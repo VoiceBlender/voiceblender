@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/csiwek/VoiceBlender/internal/events"
+	"github.com/csiwek/VoiceBlender/internal/mixer"
 	"github.com/csiwek/VoiceBlender/internal/playback"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -64,8 +65,22 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 	player := playback.NewPlayer(s.Log)
 	player.SetVolume(req.Volume)
 
-	// Write decoded 8kHz PCM directly to the leg's AudioWriter
-	writer := l.AudioWriter()
+	// If the leg is in a room, write playback into the mixer's per-participant
+	// inject channel (at 16kHz mixer rate) so it's mixed with room audio.
+	// Otherwise write directly to the leg's AudioWriter at its native rate.
+	var writer io.Writer
+	var playRate uint32
+	roomID := l.RoomID()
+	if roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			writer = rm.Mixer().InjectWriter(id)
+			playRate = uint32(mixer.SampleRate) // mixer native rate
+		}
+	}
+	if writer == nil {
+		writer = l.AudioWriter()
+		playRate = uint32(l.SampleRate())
+	}
 	if writer == nil {
 		writeError(w, http.StatusConflict, "leg has no audio writer")
 		return
@@ -78,22 +93,10 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 	legPlayers.m[id][playbackID] = player
 	legPlayers.Unlock()
 
-	// If the leg is in a room, suspend the mixer's output to this
-	// participant while playback is active. Otherwise both the mixer and
-	// the playback write to the same outFrames channel, causing frame
-	// drops and choppy audio.
-	roomID := l.RoomID()
-
 	player.OnStart(func() {
 		s.Bus.Publish(events.PlaybackStarted, map[string]interface{}{"leg_id": id, "playback_id": playbackID})
 	})
 	go func() {
-		if roomID != "" {
-			if rm, ok := s.RoomMgr.Get(roomID); ok {
-				rm.Mixer().SuspendParticipantOutput(id)
-				defer rm.Mixer().ResumeParticipantOutput(id)
-			}
-		}
 		var err error
 		if req.Tone != "" {
 			spec, ok := playback.LookupTone(req.Tone)
@@ -104,11 +107,10 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			rate := uint32(l.SampleRate())
-			toneReader := playback.NewToneReader(spec, int(rate))
-			err = player.PlayReaderAtRate(l.Context(), writer, toneReader, fmt.Sprintf("audio/pcm;rate=%d", rate), rate)
+			toneReader := playback.NewToneReader(spec, int(playRate))
+			err = player.PlayReaderAtRate(l.Context(), writer, toneReader, fmt.Sprintf("audio/pcm;rate=%d", playRate), playRate)
 		} else {
-			err = player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, uint32(l.SampleRate()), req.Repeat)
+			err = player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, playRate, req.Repeat)
 		}
 		legPlayers.Lock()
 		delete(legPlayers.m[id], playbackID)

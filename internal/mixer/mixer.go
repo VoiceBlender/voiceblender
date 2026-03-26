@@ -62,10 +62,11 @@ type Participant struct {
 	// and suppresses speaking events. Lock-free via atomic.
 	Muted atomic.Bool
 
-	// outputSuspended prevents the mixer from sending mixed-minus-self
-	// frames to this participant. Used during direct leg playback to avoid
-	// competing with the playback writer for the leg's outFrames channel.
-	outputSuspended atomic.Bool
+	// inject receives PCM frames that are mixed into this participant's
+	// output only (not heard by others). Used for per-leg playback while
+	// the leg is in a room — the playback audio is added to the
+	// mixed-minus-self output inside mixTick, avoiding channel contention.
+	inject chan []byte
 
 	// Speaking detection state (accessed only under Mixer.mu).
 	speakState speakingState
@@ -182,25 +183,39 @@ func (m *Mixer) SetParticipantMuted(id string, muted bool) {
 	}
 }
 
-// SuspendParticipantOutput stops the mixer from sending mixed-minus-self
-// frames to this participant. The participant still contributes audio to the
-// mix. Used during direct leg playback to prevent the mixer and playback
-// from competing for the same output channel.
-func (m *Mixer) SuspendParticipantOutput(id string) {
+// InjectWriter returns an io.Writer that feeds PCM frames into the
+// participant's private inject channel. The mixer adds injected frames
+// to this participant's mixed-minus-self output only — other participants
+// do not hear it. Used for per-leg playback while the leg is in a room.
+// Returns nil if the participant is not found.
+func (m *Mixer) InjectWriter(id string) io.Writer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p, ok := m.participants[id]; ok {
-		p.outputSuspended.Store(true)
+	p, ok := m.participants[id]
+	if !ok {
+		return nil
 	}
+	return &injectWriter{ch: p.inject, done: p.done}
 }
 
-// ResumeParticipantOutput re-enables mixed-minus-self output for this
-// participant after a SuspendParticipantOutput call.
-func (m *Mixer) ResumeParticipantOutput(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if p, ok := m.participants[id]; ok {
-		p.outputSuspended.Store(false)
+// injectWriter is an io.Writer that sends PCM frames into a participant's
+// inject channel. Non-blocking: drops frames if the channel is full.
+type injectWriter struct {
+	ch   chan []byte
+	done chan struct{}
+}
+
+func (w *injectWriter) Write(p []byte) (int, error) {
+	frame := make([]byte, len(p))
+	copy(frame, p)
+	select {
+	case <-w.done:
+		return 0, io.ErrClosedPipe
+	case w.ch <- frame:
+		return len(p), nil
+	default:
+		// Drop frame rather than block the playback ticker.
+		return len(p), nil
 	}
 }
 
@@ -221,6 +236,7 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) {
 		Writer:   gw,
 		incoming: make(chan []byte, 3),
 		outgoing: make(chan []byte, 3),
+		inject:   make(chan []byte, 3),
 		done:     make(chan struct{}),
 		guard:    gw,
 	}
@@ -471,10 +487,6 @@ func (m *Mixer) mixTick() {
 		if p.WriteOnly || p.Writer == nil {
 			continue
 		}
-		// Skip output when suspended (e.g. during direct leg playback).
-		if p.outputSuspended.Load() {
-			continue
-		}
 		out := make([]byte, numSamples*2)
 		for j := 0; j < numSamples; j++ {
 			self := int32(0)
@@ -483,6 +495,20 @@ func (m *Mixer) mixTick() {
 			}
 			s := clamp16(sum[j] - self)
 			binary.LittleEndian.PutUint16(out[j*2:], uint16(s))
+		}
+		// Mix in any privately-injected audio (per-leg playback).
+		var injRaw []byte
+		select {
+		case injRaw = <-p.inject:
+		default:
+		}
+		if injRaw != nil {
+			injSamples := bytesToSamples(injRaw)
+			for j := 0; j < numSamples && j < len(injSamples); j++ {
+				cur := int16(binary.LittleEndian.Uint16(out[j*2:]))
+				mixed := clamp16(int32(cur) + int32(injSamples[j]))
+				binary.LittleEndian.PutUint16(out[j*2:], uint16(mixed))
+			}
 		}
 		// Write mixed-minus-self to per-participant outgoing tap (for stereo recording).
 		if outTaps[i] != nil {
