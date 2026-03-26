@@ -1,0 +1,349 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/csiwek/VoiceBlender/internal/codec"
+	"github.com/csiwek/VoiceBlender/internal/events"
+	"github.com/csiwek/VoiceBlender/internal/leg"
+	sipmod "github.com/csiwek/VoiceBlender/internal/sip"
+	"github.com/emiago/sipgo/sip"
+	"github.com/go-chi/chi/v5"
+)
+
+type legView struct {
+	ID         string            `json:"leg_id"`
+	Type       leg.LegType       `json:"type"`
+	State      leg.LegState      `json:"state"`
+	RoomID     string            `json:"room_id,omitempty"`
+	Muted      bool              `json:"muted"`
+	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
+}
+
+func toLegView(l leg.Leg) legView {
+	return legView{
+		ID:         l.ID(),
+		Type:       l.Type(),
+		State:      l.State(),
+		RoomID:     l.RoomID(),
+		Muted:      l.IsMuted(),
+		SIPHeaders: l.SIPHeaders(),
+	}
+}
+
+// disconnectData builds the event data map for a leg.disconnected event,
+// including duration_total and duration_answered (in seconds).
+func disconnectData(l leg.Leg, reason string) map[string]interface{} {
+	now := time.Now()
+	data := map[string]interface{}{
+		"leg_id":         l.ID(),
+		"reason":         reason,
+		"duration_total": now.Sub(l.CreatedAt()).Seconds(),
+	}
+	if answered := l.AnsweredAt(); !answered.IsZero() {
+		data["duration_answered"] = now.Sub(answered).Seconds()
+	} else {
+		data["duration_answered"] = float64(0)
+	}
+	return data
+}
+
+func (s *Server) listLegs(w http.ResponseWriter, r *http.Request) {
+	legs := s.LegMgr.List()
+	views := make([]legView, len(legs))
+	for i, l := range legs {
+		views[i] = toLegView(l)
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, toLegView(l))
+}
+
+func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "only SIP inbound legs can be answered")
+		return
+	}
+
+	if l.State() != leg.StateRinging {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
+		return
+	}
+
+	sipLeg.SignalAnswer()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "answering"})
+}
+
+func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	l.SetMuted(true)
+
+	// Sync to mixer if the leg is in a room.
+	if roomID := l.RoomID(); roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			rm.Mixer().SetParticipantMuted(id, true)
+		}
+	}
+
+	s.Bus.Publish(events.LegMuted, map[string]interface{}{"leg_id": id})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "muted"})
+}
+
+func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	l.SetMuted(false)
+
+	// Sync to mixer if the leg is in a room.
+	if roomID := l.RoomID(); roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			rm.Mixer().SetParticipantMuted(id, false)
+		}
+	}
+
+	s.Bus.Publish(events.LegUnmuted, map[string]interface{}{"leg_id": id})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unmuted"})
+}
+
+// cleanupLeg stops any active recording, removes the leg from its room (if any),
+// and removes it from the leg manager. Must be called on every disconnect path.
+func (s *Server) cleanupLeg(l leg.Leg) {
+	// Ensure the leg's RTP session is closed and its context cancelled so that
+	// any readers (recording, agent) unblock promptly. For remote-BYE the dialog
+	// is already done; the BYE send error is harmless and ignored.
+	if err := l.Hangup(context.Background()); err != nil {
+		s.Log.Debug("cleanupLeg hangup", "leg_id", l.ID(), "error", err)
+	}
+
+	// Stop agent before recording so mixer taps can still be cleared.
+	s.cleanupLegAgent(l.ID())
+	// Stop recording before room removal so mixer taps can still be cleared.
+	s.stopLegRecording(l.ID())
+
+	if roomID := l.RoomID(); roomID != "" {
+		if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
+			s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
+		}
+	}
+	s.LegMgr.Remove(l.ID())
+}
+
+func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	if err := l.Hangup(r.Context()); err != nil {
+		s.Log.Warn("hangup error", "error", err)
+	}
+	s.cleanupLeg(l)
+	s.Bus.Publish(events.LegDisconnected, disconnectData(l, "api_hangup"))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "hung_up"})
+}
+
+type createLegRequest struct {
+	Type        string            `json:"type"`                   // "sip" or "webrtc"
+	URI         string            `json:"uri"`                    // SIP URI for outbound
+	From        string            `json:"from,omitempty"`         // caller ID / From header (SIP URI or display <uri>)
+	Privacy     string            `json:"privacy,omitempty"`      // SIP Privacy header value (e.g. "id", "none")
+	RingTimeout int               `json:"ring_timeout,omitempty"` // seconds; 0 = no timeout
+	Codecs      []string          `json:"codecs,omitempty"`       // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
+	Headers     map[string]string `json:"headers,omitempty"`      // custom SIP headers for outbound INVITE
+}
+
+func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
+	var req createLegRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	switch req.Type {
+	case "sip":
+		s.createSIPOutboundLeg(w, r, req)
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported leg type: %s", req.Type))
+	}
+}
+
+func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, req createLegRequest) {
+	recipient := sip.Uri{}
+	if err := sip.ParseUri(req.URI, &recipient); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid SIP URI: %v", err))
+		return
+	}
+
+	// Parse codec overrides from request.
+	var codecs []codec.CodecType
+	for _, name := range req.Codecs {
+		ct := codec.CodecTypeFromName(name)
+		if ct == codec.CodecUnknown {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown codec: %s", name))
+			return
+		}
+		codecs = append(codecs, ct)
+	}
+
+	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Log)
+
+	l.OnDTMF(func(digit rune) {
+		s.Bus.Publish(events.DTMFReceived, map[string]interface{}{
+			"leg_id": l.ID(),
+			"digit":  string(digit),
+		})
+	})
+
+	// Build invite options.
+	inviteOpts := sipmod.InviteOptions{Codecs: codecs}
+	if req.From != "" {
+		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("From", req.From))
+	}
+	if req.Privacy != "" {
+		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Privacy", req.Privacy))
+	}
+	for k, v := range req.Headers {
+		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader(k, v))
+	}
+
+	s.LegMgr.Add(l)
+	s.Bus.Publish(events.LegRinging, map[string]interface{}{"leg_id": l.ID(), "uri": req.URI})
+
+	go func() {
+		// Derive invite context from the leg's context so that
+		// Hangup (via DELETE) cancels the INVITE and sends CANCEL.
+		ctx := l.Context()
+		if req.RingTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(req.RingTimeout)*time.Second)
+			defer cancel()
+		}
+
+		call, err := s.SIPEngine.Invite(ctx, recipient, inviteOpts)
+		if err != nil {
+			s.Log.Info("outbound invite failed", "leg_id", l.ID(), "error", err)
+			if l.State() != leg.StateHungUp { // not already deleted via API
+				s.cleanupLeg(l)
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "invite_failed"))
+			}
+			return
+		}
+
+		if err := l.ConnectOutbound(call); err != nil {
+			s.Log.Error("connect outbound failed", "leg_id", l.ID(), "error", err)
+			call.RTPSess.Close()
+			call.Dialog.Bye(context.Background())
+			s.cleanupLeg(l)
+			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "connect_failed"))
+			return
+		}
+
+		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})
+
+		// Monitor for remote hangup
+		<-call.Dialog.Context().Done()
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+		}
+	}()
+
+	writeJSON(w, http.StatusCreated, toLegView(l))
+}
+
+// HandleInboundCall is called from the SIP engine for inbound INVITE requests.
+func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
+	// Register webhook from SIP X-Webhook-URL header, falling back to config default.
+	webhookURL := ""
+	if h := call.Request.GetHeader("X-Webhook-URL"); h != nil {
+		webhookURL = h.Value()
+	}
+	if webhookURL == "" {
+		webhookURL = s.Config.WebhookURL
+	}
+	if webhookURL != "" {
+		s.Webhooks.RegisterIfNew(webhookURL, "")
+	}
+
+	// Send provisional responses
+	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil); err != nil {
+		s.Log.Error("failed to send 100 Trying", "error", err)
+		return
+	}
+	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil); err != nil {
+		s.Log.Error("failed to send 180 Ringing", "error", err)
+		return
+	}
+
+	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
+	s.LegMgr.Add(l)
+	s.Bus.Publish(events.LegRinging, map[string]interface{}{
+		"leg_id": l.ID(),
+		"from":   call.From,
+		"to":     call.To,
+	})
+
+	// Wait for REST answer or context cancellation (caller hangup / timeout)
+	select {
+	case <-l.AnswerCh():
+		if err := l.Answer(context.Background()); err != nil {
+			s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
+			s.LegMgr.Remove(l.ID())
+			return
+		}
+
+		// Set up DTMF event forwarding
+		l.OnDTMF(func(digit rune) {
+			s.Bus.Publish(events.DTMFReceived, map[string]interface{}{
+				"leg_id": l.ID(),
+				"digit":  string(digit),
+			})
+		})
+
+		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})
+
+		// Block until call ends (BYE received or context cancelled)
+		<-call.Dialog.Context().Done()
+		s.cleanupLeg(l)
+		s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+		return
+
+	case <-call.Dialog.Context().Done():
+		// Caller hung up before answer
+	}
+
+	s.cleanupLeg(l)
+	s.Bus.Publish(events.LegDisconnected, disconnectData(l, "caller_cancel"))
+}

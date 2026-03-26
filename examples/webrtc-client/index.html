@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoiceBlender WebRTC Client</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --border: #0f3460;
+    --accent: #e94560;
+    --accent-hover: #ff6b6b;
+    --text: #eee;
+    --text-dim: #8892b0;
+    --green: #64ffda;
+    --red: #ff5555;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    width: 100%;
+    max-width: 480px;
+    margin-bottom: 1rem;
+  }
+  .card h2 {
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin-bottom: 0.75rem;
+  }
+
+  label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.25rem; }
+  input[type="text"] {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+  input[type="text"]:focus { outline: none; border-color: var(--accent); }
+
+  .row { display: flex; gap: 0.75rem; align-items: flex-end; }
+  .row > * { flex: 1; }
+
+  button {
+    padding: 0.6rem 1.25rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-connect { background: var(--green); color: var(--bg); }
+  .btn-connect:hover:not(:disabled) { background: #52e0c4; }
+  .btn-hangup { background: var(--red); color: #fff; }
+  .btn-hangup:hover:not(:disabled) { background: #ff7777; }
+  .btn-action { background: var(--border); color: var(--text); }
+  .btn-action:hover:not(:disabled) { background: #1a4a80; }
+  .btn-mute { background: var(--accent); color: #fff; min-width: 90px; }
+  .btn-mute:hover:not(:disabled) { background: var(--accent-hover); }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+    font-size: 0.85rem;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+  }
+  .status-dot.connected { background: var(--green); }
+  .status-dot.error { background: var(--red); }
+
+  .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+
+  .meter-container {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+  .meter-label { font-size: 0.8rem; color: var(--text-dim); min-width: 60px; }
+  .meter-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .meter-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--green);
+    border-radius: 3px;
+    transition: width 0.1s;
+  }
+
+  #log {
+    width: 100%;
+    max-width: 480px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.75rem;
+    font-family: 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-entry { padding: 0.1rem 0; }
+  .log-entry.error { color: var(--red); }
+  .log-entry.success { color: var(--green); }
+</style>
+</head>
+<body>
+
+<h1>VoiceBlender WebRTC Client</h1>
+<p class="subtitle">Browser-based voice client for VoiceBlender</p>
+
+<!-- Connection -->
+<div class="card">
+  <h2>Connection</h2>
+  <label for="server">VoiceBlender Server</label>
+  <input type="text" id="server" value="http://localhost:8080" placeholder="http://host:port">
+
+  <div class="status-bar">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="statusText">Disconnected</span>
+    <span style="flex:1"></span>
+    <span id="legId" style="font-size:0.75rem; color:var(--text-dim)"></span>
+  </div>
+
+  <div class="controls">
+    <button class="btn-connect" id="btnConnect" onclick="connect()">Connect</button>
+    <button class="btn-hangup" id="btnHangup" onclick="hangup()" disabled>Hang Up</button>
+    <button class="btn-mute" id="btnMute" onclick="toggleMute()" disabled>Mute</button>
+  </div>
+
+  <div class="meter-container">
+    <span class="meter-label">Mic</span>
+    <div class="meter-bar"><div class="meter-fill" id="micMeter"></div></div>
+  </div>
+  <div class="meter-container">
+    <span class="meter-label">Speaker</span>
+    <div class="meter-bar"><div class="meter-fill" id="spkMeter"></div></div>
+  </div>
+</div>
+
+<!-- Room -->
+<div class="card">
+  <h2>Room</h2>
+  <div class="row">
+    <div>
+      <label for="roomId">Room ID (blank = new)</label>
+      <input type="text" id="roomId" placeholder="my-room">
+    </div>
+  </div>
+  <div class="controls">
+    <button class="btn-action" id="btnJoinRoom" onclick="joinRoom()" disabled>Join Room</button>
+    <button class="btn-action" id="btnLeaveRoom" onclick="leaveRoom()" disabled>Leave Room</button>
+  </div>
+</div>
+
+<!-- DTMF -->
+<div class="card">
+  <h2>DTMF</h2>
+  <div class="controls" id="dtmfPad"></div>
+</div>
+
+<!-- Log -->
+<div id="log"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let pc = null;          // RTCPeerConnection
+let legId = null;       // assigned leg ID
+let roomId = null;      // current room
+let localStream = null; // mic MediaStream
+let muted = false;
+let micAnalyser = null;
+let spkAnalyser = null;
+let audioCtx = null;
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+const logEl = document.getElementById('log');
+function log(msg, cls) {
+  const d = document.createElement('div');
+  d.className = 'log-entry' + (cls ? ' ' + cls : '');
+  const ts = new Date().toLocaleTimeString();
+  d.textContent = `[${ts}] ${msg}`;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+function setStatus(text, state) {
+  document.getElementById('statusText').textContent = text;
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot' + (state ? ' ' + state : '');
+}
+
+function setConnected(connected) {
+  document.getElementById('btnConnect').disabled = connected;
+  document.getElementById('btnHangup').disabled = !connected;
+  document.getElementById('btnMute').disabled = !connected;
+  document.getElementById('btnJoinRoom').disabled = !connected;
+  document.getElementById('btnLeaveRoom').disabled = !connected || !roomId;
+}
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+function baseURL() {
+  return document.getElementById('server').value.replace(/\/+$/, '');
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const resp = await fetch(baseURL() + path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Audio metering
+// ---------------------------------------------------------------------------
+function startMetering(stream, meterEl, isMic) {
+  if (!audioCtx) audioCtx = new AudioContext();
+  const source = isMic
+    ? audioCtx.createMediaStreamSource(stream)
+    : audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  if (isMic) micAnalyser = analyser; else spkAnalyser = analyser;
+}
+
+function updateMeters() {
+  const update = (analyser, id) => {
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    let max = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i] - 128);
+      if (v > max) max = v;
+    }
+    document.getElementById(id).style.width = Math.min(100, (max / 128) * 100) + '%';
+  };
+  update(micAnalyser, 'micMeter');
+  update(spkAnalyser, 'spkMeter');
+  if (pc) requestAnimationFrame(updateMeters);
+}
+
+// ---------------------------------------------------------------------------
+// Connect (WebRTC offer/answer)
+// ---------------------------------------------------------------------------
+async function connect() {
+  try {
+    log('Requesting microphone access...');
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    log('Microphone granted', 'success');
+
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    // Add mic track
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+    // Handle remote audio
+    const remoteAudio = document.createElement('audio');
+    remoteAudio.autoplay = true;
+    document.body.appendChild(remoteAudio);
+    pc.ontrack = (ev) => {
+      log('Received remote audio track', 'success');
+      remoteAudio.srcObject = ev.streams[0];
+      // Speaker metering
+      startMetering(ev.streams[0], 'spkMeter', false);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      log(`ICE: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        setStatus('Disconnected', 'error');
+        cleanup();
+      }
+    };
+
+    // Create offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === 'complete') resolve();
+      };
+    });
+
+    log('Sending SDP offer to server...');
+    const result = await api('POST', '/v1/webrtc/offer', { sdp: pc.localDescription.sdp });
+    legId = result.leg_id;
+
+    await pc.setRemoteDescription({ type: 'answer', sdp: result.sdp });
+
+    document.getElementById('legId').textContent = legId;
+    setStatus('Connected', 'connected');
+    setConnected(true);
+    log(`Connected! Leg ID: ${legId}`, 'success');
+
+    // Mic metering
+    startMetering(localStream, 'micMeter', true);
+    requestAnimationFrame(updateMeters);
+
+  } catch (err) {
+    log(`Connect failed: ${err.message}`, 'error');
+    setStatus('Error', 'error');
+    cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hangup
+// ---------------------------------------------------------------------------
+async function hangup() {
+  if (!legId) return;
+  try {
+    await api('DELETE', `/v1/legs/${legId}`);
+    log('Hung up via API', 'success');
+  } catch (err) {
+    log(`Hangup API error: ${err.message}`, 'error');
+  }
+  cleanup();
+}
+
+function cleanup() {
+  if (pc) { pc.close(); pc = null; }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  micAnalyser = null;
+  spkAnalyser = null;
+  legId = null;
+  roomId = null;
+  document.getElementById('legId').textContent = '';
+  setStatus('Disconnected', '');
+  setConnected(false);
+}
+
+// ---------------------------------------------------------------------------
+// Mute
+// ---------------------------------------------------------------------------
+function toggleMute() {
+  if (!localStream) return;
+  muted = !muted;
+  localStream.getAudioTracks().forEach(t => { t.enabled = !muted; });
+  document.getElementById('btnMute').textContent = muted ? 'Unmute' : 'Mute';
+  log(muted ? 'Muted' : 'Unmuted');
+
+  // Also notify server
+  if (legId) {
+    if (muted) {
+      api('POST', `/v1/legs/${legId}/mute`).catch(() => {});
+    } else {
+      fetch(baseURL() + `/v1/legs/${legId}/mute`, { method: 'DELETE' }).catch(() => {});
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Room management
+// ---------------------------------------------------------------------------
+async function joinRoom() {
+  if (!legId) return;
+  try {
+    let rid = document.getElementById('roomId').value.trim();
+
+    if (!rid) {
+      // Create a new room
+      const r = await api('POST', '/v1/rooms', {});
+      rid = r.id;
+      document.getElementById('roomId').value = rid;
+      log(`Created room: ${rid}`, 'success');
+    } else {
+      // Try to create it (ignore 409 if it already exists)
+      try {
+        await api('POST', '/v1/rooms', { id: rid });
+        log(`Created room: ${rid}`, 'success');
+      } catch (e) {
+        if (!e.message.includes('already exists')) throw e;
+      }
+    }
+
+    await api('POST', `/v1/rooms/${rid}/legs`, { leg_id: legId });
+    roomId = rid;
+    log(`Joined room: ${rid}`, 'success');
+    document.getElementById('btnLeaveRoom').disabled = false;
+  } catch (err) {
+    log(`Join room failed: ${err.message}`, 'error');
+  }
+}
+
+async function leaveRoom() {
+  if (!legId || !roomId) return;
+  try {
+    await fetch(baseURL() + `/v1/rooms/${roomId}/legs/${legId}`, { method: 'DELETE' });
+    log(`Left room: ${roomId}`, 'success');
+    roomId = null;
+    document.getElementById('btnLeaveRoom').disabled = true;
+  } catch (err) {
+    log(`Leave room failed: ${err.message}`, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DTMF pad
+// ---------------------------------------------------------------------------
+const dtmfDigits = ['1','2','3','4','5','6','7','8','9','*','0','#'];
+const dtmfPad = document.getElementById('dtmfPad');
+dtmfDigits.forEach(d => {
+  const btn = document.createElement('button');
+  btn.className = 'btn-action';
+  btn.textContent = d;
+  btn.style.width = '48px';
+  btn.style.height = '40px';
+  btn.onclick = () => sendDTMF(d);
+  dtmfPad.appendChild(btn);
+});
+
+async function sendDTMF(digit) {
+  if (!legId) return;
+  try {
+    await api('POST', `/v1/legs/${legId}/dtmf`, { digits: digit });
+    log(`DTMF sent: ${digit}`);
+  } catch (err) {
+    log(`DTMF failed: ${err.message}`, 'error');
+  }
+}
+</script>
+</body>
+</html>
