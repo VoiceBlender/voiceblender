@@ -477,13 +477,14 @@ Stop speech-to-text on a leg.
 
 ### POST /v1/legs/{id}/agent
 
-Attach an ElevenLabs conversational AI agent to a leg. The agent hears the leg's audio and speaks back. Audio is bridged bidirectionally via the ElevenLabs ConvAI WebSocket API.
+Attach a conversational AI agent to a leg. The agent hears the leg's audio and speaks back. Audio is bridged bidirectionally via the provider's WebSocket API.
 
 **Request:**
 
 ```json
 {
-  "agent_id": "elevenlabs-agent-id",
+  "agent_id": "agent-id",
+  "provider": "elevenlabs",
   "first_message": "Hello!",
   "language": "en",
   "dynamic_variables": { "name": "Alice" }
@@ -492,11 +493,17 @@ Attach an ElevenLabs conversational AI agent to a leg. The agent hears the leg's
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | yes | ElevenLabs agent ID |
+| `agent_id` | string | yes | Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot (e.g. `ws://my-bot:8765`). |
+| `provider` | string | no | Agent provider: `"elevenlabs"` (default), `"vapi"`, or `"pipecat"` |
 | `first_message` | string | no | Override the agent's first message |
-| `language` | string | no | Language code |
+| `language` | string | no | Language code (ElevenLabs only) |
 | `dynamic_variables` | object | no | Key-value pairs passed to the agent |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `VAPI_API_KEY` env var depending on provider). Not required for Pipecat. |
+
+**Providers:**
+- `elevenlabs` — ElevenLabs ConvAI WebSocket API (default). Uses `agent_id` as the ElevenLabs agent ID.
+- `vapi` — VAPI conversational AI platform. Uses `agent_id` as the VAPI assistant ID. Creates a WebSocket call via `POST https://api.vapi.ai/call`.
+- `pipecat` — Self-hosted [Pipecat](https://pipecat.ai) bot. Uses `agent_id` as the WebSocket URL of the running bot. Audio is exchanged as protobuf-encoded binary frames (16kHz 16-bit PCM mono). No API key required.
 
 **Standalone leg:** Agent reads/writes audio directly with resampling to 16kHz.
 
@@ -514,7 +521,7 @@ Agent events (`agent.connected`, `agent.disconnected`, `agent.user_transcript`, 
 - `400` — Invalid JSON or missing `agent_id`
 - `404` — Leg not found
 - `409` — Leg not connected, agent already attached, or leg has no audio reader/writer
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 
@@ -842,13 +849,14 @@ Stop speech-to-text on a room.
 
 ### POST /v1/rooms/{id}/agent
 
-Attach an ElevenLabs conversational AI agent to a room as a virtual participant. The agent hears all participants (mixed-minus-self) and speaks to everyone.
+Attach a conversational AI agent to a room as a virtual participant. The agent hears all participants (mixed-minus-self) and speaks to everyone.
 
 **Request:**
 
 ```json
 {
-  "agent_id": "elevenlabs-agent-id",
+  "agent_id": "agent-id",
+  "provider": "elevenlabs",
   "first_message": "Hello everyone!",
   "language": "en",
   "dynamic_variables": { "topic": "meeting" }
@@ -857,11 +865,12 @@ Attach an ElevenLabs conversational AI agent to a room as a virtual participant.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | yes | ElevenLabs agent ID |
+| `agent_id` | string | yes | Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot. |
+| `provider` | string | no | Agent provider: `"elevenlabs"` (default), `"vapi"`, or `"pipecat"` |
 | `first_message` | string | no | Override the agent's first message |
-| `language` | string | no | Language code |
+| `language` | string | no | Language code (ElevenLabs only) |
 | `dynamic_variables` | object | no | Key-value pairs passed to the agent |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `VAPI_API_KEY` env var depending on provider). Not required for Pipecat. |
 
 **Response:** `200 OK`
 
@@ -873,7 +882,7 @@ Attach an ElevenLabs conversational AI agent to a room as a virtual participant.
 - `400` — Invalid JSON or missing `agent_id`
 - `404` — Room not found
 - `409` — Agent already attached to this room
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 
@@ -1155,7 +1164,7 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 | `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
 | `recording.finished` | Recording ended | `leg_id` or `room_id`, `file` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
-| `agent.connected` | Agent connected to ElevenLabs | `leg_id` or `room_id`, `conversation_id` |
+| `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |
 | `agent.user_transcript` | User speech transcribed by agent | `leg_id` or `room_id`, `text` |
 | `agent.agent_response` | Agent generated a response | `leg_id` or `room_id`, `text` |
@@ -1221,6 +1230,7 @@ All errors return:
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `WEBHOOK_URL` | _(none)_ | Default webhook URL for inbound calls (overridden by `X-Webhook-URL` SIP header) |
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
+| `VAPI_API_KEY` | _(none)_ | Default VAPI API key for Agent features when `provider=vapi` (can be overridden per-request via `api_key` in the request body) |
 | `S3_BUCKET` | _(none)_ | S3 bucket name (required for `storage=s3` recordings) |
 | `S3_REGION` | `us-east-1` | AWS region for S3 |
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |

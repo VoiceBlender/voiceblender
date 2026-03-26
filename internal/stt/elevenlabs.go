@@ -19,30 +19,21 @@ const (
 	frameBytes = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
-// TranscriptCallback is called for each transcript result.
-type TranscriptCallback func(text string, isFinal bool)
-
-// Transcriber streams audio to ElevenLabs real-time STT over WebSocket.
-type Transcriber struct {
+// ElevenLabsTranscriber streams audio to ElevenLabs real-time STT over WebSocket.
+type ElevenLabsTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
 	log     *slog.Logger
 }
 
-func New(log *slog.Logger) *Transcriber {
-	return &Transcriber{log: log}
-}
-
-// Options configures the transcription session.
-type Options struct {
-	Language string // ISO-639-1 language code (default "en")
-	Partial  bool   // emit partial transcripts
+func NewElevenLabs(log *slog.Logger) *ElevenLabsTranscriber {
+	return &ElevenLabsTranscriber{log: log}
 }
 
 // Start connects to ElevenLabs STT and streams PCM from reader.
 // It blocks until the context is cancelled or an error occurs.
-func (t *Transcriber) Start(ctx context.Context, reader io.Reader, apiKey string, opts Options, cb TranscriptCallback) error {
+func (t *ElevenLabsTranscriber) Start(ctx context.Context, reader io.Reader, apiKey string, opts Options, cb TranscriptCallback) error {
 	t.mu.Lock()
 	if t.running {
 		t.mu.Unlock()
@@ -102,7 +93,7 @@ func (t *Transcriber) Start(ctx context.Context, reader io.Reader, apiKey string
 }
 
 // Stop cancels the running transcription.
-func (t *Transcriber) Stop() {
+func (t *ElevenLabsTranscriber) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.cancel != nil {
@@ -111,7 +102,7 @@ func (t *Transcriber) Stop() {
 }
 
 // Running returns whether the transcriber is active.
-func (t *Transcriber) Running() bool {
+func (t *ElevenLabsTranscriber) Running() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.running
@@ -122,7 +113,7 @@ type audioChunkMsg struct {
 	AudioBase64 string `json:"audio_base_64"`
 }
 
-func (t *Transcriber) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
+func (t *ElevenLabsTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -168,7 +159,7 @@ type sttResponse struct {
 	Text        string `json:"text"`
 }
 
-func (t *Transcriber) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, emitPartial bool, cb TranscriptCallback) {
+func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, emitPartial bool, cb TranscriptCallback) {
 	// Use wsutil.Reader directly so that control frame responses (pong)
 	// go through our lockedWriter instead of writing to conn directly.
 	// Without this, pong writes and sendLoop writes race on the conn,

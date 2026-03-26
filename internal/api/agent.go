@@ -87,7 +87,7 @@ func (sb *streamBuffer) Close() {
 }
 
 type agentInfo struct {
-	session  *agent.Session
+	session  agent.Provider
 	sourceID string         // mixer playback source / participant ID
 	pipes    []*pipeWriter  // pipes to close on cleanup
 	speakBuf *streamBuffer  // paced speak buffer (closed before RemoveParticipant)
@@ -109,6 +109,7 @@ var (
 
 type agentRequest struct {
 	AgentID          string            `json:"agent_id"`
+	Provider         string            `json:"provider,omitempty"`
 	FirstMessage     string            `json:"first_message,omitempty"`
 	Language         string            `json:"language,omitempty"`
 	DynamicVariables map[string]string `json:"dynamic_variables,omitempty"`
@@ -129,12 +130,24 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
-	}
-	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
-		return
+	// Pipecat doesn't require a platform API key.
+	if req.Provider != "pipecat" {
+		if apiKey == "" {
+			switch req.Provider {
+			case "vapi":
+				apiKey = s.Config.VAPIAPIKey
+			default:
+				apiKey = s.Config.ElevenLabsAPIKey
+			}
+		}
+		if apiKey == "" {
+			providerName := req.Provider
+			if providerName == "" {
+				providerName = "elevenlabs"
+			}
+			writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
+			return
+		}
 	}
 
 	l, ok := s.LegMgr.Get(id)
@@ -163,7 +176,15 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bus := s.Bus
-	session := agent.New(s.Log)
+	var session agent.Provider
+	switch req.Provider {
+	case "vapi":
+		session = agent.NewVAPI(s.Log)
+	case "pipecat":
+		session = agent.NewPipecat(s.Log)
+	default:
+		session = agent.NewElevenLabs(s.Log)
+	}
 	info := &agentInfo{session: session}
 
 	var audioIn interface{ Read([]byte) (int, error) }
@@ -329,12 +350,24 @@ func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
-	}
-	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
-		return
+	// Pipecat doesn't require a platform API key.
+	if req.Provider != "pipecat" {
+		if apiKey == "" {
+			switch req.Provider {
+			case "vapi":
+				apiKey = s.Config.VAPIAPIKey
+			default:
+				apiKey = s.Config.ElevenLabsAPIKey
+			}
+		}
+		if apiKey == "" {
+			providerName := req.Provider
+			if providerName == "" {
+				providerName = "elevenlabs"
+			}
+			writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
+			return
+		}
 	}
 
 	rm, ok := s.RoomMgr.Get(id)
@@ -369,7 +402,15 @@ func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	session := agent.New(s.Log)
+	var session agent.Provider
+	switch req.Provider {
+	case "vapi":
+		session = agent.NewVAPI(s.Log)
+	case "pipecat":
+		session = agent.NewPipecat(s.Log)
+	default:
+		session = agent.NewElevenLabs(s.Log)
+	}
 	info := &agentInfo{
 		session:  session,
 		sourceID: sourceID,

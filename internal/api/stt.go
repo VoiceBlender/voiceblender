@@ -14,7 +14,7 @@ import (
 // roomSTTState holds per-room STT state: active transcribers and the options
 // used to start them so that new legs joining the room get STT automatically.
 type roomSTTState struct {
-	transcribers map[string]*stt.Transcriber // legID -> Transcriber
+	transcribers map[string]stt.Provider // legID -> Provider
 	opts         stt.Options
 	apiKey       string
 }
@@ -22,8 +22,8 @@ type roomSTTState struct {
 var (
 	legTranscribers = struct {
 		sync.Mutex
-		m map[string]*stt.Transcriber
-	}{m: make(map[string]*stt.Transcriber)}
+		m map[string]stt.Provider
+	}{m: make(map[string]stt.Provider)}
 
 	roomTranscribers = struct {
 		sync.Mutex
@@ -70,7 +70,7 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	transcriber := stt.New(s.Log)
+	transcriber := stt.NewElevenLabs(s.Log)
 	legTranscribers.m[id] = transcriber
 	legTranscribers.Unlock()
 
@@ -202,7 +202,7 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := stt.Options{Language: req.Language, Partial: req.Partial}
 	state := &roomSTTState{
-		transcribers: make(map[string]*stt.Transcriber),
+		transcribers: make(map[string]stt.Provider),
 		opts:         opts,
 		apiKey:       apiKey,
 	}
@@ -231,7 +231,7 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	pr, pw := createPipe()
 	mix.SetParticipantTap(legID, pw)
 
-	transcriber := stt.New(s.Log)
+	transcriber := stt.NewElevenLabs(s.Log)
 	roomTranscribers.Lock()
 	state.transcribers[legID] = transcriber
 	roomTranscribers.Unlock()

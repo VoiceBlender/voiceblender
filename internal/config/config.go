@@ -16,6 +16,7 @@ type Config struct {
 	LogLevel     string
 	WebhookURL        string
 	ElevenLabsAPIKey  string
+	VAPIAPIKey        string
 	S3Bucket   string
 	S3Region   string
 	S3Endpoint string
@@ -34,6 +35,7 @@ func Load() Config {
 		LogLevel:     envOr("LOG_LEVEL", "info"),
 		WebhookURL:        os.Getenv("WEBHOOK_URL"),
 		ElevenLabsAPIKey:  os.Getenv("ELEVENLABS_API_KEY"),
+		VAPIAPIKey:        os.Getenv("VAPI_API_KEY"),
 		S3Bucket:   os.Getenv("S3_BUCKET"),
 		S3Region:   envOr("S3_REGION", "us-east-1"),
 		S3Endpoint: os.Getenv("S3_ENDPOINT"),

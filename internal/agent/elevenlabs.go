@@ -15,28 +15,12 @@ import (
 )
 
 const (
-	wsURL      = "wss://api.elevenlabs.io/v1/convai/conversation"
-	frameBytes = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	elevenlabsWSURL = "wss://api.elevenlabs.io/v1/convai/conversation"
+	frameBytes      = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
-// Options configures the agent session.
-type Options struct {
-	AgentID          string
-	Language         string
-	FirstMessage     string
-	DynamicVariables map[string]string
-}
-
-// Callbacks receives events from the agent session.
-type Callbacks struct {
-	OnConnected      func(conversationID string)
-	OnDisconnected   func()
-	OnUserTranscript func(text string)
-	OnAgentResponse  func(text string)
-}
-
-// Session manages a WebSocket connection to the ElevenLabs ConvAI API.
-type Session struct {
+// ElevenLabsSession manages a WebSocket connection to the ElevenLabs ConvAI API.
+type ElevenLabsSession struct {
 	mu             sync.Mutex
 	running        bool
 	cancel         context.CancelFunc
@@ -44,15 +28,15 @@ type Session struct {
 	log            *slog.Logger
 }
 
-func New(log *slog.Logger) *Session {
-	return &Session{log: log}
+func NewElevenLabs(log *slog.Logger) *ElevenLabsSession {
+	return &ElevenLabsSession{log: log}
 }
 
 // Start dials the ElevenLabs ConvAI WebSocket and streams audio bidirectionally.
 // reader provides 16kHz 16-bit PCM mono (what humans say).
 // writer receives 16kHz 16-bit PCM mono (agent's spoken audio).
 // Blocks until the context is cancelled or an error occurs.
-func (s *Session) Start(ctx context.Context, reader io.Reader, writer io.Writer, apiKey string, opts Options, cb Callbacks) error {
+func (s *ElevenLabsSession) Start(ctx context.Context, reader io.Reader, writer io.Writer, apiKey string, opts Options, cb Callbacks) error {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -79,7 +63,7 @@ func (s *Session) Start(ctx context.Context, reader io.Reader, writer io.Writer,
 		},
 	}
 
-	url := wsURL + "?agent_id=" + opts.AgentID
+	url := elevenlabsWSURL + "?agent_id=" + opts.AgentID
 	s.log.Info("agent dialing", "url", url)
 	conn, _, _, err := dialer.Dial(ctx, url)
 	if err != nil {
@@ -115,7 +99,7 @@ func (s *Session) Start(ctx context.Context, reader io.Reader, writer io.Writer,
 }
 
 // Stop cancels the running agent session.
-func (s *Session) Stop() {
+func (s *ElevenLabsSession) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cancel != nil {
@@ -124,20 +108,20 @@ func (s *Session) Stop() {
 }
 
 // Running returns whether the session is active.
-func (s *Session) Running() bool {
+func (s *ElevenLabsSession) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running
 }
 
 // ConversationID returns the conversation ID assigned by ElevenLabs.
-func (s *Session) ConversationID() string {
+func (s *ElevenLabsSession) ConversationID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conversationID
 }
 
-func (s *Session) sendInitiation(lw *lockedWriter, opts Options) error {
+func (s *ElevenLabsSession) sendInitiation(lw *lockedWriter, opts Options) error {
 	if opts.FirstMessage == "" && opts.Language == "" && len(opts.DynamicVariables) == 0 {
 		return nil
 	}
@@ -174,7 +158,7 @@ type audioChunkMsg struct {
 	UserAudioChunk string `json:"user_audio_chunk"`
 }
 
-func (s *Session) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
+func (s *ElevenLabsSession) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -255,7 +239,7 @@ type pingMessage struct {
 	} `json:"ping_event"`
 }
 
-func (s *Session) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, writer io.Writer, cb Callbacks) {
+func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, writer io.Writer, cb Callbacks) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
