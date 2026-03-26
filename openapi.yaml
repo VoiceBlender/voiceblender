@@ -631,13 +631,13 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-    /legs/{id}/agent:
+    /legs/{id}/agent/elevenlabs:
         parameters:
             - $ref: '#/components/parameters/LegId'
         post:
-            operationId: agentLeg
-            summary: Attach an AI agent to a leg
-            description: 'Bridges audio bidirectionally with a conversational AI agent. Supported providers: `elevenlabs` (default), `vapi`, `pipecat`. Standalone legs use direct audio; legs in a room use mixer taps.'
+            operationId: agentLegElevenLabs
+            summary: Attach an ElevenLabs ConvAI agent to a leg
+            description: Bridges audio bidirectionally with an ElevenLabs conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.
             tags:
                 - Legs
             requestBody:
@@ -645,7 +645,7 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: '#/components/schemas/AgentRequest'
+                            $ref: '#/components/schemas/ElevenLabsAgentRequest'
             responses:
                 '200':
                     description: Agent started
@@ -672,11 +672,192 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '503':
-                    description: No API key provided for the selected provider
+                    description: No ElevenLabs API key provided
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/agent/vapi:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: agentLegVAPI
+            summary: Attach a VAPI agent to a leg
+            description: Bridges audio bidirectionally with a VAPI conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/VAPIAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing assistant_id
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg not connected, agent already attached, or no audio reader/writer
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: No VAPI API key provided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/agent/pipecat:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: agentLegPipecat
+            summary: Attach a Pipecat bot to a leg
+            description: Bridges audio bidirectionally with a self-hosted Pipecat bot via WebSocket. Standalone legs use direct audio; legs in a room use mixer taps.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/PipecatAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing websocket_url
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg not connected, agent already attached, or no audio reader/writer
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/agent/deepgram:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: agentLegDeepgram
+            summary: Attach a Deepgram Voice Agent to a leg
+            description: Bridges audio bidirectionally with a Deepgram Voice Agent. Standalone legs use direct audio; legs in a room use mixer taps.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DeepgramAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg not connected, agent already attached, or no audio reader/writer
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: No Deepgram API key provided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/agent/message:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: agentLegMessage
+            summary: Inject a message into a running agent session on a leg
+            description: Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AgentMessageRequest'
+            responses:
+                '200':
+                    description: Message sent
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing message
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: No agent attached to this leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Agent session not running
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '501':
+                    description: Provider does not support message injection
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/agent:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
         delete:
             operationId: stopAgentLeg
             summary: Detach the agent from a leg
@@ -1140,13 +1321,13 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-    /rooms/{id}/agent:
+    /rooms/{id}/agent/elevenlabs:
         parameters:
             - $ref: '#/components/parameters/RoomId'
         post:
-            operationId: agentRoom
-            summary: Attach an AI agent to a room
-            description: 'The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone. Supported providers: `elevenlabs` (default), `vapi`, `pipecat`.'
+            operationId: agentRoomElevenLabs
+            summary: Attach an ElevenLabs ConvAI agent to a room
+            description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
             tags:
                 - Rooms
             requestBody:
@@ -1154,7 +1335,7 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: '#/components/schemas/AgentRequest'
+                            $ref: '#/components/schemas/ElevenLabsAgentRequest'
             responses:
                 '200':
                     description: Agent started
@@ -1181,11 +1362,192 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '503':
-                    description: No API key provided for the selected provider
+                    description: No ElevenLabs API key provided
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /rooms/{id}/agent/vapi:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: agentRoomVAPI
+            summary: Attach a VAPI agent to a room
+            description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/VAPIAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing assistant_id
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Agent already attached to this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: No VAPI API key provided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/agent/pipecat:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: agentRoomPipecat
+            summary: Attach a Pipecat bot to a room
+            description: The bot joins as a virtual participant via WebSocket, hearing all participants (mixed-minus-self) and speaking to everyone.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/PipecatAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing websocket_url
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Agent already attached to this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/agent/deepgram:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: agentRoomDeepgram
+            summary: Attach a Deepgram Voice Agent to a room
+            description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DeepgramAgentRequest'
+            responses:
+                '200':
+                    description: Agent started
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Agent already attached to this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: No Deepgram API key provided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/agent/message:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: agentRoomMessage
+            summary: Inject a message into a running agent session on a room
+            description: Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AgentMessageRequest'
+            responses:
+                '200':
+                    description: Message sent
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON or missing message
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: No agent attached to this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Agent session not running
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '501':
+                    description: Provider does not support message injection
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/agent:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
         delete:
             operationId: stopAgentRoom
             summary: Detach the agent from a room
@@ -1466,35 +1828,14 @@ components:
                     description: ID of the leg to add
             required:
                 - leg_id
-        AgentRequest:
+        AgentMessageRequest:
             type: object
             properties:
-                agent_id:
+                message:
                     type: string
-                    description: Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot (e.g. ws://my-bot:8765).
-                provider:
-                    type: string
-                    description: 'Agent provider: "elevenlabs" (default), "vapi", or "pipecat". elevenlabs: ElevenLabs ConvAI WebSocket API. vapi: VAPI conversational AI platform. pipecat: Self-hosted Pipecat bot; agent_id is the bot WebSocket URL.'
-                    enum:
-                        - elevenlabs
-                        - vapi
-                        - pipecat
-                first_message:
-                    type: string
-                    description: Override the agent's first message
-                language:
-                    type: string
-                    description: Language code (ElevenLabs only)
-                dynamic_variables:
-                    type: object
-                    additionalProperties:
-                        type: string
-                    description: Key-value pairs passed to the agent
-                api_key:
-                    type: string
-                    description: API key override (falls back to ELEVENLABS_API_KEY or VAPI_API_KEY env var depending on provider). Not required for Pipecat.
+                    description: Context or instruction to inject into the running agent session
             required:
-                - agent_id
+                - message
         CreateLegRequest:
             type: object
             properties:
@@ -1576,6 +1917,54 @@ components:
                     description: 'DTMF digits to send (0-9, *, #)'
             required:
                 - digits
+        DeepgramAgentRequest:
+            type: object
+            properties:
+                settings:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Full Deepgram agent settings object (agent.listen, agent.think, agent.speak, etc.). When omitted, sensible defaults are used (nova-3 STT, gpt-4o-mini LLM, aura-2-asteria-en TTS).
+                greeting:
+                    type: string
+                    description: Agent greeting message
+                language:
+                    type: string
+                    description: Language code (e.g. "en", "es")
+                api_key:
+                    type: string
+                    description: API key override (falls back to DEEPGRAM_API_KEY env var)
+        ElevenLabsAgentRequest:
+            type: object
+            properties:
+                agent_id:
+                    type: string
+                    description: ElevenLabs agent ID
+                first_message:
+                    type: string
+                    description: Override the agent's first message
+                language:
+                    type: string
+                    description: Language code (e.g. "en", "es")
+                dynamic_variables:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Key-value pairs passed to the agent as dynamic variables
+                api_key:
+                    type: string
+                    description: API key override (falls back to ELEVENLABS_API_KEY env var)
+            required:
+                - agent_id
+        PipecatAgentRequest:
+            type: object
+            properties:
+                websocket_url:
+                    type: string
+                    description: WebSocket URL of the Pipecat bot (e.g. ws://my-bot:8765)
+                    format: uri
+            required:
+                - websocket_url
         PlaybackRequest:
             type: object
             properties:
@@ -1656,9 +2045,15 @@ components:
                     type: boolean
                     description: Emit partial (non-final) transcripts
                     default: false
+                provider:
+                    type: string
+                    description: 'STT provider: "elevenlabs" (default) or "deepgram"'
+                    enum:
+                        - elevenlabs
+                        - deepgram
                 api_key:
                     type: string
-                    description: ElevenLabs API key override
+                    description: API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)
             required:
                 - language
                 - partial
@@ -1670,7 +2065,7 @@ components:
                     description: Text to synthesize
                 voice:
                     type: string
-                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore).'
+                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en).'
                 model_id:
                     type: string
                     description: 'Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (standard, neural, long-form, generative; default neural). Google Cloud: model name (e.g. gemini-2.5-pro-tts, chirp3-hd).'
@@ -1688,19 +2083,39 @@ components:
                     maximum: 8
                 provider:
                     type: string
-                    description: 'TTS provider: "elevenlabs" (default), "aws", or "google"'
+                    description: 'TTS provider: "elevenlabs" (default), "aws", "google", or "deepgram"'
                     enum:
                         - elevenlabs
                         - aws
                         - google
+                        - deepgram
                 api_key:
                     type: string
-                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials).'
+                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var).'
             required:
                 - text
                 - voice
                 - model_id
                 - volume
+        VAPIAgentRequest:
+            type: object
+            properties:
+                assistant_id:
+                    type: string
+                    description: VAPI assistant ID
+                first_message:
+                    type: string
+                    description: Override the agent's first message
+                variable_values:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Key-value pairs passed as VAPI variable values (assistantOverrides.variableValues)
+                api_key:
+                    type: string
+                    description: API key override (falls back to VAPI_API_KEY env var)
+            required:
+                - assistant_id
         VolumeRequest:
             type: object
             properties:
@@ -1867,7 +2282,7 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
-                                    disposition:
+                                    cdr:
                                         type: object
                                         properties:
                                             reason:
@@ -1894,11 +2309,6 @@ x-webhooks:
                                                     - invite_failed
                                                     - connect_failed
                                                     - ice_failure
-                                        required:
-                                            - reason
-                                    timing:
-                                        type: object
-                                        properties:
                                             duration_total:
                                                 type: number
                                                 description: Seconds from leg creation to disconnect
@@ -1906,6 +2316,7 @@ x-webhooks:
                                                 type: number
                                                 description: Seconds from answer to disconnect (0 if never answered)
                                         required:
+                                            - reason
                                             - duration_total
                                             - duration_answered
                                     quality:

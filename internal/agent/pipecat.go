@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -24,7 +25,20 @@ type PipecatSession struct {
 	running        bool
 	cancel         context.CancelFunc
 	conversationID string
+	lw             *pipecatLockedWriter
 	log            *slog.Logger
+}
+
+// pipecatLockedWriter serializes all WebSocket binary frame writes to a net.Conn.
+type pipecatLockedWriter struct {
+	mu   sync.Mutex
+	conn net.Conn
+}
+
+func (lw *pipecatLockedWriter) WriteBinary(data []byte) error {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return wsutil.WriteClientBinary(lw.conn, data)
 }
 
 func NewPipecat(log *slog.Logger) *PipecatSession {
@@ -49,6 +63,7 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 		p.mu.Lock()
 		p.running = false
 		p.cancel = nil
+		p.lw = nil
 		p.mu.Unlock()
 		if cb.OnDisconnected != nil {
 			cb.OnDisconnected()
@@ -65,10 +80,13 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 	p.log.Info("pipecat websocket connected")
 	defer conn.Close()
 
+	lw := &pipecatLockedWriter{conn: conn}
+
 	// Pipecat has no handshake; connection is immediately live.
 	// Use the WebSocket URL as the conversation ID.
 	p.mu.Lock()
 	p.conversationID = wsURL
+	p.lw = lw
 	p.mu.Unlock()
 	if cb.OnConnected != nil {
 		cb.OnConnected(wsURL)
@@ -79,7 +97,7 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 
 	go func() {
 		defer wg.Done()
-		p.sendLoop(ctx, reader, conn)
+		p.sendLoop(ctx, reader, lw)
 	}()
 
 	go func() {
@@ -114,7 +132,7 @@ func (p *PipecatSession) ConversationID() string {
 	return p.conversationID
 }
 
-func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, conn net.Conn) {
+func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, lw *pipecatLockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -154,7 +172,7 @@ func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, conn ne
 			continue
 		}
 
-		if err := wsutil.WriteClientBinary(conn, data); err != nil {
+		if err := lw.WriteBinary(data); err != nil {
 			p.log.Debug("pipecat send error", "error", err, "sent_frames", sendCount)
 			return
 		}
@@ -163,6 +181,31 @@ func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, conn ne
 			p.log.Debug("pipecat sendLoop progress", "sent_frames", sendCount)
 		}
 	}
+}
+
+// InjectMessage sends a TextFrame to the Pipecat bot.
+func (p *PipecatSession) InjectMessage(ctx context.Context, message string) error {
+	p.mu.Lock()
+	lw := p.lw
+	running := p.running
+	p.mu.Unlock()
+
+	if !running || lw == nil {
+		return fmt.Errorf("agent session not running")
+	}
+
+	frame := &pb.Frame{
+		Frame: &pb.Frame_Text{
+			Text: &pb.TextFrame{
+				Text: message,
+			},
+		},
+	}
+	data, err := proto.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return lw.WriteBinary(data)
 }
 
 // pipecatRTVIMessage represents a JSON message inside a Pipecat MessageFrame.

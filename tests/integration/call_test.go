@@ -467,12 +467,12 @@ func TestDisconnect_DurationFields(t *testing.T) {
 	}, 5*time.Second)
 
 	dA := eA.Data.(*events.LegDisconnectedData)
-	dTotal := dA.Timing.DurationTotal
+	dTotal := dA.CDR.DurationTotal
 	if dTotal < 0.1 {
 		t.Fatalf("expected duration_total >= 0.1s, got %f", dTotal)
 	}
 
-	dAnswered := dA.Timing.DurationAnswered
+	dAnswered := dA.CDR.DurationAnswered
 	if dAnswered < 0.1 {
 		t.Fatalf("expected duration_answered >= 0.1s, got %f", dAnswered)
 	}
@@ -488,12 +488,12 @@ func TestDisconnect_DurationFields(t *testing.T) {
 	}, 5*time.Second)
 
 	dB := eB.Data.(*events.LegDisconnectedData)
-	dTotalB := dB.Timing.DurationTotal
+	dTotalB := dB.CDR.DurationTotal
 	if dTotalB < 0.1 {
 		t.Fatalf("B: expected duration_total >= 0.1s, got %f", dTotalB)
 	}
 
-	dAnsweredB := dB.Timing.DurationAnswered
+	dAnsweredB := dB.CDR.DurationAnswered
 	if dAnsweredB < 0.1 {
 		t.Fatalf("B: expected duration_answered >= 0.1s, got %f", dAnsweredB)
 	}
@@ -525,13 +525,13 @@ func TestDisconnect_UnansweredDuration(t *testing.T) {
 
 	// duration_total should be > 0 (at least the ring timeout).
 	d := e.Data.(*events.LegDisconnectedData)
-	dTotal := d.Timing.DurationTotal
+	dTotal := d.CDR.DurationTotal
 	if dTotal < 0.5 {
 		t.Fatalf("expected duration_total >= 0.5s, got %f", dTotal)
 	}
 
 	// duration_answered should be 0 (never answered).
-	dAnswered := d.Timing.DurationAnswered
+	dAnswered := d.CDR.DurationAnswered
 	if dAnswered != 0 {
 		t.Fatalf("expected duration_answered == 0, got %f", dAnswered)
 	}
@@ -567,7 +567,7 @@ func TestOutboundInbound_CallerCancel(t *testing.T) {
 
 	// Verify B sees leg.disconnected with reason "caller_cancel".
 	instB.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
-		return e.Data.GetLegID() == inboundLeg.ID && e.Data.(*events.LegDisconnectedData).Disposition.Reason == "caller_cancel"
+		return e.Data.GetLegID() == inboundLeg.ID && e.Data.(*events.LegDisconnectedData).CDR.Reason == "caller_cancel"
 	}, 5*time.Second)
 }
 

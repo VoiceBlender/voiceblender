@@ -267,6 +267,14 @@ func (s *Server) resolveTTSProvider(req TTSRequest) (tts.Provider, string) {
 	case "google":
 		// Google Cloud TTS uses Application Default Credentials; api_key is optional.
 		provider, name = tts.NewGoogle(s.Log), "google"
+	case "deepgram":
+		if apiKey == "" {
+			apiKey = s.Config.DeepgramAPIKey
+		}
+		if apiKey == "" {
+			return nil, ""
+		}
+		provider, name = tts.NewDeepgram(apiKey, s.Log), "deepgram"
 	default:
 		// ElevenLabs (default).
 		if apiKey == "" {

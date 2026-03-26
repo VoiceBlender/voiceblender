@@ -31,20 +31,18 @@ func toLegView(l leg.Leg) LegView {
 }
 
 // disconnectData builds the typed event data for a leg.disconnected event,
-// including CDR-style disposition, timing, and optional quality metrics.
+// including CDR (reason, timing) and optional quality metrics.
 func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 	now := time.Now()
 	d := &events.LegDisconnectedData{
 		LegScope: events.LegScope{LegID: l.ID()},
-		Disposition: events.DisconnectDisposition{
-			Reason: reason,
-		},
-		Timing: events.CallTiming{
+		CDR: events.CallCDR{
+			Reason:        reason,
 			DurationTotal: roundTo2(now.Sub(l.CreatedAt()).Seconds()),
 		},
 	}
 	if answered := l.AnsweredAt(); !answered.IsZero() {
-		d.Timing.DurationAnswered = roundTo2(now.Sub(answered).Seconds())
+		d.CDR.DurationAnswered = roundTo2(now.Sub(answered).Seconds())
 	}
 	if stats := l.RTPStats(); stats.PacketsReceived > 0 {
 		d.Quality = &events.CallQuality{

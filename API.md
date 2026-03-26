@@ -369,21 +369,33 @@ Synthesize speech and play it on a leg.
 }
 ```
 
+**Request (Deepgram TTS):**
+
+```json
+{
+  "text": "Hello, how can I help you?",
+  "voice": "aura-2-asteria-en",
+  "provider": "deepgram",
+  "volume": 0
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | yes | Text to synthesize |
-| `voice` | string | yes | Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. `Joanna`, `Matthew`). Google Cloud: voice name — either full format (e.g. `en-US-Neural2-F`) or short name for Gemini models (e.g. `Achernar`, `Kore`). |
-| `provider` | string | no | TTS provider: `"elevenlabs"` (default), `"aws"`, or `"google"` |
-| `model_id` | string | no | Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (`standard`, `neural`, `long-form`, `generative`; default `neural`). Google Cloud: model name (e.g. `gemini-2.5-pro-tts`, `chirp3-hd`). |
+| `voice` | string | yes | Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. `Joanna`, `Matthew`). Google Cloud: voice name — either full format (e.g. `en-US-Neural2-F`) or short name for Gemini models (e.g. `Achernar`, `Kore`). Deepgram: model name (e.g. `aura-2-asteria-en`). |
+| `provider` | string | no | TTS provider: `"elevenlabs"` (default), `"aws"`, `"google"`, or `"deepgram"` |
+| `model_id` | string | no | Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (`standard`, `neural`, `long-form`, `generative`; default `neural`). Google Cloud: model name (e.g. `gemini-2.5-pro-tts`, `chirp3-hd`). Not used for Deepgram (voice selects the model). |
 | `language` | string | no | Language code (e.g. `"en-US"`, `"pl-pl"`). Required for Google Gemini TTS voices that use short names (e.g. `Achernar`). Auto-extracted from full voice names like `en-US-Neural2-F`. |
 | `prompt` | string | no | Style/tone instruction for promptable voice models (Google Gemini TTS only). E.g. `"Read aloud in a warm, welcoming tone."` |
 | `volume` | integer | no | Volume adjustment in dB (`-8` to `8`, default `0`) |
-| `api_key` | string | no | ElevenLabs: API key override (falls back to `ELEVENLABS_API_KEY` env var). AWS: optional `ACCESS_KEY:SECRET_KEY` override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). |
+| `api_key` | string | no | ElevenLabs: API key override (falls back to `ELEVENLABS_API_KEY` env var). AWS: optional `ACCESS_KEY:SECRET_KEY` override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to `DEEPGRAM_API_KEY` env var). |
 
 **Providers:**
 - `elevenlabs` — ElevenLabs streaming TTS API (default). Requires an API key.
 - `aws` — Amazon Polly. Uses the default AWS credential chain (env vars, IAM role, shared credentials file). No API key required unless overriding credentials per-request.
 - `google` — Google Cloud Text-to-Speech. Uses Application Default Credentials (ADC). No API key required unless overriding per-request. Supports all voice types: Standard, WaveNet, Neural2, Studio, Chirp 3 HD, and Gemini TTS. For Gemini models (e.g. `gemini-2.5-pro-tts`), set `model_id` and `language` explicitly; use `prompt` for style instructions.
+- `deepgram` — Deepgram TTS API. Requires an API key. The `voice` field selects the model (e.g. `aura-2-asteria-en`).
 
 **Response:** `200 OK`
 
@@ -479,14 +491,15 @@ Stop recording a leg.
 
 ### POST /v1/legs/{id}/stt
 
-Start real-time speech-to-text transcription on a leg using ElevenLabs STT.
+Start real-time speech-to-text transcription on a leg.
 
 **Request:**
 
 ```json
 {
   "language": "en",
-  "partial": true
+  "partial": true,
+  "provider": "elevenlabs"
 }
 ```
 
@@ -494,7 +507,12 @@ Start real-time speech-to-text transcription on a leg using ElevenLabs STT.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default) or `"deepgram"` |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `DEEPGRAM_API_KEY` env var depending on provider) |
+
+**Providers:**
+- `elevenlabs` — ElevenLabs real-time STT via WebSocket (default). Uses Scribe v2 model.
+- `deepgram` — Deepgram real-time STT via WebSocket. Uses Nova-3 model. Audio is sent as raw binary PCM frames.
 
 **Response:** `200 OK`
 
@@ -507,7 +525,7 @@ Transcripts are delivered via `stt.text` webhook events.
 **Errors:**
 - `404` — Leg not found
 - `409` — Leg not connected, STT already running, or leg has no audio reader
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 
@@ -525,59 +543,162 @@ Stop speech-to-text on a leg.
 
 ---
 
-### POST /v1/legs/{id}/agent
+### POST /v1/legs/{id}/agent/elevenlabs
 
-Attach a conversational AI agent to a leg. The agent hears the leg's audio and speaks back. Audio is bridged bidirectionally via the provider's WebSocket API.
+Attach an ElevenLabs ConvAI agent to a leg.
 
 **Request:**
 
 ```json
 {
-  "agent_id": "agent-id",
-  "provider": "elevenlabs",
+  "agent_id": "abc123",
   "first_message": "Hello!",
   "language": "en",
-  "dynamic_variables": { "name": "Alice" }
+  "dynamic_variables": { "name": "Alice" },
+  "api_key": "xi-..."
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | yes | Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot (e.g. `ws://my-bot:8765`). |
-| `provider` | string | no | Agent provider: `"elevenlabs"` (default), `"vapi"`, or `"pipecat"` |
+| `agent_id` | string | yes | ElevenLabs agent ID |
 | `first_message` | string | no | Override the agent's first message |
-| `language` | string | no | Language code (ElevenLabs only) |
-| `dynamic_variables` | object | no | Key-value pairs passed to the agent |
-| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `VAPI_API_KEY` env var depending on provider). Not required for Pipecat. |
+| `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
+| `dynamic_variables` | object | no | Key-value pairs passed to the agent as dynamic variables |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` env var) |
 
-**Providers:**
-- `elevenlabs` — ElevenLabs ConvAI WebSocket API (default). Uses `agent_id` as the ElevenLabs agent ID.
-- `vapi` — VAPI conversational AI platform. Uses `agent_id` as the VAPI assistant ID. Creates a WebSocket call via `POST https://api.vapi.ai/call`.
-- `pipecat` — Self-hosted [Pipecat](https://pipecat.ai) bot. Uses `agent_id` as the WebSocket URL of the running bot. Audio is exchanged as protobuf-encoded binary frames (16kHz 16-bit PCM mono). No API key required.
+**Response:** `200 OK` — `{ "status": "agent_started", "leg_id": "..." }`
 
-**Standalone leg:** Agent reads/writes audio directly with resampling to 16kHz.
+**Errors:** `400` — Invalid JSON or missing agent_id · `404` — Leg not found · `409` — Leg not connected, agent already attached, or no audio reader/writer · `503` — No API key
 
-**Leg in a room:** Agent hears only that leg (via mixer tap) and speaks to everyone (via playback source).
+---
+
+### POST /v1/legs/{id}/agent/vapi
+
+Attach a VAPI agent to a leg.
+
+**Request:**
+
+```json
+{
+  "assistant_id": "asst_xyz",
+  "first_message": "Hello!",
+  "variable_values": { "name": "Alice" },
+  "api_key": "vapi-..."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `assistant_id` | string | yes | VAPI assistant ID |
+| `first_message` | string | no | Override the agent's first message |
+| `variable_values` | object | no | Key-value pairs passed as VAPI variable values |
+| `api_key` | string | no | API key override (falls back to `VAPI_API_KEY` env var) |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "leg_id": "..." }`
+
+**Errors:** `400` — Invalid JSON or missing assistant_id · `404` — Leg not found · `409` — Leg not connected, agent already attached, or no audio reader/writer · `503` — No API key
+
+---
+
+### POST /v1/legs/{id}/agent/pipecat
+
+Attach a self-hosted Pipecat bot to a leg. Audio is exchanged as protobuf-encoded binary frames (16kHz 16-bit PCM mono). No API key required.
+
+**Request:**
+
+```json
+{
+  "websocket_url": "ws://my-bot:8765"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `websocket_url` | string | yes | WebSocket URL of the Pipecat bot |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "leg_id": "..." }`
+
+**Errors:** `400` — Invalid JSON or missing websocket_url · `404` — Leg not found · `409` — Leg not connected, agent already attached, or no audio reader/writer
+
+---
+
+### POST /v1/legs/{id}/agent/deepgram
+
+Attach a Deepgram Voice Agent to a leg. Audio is exchanged as raw binary PCM frames (16kHz 16-bit PCM mono).
+
+**Request:**
+
+```json
+{
+  "settings": {
+    "agent": {
+      "listen": { "provider": { "type": "deepgram", "model": "nova-3" } },
+      "think": { "provider": { "type": "open_ai", "model": "gpt-4o-mini" } },
+      "speak": { "provider": { "type": "deepgram", "model": "aura-2-asteria-en" } }
+    }
+  },
+  "greeting": "Hello!",
+  "language": "en",
+  "api_key": "dg-..."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `settings` | object | no | Full Deepgram agent settings object. When omitted, sensible defaults are used (nova-3 STT, gpt-4o-mini LLM, aura-2-asteria-en TTS). |
+| `greeting` | string | no | Agent greeting message |
+| `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
+| `api_key` | string | no | API key override (falls back to `DEEPGRAM_API_KEY` env var) |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "leg_id": "..." }`
+
+**Errors:** `400` — Invalid JSON · `404` — Leg not found · `409` — Leg not connected, agent already attached, or no audio reader/writer · `503` — No API key
+
+---
+
+**Agent notes (all providers):**
+- **Standalone leg:** Agent reads/writes audio directly with resampling to 16kHz.
+- **Leg in a room:** Agent hears only that leg (via mixer tap) and speaks to everyone (via playback source).
+- Agent events (`agent.connected`, `agent.disconnected`, `agent.user_transcript`, `agent.agent_response`) are delivered via webhooks.
+
+---
+
+### POST /v1/legs/{id}/agent/message
+
+Inject a context message or instruction into a running agent session on a leg. This is provider-agnostic — the session routes the message using the appropriate provider mechanism.
+
+**Supported providers:**
+- **Deepgram** — sends `InjectAgentMessage` via WebSocket
+- **Pipecat** — sends a protobuf `TextFrame` via WebSocket
+- **VAPI** — sends `add-message` via HTTP control URL
+- **ElevenLabs** — not supported (returns `501`)
+
+**Request:**
+
+```json
+{
+  "message": "The customer's name is John and their order number is 12345."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | yes | Context or instruction to inject into the running agent session |
 
 **Response:** `200 OK`
 
 ```json
-{ "status": "agent_started", "leg_id": "550e8400-..." }
+{ "status": "message_sent" }
 ```
 
-Agent events (`agent.connected`, `agent.disconnected`, `agent.user_transcript`, `agent.agent_response`) are delivered via webhooks.
-
-**Errors:**
-- `400` — Invalid JSON or missing `agent_id`
-- `404` — Leg not found
-- `409` — Leg not connected, agent already attached, or leg has no audio reader/writer
-- `503` — No API key provided for the selected provider
+**Errors:** `400` — Invalid JSON or missing message · `404` — No agent attached to this leg · `409` — Agent session not running · `501` — Provider does not support message injection
 
 ---
 
 ### DELETE /v1/legs/{id}/agent
 
-Detach the agent from a leg.
+Detach the agent from a leg (provider-agnostic).
 
 **Response:** `200 OK`
 
@@ -901,7 +1022,8 @@ Start real-time speech-to-text on all participants in a room.
 ```json
 {
   "language": "en",
-  "partial": true
+  "partial": true,
+  "provider": "elevenlabs"
 }
 ```
 
@@ -909,7 +1031,8 @@ Start real-time speech-to-text on all participants in a room.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default) or `"deepgram"` |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `DEEPGRAM_API_KEY` env var depending on provider) |
 
 **Response:** `200 OK`
 
@@ -922,7 +1045,7 @@ Transcripts are delivered via `stt.text` webhook events.
 **Errors:**
 - `404` — Room not found
 - `409` — STT already running on this room, or room has no participants
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 
@@ -940,48 +1063,155 @@ Stop speech-to-text on a room.
 
 ---
 
-### POST /v1/rooms/{id}/agent
+### POST /v1/rooms/{id}/agent/elevenlabs
 
-Attach a conversational AI agent to a room as a virtual participant. The agent hears all participants (mixed-minus-self) and speaks to everyone.
+Attach an ElevenLabs ConvAI agent to a room. The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
 
 **Request:**
 
 ```json
 {
-  "agent_id": "agent-id",
-  "provider": "elevenlabs",
+  "agent_id": "abc123",
   "first_message": "Hello everyone!",
   "language": "en",
-  "dynamic_variables": { "topic": "meeting" }
+  "dynamic_variables": { "topic": "meeting" },
+  "api_key": "xi-..."
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | yes | Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot. |
-| `provider` | string | no | Agent provider: `"elevenlabs"` (default), `"vapi"`, or `"pipecat"` |
+| `agent_id` | string | yes | ElevenLabs agent ID |
 | `first_message` | string | no | Override the agent's first message |
-| `language` | string | no | Language code (ElevenLabs only) |
-| `dynamic_variables` | object | no | Key-value pairs passed to the agent |
-| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` or `VAPI_API_KEY` env var depending on provider). Not required for Pipecat. |
+| `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
+| `dynamic_variables` | object | no | Key-value pairs passed to the agent as dynamic variables |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "room_id": "room-123" }`
+
+**Errors:** `400` — Invalid JSON or missing agent_id · `404` — Room not found · `409` — Agent already attached · `503` — No API key
+
+---
+
+### POST /v1/rooms/{id}/agent/vapi
+
+Attach a VAPI agent to a room as a virtual participant.
+
+**Request:**
+
+```json
+{
+  "assistant_id": "asst_xyz",
+  "first_message": "Hello everyone!",
+  "variable_values": { "topic": "meeting" },
+  "api_key": "vapi-..."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `assistant_id` | string | yes | VAPI assistant ID |
+| `first_message` | string | no | Override the agent's first message |
+| `variable_values` | object | no | Key-value pairs passed as VAPI variable values |
+| `api_key` | string | no | API key override (falls back to `VAPI_API_KEY` env var) |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "room_id": "room-123" }`
+
+**Errors:** `400` — Invalid JSON or missing assistant_id · `404` — Room not found · `409` — Agent already attached · `503` — No API key
+
+---
+
+### POST /v1/rooms/{id}/agent/pipecat
+
+Attach a self-hosted Pipecat bot to a room as a virtual participant.
+
+**Request:**
+
+```json
+{
+  "websocket_url": "ws://my-bot:8765"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `websocket_url` | string | yes | WebSocket URL of the Pipecat bot |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "room_id": "room-123" }`
+
+**Errors:** `400` — Invalid JSON or missing websocket_url · `404` — Room not found · `409` — Agent already attached
+
+---
+
+### POST /v1/rooms/{id}/agent/deepgram
+
+Attach a Deepgram Voice Agent to a room as a virtual participant.
+
+**Request:**
+
+```json
+{
+  "settings": {
+    "agent": {
+      "listen": { "provider": { "type": "deepgram", "model": "nova-3" } },
+      "think": { "provider": { "type": "open_ai", "model": "gpt-4o-mini" } },
+      "speak": { "provider": { "type": "deepgram", "model": "aura-2-asteria-en" } }
+    }
+  },
+  "greeting": "Hello everyone!",
+  "language": "en",
+  "api_key": "dg-..."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `settings` | object | no | Full Deepgram agent settings object. When omitted, sensible defaults are used. |
+| `greeting` | string | no | Agent greeting message |
+| `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
+| `api_key` | string | no | API key override (falls back to `DEEPGRAM_API_KEY` env var) |
+
+**Response:** `200 OK` — `{ "status": "agent_started", "room_id": "room-123" }`
+
+**Errors:** `400` — Invalid JSON · `404` — Room not found · `409` — Agent already attached · `503` — No API key
+
+---
+
+### POST /v1/rooms/{id}/agent/message
+
+Inject a context message or instruction into a running agent session on a room. This is provider-agnostic — the session routes the message using the appropriate provider mechanism.
+
+**Supported providers:**
+- **Deepgram** — sends `InjectAgentMessage` via WebSocket
+- **Pipecat** — sends a protobuf `TextFrame` via WebSocket
+- **VAPI** — sends `add-message` via HTTP control URL
+- **ElevenLabs** — not supported (returns `501`)
+
+**Request:**
+
+```json
+{
+  "message": "The customer's name is John and their order number is 12345."
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | yes | Context or instruction to inject into the running agent session |
 
 **Response:** `200 OK`
 
 ```json
-{ "status": "agent_started", "room_id": "room-123" }
+{ "status": "message_sent" }
 ```
 
-**Errors:**
-- `400` — Invalid JSON or missing `agent_id`
-- `404` — Room not found
-- `409` — Agent already attached to this room
-- `503` — No API key provided for the selected provider
+**Errors:** `400` — Invalid JSON or missing message · `404` — No agent attached to this room · `409` — Agent session not running · `501` — Provider does not support message injection
 
 ---
 
 ### DELETE /v1/rooms/{id}/agent
 
-Detach the agent from a room.
+Detach the agent from a room (provider-agnostic).
 
 **Response:** `200 OK`
 
@@ -1207,7 +1437,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.ringing` | SIP call ringing | `leg_id`, `from`, `to` (inbound); `leg_id`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
-| `leg.disconnected` | Leg hung up | `leg_id`, `disposition`, `timing`, `quality` (see CDR-style structure below) |
+| `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |
 | `leg.joined_room` | Leg added to room | `leg_id`, `room_id` |
 | `leg.left_room` | Leg removed from room | `leg_id`, `room_id` |
 | `leg.muted` | Leg muted | `leg_id` |
@@ -1238,7 +1468,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 #### `leg.disconnected` — CDR-Style Structure
 
-The `leg.disconnected` event uses nested objects for disposition, timing, and quality metrics.
+The `leg.disconnected` event uses a `cdr` object for disconnect reason and timing, plus an optional `quality` object for RTP metrics.
 
 **Answered call with quality metrics:**
 
@@ -1248,10 +1478,8 @@ The `leg.disconnected` event uses nested objects for disposition, timing, and qu
   "timestamp": "2026-03-24T14:30:00.123Z",
   "instance_id": "inst-abc",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
-  "disposition": {
-    "reason": "remote_bye"
-  },
-  "timing": {
+  "cdr": {
+    "reason": "remote_bye",
     "duration_total": 125.43,
     "duration_answered": 120.10
   },
@@ -1272,26 +1500,19 @@ The `leg.disconnected` event uses nested objects for disposition, timing, and qu
   "timestamp": "2026-03-24T14:30:08.650Z",
   "instance_id": "inst-abc",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
-  "disposition": {
-    "reason": "caller_cancel"
-  },
-  "timing": {
+  "cdr": {
+    "reason": "caller_cancel",
     "duration_total": 8.52,
     "duration_answered": 0
   }
 }
 ```
 
-#### `disposition` Object
+#### `cdr` Object
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `reason` | string | See **Disconnect Reasons** below |
-
-#### `timing` Object
-
-| Field | Type | Description |
-|-------|------|-------------|
 | `duration_total` | float | Seconds from leg creation (INVITE sent/received) to disconnect |
 | `duration_answered` | float | Seconds from answer (200 OK) to disconnect. `0` if the leg was never answered. |
 
@@ -1359,6 +1580,7 @@ All errors return:
 | `WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 signing secret for the global webhook. |
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
 | `VAPI_API_KEY` | _(none)_ | Default VAPI API key for Agent features when `provider=vapi` (can be overridden per-request via `api_key` in the request body) |
+| `DEEPGRAM_API_KEY` | _(none)_ | Default Deepgram API key for STT, TTS, and Agent features when `provider=deepgram` (can be overridden per-request via `api_key` in the request body) |
 | `S3_BUCKET` | _(none)_ | S3 bucket name (required for `storage=s3` recordings) |
 | `S3_REGION` | `us-east-1` | AWS region for S3 |
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |

@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 )
+
+// ErrNotSupported is returned when a provider does not support an operation.
+var ErrNotSupported = errors.New("operation not supported by this provider")
 
 // Provider is the common interface for conversational AI agent backends.
 type Provider interface {
@@ -12,6 +16,7 @@ type Provider interface {
 	Stop()
 	Running() bool
 	ConversationID() string
+	InjectMessage(ctx context.Context, message string) error
 }
 
 // Options configures the agent session.
@@ -20,6 +25,7 @@ type Options struct {
 	Language         string
 	FirstMessage     string
 	DynamicVariables map[string]string
+	Settings         map[string]interface{} // Deepgram: full agent settings object
 }
 
 // Callbacks receives events from the agent session.

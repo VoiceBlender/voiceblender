@@ -23,6 +23,8 @@ type VAPISession struct {
 	running        bool
 	cancel         context.CancelFunc
 	conversationID string
+	controlURL     string
+	apiKeyStored   string
 	log            *slog.Logger
 }
 
@@ -72,6 +74,8 @@ func (v *VAPISession) Start(ctx context.Context, reader io.Reader, writer io.Wri
 		v.mu.Lock()
 		v.running = false
 		v.cancel = nil
+		v.controlURL = ""
+		v.apiKeyStored = ""
 		v.mu.Unlock()
 		if cb.OnDisconnected != nil {
 			cb.OnDisconnected()
@@ -86,6 +90,8 @@ func (v *VAPISession) Start(ctx context.Context, reader io.Reader, writer io.Wri
 
 	v.mu.Lock()
 	v.conversationID = callResp.ID
+	v.controlURL = callResp.ControlURL
+	v.apiKeyStored = apiKey
 	v.mu.Unlock()
 
 	v.log.Info("vapi call created", "call_id", callResp.ID, "listen_url", callResp.ListenURL)
@@ -140,6 +146,53 @@ func (v *VAPISession) ConversationID() string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.conversationID
+}
+
+// InjectMessage sends a system message to the VAPI call via the control URL.
+func (v *VAPISession) InjectMessage(ctx context.Context, message string) error {
+	v.mu.Lock()
+	controlURL := v.controlURL
+	apiKey := v.apiKeyStored
+	running := v.running
+	v.mu.Unlock()
+
+	if !running {
+		return fmt.Errorf("agent session not running")
+	}
+	if controlURL == "" {
+		return fmt.Errorf("no control URL available")
+	}
+
+	payload := map[string]interface{}{
+		"type": "add-message",
+		"message": map[string]string{
+			"role":    "system",
+			"content": message,
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("vapi control API returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func (v *VAPISession) createCall(ctx context.Context, apiKey string, opts Options) (*vapiCallResponse, error) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -107,39 +108,35 @@ var (
 	}{m: make(map[string]*agentInfo)}
 )
 
-func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
+// resolveAPIKey returns the request-level key if non-empty, otherwise the
+// env-level fallback. Returns an error string if both are empty.
+func resolveAPIKey(requestKey, envKey, providerName string) (string, string) {
+	if requestKey != "" {
+		return requestKey, ""
+	}
+	if envKey != "" {
+		return envKey, ""
+	}
+	return "", "no " + providerName + " API key provided"
+}
+
+// newAgentSession creates the correct agent.Provider for the given provider name.
+func newAgentSession(s *Server, provider string) agent.Provider {
+	switch provider {
+	case "vapi":
+		return agent.NewVAPI(s.Log)
+	case "pipecat":
+		return agent.NewPipecat(s.Log)
+	case "deepgram":
+		return agent.NewDeepgram(s.Log)
+	default:
+		return agent.NewElevenLabs(s.Log)
+	}
+}
+
+// startLegAgent is the shared logic for all per-provider leg agent handlers.
+func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
 	id := chi.URLParam(r, "id")
-
-	var req AgentRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
-		return
-	}
-
-	apiKey := req.APIKey
-	// Pipecat doesn't require a platform API key.
-	if req.Provider != "pipecat" {
-		if apiKey == "" {
-			switch req.Provider {
-			case "vapi":
-				apiKey = s.Config.VAPIAPIKey
-			default:
-				apiKey = s.Config.ElevenLabsAPIKey
-			}
-		}
-		if apiKey == "" {
-			providerName := req.Provider
-			if providerName == "" {
-				providerName = "elevenlabs"
-			}
-			writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-			return
-		}
-	}
 
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
@@ -159,23 +156,7 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 	}
 	legAgents.Unlock()
 
-	opts := agent.Options{
-		AgentID:          req.AgentID,
-		Language:         req.Language,
-		FirstMessage:     req.FirstMessage,
-		DynamicVariables: req.DynamicVariables,
-	}
-
-	bus := s.Bus
-	var session agent.Provider
-	switch req.Provider {
-	case "vapi":
-		session = agent.NewVAPI(s.Log)
-	case "pipecat":
-		session = agent.NewPipecat(s.Log)
-	default:
-		session = agent.NewElevenLabs(s.Log)
-	}
+	session := newAgentSession(s, provider)
 	info := &agentInfo{session: session}
 
 	var audioIn interface{ Read([]byte) (int, error) }
@@ -212,10 +193,6 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 		}
 		audioIn = mixer.NewResampleReader(ar, l.SampleRate(), mixer.SampleRate)
 
-		// ElevenLabs sends TTS audio in bursts (faster than real-time).
-		// The sipWriter blocks when outFrames (capacity 5) is full, stalling
-		// the agent's recvLoop. Use a streamBuffer to absorb bursts and a
-		// drain goroutine to feed fixed-size frames to the sipWriter at pace.
 		sb := newStreamBuffer()
 		audioOut = mixer.NewResampleWriter(sb, mixer.SampleRate, l.SampleRate())
 		info.speakBuf = sb
@@ -239,6 +216,7 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 	legAgents.m[id] = info
 	legAgents.Unlock()
 
+	bus := s.Bus
 	cb := agent.Callbacks{
 		OnConnected: func(conversationID string) {
 			bus.Publish(events.AgentConnected, &events.AgentConnectedData{
@@ -272,6 +250,164 @@ func (s *Server) agentLeg(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_started", "leg_id": id})
+}
+
+func (s *Server) agentLegElevenLabs(w http.ResponseWriter, r *http.Request) {
+	var req ElevenLabsAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.ElevenLabsAPIKey, "elevenlabs")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		AgentID:          req.AgentID,
+		Language:         req.Language,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.DynamicVariables,
+	}
+	s.startLegAgent(w, r, "elevenlabs", apiKey, opts)
+}
+
+func (s *Server) agentLegVAPI(w http.ResponseWriter, r *http.Request) {
+	var req VAPIAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.AssistantID == "" {
+		writeError(w, http.StatusBadRequest, "assistant_id is required")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.VAPIAPIKey, "vapi")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		AgentID:          req.AssistantID,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.VariableValues,
+	}
+	s.startLegAgent(w, r, "vapi", apiKey, opts)
+}
+
+func (s *Server) agentLegPipecat(w http.ResponseWriter, r *http.Request) {
+	var req PipecatAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.WebsocketURL == "" {
+		writeError(w, http.StatusBadRequest, "websocket_url is required")
+		return
+	}
+	opts := agent.Options{AgentID: req.WebsocketURL}
+	s.startLegAgent(w, r, "pipecat", "", opts)
+}
+
+func (s *Server) agentLegDeepgram(w http.ResponseWriter, r *http.Request) {
+	var req DeepgramAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.DeepgramAPIKey, "deepgram")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		Language:     req.Language,
+		FirstMessage: req.Greeting,
+		Settings:     req.Settings,
+	}
+	s.startLegAgent(w, r, "deepgram", apiKey, opts)
+}
+
+func (s *Server) agentLegMessage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req AgentMessageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	legAgents.Lock()
+	info, ok := legAgents.m[id]
+	legAgents.Unlock()
+
+	if !ok {
+		writeError(w, http.StatusNotFound, "no agent attached to this leg")
+		return
+	}
+	if !info.session.Running() {
+		writeError(w, http.StatusConflict, "agent session not running")
+		return
+	}
+
+	err := info.session.InjectMessage(r.Context(), req.Message)
+	if errors.Is(err, agent.ErrNotSupported) {
+		writeError(w, http.StatusNotImplemented, "this agent provider does not support message injection")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "message_sent"})
+}
+
+func (s *Server) agentRoomMessage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req AgentMessageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	roomAgents.Lock()
+	info, ok := roomAgents.m[id]
+	roomAgents.Unlock()
+
+	if !ok {
+		writeError(w, http.StatusNotFound, "no agent attached to this room")
+		return
+	}
+	if !info.session.Running() {
+		writeError(w, http.StatusConflict, "agent session not running")
+		return
+	}
+
+	err := info.session.InjectMessage(r.Context(), req.Message)
+	if errors.Is(err, agent.ErrNotSupported) {
+		writeError(w, http.StatusNotImplemented, "this agent provider does not support message injection")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "message_sent"})
 }
 
 func (s *Server) stopAgentLeg(w http.ResponseWriter, r *http.Request) {
@@ -327,39 +463,9 @@ func (s *Server) cleanupLegAgent(legID string) {
 	}
 }
 
-func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
+// startRoomAgent is the shared logic for all per-provider room agent handlers.
+func (s *Server) startRoomAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
 	id := chi.URLParam(r, "id")
-
-	var req AgentRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
-		return
-	}
-
-	apiKey := req.APIKey
-	// Pipecat doesn't require a platform API key.
-	if req.Provider != "pipecat" {
-		if apiKey == "" {
-			switch req.Provider {
-			case "vapi":
-				apiKey = s.Config.VAPIAPIKey
-			default:
-				apiKey = s.Config.ElevenLabsAPIKey
-			}
-		}
-		if apiKey == "" {
-			providerName := req.Provider
-			if providerName == "" {
-				providerName = "elevenlabs"
-			}
-			writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-			return
-		}
-	}
 
 	rm, ok := s.RoomMgr.Get(id)
 	if !ok {
@@ -375,13 +481,6 @@ func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	roomAgents.Unlock()
 
-	opts := agent.Options{
-		AgentID:          req.AgentID,
-		Language:         req.Language,
-		FirstMessage:     req.FirstMessage,
-		DynamicVariables: req.DynamicVariables,
-	}
-
 	sourceID := "agent-" + uuid.New().String()[:8]
 
 	// speak buffer: agent writes PCM → paced streamBuffer → mixer reads
@@ -393,15 +492,7 @@ func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var session agent.Provider
-	switch req.Provider {
-	case "vapi":
-		session = agent.NewVAPI(s.Log)
-	case "pipecat":
-		session = agent.NewPipecat(s.Log)
-	default:
-		session = agent.NewElevenLabs(s.Log)
-	}
+	session := newAgentSession(s, provider)
 	info := &agentInfo{
 		session:  session,
 		sourceID: sourceID,
@@ -448,6 +539,86 @@ func (s *Server) agentRoom(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_started", "room_id": id})
+}
+
+func (s *Server) agentRoomElevenLabs(w http.ResponseWriter, r *http.Request) {
+	var req ElevenLabsAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.ElevenLabsAPIKey, "elevenlabs")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		AgentID:          req.AgentID,
+		Language:         req.Language,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.DynamicVariables,
+	}
+	s.startRoomAgent(w, r, "elevenlabs", apiKey, opts)
+}
+
+func (s *Server) agentRoomVAPI(w http.ResponseWriter, r *http.Request) {
+	var req VAPIAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.AssistantID == "" {
+		writeError(w, http.StatusBadRequest, "assistant_id is required")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.VAPIAPIKey, "vapi")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		AgentID:          req.AssistantID,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.VariableValues,
+	}
+	s.startRoomAgent(w, r, "vapi", apiKey, opts)
+}
+
+func (s *Server) agentRoomPipecat(w http.ResponseWriter, r *http.Request) {
+	var req PipecatAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.WebsocketURL == "" {
+		writeError(w, http.StatusBadRequest, "websocket_url is required")
+		return
+	}
+	opts := agent.Options{AgentID: req.WebsocketURL}
+	s.startRoomAgent(w, r, "pipecat", "", opts)
+}
+
+func (s *Server) agentRoomDeepgram(w http.ResponseWriter, r *http.Request) {
+	var req DeepgramAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(req.APIKey, s.Config.DeepgramAPIKey, "deepgram")
+	if errMsg != "" {
+		writeError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
+	opts := agent.Options{
+		Language:     req.Language,
+		FirstMessage: req.Greeting,
+		Settings:     req.Settings,
+	}
+	s.startRoomAgent(w, r, "deepgram", apiKey, opts)
 }
 
 func (s *Server) stopAgentRoom(w http.ResponseWriter, r *http.Request) {

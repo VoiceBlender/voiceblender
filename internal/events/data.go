@@ -74,16 +74,12 @@ type LegUnholdData struct {
 
 type LegDisconnectedData struct {
 	LegScope
-	Disposition DisconnectDisposition `json:"disposition"`
-	Timing      CallTiming            `json:"timing"`
-	Quality     *CallQuality          `json:"quality,omitempty"`
+	CDR     CallCDR      `json:"cdr"`
+	Quality *CallQuality `json:"quality,omitempty"`
 }
 
-type DisconnectDisposition struct {
-	Reason string `json:"reason"`
-}
-
-type CallTiming struct {
+type CallCDR struct {
+	Reason           string  `json:"reason"`
 	DurationTotal    float64 `json:"duration_total"`
 	DurationAnswered float64 `json:"duration_answered"`
 }

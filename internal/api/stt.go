@@ -17,6 +17,7 @@ type roomSTTState struct {
 	transcribers map[string]stt.Provider // legID -> Provider
 	opts         stt.Options
 	apiKey       string
+	provider     string // "elevenlabs" (default) or "deepgram"
 }
 
 var (
@@ -40,10 +41,19 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 
 	apiKey := req.APIKey
 	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
+		switch req.Provider {
+		case "deepgram":
+			apiKey = s.Config.DeepgramAPIKey
+		default:
+			apiKey = s.Config.ElevenLabsAPIKey
+		}
 	}
 	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
+		providerName := req.Provider
+		if providerName == "" {
+			providerName = "elevenlabs"
+		}
+		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
 		return
 	}
 
@@ -64,7 +74,13 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	transcriber := stt.NewElevenLabs(s.Log)
+	var transcriber stt.Provider
+	switch req.Provider {
+	case "deepgram":
+		transcriber = stt.NewDeepgram(s.Log)
+	default:
+		transcriber = stt.NewElevenLabs(s.Log)
+	}
 	legTranscribers.m[id] = transcriber
 	legTranscribers.Unlock()
 
@@ -168,10 +184,19 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 
 	apiKey := req.APIKey
 	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
+		switch req.Provider {
+		case "deepgram":
+			apiKey = s.Config.DeepgramAPIKey
+		default:
+			apiKey = s.Config.ElevenLabsAPIKey
+		}
 	}
 	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
+		providerName := req.Provider
+		if providerName == "" {
+			providerName = "elevenlabs"
+		}
+		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
 		return
 	}
 
@@ -198,6 +223,7 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 		transcribers: make(map[string]stt.Provider),
 		opts:         opts,
 		apiKey:       apiKey,
+		provider:     req.Provider,
 	}
 	roomTranscribers.m[id] = state
 	roomTranscribers.Unlock()
@@ -224,7 +250,13 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	pr, pw := createPipe()
 	mix.SetParticipantTap(legID, pw)
 
-	transcriber := stt.NewElevenLabs(s.Log)
+	var transcriber stt.Provider
+	switch state.provider {
+	case "deepgram":
+		transcriber = stt.NewDeepgram(s.Log)
+	default:
+		transcriber = stt.NewElevenLabs(s.Log)
+	}
 	roomTranscribers.Lock()
 	state.transcribers[legID] = transcriber
 	roomTranscribers.Unlock()

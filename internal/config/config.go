@@ -21,6 +21,7 @@ type Config struct {
 	WebhookSecret     string
 	ElevenLabsAPIKey  string
 	VAPIAPIKey        string
+	DeepgramAPIKey    string
 	S3Bucket   string
 	S3Region   string
 	S3Endpoint string
@@ -45,6 +46,7 @@ func Load() Config {
 		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
 		ElevenLabsAPIKey:  os.Getenv("ELEVENLABS_API_KEY"),
 		VAPIAPIKey:        os.Getenv("VAPI_API_KEY"),
+		DeepgramAPIKey:    os.Getenv("DEEPGRAM_API_KEY"),
 		S3Bucket:   os.Getenv("S3_BUCKET"),
 		S3Region:   envOr("S3_REGION", "us-east-1"),
 		S3Endpoint: os.Getenv("S3_ENDPOINT"),

@@ -165,26 +165,28 @@ type TTSRequest struct {
 
 var ttsRequestFields = map[string]FieldEnrichment{
 	"text":     {Description: "Text to synthesize"},
-	"voice":    {Description: "Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore)."},
+	"voice":    {Description: "Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en)."},
 	"model_id": {Description: "Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (standard, neural, long-form, generative; default neural). Google Cloud: model name (e.g. gemini-2.5-pro-tts, chirp3-hd)."},
 	"language": {Description: `Language code (e.g. "en-US", "pl-pl"). Required for Google Gemini TTS voices that use short names (e.g. Achernar). Auto-extracted from full voice names like en-US-Neural2-F.`},
 	"prompt":   {Description: `Style/tone instruction for promptable voice models (Google Gemini TTS only). E.g. "Read aloud in a warm, welcoming tone."`},
 	"volume":   {Description: "Volume adjustment in dB (-8 to 8)", Minimum: intPtr(-8), Maximum: intPtr(8), Default: 0},
-	"provider": {Description: `TTS provider: "elevenlabs" (default), "aws", or "google"`, Enum: []string{"elevenlabs", "aws", "google"}},
-	"api_key":  {Description: "ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials)."},
+	"provider": {Description: `TTS provider: "elevenlabs" (default), "aws", "google", or "deepgram"`, Enum: []string{"elevenlabs", "aws", "google", "deepgram"}},
+	"api_key":  {Description: "ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var)."},
 }
 
 // STTRequest is the request body for POST /v1/legs/{id}/stt and POST /v1/rooms/{id}/stt.
 type STTRequest struct {
 	Language string `json:"language"`
 	Partial  bool   `json:"partial"`
+	Provider string `json:"provider,omitempty"`
 	APIKey   string `json:"api_key,omitempty"`
 }
 
 var sttRequestFields = map[string]FieldEnrichment{
 	"language": {Description: `Language code (e.g. "en", "es")`},
 	"partial":  {Description: "Emit partial (non-final) transcripts", Default: false},
-	"api_key":  {Description: "ElevenLabs API key override"},
+	"provider": {Description: `STT provider: "elevenlabs" (default) or "deepgram"`, Enum: []string{"elevenlabs", "deepgram"}},
+	"api_key":  {Description: "API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)"},
 }
 
 // RecordRequest is the request body for POST /v1/legs/{id}/record and POST /v1/rooms/{id}/record.
@@ -208,23 +210,74 @@ var recordRequestFields = map[string]FieldEnrichment{
 	"s3_secret_key": {Description: "AWS secret access key. Must be set together with s3_access_key."},
 }
 
-// AgentRequest is the request body for POST /v1/legs/{id}/agent and POST /v1/rooms/{id}/agent.
-type AgentRequest struct {
+// ElevenLabsAgentRequest is the request body for POST /v1/legs/{id}/agent/elevenlabs
+// and POST /v1/rooms/{id}/agent/elevenlabs.
+type ElevenLabsAgentRequest struct {
 	AgentID          string            `json:"agent_id"`
-	Provider         string            `json:"provider,omitempty"`
 	FirstMessage     string            `json:"first_message,omitempty"`
 	Language         string            `json:"language,omitempty"`
 	DynamicVariables map[string]string `json:"dynamic_variables,omitempty"`
 	APIKey           string            `json:"api_key,omitempty"`
 }
 
-var agentRequestFields = map[string]FieldEnrichment{
-	"agent_id":          {Description: "Provider-specific agent/assistant ID. For Pipecat, this is the WebSocket URL of the bot (e.g. ws://my-bot:8765)."},
-	"provider":          {Description: `Agent provider: "elevenlabs" (default), "vapi", or "pipecat". elevenlabs: ElevenLabs ConvAI WebSocket API. vapi: VAPI conversational AI platform. pipecat: Self-hosted Pipecat bot; agent_id is the bot WebSocket URL.`, Enum: []string{"elevenlabs", "vapi", "pipecat"}},
+var elevenLabsAgentRequestFields = map[string]FieldEnrichment{
+	"agent_id":          {Description: "ElevenLabs agent ID"},
 	"first_message":     {Description: "Override the agent's first message"},
-	"language":          {Description: "Language code (ElevenLabs only)"},
-	"dynamic_variables": {Description: "Key-value pairs passed to the agent"},
-	"api_key":           {Description: "API key override (falls back to ELEVENLABS_API_KEY or VAPI_API_KEY env var depending on provider). Not required for Pipecat."},
+	"language":          {Description: `Language code (e.g. "en", "es")`},
+	"dynamic_variables": {Description: "Key-value pairs passed to the agent as dynamic variables"},
+	"api_key":           {Description: "API key override (falls back to ELEVENLABS_API_KEY env var)"},
+}
+
+// VAPIAgentRequest is the request body for POST /v1/legs/{id}/agent/vapi
+// and POST /v1/rooms/{id}/agent/vapi.
+type VAPIAgentRequest struct {
+	AssistantID    string            `json:"assistant_id"`
+	FirstMessage   string            `json:"first_message,omitempty"`
+	VariableValues map[string]string `json:"variable_values,omitempty"`
+	APIKey         string            `json:"api_key,omitempty"`
+}
+
+var vapiAgentRequestFields = map[string]FieldEnrichment{
+	"assistant_id":    {Description: "VAPI assistant ID"},
+	"first_message":   {Description: "Override the agent's first message"},
+	"variable_values": {Description: "Key-value pairs passed as VAPI variable values (assistantOverrides.variableValues)"},
+	"api_key":         {Description: "API key override (falls back to VAPI_API_KEY env var)"},
+}
+
+// PipecatAgentRequest is the request body for POST /v1/legs/{id}/agent/pipecat
+// and POST /v1/rooms/{id}/agent/pipecat.
+type PipecatAgentRequest struct {
+	WebsocketURL string `json:"websocket_url"`
+}
+
+var pipecatAgentRequestFields = map[string]FieldEnrichment{
+	"websocket_url": {Description: "WebSocket URL of the Pipecat bot (e.g. ws://my-bot:8765)", Format: "uri"},
+}
+
+// DeepgramAgentRequest is the request body for POST /v1/legs/{id}/agent/deepgram
+// and POST /v1/rooms/{id}/agent/deepgram.
+type DeepgramAgentRequest struct {
+	Settings map[string]interface{} `json:"settings,omitempty"`
+	Greeting string                 `json:"greeting,omitempty"`
+	Language string                 `json:"language,omitempty"`
+	APIKey   string                 `json:"api_key,omitempty"`
+}
+
+var deepgramAgentRequestFields = map[string]FieldEnrichment{
+	"settings": {Description: "Full Deepgram agent settings object (agent.listen, agent.think, agent.speak, etc.). When omitted, sensible defaults are used (nova-3 STT, gpt-4o-mini LLM, aura-2-asteria-en TTS)."},
+	"greeting": {Description: "Agent greeting message"},
+	"language": {Description: `Language code (e.g. "en", "es")`},
+	"api_key":  {Description: "API key override (falls back to DEEPGRAM_API_KEY env var)"},
+}
+
+// AgentMessageRequest is the request body for POST /v1/legs/{id}/agent/message
+// and POST /v1/rooms/{id}/agent/message.
+type AgentMessageRequest struct {
+	Message string `json:"message"`
+}
+
+var agentMessageRequestFields = map[string]FieldEnrichment{
+	"message": {Description: "Context or instruction to inject into the running agent session"},
 }
 
 // WebRTCOfferRequest is the request body for POST /v1/webrtc/offer.
@@ -258,7 +311,11 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("TTSRequest", ttsRequestFields)
 	collect("STTRequest", sttRequestFields)
 	collect("RecordRequest", recordRequestFields)
-	collect("AgentRequest", agentRequestFields)
+	collect("ElevenLabsAgentRequest", elevenLabsAgentRequestFields)
+	collect("VAPIAgentRequest", vapiAgentRequestFields)
+	collect("PipecatAgentRequest", pipecatAgentRequestFields)
+	collect("DeepgramAgentRequest", deepgramAgentRequestFields)
+	collect("AgentMessageRequest", agentMessageRequestFields)
 	collect("WebRTCOfferRequest", webRTCOfferRequestFields)
 	return all
 }

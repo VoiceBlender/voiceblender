@@ -125,12 +125,12 @@ func WebhookFieldDescriptions() map[string]string {
 }
 
 // WebhookNestedFieldDescriptions provides descriptions for nested struct
-// fields in webhook events (e.g. disposition.reason, timing.duration_total).
+// fields in webhook events (e.g. cdr.reason, cdr.duration_total).
 func WebhookNestedFieldDescriptions() map[string]string {
 	return map[string]string{
-		"DisconnectDisposition.reason":    "Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.",
-		"CallTiming.duration_total":       "Seconds from leg creation to disconnect",
-		"CallTiming.duration_answered":    "Seconds from answer to disconnect (0 if never answered)",
+		"CallCDR.reason":           "Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.",
+		"CallCDR.duration_total":   "Seconds from leg creation to disconnect",
+		"CallCDR.duration_answered": "Seconds from answer to disconnect (0 if never answered)",
 		"CallQuality.mos_score":           "Mean Opinion Score (1.0–5.0) estimated via simplified E-model (ITU-T G.107) from packet loss and jitter",
 		"CallQuality.rtp_packets_received": "Total inbound RTP audio packets received",
 		"CallQuality.rtp_packets_lost":    "Estimated lost packets based on sequence number gaps",
@@ -366,19 +366,72 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
-			Method: "POST", Path: "/legs/{id}/agent", OperationID: "agentLeg",
-			Summary: "Attach an AI agent to a leg",
-			Description: "Bridges audio bidirectionally with a conversational AI agent. " +
-				"Supported providers: `elevenlabs` (default), `vapi`, `pipecat`. " +
-				"Standalone legs use direct audio; legs in a room use mixer taps.",
+			Method: "POST", Path: "/legs/{id}/agent/elevenlabs", OperationID: "agentLegElevenLabs",
+			Summary:     "Attach an ElevenLabs ConvAI agent to a leg",
+			Description: "Bridges audio bidirectionally with an ElevenLabs conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.",
 			Tags:        []string{"Legs"},
-			RequestType: AgentRequest{},
+			RequestType: ElevenLabsAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
 				400: {Description: "Invalid JSON or missing agent_id"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg not connected, agent already attached, or no audio reader/writer"},
-				503: {Description: "No API key provided for the selected provider"},
+				503: {Description: "No ElevenLabs API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/agent/vapi", OperationID: "agentLegVAPI",
+			Summary:     "Attach a VAPI agent to a leg",
+			Description: "Bridges audio bidirectionally with a VAPI conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.",
+			Tags:        []string{"Legs"},
+			RequestType: VAPIAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON or missing assistant_id"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg not connected, agent already attached, or no audio reader/writer"},
+				503: {Description: "No VAPI API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/agent/pipecat", OperationID: "agentLegPipecat",
+			Summary:     "Attach a Pipecat bot to a leg",
+			Description: "Bridges audio bidirectionally with a self-hosted Pipecat bot via WebSocket. Standalone legs use direct audio; legs in a room use mixer taps.",
+			Tags:        []string{"Legs"},
+			RequestType: PipecatAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON or missing websocket_url"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg not connected, agent already attached, or no audio reader/writer"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/agent/deepgram", OperationID: "agentLegDeepgram",
+			Summary:     "Attach a Deepgram Voice Agent to a leg",
+			Description: "Bridges audio bidirectionally with a Deepgram Voice Agent. Standalone legs use direct audio; legs in a room use mixer taps.",
+			Tags:        []string{"Legs"},
+			RequestType: DeepgramAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg not connected, agent already attached, or no audio reader/writer"},
+				503: {Description: "No Deepgram API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/agent/message", OperationID: "agentLegMessage",
+			Summary:     "Inject a message into a running agent session on a leg",
+			Description: "Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.",
+			Tags:        []string{"Legs"},
+			RequestType: AgentMessageRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Message sent"},
+				400: {Description: "Invalid JSON or missing message"},
+				404: {Description: "No agent attached to this leg"},
+				409: {Description: "Agent session not running"},
+				501: {Description: "Provider does not support message injection"},
 			},
 		},
 		{
@@ -564,19 +617,72 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
-			Method: "POST", Path: "/rooms/{id}/agent", OperationID: "agentRoom",
-			Summary: "Attach an AI agent to a room",
-			Description: "The agent joins as a virtual participant, hearing all participants " +
-				"(mixed-minus-self) and speaking to everyone. " +
-				"Supported providers: `elevenlabs` (default), `vapi`, `pipecat`.",
+			Method: "POST", Path: "/rooms/{id}/agent/elevenlabs", OperationID: "agentRoomElevenLabs",
+			Summary:     "Attach an ElevenLabs ConvAI agent to a room",
+			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
 			Tags:        []string{"Rooms"},
-			RequestType: AgentRequest{},
+			RequestType: ElevenLabsAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
 				400: {Description: "Invalid JSON or missing agent_id"},
 				404: {Description: "Room not found"},
 				409: {Description: "Agent already attached to this room"},
-				503: {Description: "No API key provided for the selected provider"},
+				503: {Description: "No ElevenLabs API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/agent/vapi", OperationID: "agentRoomVAPI",
+			Summary:     "Attach a VAPI agent to a room",
+			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
+			Tags:        []string{"Rooms"},
+			RequestType: VAPIAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON or missing assistant_id"},
+				404: {Description: "Room not found"},
+				409: {Description: "Agent already attached to this room"},
+				503: {Description: "No VAPI API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/agent/pipecat", OperationID: "agentRoomPipecat",
+			Summary:     "Attach a Pipecat bot to a room",
+			Description: "The bot joins as a virtual participant via WebSocket, hearing all participants (mixed-minus-self) and speaking to everyone.",
+			Tags:        []string{"Rooms"},
+			RequestType: PipecatAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON or missing websocket_url"},
+				404: {Description: "Room not found"},
+				409: {Description: "Agent already attached to this room"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/agent/deepgram", OperationID: "agentRoomDeepgram",
+			Summary:     "Attach a Deepgram Voice Agent to a room",
+			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
+			Tags:        []string{"Rooms"},
+			RequestType: DeepgramAgentRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Agent started"},
+				400: {Description: "Invalid JSON"},
+				404: {Description: "Room not found"},
+				409: {Description: "Agent already attached to this room"},
+				503: {Description: "No Deepgram API key provided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/agent/message", OperationID: "agentRoomMessage",
+			Summary:     "Inject a message into a running agent session on a room",
+			Description: "Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.",
+			Tags:        []string{"Rooms"},
+			RequestType: AgentMessageRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Message sent"},
+				400: {Description: "Invalid JSON or missing message"},
+				404: {Description: "No agent attached to this room"},
+				409: {Description: "Agent session not running"},
+				501: {Description: "Provider does not support message injection"},
 			},
 		},
 		{

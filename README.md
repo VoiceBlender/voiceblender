@@ -15,7 +15,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
 - **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
-- **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat)
+- **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat, Deepgram) with mid-session context injection
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
 - **Prometheus metrics** -- operational metrics exposed at `GET /metrics` (active legs/rooms, call durations, disconnect reasons, Go runtime). See [API.md](API.md) for the full metric reference. Profiling via `go tool pprof` is available at `/debug/pprof/` when built with `-tags pprof`.
 
@@ -84,6 +84,7 @@ DELETE /v1/legs/{id}/record        # Stop recording
 POST   /v1/legs/{id}/stt           # Start speech-to-text
 DELETE /v1/legs/{id}/stt           # Stop speech-to-text
 POST   /v1/legs/{id}/agent         # Attach AI agent
+POST   /v1/legs/{id}/agent/message # Inject message into agent
 DELETE /v1/legs/{id}/agent         # Detach AI agent
 ```
 
@@ -105,6 +106,7 @@ DELETE /v1/rooms/{id}/record       # Stop room recording
 POST   /v1/rooms/{id}/stt          # STT on all participants
 DELETE /v1/rooms/{id}/stt          # Stop room STT
 POST   /v1/rooms/{id}/agent        # Attach AI agent to room
+POST   /v1/rooms/{id}/agent/message # Inject message into agent
 DELETE /v1/rooms/{id}/agent        # Detach AI agent from room
 ```
 

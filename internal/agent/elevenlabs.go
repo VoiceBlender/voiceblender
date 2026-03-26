@@ -370,6 +370,11 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 	}
 }
 
+// InjectMessage is not supported by ElevenLabs.
+func (s *ElevenLabsSession) InjectMessage(ctx context.Context, message string) error {
+	return ErrNotSupported
+}
+
 // lockedWriter serializes all WebSocket frame writes to a net.Conn.
 type lockedWriter struct {
 	mu   sync.Mutex

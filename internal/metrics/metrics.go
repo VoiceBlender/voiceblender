@@ -139,12 +139,12 @@ func (c *Collector) handle(e events.Event) {
 
 	case events.LegDisconnected:
 		d := e.Data.(*events.LegDisconnectedData)
-		reason := d.Disposition.Reason
+		reason := d.CDR.Reason
 		if reason == "" {
 			reason = "unknown"
 		}
-		durationTotal := d.Timing.DurationTotal
-		durationAnswered := d.Timing.DurationAnswered
+		durationTotal := d.CDR.DurationTotal
+		durationAnswered := d.CDR.DurationAnswered
 
 		c.mu.Lock()
 		legType := c.legType[d.LegID]

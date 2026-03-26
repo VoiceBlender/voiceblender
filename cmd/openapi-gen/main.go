@@ -686,7 +686,7 @@ func flattenDataFields(t reflect.Type, props *omap, evtType string) {
 		}
 		switch ft.Kind() {
 		case reflect.Struct:
-			// For nested structs in webhook data (like disposition, timing, quality),
+			// For nested structs in webhook data (like cdr, quality),
 			// generate inline schema.
 			schema := webhookNestedSchema(ft, f.Type.Kind() == reflect.Ptr, jsonName)
 			// Add top-level description for special fields.
@@ -707,8 +707,8 @@ func flattenDataFields(t reflect.Type, props *omap, evtType string) {
 }
 
 // webhookNestedSchema builds an inline object schema for nested structs
-// in webhook event data (e.g. disposition, timing, quality).
-// parentFieldName is the JSON name of the parent field (e.g. "disposition").
+// in webhook event data (e.g. cdr, quality).
+// parentFieldName is the JSON name of the parent field (e.g. "cdr").
 func webhookNestedSchema(t reflect.Type, nullable bool, parentFieldName string) *omap {
 	schema := newMap().set("type", "object")
 	if nullable {
@@ -734,7 +734,7 @@ func webhookNestedSchema(t reflect.Type, nullable bool, parentFieldName string) 
 			fieldSchema.set("description", desc)
 		}
 		// Apply disconnect reason enum.
-		if typeName == "DisconnectDisposition" && jsonName == "reason" {
+		if typeName == "CallCDR" && jsonName == "reason" {
 			enumSeq := newSeq()
 			for _, v := range api.DisconnectReasonEnum {
 				enumSeq.add(v)
@@ -959,7 +959,11 @@ func schemaDisplayName(goName string) string {
 		"TTSRequest":         "TTSRequest",
 		"STTRequest":         "STTRequest",
 		"RecordRequest":      "RecordingRequest",
-		"AgentRequest":       "AgentRequest",
+		"ElevenLabsAgentRequest":  "ElevenLabsAgentRequest",
+		"VAPIAgentRequest":        "VAPIAgentRequest",
+		"PipecatAgentRequest":     "PipecatAgentRequest",
+		"DeepgramAgentRequest":    "DeepgramAgentRequest",
+		"AgentMessageRequest":     "AgentMessageRequest",
 		"WebRTCOfferRequest": "WebRTCOfferRequest",
 	}
 	if display, ok := nameMap[goName]; ok {
