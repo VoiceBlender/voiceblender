@@ -140,13 +140,40 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if l.State() != leg.StateRinging {
-		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
+	if l.State() != leg.StateRinging && l.State() != leg.StateEarlyMedia {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, expected ringing or early_media", l.State()))
 		return
 	}
 
 	sipLeg.SignalAnswer()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "answering"})
+}
+
+func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "only SIP inbound legs support early media")
+		return
+	}
+
+	if l.State() != leg.StateRinging {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
+		return
+	}
+
+	if err := sipLeg.EnableEarlyMedia(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("early media failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "early_media"})
 }
 
 func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +319,16 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 
 	// Build invite options.
 	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
+	inviteOpts.OnEarlyMedia = func(remoteSDP *sipmod.SDPMedia, rtpSess *sipmod.RTPSession) {
+		if err := l.SetupEarlyMediaOutbound(remoteSDP, rtpSess); err != nil {
+			s.Log.Warn("outbound early media failed", "leg_id", l.ID(), "error", err)
+			return
+		}
+		s.Bus.Publish(events.LegEarlyMedia, map[string]interface{}{
+			"leg_id": l.ID(),
+			"type":   string(l.Type()),
+		})
+	}
 	if req.Privacy != "" {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Privacy", req.Privacy))
 	}
@@ -339,7 +376,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			return
 		}
 
-		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})
+		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": string(l.Type())})
 
 		// Monitor for remote hangup or max duration.
 		if req.MaxDuration > 0 {
@@ -430,7 +467,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			}
 		})
 
-		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})
+		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": string(l.Type())})
 
 		// Block until call ends (BYE received or context cancelled)
 		<-call.Dialog.Context().Done()

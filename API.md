@@ -29,7 +29,7 @@ A **leg** represents one side of a voice call — either a SIP dialog or a WebRT
 |-------|------|--------|
 | `leg_id` | string | UUID |
 | `type` | string | `sip_inbound`, `sip_outbound`, `webrtc` |
-| `state` | string | `ringing`, `connected`, `hung_up` |
+| `state` | string | `ringing`, `early_media`, `connected`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted |
 | `sip_headers` | object | `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. |
@@ -69,7 +69,9 @@ Originate an outbound SIP call.
 | `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
 
-**Response:** `201 Created` — Leg object
+**Response:** `201 Created` — Leg object (initially in `ringing` state)
+
+**Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
 
 **Errors:**
 - `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
@@ -96,7 +98,7 @@ Get a single leg.
 
 ### POST /v1/legs/{id}/answer
 
-Answer a ringing inbound SIP leg. This triggers the SIP 200 OK and media negotiation.
+Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. If the leg is in `early_media` state, the existing media pipeline and SDP are reused; if in `ringing` state, a new RTP session and codec negotiation are performed.
 
 **Request:** Empty body
 
@@ -109,7 +111,27 @@ Answer a ringing inbound SIP leg. This triggers the SIP 200 OK and media negotia
 **Errors:**
 - `400` — Not a SIP inbound leg
 - `404` — Leg not found
+- `409` — Leg is not in `ringing` or `early_media` state
+
+---
+
+### POST /v1/legs/{id}/early-media
+
+Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress with SDP, sets up the RTP session and media pipeline, and transitions the leg to `early_media` state. Once in this state, audio can be played to the caller (e.g., custom ringback tones, announcements) and the leg can be added to a room — all before answering the call.
+
+**Request:** Empty body
+
+**Response:** `200 OK`
+
+```json
+{ "status": "early_media" }
+```
+
+**Errors:**
+- `400` — Not a SIP inbound leg
+- `404` — Leg not found
 - `409` — Leg is not in `ringing` state
+- `500` — Media setup failed (codec negotiation, RTP session, or SIP 183 send error)
 
 ---
 
@@ -186,9 +208,9 @@ Send DTMF digits on a leg (RFC 4733 telephone-event).
 
 ### POST /v1/legs/{id}/play
 
-Start audio playback to a leg. Fetches audio from a URL and streams it.
+Start audio playback to a leg. Fetches audio from a URL or generates a built-in telephone tone.
 
-**Request:**
+**Request (URL):**
 
 ```json
 {
@@ -197,10 +219,30 @@ Start audio playback to a leg. Fetches audio from a URL and streams it.
 }
 ```
 
+**Request (tone):**
+
+```json
+{
+  "tone": "us_ringback"
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | string | yes | URL of the audio file |
-| `mime_type` | string | yes | MIME type (`audio/wav`) |
+| `url` | string | one of `url` or `tone` | URL of the audio file |
+| `tone` | string | one of `url` or `tone` | Built-in telephone tone name (see below) |
+| `mime_type` | string | with `url` | MIME type (`audio/wav`) |
+| `repeat` | integer | no | Repeat count (0/1=once, -1=infinite) |
+| `volume` | integer | no | Volume adjustment (-8 to 8, ~3dB/step) |
+
+`url` and `tone` are mutually exclusive — provide exactly one.
+
+**Tone names:** Format is `{country}_{type}` or bare `{type}` (defaults to US).
+- Types: `ringback`, `busy`, `dial`, `congestion`
+- Countries: `us`, `gb`, `de`, `fr`, `au`, `jp`, `it`, `in`, `br`, `pl`, `ru`
+- Examples: `us_ringback`, `gb_busy`, `dial` (= `us_dial`)
+
+Tones play indefinitely until stopped via `DELETE /v1/legs/{id}/play/{playbackID}`.
 
 **Response:** `200 OK`
 
@@ -211,7 +253,7 @@ Start audio playback to a leg. Fetches audio from a URL and streams it.
 Playback runs asynchronously. Events `playback.started` and `playback.finished` are emitted.
 
 **Errors:**
-- `400` — Invalid JSON
+- `400` — Invalid JSON, missing url/tone, both url and tone provided
 - `404` — Leg not found
 - `409` — Leg has no audio writer (not yet connected)
 
@@ -552,9 +594,9 @@ Remove a leg from a room (without hanging it up).
 
 ### POST /v1/rooms/{id}/play
 
-Play audio to a room.
+Play audio to a room. Accepts a URL or a built-in telephone tone (same tone names as leg playback).
 
-**Request:**
+**Request (URL):**
 
 ```json
 {
@@ -563,6 +605,22 @@ Play audio to a room.
 }
 ```
 
+**Request (tone):**
+
+```json
+{
+  "tone": "us_ringback"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | one of `url` or `tone` | URL of the audio file |
+| `tone` | string | one of `url` or `tone` | Built-in telephone tone name |
+| `mime_type` | string | with `url` | MIME type (`audio/wav`) |
+| `repeat` | integer | no | Repeat count (0/1=once, -1=infinite) |
+| `volume` | integer | no | Volume adjustment (-8 to 8, ~3dB/step) |
+
 **Response:** `200 OK`
 
 ```json
@@ -570,7 +628,7 @@ Play audio to a room.
 ```
 
 **Errors:**
-- `400` — Invalid JSON
+- `400` — Invalid JSON, missing url/tone, both url and tone provided
 - `404` — Room not found
 - `409` — Room has no participants
 
@@ -845,7 +903,7 @@ The server sends application-level pings every 30 seconds. The connection is als
 
 ### POST /v1/webrtc/offer
 
-Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP offer and receives an SDP answer plus a leg ID.
+Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP offer and receives an SDP answer plus a leg ID. The answer is returned immediately without waiting for ICE gathering to complete — use the trickle ICE endpoints below to exchange candidates incrementally.
 
 **Request:**
 
@@ -868,9 +926,68 @@ The returned `leg_id` can be used with all `/v1/legs` and `/v1/rooms` endpoints.
 
 **Errors:**
 - `400` — Invalid JSON or invalid SDP offer
-- `500` — Peer connection, track creation, or ICE gathering failed
+- `500` — Peer connection, track creation, or answer generation failed
 
 **Audio codec:** PCMU (G.711 u-law), 8kHz, mono.
+
+---
+
+### POST /v1/legs/{id}/ice-candidates
+
+Send a remote ICE candidate to the server for a WebRTC leg (trickle ICE).
+
+**Request:**
+
+```json
+{
+  "candidate": "candidate:842163049 1 udp 1677729535 ...",
+  "sdpMid": "0",
+  "sdpMLineIndex": 0
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `candidate` | string | yes | ICE candidate string |
+| `sdpMid` | string | no | Media stream ID |
+| `sdpMLineIndex` | integer | no | Media description index |
+
+**Response:** `200 OK`
+
+```json
+{ "status": "added" }
+```
+
+**Errors:**
+- `400` — Invalid JSON or leg is not a WebRTC leg
+- `404` — Leg not found
+- `500` — Failed to add ICE candidate
+
+---
+
+### GET /v1/legs/{id}/ice-candidates
+
+Retrieve server-side ICE candidates gathered since the last call (trickle ICE). Poll this endpoint until `done` is `true` and `candidates` is empty.
+
+**Response:** `200 OK`
+
+```json
+{
+  "candidates": [
+    { "candidate": "candidate:...", "sdpMid": "0", "sdpMLineIndex": 0 }
+  ],
+  "done": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `candidates` | array | ICE candidates gathered since last poll |
+| `done` | boolean | `true` when ICE gathering is complete |
+
+**Errors:**
+- `400` — Leg is not a WebRTC leg
+- `404` — Leg not found
 
 ---
 
@@ -974,6 +1091,7 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
 | `leg.ringing` | SIP call ringing | `leg_id`, `from`, `to` (inbound); `leg_id`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
+| `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `type` |
 | `leg.connected` | Leg answered/connected | `leg_id` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `reason`, `duration_total`, `duration_answered` |
 | `leg.joined_room` | Leg added to room | `leg_id`, `room_id` |

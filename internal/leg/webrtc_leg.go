@@ -43,6 +43,10 @@ type WebRTCLeg struct {
 	inFrames  chan []byte // incoming PCM frames from browser
 	outFrames chan []byte // outgoing PCM frames to browser
 
+	// Trickle ICE
+	iceCandidates []webrtc.ICECandidateInit
+	iceDone       bool
+
 	onDTMF func(digit rune)
 	log    *slog.Logger
 }
@@ -119,6 +123,35 @@ func (l *WebRTCLeg) OnDTMF(f func(digit rune)) {
 
 func (l *WebRTCLeg) SendDTMF(_ context.Context, _ string) error {
 	return fmt.Errorf("DTMF send over WebRTC not yet implemented")
+}
+
+// AddICECandidate adds a remote ICE candidate to the peer connection.
+func (l *WebRTCLeg) AddICECandidate(c webrtc.ICECandidateInit) error {
+	return l.pc.AddICECandidate(c)
+}
+
+// PushLocalCandidate buffers a locally gathered ICE candidate for retrieval by the client.
+func (l *WebRTCLeg) PushLocalCandidate(c webrtc.ICECandidateInit) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.iceCandidates = append(l.iceCandidates, c)
+}
+
+// SetICEGatheringDone marks local ICE gathering as complete.
+func (l *WebRTCLeg) SetICEGatheringDone() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.iceDone = true
+}
+
+// DrainCandidates returns and clears all buffered local ICE candidates,
+// plus a flag indicating whether gathering is complete.
+func (l *WebRTCLeg) DrainCandidates() ([]webrtc.ICECandidateInit, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cs := l.iceCandidates
+	l.iceCandidates = nil
+	return cs, l.iceDone
 }
 
 // HandleTrack is called from OnTrack to process incoming audio.

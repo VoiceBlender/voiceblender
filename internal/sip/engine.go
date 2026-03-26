@@ -205,9 +205,10 @@ func (e *Engine) Serve(ctx context.Context) error {
 
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
-	Codecs   []codec.CodecType // Override engine codecs for this call; nil = use engine default
-	Headers  []sip.Header      // Extra SIP headers to include in the INVITE
-	FromUser string            // Override the user part of the From header (caller ID)
+	Codecs       []codec.CodecType // Override engine codecs for this call; nil = use engine default
+	Headers      []sip.Header      // Extra SIP headers to include in the INVITE
+	FromUser     string            // Override the user part of the From header (caller ID)
+	OnEarlyMedia func(remoteSDP *SDPMedia, rtpSess *RTPSession) // Called on first 183 with SDP
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
@@ -262,8 +263,41 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		return nil, fmt.Errorf("invite: %w", err)
 	}
 
-	// Wait for 200 OK
-	if err := ds.WaitAnswer(ctx, sipgo.AnswerOptions{}); err != nil {
+	// Wait for 200 OK, processing provisional responses (183) for early media
+	var earlyMediaSent bool
+	answerOpts := sipgo.AnswerOptions{}
+	if opts.OnEarlyMedia != nil {
+		answerOpts.OnResponse = func(res *sip.Response) error {
+			if earlyMediaSent {
+				return nil
+			}
+			if res.StatusCode != sip.StatusSessionInProgress {
+				return nil
+			}
+			body := res.Body()
+			if len(body) == 0 {
+				return nil
+			}
+			remoteSDP, err := ParseSDP(body)
+			if err != nil {
+				e.log.Warn("early media: parse 183 SDP failed", "error", err)
+				return nil // non-fatal, keep waiting for 200
+			}
+			if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
+				e.log.Warn("early media: set remote failed", "error", err)
+				return nil
+			}
+			earlyMediaSent = true
+			// Send a burst of silence RTP for NAT port-latching before
+			// the leg's media pipeline starts its own writeLoop.
+			if len(remoteSDP.Codecs) > 0 {
+				rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
+			}
+			opts.OnEarlyMedia(remoteSDP, rtpSess)
+			return nil
+		}
+	}
+	if err := ds.WaitAnswer(ctx, answerOpts); err != nil {
 		rtpSess.Close()
 		return nil, fmt.Errorf("wait answer: %w", err)
 	}
@@ -287,6 +321,13 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		rtpSess.Close()
 		ds.Bye(ctx)
 		return nil, fmt.Errorf("set remote: %w", err)
+	}
+
+	// Send a burst of silence RTP for NAT port-latching. The leg's full
+	// media pipeline (writeLoop) starts shortly after, but this ensures
+	// the first packets go out immediately after we learn the remote address.
+	if len(remoteSDP.Codecs) > 0 {
+		rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
 	}
 
 	return &OutboundCall{

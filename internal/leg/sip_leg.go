@@ -17,6 +17,7 @@ import (
 
 	"github.com/csiwek/VoiceBlender/internal/codec"
 	sipmod "github.com/csiwek/VoiceBlender/internal/sip"
+	"github.com/emiago/sipgo/sip"
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 )
@@ -54,7 +55,8 @@ type SIPLeg struct {
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
 	dtmfCh    chan string // DTMF digits to send in writeLoop
 
-	sipHeaders map[string]string // X-* headers from inbound INVITE or outbound request
+	earlyMediaSDP []byte         // SDP sent in 183, reused in 200 OK on Answer
+	sipHeaders    map[string]string // X-* headers from inbound INVITE or outbound request
 
 	localIP         string            // for SDP answer generation
 	supportedCodecs []codec.CodecType // from engine config
@@ -150,28 +152,58 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 	}
 }
 
-// ConnectOutbound sets the answered outbound call on the leg, negotiates the
-// codec, starts media, and transitions to connected.
-func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
+// SetupEarlyMediaOutbound configures the media pipeline from a 183 response's
+// SDP before the call is answered. Only valid in StateRinging.
+func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *sipmod.RTPSession) error {
 	l.mu.Lock()
 	if l.state != StateRinging {
 		st := l.state
 		l.mu.Unlock()
 		return fmt.Errorf("leg is %s, not ringing", st)
 	}
-	l.outbound = call
-	l.rtpSess = call.RTPSess
 	l.mu.Unlock()
 
-	negotiated, _, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
+	negotiated, _, ok := sipmod.NegotiateCodec(remoteSDP, l.supportedCodecs)
 	if !ok {
 		return fmt.Errorf("no common codec with remote")
 	}
+
+	l.mu.Lock()
+	l.rtpSess = rtpSess
 	l.codecType = negotiated
-	// As the offerer we send with OUR payload type (from the offer SDP),
-	// not the answerer's PT which may differ for dynamic codecs.
 	l.rtpPT = negotiated.PayloadType()
+	l.mu.Unlock()
+
 	l.setupMedia()
+	l.setState(StateEarlyMedia)
+	return nil
+}
+
+// ConnectOutbound sets the answered outbound call on the leg, negotiates the
+// codec, starts media, and transitions to connected.
+func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
+	l.mu.Lock()
+	st := l.state
+	if st != StateRinging && st != StateEarlyMedia {
+		l.mu.Unlock()
+		return fmt.Errorf("leg is %s, expected ringing or early_media", st)
+	}
+	l.outbound = call
+	if st == StateRinging {
+		l.rtpSess = call.RTPSess
+	}
+	l.mu.Unlock()
+
+	if st == StateRinging {
+		negotiated, _, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
+		if !ok {
+			return fmt.Errorf("no common codec with remote")
+		}
+		l.codecType = negotiated
+		l.rtpPT = negotiated.PayloadType()
+		l.setupMedia()
+	}
+
 	l.mu.Lock()
 	l.answeredAt = time.Now()
 	l.mu.Unlock()
@@ -235,10 +267,92 @@ func (l *SIPLeg) SignalAnswer() {
 	}
 }
 
+// EnableEarlyMedia sends 183 Session Progress with SDP and sets up the media
+// pipeline so audio can flow before the call is answered. Only valid for
+// inbound legs in StateRinging.
+func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
+	if l.inbound == nil {
+		return fmt.Errorf("cannot enable early media on outbound leg")
+	}
+
+	l.mu.RLock()
+	st := l.state
+	l.mu.RUnlock()
+	if st != StateRinging {
+		return fmt.Errorf("leg is %s, not ringing", st)
+	}
+
+	// Negotiate codec from remote offer
+	negotiated, pt, ok := sipmod.NegotiateCodec(l.inbound.RemoteSDP, l.supportedCodecs)
+	if !ok {
+		return fmt.Errorf("no common codec negotiated")
+	}
+	l.codecType = negotiated
+	l.rtpPT = pt
+
+	// Create RTP session
+	rtpSess, err := sipmod.NewRTPSession()
+	if err != nil {
+		return fmt.Errorf("create RTP session: %w", err)
+	}
+	l.rtpSess = rtpSess
+
+	// Set remote RTP address from the offer SDP
+	if err := rtpSess.SetRemote(l.inbound.RemoteSDP.RemoteIP, l.inbound.RemoteSDP.RemotePort); err != nil {
+		rtpSess.Close()
+		return fmt.Errorf("set remote: %w", err)
+	}
+
+	// Generate answer SDP — echo the remote's PT for dynamic codecs
+	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
+		LocalIP: l.localIP,
+		RTPPort: rtpSess.LocalPort(),
+		Codecs:  l.supportedCodecs,
+	}, negotiated, pt)
+
+	// Store SDP for reuse in Answer()
+	l.mu.Lock()
+	l.earlyMediaSDP = answerSDP
+	l.mu.Unlock()
+
+	// Send 183 Session Progress with SDP
+	if err := l.inbound.Dialog.Respond(
+		sip.StatusSessionInProgress, "Session Progress",
+		answerSDP,
+		sip.NewHeader("Content-Type", "application/sdp"),
+	); err != nil {
+		rtpSess.Close()
+		return fmt.Errorf("send 183: %w", err)
+	}
+
+	l.setupMedia()
+	l.setState(StateEarlyMedia)
+	return nil
+}
+
 func (l *SIPLeg) Answer(ctx context.Context) error {
 	if l.inbound == nil {
 		return fmt.Errorf("cannot answer outbound leg")
 	}
+
+	// If early media is active, reuse the existing SDP and RTP session.
+	l.mu.RLock()
+	sdp := l.earlyMediaSDP
+	st := l.state
+	l.mu.RUnlock()
+
+	if st == StateEarlyMedia && sdp != nil {
+		if err := l.inbound.Dialog.RespondSDP(sdp); err != nil {
+			return fmt.Errorf("respond SDP: %w", err)
+		}
+		l.mu.Lock()
+		l.answeredAt = time.Now()
+		l.mu.Unlock()
+		l.setState(StateConnected)
+		return nil
+	}
+
+	// Normal answer path from ringing state.
 
 	// Negotiate codec from remote offer
 	negotiated, pt, ok := sipmod.NegotiateCodec(l.inbound.RemoteSDP, l.supportedCodecs)

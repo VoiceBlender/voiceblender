@@ -10,6 +10,7 @@ const (
 	LegDisconnected EventType = "leg.disconnected"
 	LegJoinedRoom  EventType = "leg.joined_room"
 	LegLeftRoom    EventType = "leg.left_room"
+	LegEarlyMedia  EventType = "leg.early_media"
 	LegMuted       EventType = "leg.muted"
 	LegUnmuted     EventType = "leg.unmuted"
 

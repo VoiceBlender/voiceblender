@@ -5,6 +5,7 @@ import (
 
 	"github.com/csiwek/VoiceBlender/internal/events"
 	"github.com/csiwek/VoiceBlender/internal/leg"
+	"github.com/go-chi/chi/v5"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -68,6 +69,16 @@ func (s *Server) webrtcOffer(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
+	// Trickle ICE: buffer locally gathered candidates for the client to poll
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			l.SetICEGatheringDone()
+			return
+		}
+		init := c.ToJSON()
+		l.PushLocalCandidate(init)
+	})
+
 	// Set remote description
 	offer := webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
@@ -87,20 +98,69 @@ func (s *Server) webrtcOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gather ICE candidates
-	gatherComplete := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(answer); err != nil {
 		pc.Close()
 		writeError(w, http.StatusInternalServerError, "failed to set local description")
 		return
 	}
-	<-gatherComplete
 
+	// Register leg immediately — no waiting for ICE gathering
 	s.LegMgr.Add(l)
 	s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": "webrtc"})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"leg_id": l.ID(),
-		"sdp":    pc.LocalDescription().SDP,
+		"sdp":    answer.SDP,
+	})
+}
+
+func (s *Server) webrtcAddCandidate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+	wl, ok := l.(*leg.WebRTCLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "leg is not a WebRTC leg")
+		return
+	}
+
+	var candidate webrtc.ICECandidateInit
+	if err := decodeJSON(r, &candidate); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if err := wl.AddICECandidate(candidate); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add ICE candidate")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "added"})
+}
+
+func (s *Server) webrtcGetCandidates(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+	wl, ok := l.(*leg.WebRTCLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "leg is not a WebRTC leg")
+		return
+	}
+
+	candidates, done := wl.DrainCandidates()
+	if candidates == nil {
+		candidates = []webrtc.ICECandidateInit{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"candidates": candidates,
+		"done":       done,
 	})
 }

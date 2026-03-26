@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/csiwek/VoiceBlender/internal/events"
@@ -36,12 +38,21 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		URL      string `json:"url"`
+		Tone     string `json:"tone"`
 		MimeType string `json:"mime_type"`
 		Repeat   int    `json:"repeat"`
 		Volume   int    `json:"volume"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.URL != "" && req.Tone != "" {
+		writeError(w, http.StatusBadRequest, "url and tone are mutually exclusive")
+		return
+	}
+	if req.URL == "" && req.Tone == "" {
+		writeError(w, http.StatusBadRequest, "url or tone is required")
 		return
 	}
 	if req.Volume < -8 || req.Volume > 8 {
@@ -71,7 +82,22 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 		s.Bus.Publish(events.PlaybackStarted, map[string]interface{}{"leg_id": id, "playback_id": playbackID})
 	})
 	go func() {
-		err := player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, uint32(l.SampleRate()), req.Repeat)
+		var err error
+		if req.Tone != "" {
+			spec, ok := playback.LookupTone(req.Tone)
+			if !ok {
+				s.Bus.Publish(events.PlaybackError, map[string]interface{}{
+					"leg_id": id, "playback_id": playbackID,
+					"error": fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
+				})
+				return
+			}
+			rate := uint32(l.SampleRate())
+			toneReader := playback.NewToneReader(spec, int(rate))
+			err = player.PlayReaderAtRate(l.Context(), writer, toneReader, fmt.Sprintf("audio/pcm;rate=%d", rate), rate)
+		} else {
+			err = player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, uint32(l.SampleRate()), req.Repeat)
+		}
 		legPlayers.Lock()
 		delete(legPlayers.m[id], playbackID)
 		if len(legPlayers.m[id]) == 0 {
@@ -118,12 +144,21 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		URL      string `json:"url"`
+		Tone     string `json:"tone"`
 		MimeType string `json:"mime_type"`
 		Repeat   int    `json:"repeat"`
 		Volume   int    `json:"volume"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.URL != "" && req.Tone != "" {
+		writeError(w, http.StatusBadRequest, "url and tone are mutually exclusive")
+		return
+	}
+	if req.URL == "" && req.Tone == "" {
+		writeError(w, http.StatusBadRequest, "url or tone is required")
 		return
 	}
 	if req.Volume < -8 || req.Volume > 8 {
@@ -157,8 +192,24 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 	})
 
 	go func() {
-		// Play outputs 16kHz PCM (mixer native rate) into the pipe
-		err := player.Play(parts[0].Context(), pw, req.URL, req.MimeType, req.Repeat)
+		var err error
+		if req.Tone != "" {
+			spec, ok := playback.LookupTone(req.Tone)
+			if !ok {
+				pw.Close()
+				rm.Mixer().RemoveParticipant(playbackID)
+				s.Bus.Publish(events.PlaybackError, map[string]interface{}{
+					"room_id": id, "playback_id": playbackID,
+					"error": fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
+				})
+				return
+			}
+			toneReader := playback.NewToneReader(spec, 16000)
+			err = player.PlayReader(parts[0].Context(), pw, toneReader, "audio/pcm;rate=16000")
+		} else {
+			// Play outputs 16kHz PCM (mixer native rate) into the pipe
+			err = player.Play(parts[0].Context(), pw, req.URL, req.MimeType, req.Repeat)
+		}
 		pw.Close()
 		rm.Mixer().RemoveParticipant(playbackID)
 		roomPlayers.Lock()

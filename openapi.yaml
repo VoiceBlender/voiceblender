@@ -103,7 +103,7 @@ paths:
       - $ref: '#/components/parameters/LegId'
     post:
       operationId: answerLeg
-      summary: Answer a ringing inbound SIP leg
+      summary: Answer a ringing or early-media inbound SIP leg
       tags: [Legs]
       responses:
         '200':
@@ -123,7 +123,48 @@ paths:
         '404':
           $ref: '#/components/responses/LegNotFound'
         '409':
+          description: Leg is not in ringing or early_media state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /legs/{id}/early-media:
+    parameters:
+      - $ref: '#/components/parameters/LegId'
+    post:
+      operationId: earlyMediaLeg
+      summary: Enable early media on a ringing inbound SIP leg
+      description: >
+        Sends SIP 183 Session Progress with SDP and sets up the media pipeline.
+        The leg transitions to `early_media` state, allowing audio playback and
+        room participation before the call is answered.
+      tags: [Legs]
+      responses:
+        '200':
+          description: Early media enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              example:
+                status: early_media
+        '400':
+          description: Not a SIP inbound leg
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/LegNotFound'
+        '409':
           description: Leg is not in ringing state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Media setup failed
           content:
             application/json:
               schema:
@@ -921,7 +962,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
-          description: Peer connection, track creation, or ICE gathering failed
+          description: Peer connection, track creation, or answer generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /legs/{id}/ice-candidates:
+    post:
+      operationId: addICECandidate
+      summary: Send a remote ICE candidate to a WebRTC leg (trickle ICE)
+      tags: [WebRTC]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ICECandidateInit'
+      responses:
+        '200':
+          description: Candidate added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: added
+        '400':
+          description: Invalid JSON or leg is not a WebRTC leg
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Leg not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Failed to add ICE candidate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      operationId: getICECandidates
+      summary: Get server-side ICE candidates for a WebRTC leg (trickle ICE)
+      tags: [WebRTC]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Buffered ICE candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ICECandidateInit'
+                  done:
+                    type: boolean
+                    description: true when ICE gathering is complete
+                required: [candidates, done]
+        '400':
+          description: Leg is not a WebRTC leg
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Leg not found
           content:
             application/json:
               schema:
@@ -1050,7 +1177,7 @@ components:
           enum: [sip_inbound, sip_outbound, webrtc]
         state:
           type: string
-          enum: [ringing, connected, hung_up]
+          enum: [ringing, early_media, connected, hung_up]
         room_id:
           type: string
           description: Room ID if the leg is in a room, empty otherwise
@@ -1158,13 +1285,20 @@ components:
         url:
           type: string
           format: uri
-          description: URL of the audio file
+          description: URL of the audio file (mutually exclusive with tone)
+        tone:
+          type: string
+          description: >
+            Built-in telephone tone name. Format: {country}_{type} or bare {type} (defaults to US).
+            Types: ringback, busy, dial, congestion.
+            Countries: us, gb, de, fr, au, jp, it, in, br, pl, ru.
+            Examples: us_ringback, gb_busy, dial.
         mime_type:
           type: string
-          description: MIME type (e.g. audio/wav)
+          description: MIME type (e.g. audio/wav). Required when using url.
         repeat:
           type: integer
-          description: Number of times to repeat playback
+          description: Number of times to repeat playback (url only)
           default: 0
         volume:
           type: integer
@@ -1172,7 +1306,9 @@ components:
           minimum: -8
           maximum: 8
           default: 0
-      required: [url, mime_type]
+      oneOf:
+        - required: [url, mime_type]
+        - required: [tone]
 
     TTSRequest:
       type: object
@@ -1240,6 +1376,20 @@ components:
           type: string
           description: SDP offer from the browser
       required: [sdp]
+
+    ICECandidateInit:
+      type: object
+      properties:
+        candidate:
+          type: string
+          description: ICE candidate string
+        sdpMid:
+          type: string
+          description: Media stream identification tag
+        sdpMLineIndex:
+          type: integer
+          description: Index of the media description
+      required: [candidate]
 
     WebhookRequest:
       type: object
@@ -1323,6 +1473,7 @@ components:
       type: string
       enum:
         - leg.ringing
+        - leg.early_media
         - leg.connected
         - leg.disconnected
         - leg.joined_room
@@ -1367,6 +1518,21 @@ components:
                             type: object
                             additionalProperties: { type: string }
                             description: 'X-* custom SIP headers, if present'
+    leg.early_media:
+      post:
+        summary: Outbound leg received 183 Session Progress with SDP; media pipeline active
+        requestBody:
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/WebhookEvent'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          leg_id: { type: string }
+                          type: { type: string, description: 'Leg type (e.g. sip_outbound)' }
     leg.connected:
       post:
         summary: Leg answered/connected

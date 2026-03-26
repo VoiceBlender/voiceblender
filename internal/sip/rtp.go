@@ -88,6 +88,43 @@ func (s *RTPSession) WriteRTP(pkt *rtp.Packet) error {
 	return err
 }
 
+// SendKeepalive sends a small burst of silence RTP packets to the remote
+// address. This is used immediately after SetRemote on outbound calls to
+// punch through NAT devices (port-latching) before the leg's full media
+// pipeline starts.
+func (s *RTPSession) SendKeepalive(payloadType uint8, count int) {
+	if s.remoteAddr == nil || count <= 0 {
+		return
+	}
+	// 160 bytes of 0xFF = 20ms of PCMU silence (works for port-latching
+	// regardless of actual codec since NAT only cares about the UDP flow).
+	silence := make([]byte, 160)
+	for i := range silence {
+		silence[i] = 0xFF
+	}
+	var seq uint16
+	var ts uint32
+	for i := 0; i < count; i++ {
+		pkt := &rtp.Packet{
+			Header: rtp.Header{
+				Version:        2,
+				PayloadType:    payloadType,
+				SequenceNumber: seq,
+				Timestamp:      ts,
+				SSRC:           0, // throwaway SSRC; real writeLoop will use its own
+			},
+			Payload: silence,
+		}
+		data, err := pkt.Marshal()
+		if err != nil {
+			return
+		}
+		s.conn.WriteToUDP(data, s.remoteAddr)
+		seq++
+		ts += 160
+	}
+}
+
 // LocalPort returns the local UDP port this session is listening on.
 func (s *RTPSession) LocalPort() int {
 	return s.localPort

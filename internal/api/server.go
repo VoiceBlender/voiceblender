@@ -73,6 +73,7 @@ func (s *Server) routes() {
 		r.Get("/legs", s.listLegs)
 		r.Get("/legs/{id}", s.getLeg)
 		r.Post("/legs/{id}/answer", s.answerLeg)
+		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)
 		r.Post("/legs/{id}/mute", s.muteLeg)
 		r.Delete("/legs/{id}/mute", s.unmuteLeg)
 		r.Delete("/legs/{id}", s.deleteLeg)
@@ -86,6 +87,8 @@ func (s *Server) routes() {
 		r.Delete("/legs/{id}/stt", s.stopSTTLeg)
 		r.Post("/legs/{id}/agent", s.agentLeg)
 		r.Delete("/legs/{id}/agent", s.stopAgentLeg)
+		r.Post("/legs/{id}/ice-candidates", s.webrtcAddCandidate)
+		r.Get("/legs/{id}/ice-candidates", s.webrtcGetCandidates)
 
 		// Rooms
 		r.Post("/rooms", s.createRoom)

@@ -101,7 +101,7 @@ func (m *Manager) AddLeg(roomID, legID string) error {
 		return fmt.Errorf("leg %s not found", legID)
 	}
 
-	if l.State() != leg.StateConnected {
+	if l.State() != leg.StateConnected && l.State() != leg.StateEarlyMedia {
 		return fmt.Errorf("leg %s is not connected (state: %s)", legID, l.State())
 	}
 

@@ -1077,6 +1077,166 @@ func TestMute_BeforeRoomJoin(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 }
 
+// ---------------------------------------------------------------------------
+// Early Media Tests
+// ---------------------------------------------------------------------------
+
+func TestOutboundEarlyMedia_183WithSDP(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	// A dials B.
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outboundLeg legView
+	decodeJSON(t, createResp, &outboundLeg)
+	t.Logf("outbound leg: %s", outboundLeg.ID)
+
+	// Wait for inbound leg on B (ringing).
+	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	t.Logf("inbound leg: %s", inboundLeg.ID)
+
+	// B enables early media → sends 183 Session Progress with SDP.
+	emResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/early-media", instB.baseURL(), inboundLeg.ID), nil)
+	if emResp.StatusCode != http.StatusOK {
+		t.Fatalf("early-media: unexpected status %d", emResp.StatusCode)
+	}
+	emResp.Body.Close()
+
+	// A's outbound leg should transition to early_media.
+	waitForLegState(t, instA.baseURL(), outboundLeg.ID, "early_media", 5*time.Second)
+
+	// Verify leg.early_media event on A.
+	instA.collector.waitForMatch(t, events.LegEarlyMedia, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundLeg.ID
+	}, 3*time.Second)
+
+	// Create room on A and add the early_media leg — should succeed.
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	if roomResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room: unexpected status %d", roomResp.StatusCode)
+	}
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+	t.Logf("room: %s", rm.ID)
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/legs", instA.baseURL(), rm.ID), map[string]interface{}{
+		"leg_id": outboundLeg.ID,
+	})
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add early_media leg to room: unexpected status %d", addResp.StatusCode)
+	}
+	addResp.Body.Close()
+
+	instA.collector.waitForMatch(t, events.LegJoinedRoom, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundLeg.ID && e.Data["room_id"] == rm.ID
+	}, 3*time.Second)
+
+	// B answers — A's outbound leg should transition from early_media to connected.
+	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
+	if answerResp.StatusCode != http.StatusOK {
+		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
+	}
+	answerResp.Body.Close()
+
+	waitForLegState(t, instA.baseURL(), outboundLeg.ID, "connected", 5*time.Second)
+	waitForLegState(t, instB.baseURL(), inboundLeg.ID, "connected", 5*time.Second)
+
+	// Verify leg.connected event on A.
+	instA.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundLeg.ID
+	}, 3*time.Second)
+
+	// Verify room still has the participant.
+	getRoomResp := httpGet(t, fmt.Sprintf("%s/v1/rooms/%s", instA.baseURL(), rm.ID))
+	var gotRoom roomView
+	decodeJSON(t, getRoomResp, &gotRoom)
+	if len(gotRoom.Participants) != 1 {
+		t.Fatalf("expected 1 participant, got %d", len(gotRoom.Participants))
+	}
+	if gotRoom.Participants[0].State != "connected" {
+		t.Fatalf("expected participant state connected, got %s", gotRoom.Participants[0].State)
+	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
+}
+
+func TestOutboundEarlyMedia_AnswerWithoutEarlyMedia(t *testing.T) {
+	// Verify the normal path (no 183) still works correctly — leg goes
+	// directly from ringing to connected without early_media.
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	outboundID, inboundID := establishCall(t, instA, instB)
+
+	// Ensure no early_media event was emitted on A.
+	if instA.collector.hasEvent(events.LegEarlyMedia, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}) {
+		t.Fatal("leg.early_media should not fire when remote answers directly")
+	}
+
+	// Both legs should be connected.
+	waitForLegState(t, instA.baseURL(), outboundID, "connected", 3*time.Second)
+	waitForLegState(t, instB.baseURL(), inboundID, "connected", 3*time.Second)
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+func TestOutboundEarlyMedia_HangupDuringEarlyMedia(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	// A dials B.
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outboundLeg legView
+	decodeJSON(t, createResp, &outboundLeg)
+
+	// Wait for inbound on B, enable early media.
+	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	emResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/early-media", instB.baseURL(), inboundLeg.ID), nil)
+	if emResp.StatusCode != http.StatusOK {
+		t.Fatalf("early-media: unexpected status %d", emResp.StatusCode)
+	}
+	emResp.Body.Close()
+
+	// Wait for A's leg to reach early_media.
+	waitForLegState(t, instA.baseURL(), outboundLeg.ID, "early_media", 5*time.Second)
+
+	// A hangs up during early media (before answer).
+	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	// Verify disconnected event on A.
+	instA.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundLeg.ID
+	}, 5*time.Second)
+
+	// Verify B also sees disconnect.
+	instB.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data["leg_id"] == inboundLeg.ID
+	}, 5*time.Second)
+}
+
 func TestRecording_StopWithNoRecording(t *testing.T) {
 	instA := newTestInstance(t, "instance-a")
 	instB := newTestInstance(t, "instance-b")

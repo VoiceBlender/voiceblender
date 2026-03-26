@@ -325,23 +325,33 @@ async function connect() {
       }
     };
 
-    // Create offer
+    // Create offer and send immediately (trickle ICE)
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    // Wait for ICE gathering
-    await new Promise((resolve) => {
-      if (pc.iceGatheringState === 'complete') return resolve();
-      pc.onicegatheringstatechange = () => {
-        if (pc.iceGatheringState === 'complete') resolve();
-      };
-    });
-
     log('Sending SDP offer to server...');
-    const result = await api('POST', '/v1/webrtc/offer', { sdp: pc.localDescription.sdp });
+    const result = await api('POST', '/v1/webrtc/offer', { sdp: offer.sdp });
     legId = result.leg_id;
 
     await pc.setRemoteDescription({ type: 'answer', sdp: result.sdp });
+
+    // Trickle ICE: send local candidates to server as they arrive
+    pc.onicecandidate = async (ev) => {
+      if (ev.candidate) {
+        try {
+          await api('POST', `/v1/legs/${legId}/ice-candidates`, {
+            candidate: ev.candidate.candidate,
+            sdpMid: ev.candidate.sdpMid,
+            sdpMLineIndex: ev.candidate.sdpMLineIndex
+          });
+        } catch (err) {
+          log(`ICE candidate send failed: ${err.message}`, 'error');
+        }
+      }
+    };
+
+    // Poll server for its ICE candidates
+    pollServerCandidates(legId);
 
     document.getElementById('legId').textContent = legId;
     setStatus('Connected', 'connected');
@@ -356,6 +366,26 @@ async function connect() {
     log(`Connect failed: ${err.message}`, 'error');
     setStatus('Error', 'error');
     cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trickle ICE: poll server for its ICE candidates
+// ---------------------------------------------------------------------------
+async function pollServerCandidates(lid) {
+  let done = false;
+  while (!done && pc && legId === lid) {
+    try {
+      const data = await api('GET', `/v1/legs/${lid}/ice-candidates`);
+      for (const c of data.candidates) {
+        await pc.addIceCandidate(c);
+      }
+      done = data.done && data.candidates.length === 0;
+    } catch (err) {
+      log(`ICE candidate poll failed: ${err.message}`, 'error');
+      break;
+    }
+    if (!done) await new Promise(r => setTimeout(r, 100));
   }
 }
 

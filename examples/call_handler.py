@@ -6,10 +6,14 @@ Listens for incoming SIP calls via webhook, answers them,
 and adds all calls to a single shared room so callers can talk to each other.
 Optionally plays an audio file into the room.
 
+With --early-media, the script enables early media (SIP 183) before answering,
+plays an announcement to the caller, and then answers the call.
+
 Usage:
     python3 call_handler.py                                    # shared room, no audio
     python3 call_handler.py --audio-url https://example.com/greeting.wav
     python3 call_handler.py --direct-leg --audio-url URL       # bypass mixer
+    python3 call_handler.py --early-media --audio-url URL      # play before answer
 
 Environment variables:
     VOICEBLENDER_URL   Base URL of VoiceBlender API (default: http://localhost:8090)
@@ -41,6 +45,8 @@ class Config:
         self.audio_url = args.audio_url
         self.room_prefix = args.room_prefix
         self.direct_leg = args.direct_leg
+        self.early_media = args.early_media
+        self.early_media_delay = args.early_media_delay
         self.record = args.record
         # Shared room: created once, all calls join it
         self.shared_room_id = None
@@ -55,19 +61,6 @@ def api(cfg, method, path, body=None):
     if resp.status_code >= 400:
         log.error("API error: %s %s -> %d %s", method, path, resp.status_code, resp.text)
     return resp.status_code, resp.json()
-
-
-def wait_for_connected(cfg, leg_id, timeout=5, interval=0.1):
-    """Poll GET /v1/legs/{id} until state is 'connected' or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status, resp = api(cfg, "GET", f"/legs/{leg_id}")
-        if status != 200:
-            return False
-        if resp.get("state") == "connected":
-            return True
-        time.sleep(interval)
-    return False
 
 
 def get_or_create_room(cfg):
@@ -95,6 +88,19 @@ def get_or_create_room(cfg):
         return room_id
 
 
+def wait_for_state(cfg, leg_id, target_states, timeout=5, interval=0.1):
+    """Poll GET /v1/legs/{id} until state is one of target_states or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status, resp = api(cfg, "GET", f"/legs/{leg_id}")
+        if status != 200:
+            return False
+        if resp.get("state") in target_states:
+            return True
+        time.sleep(interval)
+    return False
+
+
 def handle_ringing(cfg, event_data):
     """Answer the call and add the leg to the shared room."""
     leg_id = event_data.get("leg_id")
@@ -106,6 +112,30 @@ def handle_ringing(cfg, event_data):
         for name, value in sip_headers.items():
             log.info("  SIP header: %s: %s", name, value)
 
+    # --- Early media: play audio or tone before answering ---
+    if cfg.early_media:
+        status, resp = api(cfg, "POST", f"/legs/{leg_id}/early-media")
+        if status != 200:
+            log.error("Failed to enable early media on leg %s: %s", leg_id, resp)
+            return
+        log.info("Early media enabled on leg %s (SIP 183 sent)", leg_id)
+
+        # Play announcement or ringback tone while still ringing
+        if cfg.audio_url:
+            play_body = {"url": cfg.audio_url, "mime_type": "audio/wav"}
+        else:
+            play_body = {"tone": "us_ringback"}
+        status, resp = api(cfg, "POST", f"/legs/{leg_id}/play", play_body)
+        if status != 200:
+            log.error("Failed to play early media on leg %s: %s", leg_id, resp)
+        else:
+            log.info("Playing early media on leg %s: %s", leg_id, play_body)
+
+        # Wait before answering so the caller hears the announcement
+        delay = cfg.early_media_delay
+        log.info("Waiting %.1fs before answering leg %s...", delay, leg_id)
+        time.sleep(delay)
+
     # 1. Answer the call
     status, resp = api(cfg, "POST", f"/legs/{leg_id}/answer")
     if status != 200:
@@ -114,7 +144,7 @@ def handle_ringing(cfg, event_data):
     log.info("Answering leg %s, waiting for connected state...", leg_id)
 
     # Poll until the leg reaches "connected" state (SIP 200 OK + media setup)
-    if not wait_for_connected(cfg, leg_id):
+    if not wait_for_state(cfg, leg_id, ("connected",)):
         log.error("Leg %s did not reach connected state", leg_id)
         return
     log.info("Leg %s connected", leg_id)
@@ -234,6 +264,17 @@ def main():
         "--direct-leg",
         action="store_true",
         help="Play audio directly to leg (bypasses room/mixer for debugging)",
+    )
+    parser.add_argument(
+        "--early-media",
+        action="store_true",
+        help="Enable early media (SIP 183) and play --audio-url before answering",
+    )
+    parser.add_argument(
+        "--early-media-delay",
+        type=float,
+        default=3.0,
+        help="Seconds to wait after starting early media playback before answering (default: 3.0)",
     )
     parser.add_argument(
         "--record",

@@ -19,6 +19,7 @@ type LegState string
 
 const (
 	StateRinging    LegState = "ringing"
+	StateEarlyMedia LegState = "early_media"
 	StateConnected  LegState = "connected"
 	StateHungUp     LegState = "hung_up"
 )
