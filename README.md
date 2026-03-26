@@ -11,7 +11,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at 16 kHz
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
-- **Recording** -- stereo WAV recording per-leg or per-room, with optional S3 upload
+- **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, optional S3 upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
 - **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)

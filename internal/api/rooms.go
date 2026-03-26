@@ -93,6 +93,8 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "leg already in this room")
 			return
 		}
+		// Stop per-participant recording in the old room before moving.
+		s.onLegLeavingRoomRecording(fromRoomID, req.LegID)
 		if err := s.RoomMgr.MoveLeg(fromRoomID, roomID, req.LegID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -127,6 +129,8 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 func (s *Server) removeLegFromRoom(w http.ResponseWriter, r *http.Request) {
 	roomID := chi.URLParam(r, "id")
 	legID := chi.URLParam(r, "legID")
+	// Stop per-participant recording before removing from mixer.
+	s.onLegLeavingRoomRecording(roomID, legID)
 	if err := s.RoomMgr.RemoveLeg(roomID, legID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

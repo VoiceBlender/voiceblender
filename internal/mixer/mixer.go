@@ -79,6 +79,9 @@ type Participant struct {
 	tap io.Writer
 	// outTap receives a copy of this participant's mixed-minus-self PCM (for stereo recording).
 	outTap io.Writer
+	// recordTap receives a copy of this participant's raw incoming PCM (for per-participant recording).
+	// Separate from tap so STT/agent and multi-channel recording can run simultaneously.
+	recordTap io.Writer
 }
 
 // Mixer performs multi-party audio mixing with mixed-minus-self.
@@ -233,6 +236,27 @@ func (w *injectWriter) Write(p []byte) (int, error) {
 	default:
 		// Drop frame rather than block the playback ticker.
 		return len(p), nil
+	}
+}
+
+// SetParticipantRecordTap sets an io.Writer that receives a copy of the
+// participant's raw incoming PCM frames. Unlike SetParticipantTap (used by
+// STT/agent), this tap is dedicated to per-participant recording and can
+// coexist with the STT tap.
+func (m *Mixer) SetParticipantRecordTap(id string, w io.Writer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p, ok := m.participants[id]; ok {
+		p.recordTap = w
+	}
+}
+
+// ClearParticipantRecordTap removes the per-participant recording tap writer.
+func (m *Mixer) ClearParticipantRecordTap(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p, ok := m.participants[id]; ok {
+		p.recordTap = nil
 	}
 }
 
@@ -425,10 +449,12 @@ func (m *Mixer) mixTick() {
 	parts := make([]*Participant, 0, len(m.participants))
 	taps := make([]io.Writer, 0, len(m.participants))
 	outTaps := make([]io.Writer, 0, len(m.participants))
+	recordTaps := make([]io.Writer, 0, len(m.participants))
 	for _, p := range m.participants {
 		parts = append(parts, p)
 		taps = append(taps, p.tap)
 		outTaps = append(outTaps, p.outTap)
+		recordTaps = append(recordTaps, p.recordTap)
 	}
 	m.mu.Unlock()
 
@@ -451,6 +477,10 @@ func (m *Mixer) mixTick() {
 		// Tap still receives audio even when muted (recording/STT of own audio).
 		if taps[i] != nil {
 			taps[i].Write(raw)
+		}
+		// Write raw PCM to per-participant recording tap (separate from STT tap).
+		if recordTaps[i] != nil {
+			recordTaps[i].Write(raw)
 		}
 		if muted[i] {
 			frames[i] = make([]int16, SamplesPerFrame) // silence — don't contribute to mix

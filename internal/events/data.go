@@ -1,5 +1,7 @@
 package events
 
+import "github.com/VoiceBlender/voiceblender/internal/recording"
+
 // EventData is the interface all typed event data structs must implement.
 type EventData interface {
 	GetLegID() string
@@ -173,7 +175,9 @@ type RecordingStartedData struct {
 
 type RecordingFinishedData struct {
 	LegRoomScope
-	File string `json:"file"`
+	File             string                              `json:"file"`
+	MultiChannelFile string                              `json:"multi_channel_file,omitempty"`
+	Channels         map[string]recording.ChannelInfo    `json:"channels,omitempty"`
 }
 
 // --- STT ---

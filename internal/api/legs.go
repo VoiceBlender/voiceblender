@@ -364,10 +364,13 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.stopLegRecording(l.ID())
 
 	if roomID := l.RoomID(); roomID != "" {
+		// Stop per-participant recording before removing from mixer.
+		s.onLegLeavingRoomRecording(roomID, l.ID())
 		if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
 			s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
 		}
 		s.stopRoomAgentIfEmpty(roomID)
+		s.stopRoomRecordingIfEmpty(roomID)
 	}
 	s.LegMgr.Remove(l.ID())
 	// Note: ClearLegWebhook is intentionally NOT called here. The caller

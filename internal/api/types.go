@@ -193,17 +193,19 @@ var sttRequestFields = map[string]FieldEnrichment{
 
 // RecordRequest is the request body for POST /v1/legs/{id}/record and POST /v1/rooms/{id}/record.
 type RecordRequest struct {
-	Storage     string `json:"storage"`
-	S3Bucket    string `json:"s3_bucket"`
-	S3Region    string `json:"s3_region"`
-	S3Endpoint  string `json:"s3_endpoint"`
-	S3Prefix    string `json:"s3_prefix"`
-	S3AccessKey string `json:"s3_access_key"`
-	S3SecretKey string `json:"s3_secret_key"`
+	Storage      string `json:"storage"`
+	MultiChannel bool   `json:"multi_channel"`
+	S3Bucket     string `json:"s3_bucket"`
+	S3Region     string `json:"s3_region"`
+	S3Endpoint   string `json:"s3_endpoint"`
+	S3Prefix     string `json:"s3_prefix"`
+	S3AccessKey  string `json:"s3_access_key"`
+	S3SecretKey  string `json:"s3_secret_key"`
 }
 
 var recordRequestFields = map[string]FieldEnrichment{
 	"storage":       {Description: `"file" (default) — local disk, "s3" — upload to S3 after recording stops`, Enum: []string{"file", "s3"}},
+	"multi_channel": {Description: "When true, record each participant to a separate mono WAV file in addition to the full mix. Only applies to room recordings.", Default: false},
 	"s3_bucket":     {Description: "S3 bucket name. Overrides S3_BUCKET env var. Required if env var is not set."},
 	"s3_region":     {Description: "AWS region. Overrides S3_REGION env var. Default us-east-1."},
 	"s3_endpoint":   {Description: "Custom S3 endpoint (MinIO, etc.). Overrides S3_ENDPOINT env var."},

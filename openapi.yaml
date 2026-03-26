@@ -43,6 +43,9 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
+        - name: DEEPGRAM_API_KEY
+          default: ""
+          description: API key for Deepgram STT, TTS, and Agent provider
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -1298,7 +1301,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                                $ref: '#/components/schemas/StopRecordRoomResponse'
                 '404':
                     description: No recording in progress
                     content:
@@ -1864,6 +1867,43 @@ components:
                     type: string
             required:
                 - status
+        StopRecordRoomResponse:
+            type: object
+            properties:
+                status:
+                    type: string
+                file:
+                    type: string
+                    description: Path/URI of the full mix recording (mono)
+                multi_channel_file:
+                    type: string
+                    description: Path/URI of the multi-channel WAV file. Only present when multi_channel was true.
+                channels:
+                    type: object
+                    description: Map of leg ID to channel metadata. Only present when multi_channel was true.
+                    additionalProperties:
+                        $ref: '#/components/schemas/ChannelInfo'
+            required:
+                - status
+                - file
+        ChannelInfo:
+            type: object
+            properties:
+                channel:
+                    type: integer
+                    description: Zero-based channel index in the multi-channel WAV
+                start_ms:
+                    type: integer
+                    description: Milliseconds from recording start when this participant joined
+                    format: int64
+                end_ms:
+                    type: integer
+                    description: Milliseconds from recording start when this participant's audio ends
+                    format: int64
+            required:
+                - channel
+                - start_ms
+                - end_ms
         AddLegRequest:
             type: object
             properties:
@@ -2053,6 +2093,10 @@ components:
                     enum:
                         - file
                         - s3
+                multi_channel:
+                    type: boolean
+                    description: When true, produce a single multi-channel WAV with one track per participant (time-aligned). Only applies to room recordings.
+                    default: false
                 s3_bucket:
                     type: string
                     description: S3 bucket name. Overrides S3_BUCKET env var. Required if env var is not set.
@@ -2709,6 +2753,14 @@ x-webhooks:
                                     file:
                                         type: string
                                         description: Recording file path or S3 URI
+                                    multi_channel_file:
+                                        type: string
+                                        description: Path/URI of the multi-channel WAV file (only for multi-channel room recordings)
+                                    channels:
+                                        type: object
+                                        description: Channel metadata per participant (only for multi-channel room recordings)
+                                        additionalProperties:
+                                            $ref: '#/components/schemas/ChannelInfo'
     room.created:
         post:
             summary: Room created

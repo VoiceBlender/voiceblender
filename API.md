@@ -990,6 +990,7 @@ Start recording the full room mix to a WAV file (16kHz, 16-bit, mono).
 ```json
 {
   "storage": "s3",
+  "multi_channel": true,
   "s3_bucket": "my-recordings",
   "s3_region": "eu-west-1",
   "s3_access_key": "AKIA...",
@@ -1000,6 +1001,7 @@ Start recording the full room mix to a WAV file (16kHz, 16-bit, mono).
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops |
+| `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
@@ -1020,6 +1022,14 @@ When `s3_bucket` is provided, a per-request S3 backend is created. Otherwise the
 
 When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
 
+#### Multi-Channel Recording
+
+When `multi_channel: true` is set, a single multi-channel WAV file is produced alongside the full mix. Each participant gets their own channel (track) within this file, with silence padding so all tracks are time-aligned to the recording start. Participants that join mid-recording get a new channel; participants that leave have silence written for the remainder.
+
+This gives you one file ready for post-production — each speaker on a clean isolated channel for independent editing, noise reduction, and level adjustment.
+
+The per-participant audio capture uses a dedicated mixer tap that is independent of STT/agent taps, so multi-channel recording and STT can run simultaneously without conflict.
+
 **Errors:**
 - `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
 - `404` — Room not found
@@ -1034,12 +1044,35 @@ Stop room recording.
 
 **Response:** `200 OK`
 
+Standard (mono) recording:
 ```json
 {
   "status": "stopped",
   "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
 }
 ```
+
+Multi-channel recording — includes a single multi-channel WAV with channel metadata:
+```json
+{
+  "status": "stopped",
+  "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav",
+  "multi_channel_file": "/tmp/recordings/20260301_110500_multichannel_e5f6a7b8.wav",
+  "channels": {
+    "550e8400-e29b-41d4-a716-446655440000": { "channel": 0, "start_ms": 0, "end_ms": 45000 },
+    "660f9500-f3ac-52e5-b827-557766551111": { "channel": 1, "start_ms": 1200, "end_ms": 45000 }
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | Path/URI of the full mix recording (mono) |
+| `multi_channel_file` | string | Path/URI of the multi-channel WAV file. Only present when `multi_channel: true` was used. |
+| `channels` | object | Map of leg ID to channel metadata. Only present when `multi_channel: true` was used. |
+| `channels[].channel` | integer | Zero-based channel index in the multi-channel WAV |
+| `channels[].start_ms` | integer | Milliseconds from recording start when this participant joined |
+| `channels[].end_ms` | integer | Milliseconds from recording start when this participant's audio ends |
 
 **Errors:** `404` — No recording in progress
 
@@ -1491,7 +1524,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
 | `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
-| `recording.finished` | Recording ended | `leg_id` or `room_id`, `file` |
+| `recording.finished` | Recording ended | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |

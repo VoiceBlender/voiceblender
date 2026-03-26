@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -24,7 +27,155 @@ type legRecordInfo struct {
 	storage storage.Backend
 }
 
+// multiChannelState tracks per-participant recording state for a room.
+// Each participant gets a mono WAV recorded via the mixer's recordTap.
+// At stop time, all per-participant WAVs are merged into a single
+// multi-channel WAV with silence padding for join/leave time alignment.
+type multiChannelState struct {
+	mu        sync.Mutex
+	active    bool
+	startTime time.Time
+	storage   storage.Backend
+	dir       string
+	recorders map[string]*recording.Recorder // legID → recorder
+	pipes     map[string]*pipeWriter         // legID → pipe writer (to close on stop)
+	files     map[string]string              // legID → local WAV path (finalized)
+	// Channel assignment — preserves order for deterministic channel mapping.
+	participantOrder []string
+	// Timing — join/leave offsets relative to startTime.
+	joinOffsets  map[string]time.Duration
+	leaveOffsets map[string]time.Duration
+	log          *slog.Logger
+}
+
+// startLeg begins recording a single participant's audio via the mixer's recordTap.
+func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if !mc.active {
+		return
+	}
+	if _, exists := mc.recorders[legID]; exists {
+		return
+	}
+
+	pr, pw := createPipe()
+	m.SetParticipantRecordTap(legID, pw)
+
+	rec := recording.NewRecorder(mc.log)
+	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mixer.SampleRate))
+	if err != nil {
+		mc.log.Error("multi-channel: failed to start per-leg recording", "leg_id", legID, "error", err)
+		m.ClearParticipantRecordTap(legID)
+		pw.Close()
+		return
+	}
+
+	mc.recorders[legID] = rec
+	mc.pipes[legID] = pw
+	mc.participantOrder = append(mc.participantOrder, legID)
+	mc.joinOffsets[legID] = time.Since(mc.startTime)
+	mc.log.Info("multi-channel: started per-leg recording", "leg_id", legID, "file", fpath)
+}
+
+// stopLeg stops recording for a single participant and stores the finalized local path.
+func (mc *multiChannelState) stopLeg(legID string, m mixerIface) {
+	mc.mu.Lock()
+	rec, ok := mc.recorders[legID]
+	if !ok {
+		mc.mu.Unlock()
+		return
+	}
+	pw := mc.pipes[legID]
+	delete(mc.recorders, legID)
+	delete(mc.pipes, legID)
+	mc.leaveOffsets[legID] = time.Since(mc.startTime)
+	mc.mu.Unlock()
+
+	m.ClearParticipantRecordTap(legID)
+	if pw != nil {
+		pw.Close()
+	}
+
+	fpath := rec.Stop()
+	rec.Wait()
+
+	mc.mu.Lock()
+	mc.files[legID] = fpath
+	mc.mu.Unlock()
+	mc.log.Info("multi-channel: stopped per-leg recording", "leg_id", legID, "file", fpath)
+}
+
+// stopAll stops all per-participant recordings, merges into a single
+// multi-channel WAV, uploads if needed, and returns the result.
+func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResult, error) {
+	mc.mu.Lock()
+	mc.active = false
+	totalDuration := time.Since(mc.startTime)
+	// Snapshot the leg IDs still recording.
+	legIDs := make([]string, 0, len(mc.recorders))
+	for id := range mc.recorders {
+		legIDs = append(legIDs, id)
+	}
+	mc.mu.Unlock()
+
+	// Stop any still-recording participants.
+	for _, id := range legIDs {
+		mc.stopLeg(id, m)
+	}
+
+	mc.mu.Lock()
+	// Build merge inputs in channel order.
+	inputs := make([]recording.MultiChannelInput, len(mc.participantOrder))
+	for i, legID := range mc.participantOrder {
+		inputs[i] = recording.MultiChannelInput{
+			LegID:      legID,
+			FilePath:   mc.files[legID],
+			JoinOffset: mc.joinOffsets[legID],
+		}
+	}
+	mc.mu.Unlock()
+
+	result, err := recording.MergeMultiChannel(mc.dir, inputs, totalDuration, mixer.SampleRate)
+	if err != nil {
+		mc.log.Error("multi-channel: merge failed", "error", err)
+		return nil, err
+	}
+
+	// Upload the merged file if storage backend is set.
+	if mc.storage != nil {
+		loc, uploadErr := mc.storage.Upload(context.Background(), result.FilePath)
+		if uploadErr != nil {
+			mc.log.Error("multi-channel: storage upload failed", "error", uploadErr)
+		} else {
+			result.FilePath = loc
+		}
+	}
+
+	// Clean up intermediate per-participant WAV files.
+	mc.mu.Lock()
+	for _, fpath := range mc.files {
+		os.Remove(fpath)
+	}
+	mc.mu.Unlock()
+
+	return result, nil
+}
+
+// mixerIface is the subset of mixer.Mixer methods used by multiChannelState,
+// allowing for easier testing.
+type mixerIface interface {
+	SetParticipantRecordTap(id string, w io.Writer)
+	ClearParticipantRecordTap(id string)
+}
+
 var (
+	// roomMultiChannel tracks multi-channel recording state per room.
+	roomMultiChannel = struct {
+		sync.Mutex
+		m map[string]*multiChannelState
+	}{m: make(map[string]*multiChannelState)}
+
 	legRecorders = struct {
 		sync.Mutex
 		m map[string]*recording.Recorder
@@ -306,7 +457,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use the mixer tap via a pipe for room recording
+	// Use the mixer tap via a pipe for room recording (full mix, always started)
 	pr, pw := createPipe()
 	rm.Mixer().SetTap(pw)
 
@@ -330,6 +481,30 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	roomRecordStorage.m[id] = backend
 	roomRecordStorage.Unlock()
 
+	// Multi-channel: start per-participant recordings.
+	if req.MultiChannel {
+		mc := &multiChannelState{
+			active:       true,
+			startTime:    time.Now(),
+			storage:      backend,
+			dir:          s.Config.RecordingDir,
+			recorders:    make(map[string]*recording.Recorder),
+			pipes:        make(map[string]*pipeWriter),
+			files:        make(map[string]string),
+			joinOffsets:  make(map[string]time.Duration),
+			leaveOffsets: make(map[string]time.Duration),
+			log:          s.Log,
+		}
+		roomMultiChannel.Lock()
+		roomMultiChannel.m[id] = mc
+		roomMultiChannel.Unlock()
+
+		mix := rm.Mixer()
+		for _, p := range parts {
+			mc.startLeg(p.ID(), mix, s.Config.RecordingDir)
+		}
+	}
+
 	s.Bus.Publish(events.RecordingStarted, &events.RecordingStartedData{
 		LegRoomScope: events.LegRoomScope{RoomID: id},
 		File:         fpath,
@@ -337,11 +512,26 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "recording", "file": fpath})
 }
 
-func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	rm, ok := s.RoomMgr.Get(id)
-	if ok {
+// cleanupRoomRecording stops all recording activity for a room and returns
+// the result. Returns nil if no recording was in progress.
+func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *recording.MultiChannelResult, ok bool) {
+	rm, rmOK := s.RoomMgr.Get(id)
+	if rmOK {
 		rm.Mixer().SetTap(nil)
+	}
+
+	// Stop multi-channel per-participant recordings first.
+	roomMultiChannel.Lock()
+	mc := roomMultiChannel.m[id]
+	delete(roomMultiChannel.m, id)
+	roomMultiChannel.Unlock()
+	if mc != nil && rm != nil {
+		result, err := mc.stopAll(rm.Mixer())
+		if err != nil {
+			s.Log.Error("multi-channel merge failed", "room_id", id, "error", err)
+		} else {
+			mcResult = result
+		}
 	}
 
 	roomRecordPipes.Lock()
@@ -353,14 +543,13 @@ func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	roomRecorders.Lock()
-	rec, ok := roomRecorders.m[id]
-	if ok {
+	rec, recOK := roomRecorders.m[id]
+	if recOK {
 		delete(roomRecorders.m, id)
 	}
 	roomRecorders.Unlock()
-	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
-		return
+	if !recOK {
+		return "", nil, false
 	}
 
 	roomRecordStorage.Lock()
@@ -371,7 +560,7 @@ func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
 	fpath := rec.Stop()
 	rec.Wait()
 
-	location := fpath
+	location = fpath
 	if backend != nil {
 		loc, err := backend.Upload(context.Background(), fpath)
 		if err != nil {
@@ -381,11 +570,99 @@ func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Bus.Publish(events.RecordingFinished, &events.RecordingFinishedData{
+	return location, mcResult, true
+}
+
+func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	location, mcResult, ok := s.cleanupRoomRecording(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no recording in progress")
+		return
+	}
+
+	resp := map[string]interface{}{"status": "stopped", "file": location}
+	evtData := &events.RecordingFinishedData{
 		LegRoomScope: events.LegRoomScope{RoomID: id},
 		File:         location,
-	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "file": location})
+	}
+	if mcResult != nil {
+		resp["multi_channel_file"] = mcResult.FilePath
+		channels := make(map[string]interface{}, len(mcResult.Channels))
+		for legID, ch := range mcResult.Channels {
+			channels[legID] = map[string]interface{}{
+				"channel":  ch.Channel,
+				"start_ms": ch.StartMs,
+				"end_ms":   ch.EndMs,
+			}
+		}
+		resp["channels"] = channels
+		evtData.MultiChannelFile = mcResult.FilePath
+		evtData.Channels = mcResult.Channels
+	}
+
+	s.Bus.Publish(events.RecordingFinished, evtData)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// stopRoomRecordingIfEmpty stops the room's recording when no leg participants
+// remain. Called after a leg is removed from a room.
+func (s *Server) stopRoomRecordingIfEmpty(roomID string) {
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok || rm.ParticipantCount() > 0 {
+		return
+	}
+
+	location, mcResult, ok := s.cleanupRoomRecording(roomID)
+	if !ok {
+		return
+	}
+
+	evtData := &events.RecordingFinishedData{
+		LegRoomScope: events.LegRoomScope{RoomID: roomID},
+		File:         location,
+	}
+	if mcResult != nil {
+		evtData.MultiChannelFile = mcResult.FilePath
+		evtData.Channels = mcResult.Channels
+	}
+	s.Bus.Publish(events.RecordingFinished, evtData)
+	s.Log.Info("auto-stopped room recording (empty room)", "room_id", roomID, "file", location)
+}
+
+// onLegJoinedRoomRecording starts a per-participant recording if multi-channel
+// recording is active for the room. Called from onLegJoinedRoom.
+func (s *Server) onLegJoinedRoomRecording(roomID, legID string) {
+	roomMultiChannel.Lock()
+	mc := roomMultiChannel.m[roomID]
+	roomMultiChannel.Unlock()
+	if mc == nil {
+		return
+	}
+
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok {
+		return
+	}
+	mc.startLeg(legID, rm.Mixer(), s.Config.RecordingDir)
+}
+
+// onLegLeavingRoomRecording stops the per-participant recording for a leg
+// that is leaving a room with active multi-channel recording.
+func (s *Server) onLegLeavingRoomRecording(roomID, legID string) {
+	roomMultiChannel.Lock()
+	mc := roomMultiChannel.m[roomID]
+	roomMultiChannel.Unlock()
+	if mc == nil {
+		return
+	}
+
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok {
+		return
+	}
+	mc.stopLeg(legID, rm.Mixer())
 }
 
 func createPipe() (*pipeReader, *pipeWriter) {

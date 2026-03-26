@@ -292,6 +292,9 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 
 // onLegJoinedRoom starts STT for a newly added leg if room STT is active.
 func (s *Server) onLegJoinedRoom(roomID, legID string) {
+	// Auto-start per-participant recording if multi-channel is active.
+	s.onLegJoinedRoomRecording(roomID, legID)
+
 	roomTranscribers.Lock()
 	state, ok := roomTranscribers.m[roomID]
 	if !ok {
