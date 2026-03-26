@@ -567,7 +567,7 @@ paths:
       - $ref: '#/components/parameters/RoomId'
     post:
       operationId: addLegToRoom
-      summary: Add a leg to a room
+      summary: Add a leg to a room (auto-creates room if it doesn't exist)
       tags: [Rooms]
       requestBody:
         required: true

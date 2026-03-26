@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -75,6 +76,13 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
+	}
+	// Auto-create the room if it doesn't exist.
+	if _, ok := s.RoomMgr.Get(roomID); !ok {
+		if _, err := s.RoomMgr.Create(roomID); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
+			return
+		}
 	}
 	if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

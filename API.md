@@ -562,7 +562,7 @@ Delete a room. All participants are hung up.
 
 ### POST /v1/rooms/{id}/legs
 
-Add a leg to a room. The leg must be in `connected` state.
+Add a leg to a room. The leg must be in `connected` or `early_media` state. If the room does not exist, it is automatically created.
 
 **Request:**
 
