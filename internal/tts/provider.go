@@ -7,9 +7,11 @@ import (
 
 // Options controls TTS synthesis parameters.
 type Options struct {
-	Voice   string // provider-specific voice identifier
-	ModelID string // optional, provider-specific model
-	APIKey  string // per-request API key override
+	Voice    string // provider-specific voice identifier
+	ModelID  string // optional, provider-specific model
+	Language string // optional, language code (e.g. "en-US", "pl-pl")
+	Prompt   string // optional, style/tone instruction (Google Gemini TTS)
+	APIKey   string // per-request API key override
 }
 
 // Result holds the synthesized audio stream.

@@ -324,3 +324,179 @@ func TestSTT_RoomDefaultProvider(t *testing.T) {
 		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
 }
+
+// TestTTS_LegDefaultProvider verifies that TTS on a leg defaults to ElevenLabs
+// and returns 503 when no API key is configured.
+func TestTTS_LegDefaultProvider(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/tts", instA.baseURL(), outboundID), map[string]interface{}{
+		"text":  "Hello",
+		"voice": "Rachel",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body["error"] != "no elevenlabs API key provided" {
+		t.Fatalf("unexpected error: %s", body["error"])
+	}
+}
+
+// TestTTS_LegAWSProvider verifies that provider=aws does not require an API key
+// (uses default AWS credential chain). The synthesis will fail at the AWS call
+// level, but the provider selection and API key bypass should succeed, returning
+// 200 (playback starts asynchronously).
+func TestTTS_LegAWSProvider(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/tts", instA.baseURL(), outboundID), map[string]interface{}{
+		"text":     "Hello from Polly",
+		"voice":    "Joanna",
+		"provider": "aws",
+	})
+	defer resp.Body.Close()
+
+	// AWS provider doesn't require an API key, so should return 200.
+	if resp.StatusCode != http.StatusOK {
+		var body map[string]string
+		json.NewDecoder(resp.Body).Decode(&body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body["error"])
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["status"] != "playing" {
+		t.Fatalf("expected status=playing, got %v", body["status"])
+	}
+}
+
+// TestTTS_LegGoogleProvider verifies that provider=google does not require an
+// API key (uses Application Default Credentials). The synthesis will fail at
+// the Google API level, but the provider selection should succeed, returning
+// 200 (playback starts asynchronously).
+func TestTTS_LegGoogleProvider(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/tts", instA.baseURL(), outboundID), map[string]interface{}{
+		"text":     "Hello from Google",
+		"voice":    "en-US-Neural2-F",
+		"provider": "google",
+	})
+	defer resp.Body.Close()
+
+	// Google provider doesn't require an API key, so should return 200.
+	if resp.StatusCode != http.StatusOK {
+		var body map[string]string
+		json.NewDecoder(resp.Body).Decode(&body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body["error"])
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["status"] != "playing" {
+		t.Fatalf("expected status=playing, got %v", body["status"])
+	}
+}
+
+// TestTTS_RoomGoogleProvider verifies provider=google works for room TTS.
+func TestTTS_RoomGoogleProvider(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	if roomResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room: unexpected status %d", roomResp.StatusCode)
+	}
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/legs", instA.baseURL(), rm.ID), map[string]interface{}{
+		"leg_id": outboundID,
+	})
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add leg to room: unexpected status %d", addResp.StatusCode)
+	}
+	addResp.Body.Close()
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/tts", instA.baseURL(), rm.ID), map[string]interface{}{
+		"text":     "Room announcement from Google",
+		"voice":    "en-US-Neural2-F",
+		"provider": "google",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var body map[string]string
+		json.NewDecoder(resp.Body).Decode(&body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body["error"])
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["status"] != "playing" {
+		t.Fatalf("expected status=playing, got %v", body["status"])
+	}
+}
+
+// TestTTS_RoomAWSProvider verifies provider=aws works for room TTS.
+func TestTTS_RoomAWSProvider(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	if roomResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room: unexpected status %d", roomResp.StatusCode)
+	}
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/legs", instA.baseURL(), rm.ID), map[string]interface{}{
+		"leg_id": outboundID,
+	})
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add leg to room: unexpected status %d", addResp.StatusCode)
+	}
+	addResp.Body.Close()
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/tts", instA.baseURL(), rm.ID), map[string]interface{}{
+		"text":     "Room announcement from Polly",
+		"voice":    "Matthew",
+		"provider": "aws",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var body map[string]string
+		json.NewDecoder(resp.Body).Decode(&body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body["error"])
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["status"] != "playing" {
+		t.Fatalf("expected status=playing, got %v", body["status"])
+	}
+}

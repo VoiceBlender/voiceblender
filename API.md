@@ -318,7 +318,7 @@ Stop audio playback on a leg.
 
 ### POST /v1/legs/{id}/tts
 
-Synthesize speech and play it on a leg using ElevenLabs TTS.
+Synthesize speech and play it on a leg.
 
 **Request:**
 
@@ -326,18 +326,40 @@ Synthesize speech and play it on a leg using ElevenLabs TTS.
 {
   "text": "Hello, how can I help you?",
   "voice": "Rachel",
+  "provider": "elevenlabs",
   "model_id": "eleven_multilingual_v2",
   "volume": 0
+}
+```
+
+**Request (Google Gemini TTS):**
+
+```json
+{
+  "text": "Movies, oh my gosh, I just love them.",
+  "voice": "Achernar",
+  "provider": "google",
+  "model_id": "gemini-2.5-pro-tts",
+  "language": "en-US",
+  "prompt": "Read aloud in a warm, welcoming tone."
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | yes | Text to synthesize |
-| `voice` | string | yes | ElevenLabs voice name or ID |
-| `model_id` | string | no | ElevenLabs model ID |
+| `voice` | string | yes | Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. `Joanna`, `Matthew`). Google Cloud: voice name — either full format (e.g. `en-US-Neural2-F`) or short name for Gemini models (e.g. `Achernar`, `Kore`). |
+| `provider` | string | no | TTS provider: `"elevenlabs"` (default), `"aws"`, or `"google"` |
+| `model_id` | string | no | Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (`standard`, `neural`, `long-form`, `generative`; default `neural`). Google Cloud: model name (e.g. `gemini-2.5-pro-tts`, `chirp3-hd`). |
+| `language` | string | no | Language code (e.g. `"en-US"`, `"pl-pl"`). Required for Google Gemini TTS voices that use short names (e.g. `Achernar`). Auto-extracted from full voice names like `en-US-Neural2-F`. |
+| `prompt` | string | no | Style/tone instruction for promptable voice models (Google Gemini TTS only). E.g. `"Read aloud in a warm, welcoming tone."` |
 | `volume` | integer | no | Volume adjustment in dB (`-8` to `8`, default `0`) |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `api_key` | string | no | ElevenLabs: API key override (falls back to `ELEVENLABS_API_KEY` env var). AWS: optional `ACCESS_KEY:SECRET_KEY` override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). |
+
+**Providers:**
+- `elevenlabs` — ElevenLabs streaming TTS API (default). Requires an API key.
+- `aws` — Amazon Polly. Uses the default AWS credential chain (env vars, IAM role, shared credentials file). No API key required unless overriding credentials per-request.
+- `google` — Google Cloud Text-to-Speech. Uses Application Default Credentials (ADC). No API key required unless overriding per-request. Supports all voice types: Standard, WaveNet, Neural2, Studio, Chirp 3 HD, and Gemini TTS. For Gemini models (e.g. `gemini-2.5-pro-tts`), set `model_id` and `language` explicitly; use `prompt` for style instructions.
 
 **Response:** `200 OK`
 
@@ -349,7 +371,7 @@ Synthesize speech and play it on a leg using ElevenLabs TTS.
 - `400` — Invalid JSON, missing text/voice, volume out of range
 - `404` — Leg not found
 - `409` — Leg has no audio writer
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 
@@ -700,7 +722,7 @@ Stop room playback.
 
 ### POST /v1/rooms/{id}/tts
 
-Synthesize speech and play it into a room using ElevenLabs TTS.
+Synthesize speech and play it into a room.
 
 **Request:**
 
@@ -708,6 +730,7 @@ Synthesize speech and play it into a room using ElevenLabs TTS.
 {
   "text": "Attention please.",
   "voice": "Rachel",
+  "provider": "elevenlabs",
   "model_id": "eleven_multilingual_v2",
   "volume": 0
 }
@@ -716,10 +739,13 @@ Synthesize speech and play it into a room using ElevenLabs TTS.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | yes | Text to synthesize |
-| `voice` | string | yes | ElevenLabs voice name or ID |
-| `model_id` | string | no | ElevenLabs model ID |
+| `voice` | string | yes | Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. `Joanna`, `Matthew`). Google Cloud: voice name — either full format (e.g. `en-US-Neural2-F`) or short name for Gemini models (e.g. `Achernar`, `Kore`). |
+| `provider` | string | no | TTS provider: `"elevenlabs"` (default), `"aws"`, or `"google"` |
+| `model_id` | string | no | Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (`standard`, `neural`, `long-form`, `generative`; default `neural`). Google Cloud: model name (e.g. `gemini-2.5-pro-tts`, `chirp3-hd`). |
+| `language` | string | no | Language code (e.g. `"en-US"`, `"pl-pl"`). Required for Google Gemini TTS voices that use short names. Auto-extracted from full voice names. |
+| `prompt` | string | no | Style/tone instruction for promptable voice models (Google Gemini TTS only). |
 | `volume` | integer | no | Volume adjustment in dB (`-8` to `8`, default `0`) |
-| `api_key` | string | no | ElevenLabs API key override (falls back to `ELEVENLABS_API_KEY` env var) |
+| `api_key` | string | no | ElevenLabs: API key override (falls back to `ELEVENLABS_API_KEY` env var). AWS: optional `ACCESS_KEY:SECRET_KEY` override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). |
 
 **Response:** `200 OK`
 
@@ -731,7 +757,7 @@ Synthesize speech and play it into a room using ElevenLabs TTS.
 - `400` — Invalid JSON, missing text/voice, volume out of range
 - `404` — Room not found
 - `409` — Room has no participants
-- `503` — No ElevenLabs API key provided
+- `503` — No API key provided for the selected provider
 
 ---
 

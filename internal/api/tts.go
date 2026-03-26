@@ -13,11 +13,14 @@ import (
 )
 
 type ttsRequest struct {
-	Text    string `json:"text"`
-	Voice   string `json:"voice"`
-	ModelID string `json:"model_id"`
-	Volume  int    `json:"volume"`
-	APIKey  string `json:"api_key,omitempty"`
+	Text     string `json:"text"`
+	Voice    string `json:"voice"`
+	ModelID  string `json:"model_id"`
+	Language string `json:"language,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
+	Volume   int    `json:"volume"`
+	Provider string `json:"provider,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
 }
 
 func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
@@ -34,12 +37,13 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
-	}
-	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
+	provider, apiKey := s.resolveTTSProvider(req)
+	if provider == nil {
+		providerName := req.Provider
+		if providerName == "" {
+			providerName = "elevenlabs"
+		}
+		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
 		return
 	}
 
@@ -74,10 +78,12 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 	legPlayers.Unlock()
 
 	go func() {
-		result, err := s.TTS.Synthesize(l.Context(), req.Text, tts.Options{
-			Voice:   req.Voice,
-			ModelID: req.ModelID,
-			APIKey:  apiKey,
+		result, err := provider.Synthesize(l.Context(), req.Text, tts.Options{
+			Voice:    req.Voice,
+			ModelID:  req.ModelID,
+			Language: req.Language,
+			Prompt:   req.Prompt,
+			APIKey:   apiKey,
 		})
 		if err != nil {
 			legPlayers.Lock()
@@ -128,12 +134,13 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = s.Config.ElevenLabsAPIKey
-	}
-	if apiKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "no ElevenLabs API key provided")
+	provider, apiKey := s.resolveTTSProvider(req)
+	if provider == nil {
+		providerName := req.Provider
+		if providerName == "" {
+			providerName = "elevenlabs"
+		}
+		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
 		return
 	}
 
@@ -172,7 +179,7 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 	roomPlayers.Unlock()
 
 	go func() {
-		result, err := s.TTS.Synthesize(parts[0].Context(), req.Text, tts.Options{
+		result, err := provider.Synthesize(parts[0].Context(), req.Text, tts.Options{
 			Voice:   req.Voice,
 			ModelID: req.ModelID,
 			APIKey:  apiKey,
@@ -215,4 +222,28 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]string{"playback_id": playbackID, "status": "playing"})
+}
+
+// resolveTTSProvider returns the TTS provider and API key for the request.
+// Returns nil provider if the required API key is missing.
+func (s *Server) resolveTTSProvider(req ttsRequest) (tts.Provider, string) {
+	apiKey := req.APIKey
+	switch req.Provider {
+	case "aws":
+		// AWS Polly uses the default credential chain; api_key is optional
+		// (format: "ACCESS_KEY:SECRET_KEY" for per-request overrides).
+		return tts.NewAWS(s.Config.S3Region, s.Log), apiKey
+	case "google":
+		// Google Cloud TTS uses Application Default Credentials; api_key is optional.
+		return tts.NewGoogle(s.Log), apiKey
+	default:
+		// ElevenLabs (default).
+		if apiKey == "" {
+			apiKey = s.Config.ElevenLabsAPIKey
+		}
+		if apiKey == "" {
+			return nil, ""
+		}
+		return s.TTS, apiKey
+	}
 }
