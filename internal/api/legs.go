@@ -260,19 +260,22 @@ func (s *Server) setupHoldCallbacks(l *leg.SIPLeg) {
 }
 
 // HandleReInvite processes a remote re-INVITE by finding the matching SIPLeg
-// via Call-ID and delegating to its hold/unhold handler.
-func (s *Server) HandleReInvite(callID string, direction string) {
+// via Call-ID and delegating to its hold/unhold handler. Returns the SDP
+// answer to include in the 200 OK response.
+func (s *Server) HandleReInvite(callID string, direction string) []byte {
 	for _, l := range s.LegMgr.List() {
 		sl, ok := l.(*leg.SIPLeg)
 		if !ok {
 			continue
 		}
 		if sl.CallID() == callID {
+			sdp := sl.ReInviteAnswerSDP(direction)
 			sl.HandleRemoteHold(direction)
-			return
+			return sdp
 		}
 	}
 	s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
+	return nil
 }
 
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {

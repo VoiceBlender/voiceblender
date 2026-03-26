@@ -30,7 +30,7 @@ type Engine struct {
 	dcCache *sipgo.DialogClientCache
 
 	onInvite   func(call *InboundCall)
-	onReInvite func(callID string, direction string)
+	onReInvite func(callID string, direction string) []byte // returns SDP answer for 200 OK
 	codecs     []codec.CodecType
 	bindIP     string // externally-reachable IP (for SDP/Contact)
 	listenIP   string // original bind address (for ListenAndServe)
@@ -135,8 +135,9 @@ func (e *Engine) OnInvite(handler func(*InboundCall)) {
 }
 
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
-// The handler receives the SIP Call-ID and the SDP direction attribute.
-func (e *Engine) OnReInvite(handler func(callID string, direction string)) {
+// The handler receives the SIP Call-ID and the SDP direction attribute, and
+// returns the SDP body to include in the 200 OK response (nil = no SDP).
+func (e *Engine) OnReInvite(handler func(callID string, direction string) []byte) {
 	e.onReInvite = handler
 }
 
@@ -174,18 +175,24 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 	}
 
-	// Respond 200 OK to the re-INVITE.
-	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	// Call the handler before responding so it can provide the SDP answer
+	// and update hold state.
+	var answerSDP []byte
+	if e.onReInvite != nil {
+		answerSDP = e.onReInvite(callID.Value(), direction)
+	}
+
+	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
+	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
+	if len(answerSDP) > 0 {
+		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
 	if err := tx.Respond(res); err != nil {
 		e.log.Error("re-INVITE: respond failed", "error", err)
 		return
 	}
 
 	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "direction", direction)
-
-	if e.onReInvite != nil {
-		e.onReInvite(callID.Value(), direction)
-	}
 }
 
 // SendReInvite sends a re-INVITE within an existing dialog for hold/unhold.

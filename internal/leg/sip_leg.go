@@ -809,6 +809,35 @@ func (l *SIPLeg) OnRTPTimeout(f func()) {
 	l.onRTPTimeout = f
 }
 
+// ReInviteAnswerSDP builds an SDP body for responding to a remote re-INVITE.
+// The direction is mirrored: if the remote sent "sendonly" (hold), we respond
+// with "recvonly"; if "sendrecv" we respond with "sendrecv".
+func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	// Mirror the direction: remote sendonly → we recvonly, etc.
+	ourDirection := "sendrecv"
+	switch remoteDirection {
+	case "sendonly":
+		ourDirection = "recvonly"
+	case "recvonly":
+		ourDirection = "sendonly"
+	case "inactive":
+		ourDirection = "inactive"
+	}
+
+	if l.rtpSess == nil {
+		return nil
+	}
+
+	return sipmod.GenerateReInviteSDP(sipmod.SDPConfig{
+		LocalIP: l.localIP,
+		RTPPort: l.rtpSess.LocalPort(),
+		Codecs:  l.supportedCodecs,
+	}, l.codecType, l.rtpPT, ourDirection)
+}
+
 // CallID returns the SIP Call-ID for this leg's dialog.
 func (l *SIPLeg) CallID() string {
 	l.mu.RLock()
