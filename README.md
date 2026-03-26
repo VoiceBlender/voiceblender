@@ -11,9 +11,9 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Recording** -- stereo WAV recording per-leg or per-room, with optional S3 upload
 - **Playback** -- stream WAV/MP3 audio into legs or rooms
-- **TTS** -- ElevenLabs text-to-speech into legs or rooms
-- **STT** -- real-time ElevenLabs speech-to-text with partial transcripts
-- **AI Agent** -- attach an ElevenLabs conversational AI agent to a leg or room
+- **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
+- **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
+- **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat)
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry
 
 ## Quick Start
@@ -133,9 +133,9 @@ internal/
   events/               Event bus + webhook delivery
   playback/             Audio file playback
   recording/            WAV recording
-  tts/                  ElevenLabs TTS
-  stt/                  ElevenLabs STT
-  agent/                ElevenLabs conversational AI agent
+  tts/                  TTS (ElevenLabs, Google Cloud, AWS Polly)
+  stt/                  STT (ElevenLabs)
+  agent/                AI agent (ElevenLabs, VAPI, Pipecat)
   storage/              S3 upload backend
   config/               Environment variable config
 tests/integration/      Integration and benchmark tests
