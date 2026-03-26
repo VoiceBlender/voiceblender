@@ -180,6 +180,7 @@ type createLegRequest struct {
 	From        string            `json:"from,omitempty"`         // caller ID / From header (SIP URI or display <uri>)
 	Privacy     string            `json:"privacy,omitempty"`      // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout int               `json:"ring_timeout,omitempty"` // seconds; 0 = no timeout
+	MaxDuration int               `json:"max_duration,omitempty"` // seconds; 0 = no limit
 	Codecs      []string          `json:"codecs,omitempty"`       // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
 	Headers     map[string]string `json:"headers,omitempty"`      // custom SIP headers for outbound INVITE
 }
@@ -272,11 +273,29 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 
 		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})
 
-		// Monitor for remote hangup
-		<-call.Dialog.Context().Done()
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+		// Monitor for remote hangup or max duration.
+		if req.MaxDuration > 0 {
+			maxTimer := time.NewTimer(time.Duration(req.MaxDuration) * time.Second)
+			defer maxTimer.Stop()
+			select {
+			case <-call.Dialog.Context().Done():
+				if l.State() != leg.StateHungUp {
+					s.cleanupLeg(l)
+					s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+				}
+			case <-maxTimer.C:
+				if l.State() != leg.StateHungUp {
+					s.Log.Info("max duration reached", "leg_id", l.ID(), "max_duration", req.MaxDuration)
+					s.cleanupLeg(l)
+					s.Bus.Publish(events.LegDisconnected, disconnectData(l, "max_duration"))
+				}
+			}
+		} else {
+			<-call.Dialog.Context().Done()
+			if l.State() != leg.StateHungUp {
+				s.cleanupLeg(l)
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+			}
 		}
 	}()
 

@@ -49,6 +49,7 @@ Originate an outbound SIP call.
   "from": "\"Alice\" <sip:alice@10.0.0.1>",
   "privacy": "id",
   "ring_timeout": 30,
+  "max_duration": 3600,
   "codecs": ["PCMU", "PCMA", "G722", "opus"],
   "headers": {
     "X-Correlation-ID": "abc-123",
@@ -64,6 +65,7 @@ Originate an outbound SIP call.
 | `from` | string | no | Caller ID / SIP From header (URI or `"display" <uri>`) |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
+| `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
 | `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
 
@@ -1000,7 +1002,7 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 |-------|------|-------------|
 | `duration_total` | float | Seconds from leg creation (INVITE sent/received) to disconnect |
 | `duration_answered` | float | Seconds from answer (200 OK) to disconnect. `0` if the leg was never answered. |
-| `reason` | string | One of: `api_hangup`, `remote_bye`, `caller_cancel`, `invite_failed`, `connect_failed`, `ice_failure` |
+| `reason` | string | One of: `api_hangup`, `remote_bye`, `caller_cancel`, `invite_failed`, `connect_failed`, `ice_failure`, `max_duration` |
 
 ---
 

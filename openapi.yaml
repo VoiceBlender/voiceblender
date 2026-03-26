@@ -1054,6 +1054,14 @@ components:
         room_id:
           type: string
           description: Room ID if the leg is in a room, empty otherwise
+        muted:
+          type: boolean
+          description: Whether the leg is muted
+        sip_headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: 'X-* headers from the inbound INVITE. Only present on sip_inbound legs.'
       required: [leg_id, type, state]
 
     Room:
@@ -1119,12 +1127,21 @@ components:
           type: integer
           description: Seconds to wait for answer; 0 = no timeout
           default: 0
+        max_duration:
+          type: integer
+          description: Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.
+          default: 0
         codecs:
           type: array
           items:
             type: string
             enum: [PCMU, PCMA, G722, opus]
           description: Codec preference order
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Custom SIP headers to include in the outbound INVITE (e.g. X-Correlation-ID)
       required: [type, uri]
 
     DTMFRequest:
@@ -1373,7 +1390,7 @@ components:
                         type: object
                         properties:
                           leg_id: { type: string }
-                          reason: { type: string, enum: [api_hangup, remote_bye, caller_cancel, invite_failed, connect_failed, ice_failure] }
+                          reason: { type: string, enum: [api_hangup, remote_bye, caller_cancel, invite_failed, connect_failed, ice_failure, max_duration] }
     leg.joined_room:
       post:
         summary: Leg added to a room
