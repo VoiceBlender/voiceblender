@@ -26,6 +26,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+replace github.com/emiago/sipgo => /home/csiwek/go/src/sipgo
+
 require (
 	cloud.google.com/go v0.120.0 // indirect
 	cloud.google.com/go/auth v0.16.4 // indirect

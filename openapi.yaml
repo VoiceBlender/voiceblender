@@ -1567,7 +1567,7 @@ components:
                           reason:
                             type: string
                             description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.'
-                            enum: [api_hangup, remote_bye, caller_cancel, ring_timeout, max_duration, busy, unavailable, not_found, forbidden, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, declined, rtp_timeout, invite_failed, connect_failed, ice_failure]
+                            enum: [api_hangup, remote_bye, caller_cancel, ring_timeout, max_duration, busy, unavailable, not_found, forbidden, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, declined, rtp_timeout, session_expired, invite_failed, connect_failed, ice_failure]
     leg.joined_room:
       post:
         summary: Leg added to a room

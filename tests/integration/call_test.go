@@ -1782,3 +1782,158 @@ func TestRecording_StorageS3NotConfigured(t *testing.T) {
 	// Cleanup.
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 }
+
+// ---------------------------------------------------------------------------
+// Session Timer Tests (RFC 4028)
+// ---------------------------------------------------------------------------
+
+// TestSessionTimer_CallConnectsWithHeaders verifies that an outbound call
+// carrying Session-Expires and Supported: timer headers connects normally and
+// that the inbound leg's session timer fields are populated.
+func TestSessionTimer_CallConnectsWithHeaders(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	// A dials B with session timer headers.
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+		"headers": map[string]string{
+			"Session-Expires": "1800;refresher=uac",
+			"Supported":       "timer",
+			"Min-SE":          "90",
+		},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outbound legView
+	decodeJSON(t, createResp, &outbound)
+
+	// Wait for inbound on B and answer.
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
+	if answerResp.StatusCode != http.StatusOK {
+		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
+	}
+	answerResp.Body.Close()
+
+	// Both legs should reach connected state.
+	waitForLegState(t, instA.baseURL(), outbound.ID, "connected", 5*time.Second)
+	waitForLegState(t, instB.baseURL(), inbound.ID, "connected", 5*time.Second)
+
+	// Verify the inbound leg on B has session timer fields set.
+	var sipLeg *leg.SIPLeg
+	for _, l := range instB.legMgr.List() {
+		if sl, ok := l.(*leg.SIPLeg); ok && sl.ID() == inbound.ID {
+			sipLeg = sl
+			break
+		}
+	}
+	if sipLeg == nil {
+		t.Fatal("inbound SIP leg not found in manager")
+	}
+	interval, refresher := sipLeg.SessionTimerParams()
+	if interval != 1800 {
+		t.Fatalf("expected session interval 1800, got %d", interval)
+	}
+	if refresher != "uac" {
+		t.Fatalf("expected refresher uac, got %q", refresher)
+	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outbound.ID))
+}
+
+// TestSessionTimer_RefreshReInvite verifies that a re-INVITE (e.g. hold/unhold)
+// resets the session timer on the remote side.
+func TestSessionTimer_RefreshReInvite(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	// Establish call with session timer headers from A.
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+		"headers": map[string]string{
+			"Session-Expires": "1800;refresher=uac",
+			"Supported":       "timer",
+		},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outbound legView
+	decodeJSON(t, createResp, &outbound)
+
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
+	if answerResp.StatusCode != http.StatusOK {
+		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
+	}
+	answerResp.Body.Close()
+
+	waitForLegState(t, instA.baseURL(), outbound.ID, "connected", 5*time.Second)
+	waitForLegState(t, instB.baseURL(), inbound.ID, "connected", 5*time.Second)
+
+	// Hold from A → triggers re-INVITE to B, which resets B's session timer.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outbound.ID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+
+	// B should see the hold event (re-INVITE was processed → timer was reset).
+	instB.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data["leg_id"] == inbound.ID
+	}, 5*time.Second)
+
+	// Unhold from A.
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outbound.ID))
+	if unholdResp.StatusCode != http.StatusOK {
+		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
+	}
+	unholdResp.Body.Close()
+
+	instB.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data["leg_id"] == inbound.ID
+	}, 5*time.Second)
+
+	// Verify both legs are still connected (session wasn't terminated).
+	waitForLegState(t, instA.baseURL(), outbound.ID, "connected", 3*time.Second)
+	waitForLegState(t, instB.baseURL(), inbound.ID, "connected", 3*time.Second)
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outbound.ID))
+}
+
+// TestSessionTimer_NoTimerWithoutHeader verifies that calls without
+// Session-Expires headers don't activate session timers.
+func TestSessionTimer_NoTimerWithoutHeader(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	outboundID, inboundID := establishCall(t, instA, instB)
+
+	// Verify inbound leg has no session timer.
+	var sipLeg *leg.SIPLeg
+	for _, l := range instB.legMgr.List() {
+		if sl, ok := l.(*leg.SIPLeg); ok && sl.ID() == inboundID {
+			sipLeg = sl
+			break
+		}
+	}
+	if sipLeg == nil {
+		t.Fatal("inbound SIP leg not found")
+	}
+	interval, _ := sipLeg.SessionTimerParams()
+	if interval != 0 {
+		t.Fatalf("expected no session timer (interval=0), got %d", interval)
+	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	_ = inboundID
+}

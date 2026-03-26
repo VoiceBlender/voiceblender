@@ -53,6 +53,12 @@ type SIPLeg struct {
 	held      bool        // true when call is on hold
 	holdTimer *time.Timer // 2-hour auto-hangup timer
 
+	// Session timer (RFC 4028)
+	sessionInterval  uint32      // negotiated interval in seconds (0 = no session timer)
+	sessionRefresher string      // "uac" or "uas"
+	sessionTimer     *time.Timer // refresh or expiry timer
+	onSessionExpired func()      // called when session expires without refresh
+
 	// Media
 	rtpSess   *sipmod.RTPSession
 	codecType codec.CodecType
@@ -100,7 +106,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		callID = cid.Value()
 	}
 
-	return &SIPLeg{
+	l := &SIPLeg{
 		id:              uuid.New().String(),
 		legType:         TypeSIPInbound,
 		state:           StateRinging,
@@ -117,6 +123,14 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		supportedCodecs: engine.Codecs(),
 		log:             log,
 	}
+
+	// Copy session timer params from inbound call.
+	if call.SessionTimer != nil {
+		l.sessionInterval = call.SessionTimer.Interval
+		l.sessionRefresher = call.SessionTimer.Refresher
+	}
+
+	return l
 }
 
 func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
@@ -230,10 +244,19 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 		l.setupMedia()
 	}
 
+	// Pick up session timer params from the outbound call's 200 OK.
+	if call.SessionTimer != nil {
+		l.mu.Lock()
+		l.sessionInterval = call.SessionTimer.Interval
+		l.sessionRefresher = call.SessionTimer.Refresher
+		l.mu.Unlock()
+	}
+
 	l.mu.Lock()
 	l.answeredAt = time.Now()
 	l.mu.Unlock()
 	l.setState(StateConnected)
+	l.startSessionTimer()
 	return nil
 }
 
@@ -385,13 +408,25 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	l.mu.RUnlock()
 
 	if st == StateEarlyMedia && sdp != nil {
-		if err := l.inbound.Dialog.RespondSDP(sdp); err != nil {
-			return fmt.Errorf("respond SDP: %w", err)
+		if l.sessionInterval > 0 {
+			// Use Respond to include session timer headers.
+			if err := l.inbound.Dialog.Respond(sip.StatusOK, "OK", sdp,
+				sip.NewHeader("Content-Type", "application/sdp"),
+				sip.NewHeader("Supported", "timer"),
+				sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
+			); err != nil {
+				return fmt.Errorf("respond SDP: %w", err)
+			}
+		} else {
+			if err := l.inbound.Dialog.RespondSDP(sdp); err != nil {
+				return fmt.Errorf("respond SDP: %w", err)
+			}
 		}
 		l.mu.Lock()
 		l.answeredAt = time.Now()
 		l.mu.Unlock()
 		l.setState(StateConnected)
+		l.startSessionTimer()
 		return nil
 	}
 
@@ -426,9 +461,21 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	}, negotiated, pt)
 
 	// Send 200 OK with SDP answer
-	if err := l.inbound.Dialog.RespondSDP(answerSDP); err != nil {
-		rtpSess.Close()
-		return fmt.Errorf("respond SDP: %w", err)
+	if l.sessionInterval > 0 {
+		// Include session timer headers in 200 OK.
+		if err := l.inbound.Dialog.Respond(sip.StatusOK, "OK", answerSDP,
+			sip.NewHeader("Content-Type", "application/sdp"),
+			sip.NewHeader("Supported", "timer"),
+			sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
+		); err != nil {
+			rtpSess.Close()
+			return fmt.Errorf("respond SDP: %w", err)
+		}
+	} else {
+		if err := l.inbound.Dialog.RespondSDP(answerSDP); err != nil {
+			rtpSess.Close()
+			return fmt.Errorf("respond SDP: %w", err)
+		}
 	}
 
 	l.setupMedia()
@@ -436,6 +483,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	l.answeredAt = time.Now()
 	l.mu.Unlock()
 	l.setState(StateConnected)
+	l.startSessionTimer()
 	return nil
 }
 
@@ -711,6 +759,9 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 		l.holdTimer = nil
 	}
 	l.mu.Unlock()
+
+	// Cancel session timer if active.
+	l.stopSessionTimer()
 
 	// Close RTP session
 	if l.rtpSess != nil {
@@ -1020,6 +1071,141 @@ func (l *SIPLeg) HandleRemoteHold(direction string) {
 			cb()
 		}
 	}
+}
+
+// SessionTimerParams returns the negotiated session timer interval and refresher.
+// Returns (0, "") if session timers are not active.
+func (l *SIPLeg) SessionTimerParams() (interval uint32, refresher string) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.sessionInterval, l.sessionRefresher
+}
+
+// OnSessionExpired registers a callback for when the session timer expires
+// without a refresh. Typically used to hang up the call.
+func (l *SIPLeg) OnSessionExpired(f func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onSessionExpired = f
+}
+
+// startSessionTimer starts the session refresh or expiry timer after the call
+// is answered. Must only be called once.
+func (l *SIPLeg) startSessionTimer() {
+	l.mu.RLock()
+	interval := l.sessionInterval
+	refresher := l.sessionRefresher
+	l.mu.RUnlock()
+
+	if interval == 0 {
+		return
+	}
+
+	if refresher == "uas" {
+		// We are the refresher — send re-INVITE at half the interval.
+		refreshAt := time.Duration(interval) * time.Second / 2
+		l.log.Info("session timer: uas refresher", "leg_id", l.id, "interval", interval, "refresh_at", refreshAt)
+		l.mu.Lock()
+		l.sessionTimer = time.AfterFunc(refreshAt, l.sessionRefresh)
+		l.mu.Unlock()
+	} else {
+		// Remote is the refresher — guard timer at full interval + 32s grace
+		// (RFC 4028 §10 recommends a grace period of at least 32 seconds).
+		guardAt := time.Duration(interval)*time.Second + 32*time.Second
+		l.log.Info("session timer: uac refresher", "leg_id", l.id, "interval", interval, "guard_at", guardAt)
+		l.mu.Lock()
+		l.sessionTimer = time.AfterFunc(guardAt, l.sessionExpired)
+		l.mu.Unlock()
+	}
+}
+
+// sessionRefresh fires when we (UAS) need to refresh the session.
+func (l *SIPLeg) sessionRefresh() {
+	l.mu.RLock()
+	st := l.state
+	interval := l.sessionInterval
+	l.mu.RUnlock()
+
+	if st == StateHungUp {
+		return
+	}
+
+	l.log.Info("session timer: sending refresh re-INVITE", "leg_id", l.id)
+
+	sdpBody := l.ReInviteAnswerSDP("sendrecv")
+	if sdpBody == nil {
+		l.log.Error("session timer: could not generate refresh SDP", "leg_id", l.id)
+		return
+	}
+
+	var dialog interface{}
+	if l.inbound != nil {
+		dialog = l.inbound.Dialog
+	} else if l.outbound != nil {
+		dialog = l.outbound.Dialog
+	}
+	if dialog == nil {
+		return
+	}
+
+	if err := l.engine.SendReInvite(l.ctx, dialog, sdpBody); err != nil {
+		l.log.Error("session timer: refresh re-INVITE failed", "leg_id", l.id, "error", err)
+		// On failure, try once more at 75% of remaining interval.
+		remaining := time.Duration(interval) * time.Second / 4
+		l.mu.Lock()
+		l.sessionTimer = time.AfterFunc(remaining, l.sessionExpired)
+		l.mu.Unlock()
+		return
+	}
+
+	// Schedule next refresh.
+	refreshAt := time.Duration(interval) * time.Second / 2
+	l.mu.Lock()
+	l.sessionTimer = time.AfterFunc(refreshAt, l.sessionRefresh)
+	l.mu.Unlock()
+}
+
+// sessionExpired fires when the remote failed to refresh the session in time.
+func (l *SIPLeg) sessionExpired() {
+	l.log.Info("session timer expired", "leg_id", l.id)
+	l.mu.RLock()
+	cb := l.onSessionExpired
+	l.mu.RUnlock()
+	if cb != nil {
+		cb()
+	}
+}
+
+// ResetSessionTimer resets the session timer, called when a refresh re-INVITE
+// is received from the remote UA.
+func (l *SIPLeg) ResetSessionTimer() {
+	l.mu.Lock()
+	interval := l.sessionInterval
+	refresher := l.sessionRefresher
+	t := l.sessionTimer
+	l.mu.Unlock()
+
+	if interval == 0 || t == nil {
+		return
+	}
+
+	l.log.Debug("session timer reset", "leg_id", l.id, "interval", interval, "refresher", refresher)
+
+	if refresher == "uas" {
+		t.Reset(time.Duration(interval) * time.Second / 2)
+	} else {
+		t.Reset(time.Duration(interval)*time.Second + 32*time.Second)
+	}
+}
+
+// stopSessionTimer stops the session timer. Called on hangup.
+func (l *SIPLeg) stopSessionTimer() {
+	l.mu.Lock()
+	if l.sessionTimer != nil {
+		l.sessionTimer.Stop()
+		l.sessionTimer = nil
+	}
+	l.mu.Unlock()
 }
 
 func (l *SIPLeg) SendDTMF(ctx context.Context, digits string) error {

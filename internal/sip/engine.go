@@ -5,11 +5,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 )
+
+// containsToken checks if a comma-separated header value contains a token
+// (case-insensitive), e.g. containsToken("100rel, timer", "timer") → true.
+func containsToken(headerValue, token string) bool {
+	for _, t := range strings.Split(headerValue, ",") {
+		if strings.EqualFold(strings.TrimSpace(t), token) {
+			return true
+		}
+	}
+	return false
+}
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
@@ -45,6 +57,9 @@ type InboundCall struct {
 	To        string     // callee URI user part
 	RemoteSDP *SDPMedia  // parsed offer SDP
 	Request   *sip.Request
+
+	// Session timer (RFC 4028) — populated when remote requests timers.
+	SessionTimer *SessionTimerParams // nil when remote didn't request timers
 }
 
 // OutboundCall wraps a sipgo DialogClientSession with parsed answer SDP.
@@ -52,6 +67,9 @@ type OutboundCall struct {
 	Dialog    *sipgo.DialogClientSession
 	RemoteSDP *SDPMedia
 	RTPSess   *RTPSession
+
+	// Session timer (RFC 4028) — populated when remote's 200 OK includes timers.
+	SessionTimer *SessionTimerParams // nil when remote didn't include timers
 }
 
 // resolveExternalIP detects the preferred outbound LAN IP.
@@ -187,6 +205,17 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if len(answerSDP) > 0 {
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	}
+	// Echo Session-Expires in the re-INVITE 200 OK if present (RFC 4028).
+	if seHdr := req.GetHeader("Session-Expires"); seHdr != nil {
+		interval, refresher := ParseSessionExpires(seHdr.Value())
+		if interval > 0 {
+			if refresher == "" {
+				refresher = "uac"
+			}
+			res.AppendHeader(sip.NewHeader("Supported", "timer"))
+			res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)))
+		}
+	}
 	if err := tx.Respond(res); err != nil {
 		e.log.Error("re-INVITE: respond failed", "error", err)
 		return
@@ -281,12 +310,48 @@ func (e *Engine) registerHandlers() {
 			to = t.Address.User
 		}
 
+		// Parse session timer headers (RFC 4028).
+		var sessionTimer *SessionTimerParams
+		if seHdr := req.GetHeader("Session-Expires"); seHdr != nil {
+			interval, refresher := ParseSessionExpires(seHdr.Value())
+			if interval > 0 {
+				var minSE uint32
+				if mseHdr := req.GetHeader("Min-SE"); mseHdr != nil {
+					minSE = ParseMinSE(mseHdr.Value())
+				}
+				// Enforce our minimum.
+				if minSE < DefaultMinSE {
+					minSE = DefaultMinSE
+				}
+				if interval < minSE {
+					interval = minSE
+				}
+				// Default refresher: prefer uac if they support timer.
+				if refresher == "" {
+					refresher = "uac"
+					if sup := req.GetHeader("Supported"); sup != nil {
+						if !containsToken(sup.Value(), "timer") {
+							refresher = "uas"
+						}
+					} else {
+						refresher = "uas"
+					}
+				}
+				sessionTimer = &SessionTimerParams{
+					Interval:  interval,
+					Refresher: refresher,
+					MinSE:     minSE,
+				}
+			}
+		}
+
 		call := &InboundCall{
-			Dialog:    ds,
-			From:      from,
-			To:        to,
-			RemoteSDP: remoteSDP,
-			Request:   req,
+			Dialog:       ds,
+			From:         from,
+			To:           to,
+			RemoteSDP:    remoteSDP,
+			Request:      req,
+			SessionTimer: sessionTimer,
 		}
 
 		if e.onInvite != nil {
@@ -313,8 +378,11 @@ func (e *Engine) registerHandlers() {
 	})
 
 	e.server.OnCancel(func(req *sip.Request, tx sip.ServerTransaction) {
-		// Respond 200 OK to the CANCEL request
-		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		// This handler fires only for CANCELs that didn't match an active
+		// INVITE transaction.  For matched CANCELs, sipgo's transaction
+		// layer handles both 487 (for INVITE) and 200 OK (for CANCEL)
+		// automatically.  Respond 481 per RFC 3261 §9.2.
+		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
 		tx.Respond(res)
 	})
 }
@@ -457,10 +525,26 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
 	}
 
+	// Parse session timer from 200 OK if present.
+	var sessionTimer *SessionTimerParams
+	if seHdr := ds.InviteResponse.GetHeader("Session-Expires"); seHdr != nil {
+		interval, refresher := ParseSessionExpires(seHdr.Value())
+		if interval > 0 {
+			if refresher == "" {
+				refresher = "uac" // we are UAC
+			}
+			sessionTimer = &SessionTimerParams{
+				Interval:  interval,
+				Refresher: refresher,
+			}
+		}
+	}
+
 	return &OutboundCall{
-		Dialog:    ds,
-		RemoteSDP: remoteSDP,
-		RTPSess:   rtpSess,
+		Dialog:       ds,
+		RemoteSDP:    remoteSDP,
+		RTPSess:      rtpSess,
+		SessionTimer: sessionTimer,
 	}, nil
 }
 

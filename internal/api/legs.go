@@ -271,6 +271,8 @@ func (s *Server) HandleReInvite(callID string, direction string) []byte {
 		if sl.CallID() == callID {
 			sdp := sl.ReInviteAnswerSDP(direction)
 			sl.HandleRemoteHold(direction)
+			// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
+			sl.ResetSessionTimer()
 			return sdp
 		}
 	}
@@ -499,6 +501,14 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			return
 		}
 
+		// Wire session timer expiry to hangup + event.
+		l.OnSessionExpired(func() {
+			if l.State() != leg.StateHungUp {
+				s.cleanupLeg(l)
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "session_expired"))
+			}
+		})
+
 		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": string(l.Type())})
 		addToRoom()
 
@@ -593,12 +603,22 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 		s.setupHoldCallbacks(l)
 
+		// Wire session timer expiry to hangup + event.
+		l.OnSessionExpired(func() {
+			if l.State() != leg.StateHungUp {
+				s.cleanupLeg(l)
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "session_expired"))
+			}
+		})
+
 		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": string(l.Type())})
 
 		// Block until call ends (BYE received or context cancelled)
 		<-call.Dialog.Context().Done()
-		s.cleanupLeg(l)
-		s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "remote_bye"))
+		}
 		return
 
 	case <-call.Dialog.Context().Done():

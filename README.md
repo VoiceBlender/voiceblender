@@ -4,7 +4,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 
 ## Features
 
-- **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus)
+- **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus), session timers (RFC 4028)
 - **WebRTC** -- browser-based voice via SDP offer/answer (PCMU at 8 kHz)
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at 16 kHz
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames

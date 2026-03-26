@@ -1226,6 +1226,7 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 | `declined` | Remote returned 603 Decline |
 | `sip_{code}` | Other SIP failure response (e.g. `sip_500`) |
 | `rtp_timeout` | No RTP packets received for 30 seconds |
+| `session_expired` | SIP session timer expired without refresh (RFC 4028) |
 | `invite_failed` | INVITE failed for a non-SIP reason (transport error, DNS failure, etc.) |
 | `connect_failed` | Call answered but media/codec negotiation failed |
 | `ice_failure` | WebRTC ICE connection failed |
@@ -1261,6 +1262,16 @@ All errors return:
 | `S3_REGION` | `us-east-1` | AWS region for S3 |
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |
 | `S3_PREFIX` | _(none)_ | Key prefix for S3 objects (e.g. `recordings/`) |
+
+---
+
+## SIP Session Timers (RFC 4028)
+
+- Accepts session timers requested by the remote UA (inbound and outbound)
+- Minimum session interval: 90 seconds (`Min-SE`)
+- Supports both `refresher=uac` and `refresher=uas` roles
+- Re-INVITEs (including hold/unhold) reset the session timer
+- Expired sessions disconnect with reason `session_expired`
 
 ---
 
