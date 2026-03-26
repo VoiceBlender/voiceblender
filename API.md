@@ -19,6 +19,7 @@ A **leg** represents one side of a voice call — either a SIP dialog or a WebRT
   "state": "connected",
   "room_id": "room-123",
   "muted": false,
+  "held": false,
   "sip_headers": {
     "X-Correlation-ID": "abc-123"
   }
@@ -29,9 +30,10 @@ A **leg** represents one side of a voice call — either a SIP dialog or a WebRT
 |-------|------|--------|
 | `leg_id` | string | UUID |
 | `type` | string | `sip_inbound`, `sip_outbound`, `webrtc` |
-| `state` | string | `ringing`, `early_media`, `connected`, `hung_up` |
+| `state` | string | `ringing`, `early_media`, `connected`, `held`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted |
+| `held` | boolean | `true` if the call is on hold (SIP legs only) |
 | `sip_headers` | object | `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. |
 
 ---
@@ -164,6 +166,40 @@ Unmute a leg.
 ```
 
 **Errors:** `404` — Leg not found
+
+---
+
+### POST /v1/legs/{id}/hold
+
+Put a SIP call on hold. Sends a re-INVITE with `sendonly` SDP direction. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "held" }
+```
+
+**Errors:**
+- `404` — Leg not found
+- `400` — Not a SIP leg
+- `409` — Leg is not in `connected` state, or already held
+
+---
+
+### DELETE /v1/legs/{id}/hold
+
+Resume a held SIP call. Sends a re-INVITE with `sendrecv` SDP direction.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "resumed" }
+```
+
+**Errors:**
+- `404` — Leg not found
+- `400` — Not a SIP leg
+- `409` — Leg is not held
 
 ---
 
@@ -1100,6 +1136,8 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 | `leg.left_room` | Leg removed from room | `leg_id`, `room_id` |
 | `leg.muted` | Leg muted | `leg_id` |
 | `leg.unmuted` | Leg unmuted | `leg_id` |
+| `leg.hold` | Leg put on hold (local or remote) | `leg_id`, `type` |
+| `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `type` |
 | `dtmf.received` | DTMF digit received | `leg_id`, `digit` |
 | `speaking.started` | Participant started speaking | `leg_id`, `room_id` |
 | `speaking.stopped` | Participant stopped speaking | `leg_id`, `room_id` |

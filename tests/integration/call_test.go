@@ -90,6 +90,7 @@ func newTestInstance(t *testing.T, name string) *testInstance {
 
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, cfg, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
+	engine.OnReInvite(apiSrv.HandleReInvite)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -257,6 +258,7 @@ type legView struct {
 	State  string `json:"state"`
 	RoomID string `json:"room_id,omitempty"`
 	Muted  bool   `json:"muted"`
+	Held   bool   `json:"held"`
 }
 
 type roomView struct {
@@ -1072,6 +1074,302 @@ func TestMute_BeforeRoomJoin(t *testing.T) {
 	}) {
 		t.Fatal("speaking.started should not fire for pre-muted leg")
 	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// ---------------------------------------------------------------------------
+// Hold Tests
+// ---------------------------------------------------------------------------
+
+// TestHold_LocalHoldUnhold verifies that POST /v1/legs/{id}/hold puts the
+// call on hold (state=held, held=true, leg.hold event) and DELETE
+// /v1/legs/{id}/hold resumes it (state=connected, held=false, leg.unhold event).
+func TestHold_LocalHoldUnhold(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	// Hold the leg.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
+	}
+	var holdResult map[string]string
+	decodeJSON(t, holdResp, &holdResult)
+	if holdResult["status"] != "held" {
+		t.Fatalf("expected status 'held', got %q", holdResult["status"])
+	}
+
+	// Verify leg.hold event.
+	instA.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 3*time.Second)
+
+	// Verify GET shows held=true, state=held.
+	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg legView
+	decodeJSON(t, getResp, &gotLeg)
+	if !gotLeg.Held {
+		t.Fatal("expected leg to be held")
+	}
+	if gotLeg.State != "held" {
+		t.Fatalf("expected state 'held', got %q", gotLeg.State)
+	}
+
+	// Unhold the leg.
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
+	if unholdResp.StatusCode != http.StatusOK {
+		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
+	}
+	var unholdResult map[string]string
+	decodeJSON(t, unholdResp, &unholdResult)
+	if unholdResult["status"] != "resumed" {
+		t.Fatalf("expected status 'resumed', got %q", unholdResult["status"])
+	}
+
+	// Verify leg.unhold event.
+	instA.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 3*time.Second)
+
+	// Verify GET shows held=false, state=connected.
+	getResp2 := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg2 legView
+	decodeJSON(t, getResp2, &gotLeg2)
+	if gotLeg2.Held {
+		t.Fatal("expected leg to not be held")
+	}
+	if gotLeg2.State != "connected" {
+		t.Fatalf("expected state 'connected', got %q", gotLeg2.State)
+	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestHold_DoubleHoldNoop verifies that holding an already-held leg is a no-op.
+func TestHold_DoubleHoldNoop(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	// Hold the leg twice.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+	instA.collector.waitForMatch(t, events.LegHold, nil, 3*time.Second)
+
+	// Second hold should also succeed (no-op).
+	holdResp2 := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp2.StatusCode != http.StatusOK {
+		t.Fatalf("double hold: unexpected status %d", holdResp2.StatusCode)
+	}
+	holdResp2.Body.Close()
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestHold_UnholdWhenNotHeld verifies that unholding a non-held leg is a no-op.
+func TestHold_UnholdWhenNotHeld(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	// Unhold a non-held leg should succeed (no-op).
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
+	if unholdResp.StatusCode != http.StatusOK {
+		t.Fatalf("unhold not-held: unexpected status %d", unholdResp.StatusCode)
+	}
+	unholdResp.Body.Close()
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestHold_WebRTCNotSupported verifies that holding a WebRTC leg returns an error.
+func TestHold_WebRTCNotSupported(t *testing.T) {
+	inst := newTestInstance(t, "instance-a")
+
+	// Try to hold a non-existent leg (will get 404).
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", inst.baseURL(), "nonexistent"), nil)
+	if holdResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+}
+
+// TestHold_NotConnected verifies that holding a ringing leg returns an error.
+func TestHold_NotConnected(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	// Create outbound leg (will be in ringing state).
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outboundLeg legView
+	decodeJSON(t, createResp, &outboundLeg)
+
+	// Wait for it to be in ringing state on instB.
+	waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	// Try to hold a ringing leg — should fail.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundLeg.ID), nil)
+	if holdResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for hold on ringing leg, got %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
+}
+
+// TestHold_HangupCleansUpHoldTimer verifies that hanging up a held leg doesn't
+// cause a panic or leak from the hold timer.
+func TestHold_HangupCleansUpHoldTimer(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	// Hold the leg.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+	instA.collector.waitForMatch(t, events.LegHold, nil, 3*time.Second)
+
+	// Hangup while held.
+	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("hangup: unexpected status %d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	// Verify disconnect event fires.
+	instA.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 3*time.Second)
+}
+
+// TestHold_RemoteHoldViaReInvite verifies that when the remote side puts
+// the call on hold (via re-INVITE with sendonly), the local side detects it
+// and emits leg.hold / leg.unhold events.
+func TestHold_RemoteHoldViaReInvite(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, inboundID := establishCall(t, instA, instB)
+
+	// B holds its inbound leg (simulates remote hold from A's perspective).
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instB.baseURL(), inboundID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("remote hold: unexpected status %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+
+	// B should see leg.hold event for its inbound leg.
+	instB.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data["leg_id"] == inboundID
+	}, 3*time.Second)
+
+	// A should detect the hold via re-INVITE and see leg.hold for its outbound leg.
+	instA.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 5*time.Second)
+
+	// Verify A's leg shows held=true.
+	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg legView
+	decodeJSON(t, getResp, &gotLeg)
+	if !gotLeg.Held {
+		t.Fatal("expected outbound leg on A to be held (remote hold)")
+	}
+
+	// B resumes the call.
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instB.baseURL(), inboundID))
+	if unholdResp.StatusCode != http.StatusOK {
+		t.Fatalf("remote unhold: unexpected status %d", unholdResp.StatusCode)
+	}
+	unholdResp.Body.Close()
+
+	// B should see leg.unhold event.
+	instB.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data["leg_id"] == inboundID
+	}, 3*time.Second)
+
+	// A should detect the unhold.
+	instA.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 5*time.Second)
+
+	// Verify A's leg is no longer held.
+	getResp2 := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg2 legView
+	decodeJSON(t, getResp2, &gotLeg2)
+	if gotLeg2.Held {
+		t.Fatal("expected outbound leg on A to not be held after unhold")
+	}
+
+	// Cleanup.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestHold_LegInRoom verifies hold/unhold works for a leg that is in a room.
+func TestHold_LegInRoom(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	// Create room and add leg.
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/legs", instA.baseURL(), rm.ID), map[string]interface{}{
+		"leg_id": outboundID,
+	})
+	addResp.Body.Close()
+	instA.collector.waitForMatch(t, events.LegJoinedRoom, nil, 3*time.Second)
+
+	// Hold the leg.
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp.StatusCode != http.StatusOK {
+		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+
+	instA.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 3*time.Second)
+
+	// Verify GET shows held.
+	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg legView
+	decodeJSON(t, getResp, &gotLeg)
+	if !gotLeg.Held {
+		t.Fatal("expected leg to be held")
+	}
+
+	// Unhold.
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
+	if unholdResp.StatusCode != http.StatusOK {
+		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
+	}
+	unholdResp.Body.Close()
+
+	instA.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data["leg_id"] == outboundID
+	}, 3*time.Second)
 
 	// Cleanup.
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))

@@ -76,6 +76,8 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)
 		r.Post("/legs/{id}/mute", s.muteLeg)
 		r.Delete("/legs/{id}/mute", s.unmuteLeg)
+		r.Post("/legs/{id}/hold", s.holdLeg)
+		r.Delete("/legs/{id}/hold", s.unholdLeg)
 		r.Delete("/legs/{id}", s.deleteLeg)
 		r.Post("/legs/{id}/dtmf", s.sendDTMF)
 		r.Post("/legs/{id}/play", s.playLeg)

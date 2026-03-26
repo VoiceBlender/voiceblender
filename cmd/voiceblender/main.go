@@ -108,6 +108,9 @@ func main() {
 	// Register inbound call handler
 	engine.OnInvite(apiSrv.HandleInboundCall)
 
+	// Register re-INVITE handler for hold/unhold detection
+	engine.OnReInvite(apiSrv.HandleReInvite)
+
 	// Run SIP and HTTP servers
 	g, gCtx := errgroup.WithContext(ctx)
 

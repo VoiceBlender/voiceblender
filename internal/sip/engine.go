@@ -29,12 +29,13 @@ type Engine struct {
 	dsCache *sipgo.DialogServerCache
 	dcCache *sipgo.DialogClientCache
 
-	onInvite func(call *InboundCall)
-	codecs   []codec.CodecType
-	bindIP   string // externally-reachable IP (for SDP/Contact)
-	listenIP string // original bind address (for ListenAndServe)
-	bindPort int
-	log      *slog.Logger
+	onInvite   func(call *InboundCall)
+	onReInvite func(callID string, direction string)
+	codecs     []codec.CodecType
+	bindIP     string // externally-reachable IP (for SDP/Contact)
+	listenIP   string // original bind address (for ListenAndServe)
+	bindPort   int
+	log        *slog.Logger
 }
 
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
@@ -133,8 +134,111 @@ func (e *Engine) OnInvite(handler func(*InboundCall)) {
 	e.onInvite = handler
 }
 
+// OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
+// The handler receives the SIP Call-ID and the SDP direction attribute.
+func (e *Engine) OnReInvite(handler func(callID string, direction string)) {
+	e.onReInvite = handler
+}
+
+// handleReInvite processes an in-dialog re-INVITE (e.g. hold/unhold).
+func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
+	callID := req.CallID()
+	if callID == nil {
+		e.log.Error("re-INVITE missing Call-ID")
+		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing Call-ID", nil)
+		tx.Respond(res)
+		return
+	}
+
+	body := req.Body()
+	direction := "sendrecv"
+	if len(body) > 0 {
+		remoteSDP, err := ParseSDP(body)
+		if err != nil {
+			e.log.Warn("re-INVITE: parse SDP failed", "error", err)
+		} else if remoteSDP.Direction != "" {
+			direction = remoteSDP.Direction
+		}
+	}
+
+	// Respond 200 OK to the re-INVITE.
+	// We don't change our media, so respond without SDP body.
+	// Many endpoints accept a 200 OK without SDP for re-INVITEs.
+	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	if err := tx.Respond(res); err != nil {
+		e.log.Error("re-INVITE: respond failed", "error", err)
+		return
+	}
+
+	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "direction", direction)
+
+	if e.onReInvite != nil {
+		e.onReInvite(callID.Value(), direction)
+	}
+}
+
+// SendReInvite sends a re-INVITE within an existing dialog for hold/unhold.
+// dialog must be either *sipgo.DialogServerSession or *sipgo.DialogClientSession.
+func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody []byte) error {
+	switch d := dialog.(type) {
+	case *sipgo.DialogServerSession:
+		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.SetBody(sdpBody)
+
+		res, err := d.Do(ctx, req)
+		if err != nil {
+			return fmt.Errorf("re-INVITE Do: %w", err)
+		}
+		if !res.IsSuccess() {
+			return fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+		}
+
+		// Send ACK
+		cont := res.Contact()
+		if cont != nil {
+			ack := sip.NewRequest(sip.ACK, cont.Address)
+			return d.WriteRequest(ack)
+		}
+		return nil
+
+	case *sipgo.DialogClientSession:
+		req := sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
+		req.AppendHeader(d.InviteRequest.Contact())
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.SetBody(sdpBody)
+
+		res, err := d.Do(ctx, req)
+		if err != nil {
+			return fmt.Errorf("re-INVITE Do: %w", err)
+		}
+		if !res.IsSuccess() {
+			return fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+		}
+
+		// Send ACK
+		cont := res.Contact()
+		if cont != nil {
+			ack := sip.NewRequest(sip.ACK, cont.Address)
+			return d.WriteRequest(ack)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported dialog type: %T", dialog)
+	}
+}
+
 func (e *Engine) registerHandlers() {
 	e.server.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
+		// Check if this is a re-INVITE (in-dialog request with To tag).
+		if to := req.To(); to != nil {
+			if tag, ok := to.Params.Get("tag"); ok && tag != "" {
+				e.handleReInvite(req, tx)
+				return
+			}
+		}
+
 		ds, err := e.dsCache.ReadInvite(req, tx)
 		if err != nil {
 			e.log.Error("read invite failed", "error", err)

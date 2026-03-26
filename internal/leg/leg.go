@@ -21,6 +21,7 @@ const (
 	StateRinging    LegState = "ringing"
 	StateEarlyMedia LegState = "early_media"
 	StateConnected  LegState = "connected"
+	StateHeld       LegState = "held"
 	StateHungUp     LegState = "hung_up"
 )
 
@@ -40,6 +41,7 @@ type Leg interface {
 	SetRoomID(id string)
 	IsMuted() bool
 	SetMuted(muted bool)
+	IsHeld() bool
 	CreatedAt() time.Time
 	AnsweredAt() time.Time
 	SIPHeaders() map[string]string

@@ -98,6 +98,7 @@ func (l *WebRTCLeg) SetRoomID(id string) {
 
 func (l *WebRTCLeg) IsMuted() bool    { return l.muted.Load() }
 func (l *WebRTCLeg) SetMuted(m bool)  { l.muted.Store(m) }
+func (l *WebRTCLeg) IsHeld() bool     { return false }
 
 func (l *WebRTCLeg) CreatedAt() time.Time  { return l.createdAt }
 func (l *WebRTCLeg) AnsweredAt() time.Time { return l.createdAt } // WebRTC legs are connected immediately

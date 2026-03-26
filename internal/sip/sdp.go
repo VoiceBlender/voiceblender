@@ -24,6 +24,7 @@ type SDPMedia struct {
 	Codecs     []codec.CodecType         // Codecs from m= line, in offer order
 	CodecPTs   map[codec.CodecType]uint8 // Actual PT for each codec from remote SDP
 	Ptime      int                       // ms, default 20
+	Direction  string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
 }
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
@@ -224,6 +225,10 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 					m.Ptime = v
 				}
 			}
+			switch a.Key {
+			case "sendrecv", "sendonly", "recvonly", "inactive":
+				m.Direction = a.Key
+			}
 		}
 
 		// Parse payload types from m= line formats.
@@ -263,6 +268,44 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 	}
 
 	return m, nil
+}
+
+// GenerateReInviteSDP builds an SDP body for a re-INVITE (hold/unhold).
+// It is similar to GenerateAnswer but uses the specified direction attribute.
+func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, direction string) []byte {
+	sd := buildSessionDescription(cfg.LocalIP)
+
+	formats := []string{strconv.Itoa(int(selectedPT))}
+	if selected == codec.CodecOpus {
+		formats = append(formats, "100") // telephone-event/48000
+	}
+	formats = append(formats, "101") // telephone-event/8000
+
+	md := &pionsdp.MediaDescription{
+		MediaName: pionsdp.MediaName{
+			Media:   "audio",
+			Port:    pionsdp.RangedPort{Value: cfg.RTPPort},
+			Protos:  []string{"RTP", "AVP"},
+			Formats: formats,
+		},
+	}
+
+	addCodecAttributes(md, selectedPT, selected)
+	if selected == codec.CodecOpus {
+		addTelephoneEvent(md, 100, 48000)
+	}
+	addTelephoneEvent(md, 101, 8000)
+
+	md.Attributes = append(md.Attributes,
+		pionsdp.NewAttribute("ptime", "20"),
+		pionsdp.NewPropertyAttribute(direction),
+		pionsdp.NewPropertyAttribute("rtcp-mux"),
+	)
+
+	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
+
+	b, _ := sd.Marshal()
+	return b
 }
 
 // NegotiateCodec finds the first codec in the remote SDP that is also in the supported list.

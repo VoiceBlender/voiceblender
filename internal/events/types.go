@@ -13,6 +13,8 @@ const (
 	LegEarlyMedia  EventType = "leg.early_media"
 	LegMuted       EventType = "leg.muted"
 	LegUnmuted     EventType = "leg.unmuted"
+	LegHold        EventType = "leg.hold"
+	LegUnhold      EventType = "leg.unhold"
 
 	DTMFReceived EventType = "dtmf.received"
 

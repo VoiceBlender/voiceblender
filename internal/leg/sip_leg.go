@@ -44,6 +44,12 @@ type SIPLeg struct {
 	answerCh      chan struct{} // signaled by REST answer endpoint (inbound only)
 	onDTMF        func(digit rune)
 	onRTPTimeout  func() // called when no RTP received within timeout
+	onHold        func() // called when leg is put on hold
+	onUnhold      func() // called when leg is taken off hold
+
+	callID    string      // SIP Call-ID for re-INVITE matching
+	held      bool        // true when call is on hold
+	holdTimer *time.Timer // 2-hour auto-hangup timer
 
 	// Media
 	rtpSess   *sipmod.RTPSession
@@ -58,6 +64,7 @@ type SIPLeg struct {
 	earlyMediaSDP []byte         // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders    map[string]string // X-* headers from inbound INVITE or outbound request
 
+	engine          *sipmod.Engine    // for sending re-INVITEs
 	localIP         string            // for SDP answer generation
 	supportedCodecs []codec.CodecType // from engine config
 
@@ -85,6 +92,12 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		}
 	}
 
+	// Extract Call-ID for re-INVITE matching.
+	var callID string
+	if cid := call.Request.CallID(); cid != nil {
+		callID = cid.Value()
+	}
+
 	return &SIPLeg{
 		id:              uuid.New().String(),
 		legType:         TypeSIPInbound,
@@ -95,6 +108,8 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		ctx:             ctx,
 		cancel:          cancel,
 		answerCh:        make(chan struct{}),
+		callID:          callID,
+		engine:          engine,
 		localIP:         engine.BindIP(),
 		supportedCodecs: engine.Codecs(),
 		log:             log,
@@ -147,6 +162,8 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 		createdAt:       time.Now(),
 		ctx:             ctx,
 		cancel:          cancel,
+		engine:          engine,
+		localIP:         engine.BindIP(),
 		supportedCodecs: supported,
 		log:             log,
 	}
@@ -191,6 +208,12 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	l.outbound = call
 	if st == StateRinging {
 		l.rtpSess = call.RTPSess
+	}
+	// Extract Call-ID for re-INVITE matching.
+	if call.Dialog.InviteRequest != nil {
+		if cid := call.Dialog.InviteRequest.CallID(); cid != nil {
+			l.callID = cid.Value()
+		}
 	}
 	l.mu.Unlock()
 
@@ -430,7 +453,16 @@ func (l *SIPLeg) setupMedia() {
 func (l *SIPLeg) readLoop() {
 	for {
 		// Set read deadline for RTP timeout detection.
-		l.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
+		// When held, use a very long deadline (beyond hold timer) to avoid
+		// false RTP timeouts since no RTP is expected while on hold.
+		l.mu.RLock()
+		isHeld := l.held
+		l.mu.RUnlock()
+		if isHeld {
+			l.rtpSess.SetReadDeadline(time.Now().Add(2*time.Hour + time.Minute))
+		} else {
+			l.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
+		}
 
 		pkt, err := l.rtpSess.ReadRTP()
 		if err != nil {
@@ -638,6 +670,14 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 	l.setState(StateHungUp)
 	defer l.cancel()
 
+	// Cancel hold timer if active.
+	l.mu.Lock()
+	if l.holdTimer != nil {
+		l.holdTimer.Stop()
+		l.holdTimer = nil
+	}
+	l.mu.Unlock()
+
 	// Close RTP session
 	if l.rtpSess != nil {
 		l.rtpSess.Close()
@@ -753,6 +793,170 @@ func (l *SIPLeg) OnRTPTimeout(f func()) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.onRTPTimeout = f
+}
+
+// CallID returns the SIP Call-ID for this leg's dialog.
+func (l *SIPLeg) CallID() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.callID
+}
+
+// IsHeld returns true if the call is currently on hold.
+func (l *SIPLeg) IsHeld() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.held
+}
+
+// OnHold registers a callback for when the leg is put on hold.
+func (l *SIPLeg) OnHold(f func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onHold = f
+}
+
+// OnUnhold registers a callback for when the leg is taken off hold.
+func (l *SIPLeg) OnUnhold(f func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onUnhold = f
+}
+
+// SetHeld updates hold state and manages the 2-hour auto-hangup timer.
+func (l *SIPLeg) SetHeld(held bool) {
+	l.mu.Lock()
+	if l.held == held {
+		l.mu.Unlock()
+		return
+	}
+	l.held = held
+
+	if held {
+		l.state = StateHeld
+		// Start 2-hour hold timer for auto-hangup.
+		l.holdTimer = time.AfterFunc(2*time.Hour, func() {
+			l.log.Info("hold timeout", "leg_id", l.id)
+			l.mu.RLock()
+			cb := l.onRTPTimeout
+			l.mu.RUnlock()
+			if cb != nil {
+				cb()
+			}
+		})
+	} else {
+		l.state = StateConnected
+		// Cancel hold timer.
+		if l.holdTimer != nil {
+			l.holdTimer.Stop()
+			l.holdTimer = nil
+		}
+	}
+	l.mu.Unlock()
+}
+
+// Hold initiates hold by sending a re-INVITE with sendonly SDP.
+func (l *SIPLeg) Hold(ctx context.Context) error {
+	l.mu.RLock()
+	st := l.state
+	isHeld := l.held
+	l.mu.RUnlock()
+
+	if isHeld {
+		return nil // already held
+	}
+	if st != StateConnected {
+		return fmt.Errorf("leg is %s, must be connected to hold", st)
+	}
+
+	sdpBody := sipmod.GenerateReInviteSDP(sipmod.SDPConfig{
+		LocalIP: l.localIP,
+		RTPPort: l.rtpSess.LocalPort(),
+		Codecs:  l.supportedCodecs,
+	}, l.codecType, l.rtpPT, "sendonly")
+
+	var dialog interface{}
+	if l.inbound != nil {
+		dialog = l.inbound.Dialog
+	} else if l.outbound != nil {
+		dialog = l.outbound.Dialog
+	} else {
+		return fmt.Errorf("no dialog available")
+	}
+
+	if err := l.engine.SendReInvite(ctx, dialog, sdpBody); err != nil {
+		return fmt.Errorf("hold re-INVITE: %w", err)
+	}
+
+	l.SetHeld(true)
+	l.mu.RLock()
+	cb := l.onHold
+	l.mu.RUnlock()
+	if cb != nil {
+		cb()
+	}
+	return nil
+}
+
+// Unhold resumes the call by sending a re-INVITE with sendrecv SDP.
+func (l *SIPLeg) Unhold(ctx context.Context) error {
+	l.mu.RLock()
+	isHeld := l.held
+	l.mu.RUnlock()
+
+	if !isHeld {
+		return nil // not held
+	}
+
+	sdpBody := sipmod.GenerateReInviteSDP(sipmod.SDPConfig{
+		LocalIP: l.localIP,
+		RTPPort: l.rtpSess.LocalPort(),
+		Codecs:  l.supportedCodecs,
+	}, l.codecType, l.rtpPT, "sendrecv")
+
+	var dialog interface{}
+	if l.inbound != nil {
+		dialog = l.inbound.Dialog
+	} else if l.outbound != nil {
+		dialog = l.outbound.Dialog
+	} else {
+		return fmt.Errorf("no dialog available")
+	}
+
+	if err := l.engine.SendReInvite(ctx, dialog, sdpBody); err != nil {
+		return fmt.Errorf("unhold re-INVITE: %w", err)
+	}
+
+	l.SetHeld(false)
+	l.mu.RLock()
+	cb := l.onUnhold
+	l.mu.RUnlock()
+	if cb != nil {
+		cb()
+	}
+	return nil
+}
+
+// HandleRemoteHold processes a remote re-INVITE's SDP direction for hold/unhold.
+func (l *SIPLeg) HandleRemoteHold(direction string) {
+	switch direction {
+	case "sendonly", "inactive":
+		l.SetHeld(true)
+		l.mu.RLock()
+		cb := l.onHold
+		l.mu.RUnlock()
+		if cb != nil {
+			cb()
+		}
+	case "sendrecv", "recvonly":
+		l.SetHeld(false)
+		l.mu.RLock()
+		cb := l.onUnhold
+		l.mu.RUnlock()
+		if cb != nil {
+			cb()
+		}
+	}
 }
 
 func (l *SIPLeg) SendDTMF(ctx context.Context, digits string) error {

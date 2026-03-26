@@ -24,6 +24,7 @@ type legView struct {
 	State      leg.LegState      `json:"state"`
 	RoomID     string            `json:"room_id,omitempty"`
 	Muted      bool              `json:"muted"`
+	Held       bool              `json:"held"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 }
 
@@ -34,6 +35,7 @@ func toLegView(l leg.Leg) legView {
 		State:      l.State(),
 		RoomID:     l.RoomID(),
 		Muted:      l.IsMuted(),
+		Held:       l.IsHeld(),
 		SIPHeaders: l.SIPHeaders(),
 	}
 }
@@ -219,6 +221,82 @@ func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unmuted"})
 }
 
+func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "only SIP legs support hold")
+		return
+	}
+
+	if err := sipLeg.Hold(r.Context()); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "held"})
+}
+
+// setupHoldCallbacks wires hold/unhold event publishing on a SIPLeg.
+func (s *Server) setupHoldCallbacks(l *leg.SIPLeg) {
+	l.OnHold(func() {
+		s.Bus.Publish(events.LegHold, map[string]interface{}{
+			"leg_id": l.ID(),
+			"type":   string(l.Type()),
+		})
+	})
+	l.OnUnhold(func() {
+		s.Bus.Publish(events.LegUnhold, map[string]interface{}{
+			"leg_id": l.ID(),
+			"type":   string(l.Type()),
+		})
+	})
+}
+
+// HandleReInvite processes a remote re-INVITE by finding the matching SIPLeg
+// via Call-ID and delegating to its hold/unhold handler.
+func (s *Server) HandleReInvite(callID string, direction string) {
+	for _, l := range s.LegMgr.List() {
+		sl, ok := l.(*leg.SIPLeg)
+		if !ok {
+			continue
+		}
+		if sl.CallID() == callID {
+			sl.HandleRemoteHold(direction)
+			return
+		}
+	}
+	s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
+}
+
+func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "only SIP legs support hold")
+		return
+	}
+
+	if err := sipLeg.Unhold(r.Context()); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
+}
+
 // cleanupLeg stops any active recording, removes the leg from its room (if any),
 // and removes it from the leg manager. Must be called on every disconnect path.
 func (s *Server) cleanupLeg(l leg.Leg) {
@@ -329,6 +407,8 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "rtp_timeout"))
 		}
 	})
+
+	s.setupHoldCallbacks(l)
 
 	// addToRoom adds the leg to the requested room at most once (on early
 	// media or on connect, whichever comes first).
@@ -497,6 +577,8 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "rtp_timeout"))
 			}
 		})
+
+		s.setupHoldCallbacks(l)
 
 		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID(), "type": string(l.Type())})
 
