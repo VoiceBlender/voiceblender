@@ -238,6 +238,7 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 		if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
 			s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
 		}
+		s.stopRoomAgentIfEmpty(roomID)
 	}
 	s.LegMgr.Remove(l.ID())
 }

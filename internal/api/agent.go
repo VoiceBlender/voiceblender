@@ -434,6 +434,16 @@ func (s *Server) stopAgentRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_stopped"})
 }
 
+// stopRoomAgentIfEmpty cleans up the room's agent when no leg participants
+// remain. Called after a leg is removed from a room.
+func (s *Server) stopRoomAgentIfEmpty(roomID string) {
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok || rm.ParticipantCount() > 0 {
+		return
+	}
+	s.cleanupRoomAgent(roomID)
+}
+
 func (s *Server) cleanupRoomAgent(roomID string) {
 	roomAgents.Lock()
 	info, ok := roomAgents.m[roomID]

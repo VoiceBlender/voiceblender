@@ -99,5 +99,6 @@ func (s *Server) removeLegFromRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.stopRoomAgentIfEmpty(roomID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
