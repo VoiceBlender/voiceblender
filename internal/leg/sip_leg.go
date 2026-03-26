@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 )
+
+const rtpTimeout = 30 * time.Second
 
 // SIPLeg wraps a SIP dialog (inbound or outbound) with RTP media handling.
 type SIPLeg struct {
@@ -37,8 +40,9 @@ type SIPLeg struct {
 	muted      atomic.Bool
 	createdAt  time.Time
 	answeredAt time.Time // zero if never answered
-	answerCh   chan struct{} // signaled by REST answer endpoint (inbound only)
-	onDTMF   func(digit rune)
+	answerCh      chan struct{} // signaled by REST answer endpoint (inbound only)
+	onDTMF        func(digit rune)
+	onRTPTimeout  func() // called when no RTP received within timeout
 
 	// Media
 	rtpSess   *sipmod.RTPSession
@@ -311,6 +315,9 @@ func (l *SIPLeg) setupMedia() {
 // native-rate PCM frames into inFrames.
 func (l *SIPLeg) readLoop() {
 	for {
+		// Set read deadline for RTP timeout detection.
+		l.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
+
 		pkt, err := l.rtpSess.ReadRTP()
 		if err != nil {
 			select {
@@ -321,6 +328,18 @@ func (l *SIPLeg) readLoop() {
 			// Non-RTP packets (RTCP, STUN) fail unmarshal — skip them.
 			if errors.Is(err, sipmod.ErrNotRTP) {
 				continue
+			}
+			// Check for read deadline timeout (no RTP received).
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				l.log.Info("RTP timeout", "leg_id", l.id, "timeout", rtpTimeout)
+				l.mu.RLock()
+				cb := l.onRTPTimeout
+				l.mu.RUnlock()
+				if cb != nil {
+					cb()
+				}
+				return
 			}
 			l.log.Debug("readLoop: ReadRTP error", "error", err)
 			return
@@ -594,6 +613,14 @@ func (l *SIPLeg) OnDTMF(f func(digit rune)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.onDTMF = f
+}
+
+// OnRTPTimeout sets a callback that fires when no RTP packets are received
+// within the timeout period (30s). Called at most once.
+func (l *SIPLeg) OnRTPTimeout(f func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onRTPTimeout = f
 }
 
 func (l *SIPLeg) SendDTMF(ctx context.Context, digits string) error {

@@ -99,8 +99,12 @@ def handle_ringing(cfg, event_data):
     """Answer the call and add the leg to the shared room."""
     leg_id = event_data.get("leg_id")
     caller = event_data.get("from", "unknown")
-    callee = event_data.get("to", "unknown")
+    callee = event_data.get("to") or event_data.get("uri", "unknown")
+    sip_headers = event_data.get("sip_headers", {})
     log.info("Incoming call: %s -> %s (leg %s)", caller, callee, leg_id)
+    if sip_headers:
+        for name, value in sip_headers.items():
+            log.info("  SIP header: %s: %s", name, value)
 
     # 1. Answer the call
     status, resp = api(cfg, "POST", f"/legs/{leg_id}/answer")

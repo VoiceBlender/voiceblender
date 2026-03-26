@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/csiwek/VoiceBlender/internal/events"
 	"github.com/csiwek/VoiceBlender/internal/leg"
 	sipmod "github.com/csiwek/VoiceBlender/internal/sip"
+	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/go-chi/chi/v5"
 )
@@ -41,14 +44,67 @@ func disconnectData(l leg.Leg, reason string) map[string]interface{} {
 	data := map[string]interface{}{
 		"leg_id":         l.ID(),
 		"reason":         reason,
-		"duration_total": now.Sub(l.CreatedAt()).Seconds(),
+		"duration_total": roundTo2(now.Sub(l.CreatedAt()).Seconds()),
 	}
 	if answered := l.AnsweredAt(); !answered.IsZero() {
-		data["duration_answered"] = now.Sub(answered).Seconds()
+		data["duration_answered"] = roundTo2(now.Sub(answered).Seconds())
 	} else {
 		data["duration_answered"] = float64(0)
 	}
 	return data
+}
+
+func roundTo2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+// inviteFailureReason maps a SIP INVITE error to a disconnect reason string.
+func inviteFailureReason(err error, hasRingTimeout bool, ctx context.Context) string {
+	// Ring timeout — context deadline exceeded while waiting for answer.
+	if hasRingTimeout && ctx.Err() == context.DeadlineExceeded {
+		return "ring_timeout"
+	}
+
+	// SIP response codes from sipgo's ErrDialogResponse.
+	// sipgo returns both *ErrDialogResponse and ErrDialogResponse, so try both.
+	var dialogErrPtr *sipgo.ErrDialogResponse
+	var dialogErr sipgo.ErrDialogResponse
+	var res *sip.Response
+	if errors.As(err, &dialogErrPtr) {
+		res = dialogErrPtr.Res
+	} else if errors.As(err, &dialogErr) {
+		res = dialogErr.Res
+	}
+	if res != nil {
+		switch res.StatusCode {
+		case sip.StatusBusyHere: // 486
+			return "busy"
+		case 480: // Temporarily Unavailable
+			return "unavailable"
+		case sip.StatusNotFound: // 404
+			return "not_found"
+		case sip.StatusForbidden: // 403
+			return "forbidden"
+		case 401, 407: // Unauthorized / Proxy Authentication Required
+			return "unauthorized"
+		case 408: // Request Timeout
+			return "timeout"
+		case 487: // Request Terminated (CANCEL was sent)
+			return "cancelled"
+		case 488: // Not Acceptable Here
+			return "not_acceptable"
+		case 503: // Service Unavailable
+			return "service_unavailable"
+		case 603: // Decline
+			return "declined"
+		default:
+			if res.StatusCode >= 400 {
+				return fmt.Sprintf("sip_%d", res.StatusCode)
+			}
+		}
+	}
+
+	return "invite_failed"
 }
 
 func (s *Server) listLegs(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +233,7 @@ func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
 type createLegRequest struct {
 	Type        string            `json:"type"`                   // "sip" or "webrtc"
 	URI         string            `json:"uri"`                    // SIP URI for outbound
-	From        string            `json:"from,omitempty"`         // caller ID / From header (SIP URI or display <uri>)
+	From        string            `json:"from,omitempty"`         // caller ID (user part of the SIP From header, e.g. "+15551234567")
 	Privacy     string            `json:"privacy,omitempty"`      // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout int               `json:"ring_timeout,omitempty"` // seconds; 0 = no timeout
 	MaxDuration int               `json:"max_duration,omitempty"` // seconds; 0 = no limit
@@ -227,11 +283,15 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		})
 	})
 
+	l.OnRTPTimeout(func() {
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.Bus.Publish(events.LegDisconnected, disconnectData(l, "rtp_timeout"))
+		}
+	})
+
 	// Build invite options.
-	inviteOpts := sipmod.InviteOptions{Codecs: codecs}
-	if req.From != "" {
-		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("From", req.From))
-	}
+	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
 	if req.Privacy != "" {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Privacy", req.Privacy))
 	}
@@ -240,7 +300,14 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	}
 
 	s.LegMgr.Add(l)
-	s.Bus.Publish(events.LegRinging, map[string]interface{}{"leg_id": l.ID(), "uri": req.URI})
+	ringingData := map[string]interface{}{"leg_id": l.ID(), "uri": req.URI}
+	if req.From != "" {
+		ringingData["from"] = req.From
+	}
+	if len(req.Headers) > 0 {
+		ringingData["sip_headers"] = req.Headers
+	}
+	s.Bus.Publish(events.LegRinging, ringingData)
 
 	go func() {
 		// Derive invite context from the leg's context so that
@@ -256,8 +323,9 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		if err != nil {
 			s.Log.Info("outbound invite failed", "leg_id", l.ID(), "error", err)
 			if l.State() != leg.StateHungUp { // not already deleted via API
+				reason := inviteFailureReason(err, req.RingTimeout > 0, ctx)
 				s.cleanupLeg(l)
-				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "invite_failed"))
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, reason))
 			}
 			return
 		}
@@ -328,11 +396,15 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
 	s.LegMgr.Add(l)
-	s.Bus.Publish(events.LegRinging, map[string]interface{}{
+	inboundRinging := map[string]interface{}{
 		"leg_id": l.ID(),
 		"from":   call.From,
 		"to":     call.To,
-	})
+	}
+	if hdrs := l.SIPHeaders(); len(hdrs) > 0 {
+		inboundRinging["sip_headers"] = hdrs
+	}
+	s.Bus.Publish(events.LegRinging, inboundRinging)
 
 	// Wait for REST answer or context cancellation (caller hangup / timeout)
 	select {
@@ -349,6 +421,13 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 				"leg_id": l.ID(),
 				"digit":  string(digit),
 			})
+		})
+
+		l.OnRTPTimeout(func() {
+			if l.State() != leg.StateHungUp {
+				s.cleanupLeg(l)
+				s.Bus.Publish(events.LegDisconnected, disconnectData(l, "rtp_timeout"))
+			}
 		})
 
 		s.Bus.Publish(events.LegConnected, map[string]interface{}{"leg_id": l.ID()})

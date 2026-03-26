@@ -46,7 +46,7 @@ Originate an outbound SIP call.
 {
   "type": "sip",
   "uri": "sip:alice@192.168.1.100:5060",
-  "from": "\"Alice\" <sip:alice@10.0.0.1>",
+  "from": "+15551234567",
   "privacy": "id",
   "ring_timeout": 30,
   "max_duration": 3600,
@@ -62,7 +62,7 @@ Originate an outbound SIP call.
 |-------|------|----------|-------------|
 | `type` | string | yes | `"sip"` |
 | `uri` | string | yes | SIP URI to dial |
-| `from` | string | no | Caller ID / SIP From header (URI or `"display" <uri>`) |
+| `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
@@ -973,7 +973,7 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | Inbound SIP call ringing | `leg_id`, `from`, `to` |
+| `leg.ringing` | SIP call ringing | `leg_id`, `from`, `to` (inbound); `leg_id`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
 | `leg.connected` | Leg answered/connected | `leg_id` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `reason`, `duration_total`, `duration_answered` |
 | `leg.joined_room` | Leg added to room | `leg_id`, `room_id` |
@@ -1002,7 +1002,32 @@ The signature is computed over the raw JSON request body using HMAC-SHA256 with 
 |-------|------|-------------|
 | `duration_total` | float | Seconds from leg creation (INVITE sent/received) to disconnect |
 | `duration_answered` | float | Seconds from answer (200 OK) to disconnect. `0` if the leg was never answered. |
-| `reason` | string | One of: `api_hangup`, `remote_bye`, `caller_cancel`, `invite_failed`, `connect_failed`, `ice_failure`, `max_duration` |
+| `reason` | string | See **Disconnect Reasons** below |
+
+**Disconnect Reasons:**
+
+| Reason | Description |
+|--------|-------------|
+| `api_hangup` | Hung up via `DELETE /v1/legs/{id}` |
+| `remote_bye` | Remote party sent BYE |
+| `caller_cancel` | Inbound caller hung up before answer |
+| `ring_timeout` | Outbound `ring_timeout` expired before answer |
+| `max_duration` | Outbound `max_duration` reached after connect |
+| `busy` | Remote returned 486 Busy Here |
+| `unavailable` | Remote returned 480 Temporarily Unavailable |
+| `not_found` | Remote returned 404 Not Found |
+| `forbidden` | Remote returned 403 Forbidden |
+| `unauthorized` | Remote returned 401/407 Authentication Required |
+| `timeout` | Remote returned 408 Request Timeout |
+| `cancelled` | INVITE was cancelled (487 Request Terminated) |
+| `not_acceptable` | Remote returned 488 Not Acceptable Here |
+| `service_unavailable` | Remote returned 503 Service Unavailable |
+| `declined` | Remote returned 603 Decline |
+| `sip_{code}` | Other SIP failure response (e.g. `sip_500`) |
+| `rtp_timeout` | No RTP packets received for 30 seconds |
+| `invite_failed` | INVITE failed for a non-SIP reason (transport error, DNS failure, etc.) |
+| `connect_failed` | Call answered but media/codec negotiation failed |
+| `ice_failure` | WebRTC ICE connection failed |
 
 ---
 

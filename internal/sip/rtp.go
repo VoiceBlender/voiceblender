@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/pion/rtp"
 )
@@ -90,6 +91,11 @@ func (s *RTPSession) WriteRTP(pkt *rtp.Packet) error {
 // LocalPort returns the local UDP port this session is listening on.
 func (s *RTPSession) LocalPort() int {
 	return s.localPort
+}
+
+// SetReadDeadline sets a deadline on the underlying UDP socket for reads.
+func (s *RTPSession) SetReadDeadline(t time.Time) error {
+	return s.conn.SetReadDeadline(t)
 }
 
 // Close closes the UDP connection.

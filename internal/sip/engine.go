@@ -205,8 +205,9 @@ func (e *Engine) Serve(ctx context.Context) error {
 
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
-	Codecs  []codec.CodecType // Override engine codecs for this call; nil = use engine default
-	Headers []sip.Header      // Extra SIP headers to include in the INVITE
+	Codecs   []codec.CodecType // Override engine codecs for this call; nil = use engine default
+	Headers  []sip.Header      // Extra SIP headers to include in the INVITE
+	FromUser string            // Override the user part of the From header (caller ID)
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
@@ -231,13 +232,31 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		Codecs:  codecs,
 	})
 
-	// Prepend Content-Type for SDP body (sipgo does not add it automatically).
-	headers := make([]sip.Header, 0, len(opts.Headers)+1)
-	headers = append(headers, sip.NewHeader("Content-Type", "application/sdp"))
-	headers = append(headers, opts.Headers...)
+	// Build the INVITE request. We construct it manually so we can set
+	// a proper typed FromHeader when FromUser is specified (appending a
+	// generic "From" header would create a duplicate).
+	req := sip.NewRequest(sip.INVITE, recipient)
+	req.SetBody(sdpOffer)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+
+	if opts.FromUser != "" {
+		fromURI := sip.Uri{
+			Scheme: "sip",
+			User:   opts.FromUser,
+			Host:   e.bindIP,
+		}
+		from := &sip.FromHeader{Address: fromURI}
+		from.Params.Add("tag", sip.GenerateTagN(16))
+		req.AppendHeader(from)
+		req.AppendHeader(sip.NewHeader("P-Asserted-Identity", fromURI.String()))
+	}
+
+	for _, h := range opts.Headers {
+		req.AppendHeader(h)
+	}
 
 	// Send INVITE via dialog client cache
-	ds, err := e.dcCache.Invite(ctx, recipient, sdpOffer, headers...)
+	ds, err := e.dcCache.WriteInvite(ctx, req)
 	if err != nil {
 		rtpSess.Close()
 		return nil, fmt.Errorf("invite: %w", err)

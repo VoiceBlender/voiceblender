@@ -1119,7 +1119,7 @@ components:
           description: SIP URI to dial
         from:
           type: string
-          description: 'Caller ID / SIP From header (URI or "display" <uri>)'
+          description: 'Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")'
         privacy:
           type: string
           description: SIP Privacy header value (e.g. "id", "none")
@@ -1348,7 +1348,7 @@ components:
   x-webhooks:
     leg.ringing:
       post:
-        summary: Inbound SIP call ringing
+        summary: SIP call ringing (inbound or outbound)
         requestBody:
           content:
             application/json:
@@ -1360,8 +1360,13 @@ components:
                         type: object
                         properties:
                           leg_id: { type: string }
-                          from: { type: string }
-                          to: { type: string }
+                          from: { type: string, description: 'Caller URI (inbound) or From header value (outbound, if set)' }
+                          to: { type: string, description: 'Callee URI (inbound only)' }
+                          uri: { type: string, description: 'Dialed SIP URI (outbound only)' }
+                          sip_headers:
+                            type: object
+                            additionalProperties: { type: string }
+                            description: 'X-* custom SIP headers, if present'
     leg.connected:
       post:
         summary: Leg answered/connected
@@ -1390,7 +1395,10 @@ components:
                         type: object
                         properties:
                           leg_id: { type: string }
-                          reason: { type: string, enum: [api_hangup, remote_bye, caller_cancel, invite_failed, connect_failed, ice_failure, max_duration] }
+                          reason:
+                            type: string
+                            description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.'
+                            enum: [api_hangup, remote_bye, caller_cancel, ring_timeout, max_duration, busy, unavailable, not_found, forbidden, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, declined, rtp_timeout, invite_failed, connect_failed, ice_failure]
     leg.joined_room:
       post:
         summary: Leg added to a room
