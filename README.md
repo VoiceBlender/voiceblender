@@ -191,12 +191,23 @@ See [TESTING.md](TESTING.md) for details.
 
 ## Dependencies
 
-- [sipgo](https://github.com/emiago/sipgo) -- SIP stack
-- [pion/webrtc](https://github.com/pion/webrtc) -- WebRTC
-- [go-chi](https://github.com/go-chi/chi) -- HTTP router
-- [zaf/g711](https://github.com/zaf/g711) -- G.711 codec
-- [gobwas/ws](https://github.com/gobwas/ws) -- WebSocket
-- [go-audio/wav](https://github.com/go-audio/wav) -- WAV encoding
+| Library | Description | Notes |
+|---------|-------------|-------|
+| [sipgo](https://github.com/emiago/sipgo) | SIP stack | |
+| [pion/webrtc](https://github.com/pion/webrtc) | WebRTC | |
+| [go-chi](https://github.com/go-chi/chi) | HTTP router | |
+| [zaf/g711](https://github.com/zaf/g711) | G.711 codec | |
+| [gobwas/ws](https://github.com/gobwas/ws) | WebSocket | |
+| [go-audio/wav](https://github.com/go-audio/wav) | WAV encoding | |
+| [gopus](https://github.com/thesyncim/gopus) | Opus codec | Pure Go |
+| [go-mp3](https://github.com/hajimehoshi/go-mp3) | MP3 decoder | Pure Go |
+| [go-audio/audio](https://github.com/go-audio/audio) | Audio buffer types | |
+| [google/uuid](https://github.com/google/uuid) | UUID generation | |
+| [prometheus/client_golang](https://github.com/prometheus/client_golang) | Prometheus metrics | |
+| [aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) | AWS SDK (S3, Polly) | |
+| [cloud.google.com/go/texttospeech](https://cloud.google.com/go/docs/reference/cloud.google.com/go/texttospeech/latest) | Google Cloud TTS | |
+| [protobuf](https://github.com/protocolbuffers/protobuf-go) | Protocol Buffers | Pipecat agent |
+| [x/sync](https://pkg.go.dev/golang.org/x/sync) | Concurrency utilities | |
 
 ## AI-Assisted Development
 
