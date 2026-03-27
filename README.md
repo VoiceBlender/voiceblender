@@ -58,6 +58,11 @@ All configuration is via environment variables:
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files (used when `TTS_CACHE_ENABLED=true`) |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
 
+## Links
+
+- **Website:** [voiceblender.org](https://voiceblender.org/)
+- **Documentation:** [voiceblender.org/docs](https://voiceblender.org/docs)
+
 ## API Overview
 
 Full reference: [API.md](API.md)
