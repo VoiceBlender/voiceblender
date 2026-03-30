@@ -25,6 +25,7 @@ type RTPSession struct {
 	conn       *net.UDPConn
 	remoteAddr unsafe.Pointer // *net.UDPAddr, accessed atomically
 	localPort  int
+	allocator  *PortAllocator // non-nil when port was allocated from a pool
 }
 
 // NewRTPSession creates a new RTP session listening on a random UDP port.
@@ -53,6 +54,25 @@ func NewRTPSessionOnPort(port int) (*RTPSession, error) {
 		conn:      conn,
 		localPort: addr.Port,
 	}, nil
+}
+
+// NewRTPSessionFromAllocator creates an RTP session using a port from the
+// allocator's pool. If alloc is nil, behaves like NewRTPSession (OS-assigned).
+func NewRTPSessionFromAllocator(alloc *PortAllocator) (*RTPSession, error) {
+	if alloc == nil {
+		return NewRTPSession()
+	}
+	port, err := alloc.Allocate()
+	if err != nil {
+		return nil, err
+	}
+	sess, err := NewRTPSessionOnPort(port)
+	if err != nil {
+		alloc.Release(port)
+		return nil, err
+	}
+	sess.allocator = alloc
+	return sess, nil
 }
 
 // getRemote returns the current remote address atomically.
@@ -160,7 +180,11 @@ func (s *RTPSession) SetReadDeadline(t time.Time) error {
 	return s.conn.SetReadDeadline(t)
 }
 
-// Close closes the UDP connection.
+// Close closes the UDP connection and releases the port back to the allocator.
 func (s *RTPSession) Close() error {
-	return s.conn.Close()
+	err := s.conn.Close()
+	if s.allocator != nil {
+		s.allocator.Release(s.localPort)
+	}
+	return err
 }

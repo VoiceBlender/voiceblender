@@ -28,7 +28,18 @@ func (s *Server) webrtcOffer(w http.ResponseWriter, r *http.Request) {
 		ICEServers: iceServers,
 	}
 
-	pc, err := webrtc.NewPeerConnection(config)
+	var (
+		pc  *webrtc.PeerConnection
+		err error
+	)
+	if s.Config.RTPPortMin > 0 && s.Config.RTPPortMax > 0 {
+		se := webrtc.SettingEngine{}
+		se.SetEphemeralUDPPortRange(uint16(s.Config.RTPPortMin), uint16(s.Config.RTPPortMax))
+		api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+		pc, err = api.NewPeerConnection(config)
+	} else {
+		pc, err = webrtc.NewPeerConnection(config)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create peer connection")
 		return
