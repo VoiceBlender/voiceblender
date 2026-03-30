@@ -371,7 +371,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
 	l.rtpPT = pt
 
 	// Create RTP session
-	rtpSess, err := sipmod.NewRTPSession()
+	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
 	if err != nil {
 		return fmt.Errorf("create RTP session: %w", err)
 	}
@@ -455,7 +455,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	l.rtpPT = pt
 
 	// Create RTP session
-	rtpSess, err := sipmod.NewRTPSession()
+	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
 	if err != nil {
 		return fmt.Errorf("create RTP session: %w", err)
 	}

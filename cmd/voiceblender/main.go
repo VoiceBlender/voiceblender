@@ -60,14 +60,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// RTP port allocator (nil when range not configured)
+	portAlloc, err := sipmod.NewPortAllocator(cfg.RTPPortMin, cfg.RTPPortMax)
+	if err != nil {
+		log.Error("invalid RTP port range", "error", err)
+		os.Exit(1)
+	}
+	if portAlloc != nil {
+		log.Info("RTP port range configured", "min", cfg.RTPPortMin, "max", cfg.RTPPortMax)
+	}
+
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:   cfg.SIPBindIP,
-		ListenIP: cfg.SIPListenIP,
-		BindPort: sipPort,
-		SIPHost:  cfg.SIPHost,
-		Codecs:   []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
-		Log:      log,
+		BindIP:        cfg.SIPBindIP,
+		ListenIP:      cfg.SIPListenIP,
+		BindPort:      sipPort,
+		SIPHost:       cfg.SIPHost,
+		Codecs:        []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
+		Log:           log,
+		PortAllocator: portAlloc,
 	})
 	if err != nil {
 		log.Error("failed to create SIP engine", "error", err)

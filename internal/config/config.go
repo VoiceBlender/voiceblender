@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,6 +30,8 @@ type Config struct {
 	TTSCacheEnabled      bool
 	TTSCacheDir          string
 	TTSCacheIncludeAPIKey bool
+	RTPPortMin int
+	RTPPortMax int
 }
 
 func Load() Config {
@@ -54,7 +57,18 @@ func Load() Config {
 		TTSCacheEnabled:      os.Getenv("TTS_CACHE_ENABLED") == "true",
 		TTSCacheDir:          envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
 		TTSCacheIncludeAPIKey: os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
+		RTPPortMin: envInt("RTP_PORT_MIN", 10000),
+		RTPPortMax: envInt("RTP_PORT_MAX", 20000),
 	}
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func envOr(key, def string) string {

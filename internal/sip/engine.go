@@ -25,12 +25,13 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP   string // IP advertised in SDP/Contact/Via headers
-	ListenIP string // IP to bind the UDP socket on (default: same as BindIP)
-	BindPort int
-	SIPHost  string
-	Codecs   []codec.CodecType
-	Log      *slog.Logger
+	BindIP        string // IP advertised in SDP/Contact/Via headers
+	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
+	BindPort      int
+	SIPHost       string
+	Codecs        []codec.CodecType
+	Log           *slog.Logger
+	PortAllocator *PortAllocator // nil = OS-assigned ports
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -43,11 +44,12 @@ type Engine struct {
 
 	onInvite   func(call *InboundCall)
 	onReInvite func(callID string, direction string) []byte // returns SDP answer for 200 OK
-	codecs     []codec.CodecType
-	bindIP     string // externally-reachable IP (for SDP/Contact)
-	listenIP   string // original bind address (for ListenAndServe)
-	bindPort   int
-	log        *slog.Logger
+	codecs    []codec.CodecType
+	bindIP    string // externally-reachable IP (for SDP/Contact)
+	listenIP  string // original bind address (for ListenAndServe)
+	bindPort  int
+	portAlloc *PortAllocator
+	log       *slog.Logger
 }
 
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
@@ -131,16 +133,17 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		ua:       ua,
-		server:   server,
-		client:   client,
-		dsCache:  sipgo.NewDialogServerCache(client, contactHdr),
-		dcCache:  sipgo.NewDialogClientCache(client, contactHdr),
-		codecs:   cfg.Codecs,
-		bindIP:   advertiseIP,
-		listenIP: listenIP,
-		bindPort: cfg.BindPort,
-		log:      cfg.Log,
+		ua:        ua,
+		server:    server,
+		client:    client,
+		dsCache:   sipgo.NewDialogServerCache(client, contactHdr),
+		dcCache:   sipgo.NewDialogClientCache(client, contactHdr),
+		codecs:    cfg.Codecs,
+		bindIP:    advertiseIP,
+		listenIP:  listenIP,
+		bindPort:  cfg.BindPort,
+		portAlloc: cfg.PortAllocator,
+		log:       cfg.Log,
 	}
 
 	e.registerHandlers()
@@ -406,7 +409,7 @@ type InviteOptions struct {
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
 func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptions) (*OutboundCall, error) {
 	// Create RTP session for media
-	rtpSess, err := NewRTPSession()
+	rtpSess, err := NewRTPSessionFromAllocator(e.portAlloc)
 	if err != nil {
 		return nil, fmt.Errorf("create RTP session: %w", err)
 	}
@@ -556,4 +559,9 @@ func (e *Engine) Codecs() []codec.CodecType {
 // BindIP returns the engine's bind IP address.
 func (e *Engine) BindIP() string {
 	return e.bindIP
+}
+
+// PortAllocator returns the engine's port allocator (nil if OS-assigned).
+func (e *Engine) PortAllocator() *PortAllocator {
+	return e.portAlloc
 }

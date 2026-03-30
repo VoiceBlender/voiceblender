@@ -199,7 +199,7 @@ See [TESTING.md](TESTING.md) for details.
 | [zaf/g711](https://github.com/zaf/g711) | G.711 codec | |
 | [gobwas/ws](https://github.com/gobwas/ws) | WebSocket | |
 | [go-audio/wav](https://github.com/go-audio/wav) | WAV encoding | |
-| [gopus](https://github.com/thesyncim/gopus) | Opus codec | Thanks Marcelo! (Claude and Codex too! |
+| [gopus](https://github.com/thesyncim/gopus) | Opus codec | Thanks Marcelo! (Claude and Codex too!) |
 | [go-mp3](https://github.com/hajimehoshi/go-mp3) | MP3 decoder | Pure Go |
 | [go-audio/audio](https://github.com/go-audio/audio) | Audio buffer types | |
 | [google/uuid](https://github.com/google/uuid) | UUID generation | |
