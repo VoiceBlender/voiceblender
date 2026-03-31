@@ -57,6 +57,8 @@ All configuration is via environment variables:
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files (used when `TTS_CACHE_ENABLED=true`) |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
+| `RTP_PORT_MIN` | `10000` | Minimum UDP port for RTP/RTCP media |
+| `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 
 ## Links
 

@@ -43,9 +43,6 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
-        - name: DEEPGRAM_API_KEY
-          default: ""
-          description: API key for Deepgram STT, TTS, and Agent provider
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -67,6 +64,12 @@ info:
         - name: TTS_CACHE_INCLUDE_API_KEY
           default: "false"
           description: Include API key in TTS cache key; set true if different keys map to different voice clones
+        - name: RTP_PORT_MIN
+          default: "10000"
+          description: Minimum UDP port for RTP/RTCP media
+        - name: RTP_PORT_MAX
+          default: "20000"
+          description: Maximum UDP port for RTP/RTCP media
     version: 1.0.0
     license:
         name: MIT
@@ -264,46 +267,6 @@ paths:
             responses:
                 '200':
                     description: Leg unmuted
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
-                '404':
-                    description: Leg not found
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-    /legs/{id}/deaf:
-        parameters:
-            - $ref: '#/components/parameters/LegId'
-        post:
-            operationId: deafLeg
-            summary: Deafen a leg
-            description: A deaf leg does not receive mixed audio from the room — the participant cannot hear other participants. The leg can still speak (its audio is still mixed for others).
-            tags:
-                - Legs
-            responses:
-                '200':
-                    description: Leg deafened
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
-                '404':
-                    description: Leg not found
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-        delete:
-            operationId: undeafLeg
-            summary: Undeafen a leg
-            tags:
-                - Legs
-            responses:
-                '200':
-                    description: Leg undeafened
                     content:
                         application/json:
                             schema:
@@ -1301,7 +1264,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/StopRecordRoomResponse'
+                                $ref: '#/components/schemas/StatusResponse'
                 '404':
                     description: No recording in progress
                     content:
@@ -1867,43 +1830,6 @@ components:
                     type: string
             required:
                 - status
-        StopRecordRoomResponse:
-            type: object
-            properties:
-                status:
-                    type: string
-                file:
-                    type: string
-                    description: Path/URI of the full mix recording (mono)
-                multi_channel_file:
-                    type: string
-                    description: Path/URI of the multi-channel WAV file. Only present when multi_channel was true.
-                channels:
-                    type: object
-                    description: Map of leg ID to channel metadata. Only present when multi_channel was true.
-                    additionalProperties:
-                        $ref: '#/components/schemas/ChannelInfo'
-            required:
-                - status
-                - file
-        ChannelInfo:
-            type: object
-            properties:
-                channel:
-                    type: integer
-                    description: Zero-based channel index in the multi-channel WAV
-                start_ms:
-                    type: integer
-                    description: Milliseconds from recording start when this participant joined
-                    format: int64
-                end_ms:
-                    type: integer
-                    description: Milliseconds from recording start when this participant's audio ends
-                    format: int64
-            required:
-                - channel
-                - start_ms
-                - end_ms
         AddLegRequest:
             type: object
             properties:
@@ -2095,7 +2021,7 @@ components:
                         - s3
                 multi_channel:
                     type: boolean
-                    description: When true, produce a single multi-channel WAV with one track per participant (time-aligned). Only applies to room recordings.
+                    description: When true, record each participant to a separate mono WAV file in addition to the full mix. Only applies to room recordings.
                     default: false
                 s3_bucket:
                     type: string
@@ -2117,6 +2043,7 @@ components:
                     description: AWS secret access key. Must be set together with s3_access_key.
             required:
                 - storage
+                - multi_channel
                 - s3_bucket
                 - s3_region
                 - s3_endpoint
@@ -2260,8 +2187,6 @@ components:
                 - leg.left_room
                 - leg.muted
                 - leg.unmuted
-                - leg.deaf
-                - leg.undeaf
                 - leg.hold
                 - leg.unhold
                 - dtmf.received
@@ -2479,32 +2404,6 @@ x-webhooks:
     leg.unmuted:
         post:
             summary: Leg unmuted
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                        description: Leg identifier
-    leg.deaf:
-        post:
-            summary: Leg deafened
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                        description: Leg identifier
-    leg.undeaf:
-        post:
-            summary: Leg undeafened
             requestBody:
                 content:
                     application/json:
@@ -2755,10 +2654,8 @@ x-webhooks:
                                         description: Recording file path or S3 URI
                                     multi_channel_file:
                                         type: string
-                                        description: Path/URI of the multi-channel WAV file (only for multi-channel room recordings)
                                     channels:
                                         type: object
-                                        description: Channel metadata per participant (only for multi-channel room recordings)
                                         additionalProperties:
                                             $ref: '#/components/schemas/ChannelInfo'
     room.created:
