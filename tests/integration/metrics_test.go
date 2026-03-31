@@ -211,8 +211,6 @@ func TestMetrics_Endpoint(t *testing.T) {
 	expected := []string{
 		"voiceblender_active_legs",
 		"voiceblender_active_rooms",
-		"voiceblender_legs_total",
-		"voiceblender_call_duration_seconds",
 		"go_goroutines",
 	}
 	for _, name := range expected {

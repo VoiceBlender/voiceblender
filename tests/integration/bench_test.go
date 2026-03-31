@@ -426,7 +426,7 @@ func waitForCorrelatedLeg(baseURL, correlationID string, timeout time.Duration) 
 			continue
 		}
 		var legs []struct {
-			ID         string            `json:"leg_id"`
+			ID         string            `json:"id"`
 			Type       string            `json:"type"`
 			State      string            `json:"state"`
 			SIPHeaders map[string]string `json:"sip_headers"`
@@ -529,7 +529,7 @@ func doCreateLeg(baseURL string, targetSIPPort int, headers map[string]string) (
 		return "", fmt.Errorf("status %d: %s", resp.StatusCode, b)
 	}
 	var v struct {
-		ID string `json:"leg_id"`
+		ID string `json:"id"`
 	}
 	json.NewDecoder(resp.Body).Decode(&v)
 	return v.ID, nil

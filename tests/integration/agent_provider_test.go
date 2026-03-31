@@ -18,7 +18,7 @@ func TestAgent_LegDefaultProvider(t *testing.T) {
 	instB := newTestInstance(t, "instance-b")
 	outboundID, _ := establishCall(t, instA, instB)
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent", instA.baseURL(), outboundID), map[string]interface{}{
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent/elevenlabs", instA.baseURL(), outboundID), map[string]interface{}{
 		"agent_id": "test-agent",
 	})
 	defer resp.Body.Close()
@@ -43,9 +43,8 @@ func TestAgent_LegVAPIProvider(t *testing.T) {
 	instB := newTestInstance(t, "instance-b")
 	outboundID, _ := establishCall(t, instA, instB)
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent", instA.baseURL(), outboundID), map[string]interface{}{
-		"agent_id": "test-agent",
-		"provider": "vapi",
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent/vapi", instA.baseURL(), outboundID), map[string]interface{}{
+		"assistant_id": "test-agent",
 	})
 	defer resp.Body.Close()
 
@@ -86,7 +85,7 @@ func TestAgent_RoomDefaultProvider(t *testing.T) {
 	}
 	addResp.Body.Close()
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent", instA.baseURL(), rm.ID), map[string]interface{}{
+	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent/elevenlabs", instA.baseURL(), rm.ID), map[string]interface{}{
 		"agent_id": "test-agent",
 	})
 	defer resp.Body.Close()
@@ -126,9 +125,8 @@ func TestAgent_RoomVAPIProvider(t *testing.T) {
 	}
 	addResp.Body.Close()
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent", instA.baseURL(), rm.ID), map[string]interface{}{
-		"agent_id": "test-agent",
-		"provider": "vapi",
+	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent/vapi", instA.baseURL(), rm.ID), map[string]interface{}{
+		"assistant_id": "test-agent",
 	})
 	defer resp.Body.Close()
 
@@ -149,7 +147,7 @@ func TestAgent_RoomVAPIProvider(t *testing.T) {
 func TestAgent_LegNotFound(t *testing.T) {
 	instA := newTestInstance(t, "instance-a")
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent", instA.baseURL(), "nonexistent"), map[string]interface{}{
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent/elevenlabs", instA.baseURL(), "nonexistent"), map[string]interface{}{
 		"agent_id": "test-agent",
 		"api_key":  "fake-key",
 	})
@@ -166,7 +164,7 @@ func TestAgent_LegMissingAgentID(t *testing.T) {
 	instB := newTestInstance(t, "instance-b")
 	outboundID, _ := establishCall(t, instA, instB)
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent", instA.baseURL(), outboundID), map[string]interface{}{
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent/elevenlabs", instA.baseURL(), outboundID), map[string]interface{}{
 		"api_key": "fake-key",
 	})
 	defer resp.Body.Close()
@@ -213,9 +211,8 @@ func TestAgent_LegPipecatProvider(t *testing.T) {
 	instB := newTestInstance(t, "instance-b")
 	outboundID, _ := establishCall(t, instA, instB)
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent", instA.baseURL(), outboundID), map[string]interface{}{
-		"agent_id": "ws://127.0.0.1:19999", // no bot running here
-		"provider": "pipecat",
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/agent/pipecat", instA.baseURL(), outboundID), map[string]interface{}{
+		"websocket_url": "ws://127.0.0.1:19999", // no bot running here
 	})
 	defer resp.Body.Close()
 
@@ -266,9 +263,8 @@ func TestAgent_RoomPipecatProvider(t *testing.T) {
 	}
 	addResp.Body.Close()
 
-	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent", instA.baseURL(), rm.ID), map[string]interface{}{
-		"agent_id": "ws://127.0.0.1:19999",
-		"provider": "pipecat",
+	resp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/agent/pipecat", instA.baseURL(), rm.ID), map[string]interface{}{
+		"websocket_url": "ws://127.0.0.1:19999",
 	})
 	defer resp.Body.Close()
 
