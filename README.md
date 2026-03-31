@@ -51,6 +51,9 @@ All configuration is via environment variables:
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
+| `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
+| `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
+| `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
 | `S3_BUCKET` | | S3 bucket for recording uploads |
 | `S3_REGION` | `us-east-1` | AWS region |
 | `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.) |

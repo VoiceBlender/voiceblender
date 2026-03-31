@@ -43,6 +43,15 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
+        - name: DEEPGRAM_API_KEY
+          default: ""
+          description: API key for Deepgram STT and TTS
+        - name: AZURE_SPEECH_KEY
+          default: ""
+          description: Subscription key for Azure Cognitive Speech Services (TTS and STT)
+        - name: AZURE_SPEECH_REGION
+          default: eastus
+          description: Azure region for Speech Services (e.g. eastus, westeurope)
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -2150,13 +2159,14 @@ components:
                     default: false
                 provider:
                     type: string
-                    description: 'STT provider: "elevenlabs" (default) or "deepgram"'
+                    description: 'STT provider: "elevenlabs" (default), "deepgram", or "azure"'
                     enum:
                         - elevenlabs
                         - deepgram
+                        - azure
                 api_key:
                     type: string
-                    description: API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)
+                    description: API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY, or AZURE_SPEECH_KEY env var depending on provider)
             required:
                 - language
                 - partial
@@ -2168,7 +2178,7 @@ components:
                     description: Text to synthesize
                 voice:
                     type: string
-                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en).'
+                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en). Azure: voice name (e.g. en-US-JennyNeural, pl-PL-MarekNeural).'
                 model_id:
                     type: string
                     description: 'Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (standard, neural, long-form, generative; default neural). Google Cloud: model name (e.g. gemini-2.5-pro-tts, chirp3-hd).'
@@ -2186,15 +2196,16 @@ components:
                     maximum: 8
                 provider:
                     type: string
-                    description: 'TTS provider: "elevenlabs" (default), "aws", "google", or "deepgram"'
+                    description: 'TTS provider: "elevenlabs" (default), "aws", "google", "deepgram", or "azure"'
                     enum:
                         - elevenlabs
                         - aws
                         - google
                         - deepgram
+                        - azure
                 api_key:
                     type: string
-                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var).'
+                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var). Azure: subscription key override (falls back to AZURE_SPEECH_KEY env var).'
             required:
                 - text
                 - voice

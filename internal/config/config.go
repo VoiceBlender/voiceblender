@@ -23,6 +23,8 @@ type Config struct {
 	ElevenLabsAPIKey      string
 	VAPIAPIKey            string
 	DeepgramAPIKey        string
+	AzureSpeechKey        string
+	AzureSpeechRegion     string
 	S3Bucket              string
 	S3Region              string
 	S3Endpoint            string
@@ -50,6 +52,8 @@ func Load() Config {
 		ElevenLabsAPIKey:      os.Getenv("ELEVENLABS_API_KEY"),
 		VAPIAPIKey:            os.Getenv("VAPI_API_KEY"),
 		DeepgramAPIKey:        os.Getenv("DEEPGRAM_API_KEY"),
+		AzureSpeechKey:        os.Getenv("AZURE_SPEECH_KEY"),
+		AzureSpeechRegion:     envOr("AZURE_SPEECH_REGION", "eastus"),
 		S3Bucket:              os.Getenv("S3_BUCKET"),
 		S3Region:              envOr("S3_REGION", "us-east-1"),
 		S3Endpoint:            os.Getenv("S3_ENDPOINT"),
