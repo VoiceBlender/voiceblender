@@ -146,11 +146,16 @@ func (s *Server) stopPlayLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, ok := players[playbackID]
-	legPlayers.Unlock()
 	if !ok {
+		legPlayers.Unlock()
 		writeError(w, http.StatusNotFound, "no playback in progress")
 		return
 	}
+	delete(players, playbackID)
+	if len(players) == 0 {
+		delete(legPlayers.m, id)
+	}
+	legPlayers.Unlock()
 	p.Stop()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
@@ -266,11 +271,16 @@ func (s *Server) stopPlayRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, ok := players[playbackID]
-	roomPlayers.Unlock()
 	if !ok {
+		roomPlayers.Unlock()
 		writeError(w, http.StatusNotFound, "no playback in progress")
 		return
 	}
+	delete(players, playbackID)
+	if len(players) == 0 {
+		delete(roomPlayers.m, id)
+	}
+	roomPlayers.Unlock()
 	p.Stop()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }

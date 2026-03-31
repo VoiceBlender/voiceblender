@@ -863,8 +863,8 @@ func TestRepeat_ThreePlaysThreeTimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if reqCount != 3 {
-		t.Errorf("server requests = %d, want 3", reqCount)
+	if reqCount != 1 {
+		t.Errorf("server requests = %d, want 1 (single download, replayed from disk)", reqCount)
 	}
 	// Each iteration writes one 320-byte frame, so total should be 960
 	if output.Len() != 320*3 {
@@ -900,8 +900,8 @@ func TestRepeat_InfiniteStopsOnCancel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected context error for infinite repeat with cancel")
 	}
-	if reqCount < 2 {
-		t.Errorf("server requests = %d, want >= 2", reqCount)
+	if reqCount != 1 {
+		t.Errorf("server requests = %d, want 1 (single download, replayed from disk)", reqCount)
 	}
 }
 
@@ -929,19 +929,11 @@ func TestRepeat_OnStartCalledOnce(t *testing.T) {
 	}
 }
 
-func TestRepeat_FetchErrorOnSecondIteration(t *testing.T) {
-	audio := make([]byte, 160*2)
-	wav := buildWAV(1, 1, 8000, 16, audio)
-
-	var reqCount int
+func TestRepeat_FetchErrorOnFirstDownload(t *testing.T) {
+	// The player downloads once to a temp file and replays from disk,
+	// so a fetch error can only happen on the initial download.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqCount++
-		if reqCount == 1 {
-			w.Header().Set("Content-Type", "audio/wav")
-			w.Write(wav)
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-		}
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer ts.Close()
 
@@ -949,14 +941,38 @@ func TestRepeat_FetchErrorOnSecondIteration(t *testing.T) {
 	var output bytes.Buffer
 	err := p.PlayAt8kHz(context.Background(), &output, ts.URL+"/audio.wav", "audio/wav", 3)
 	if err == nil {
-		t.Fatal("expected error on second iteration fetch failure")
+		t.Fatal("expected error on fetch failure")
 	}
-	if reqCount != 2 {
-		t.Errorf("server requests = %d, want 2", reqCount)
+	if output.Len() != 0 {
+		t.Errorf("output size = %d, want 0 (no audio should be written)", output.Len())
 	}
-	// First iteration's audio should have been written
-	if output.Len() != 320 {
-		t.Errorf("output size = %d, want 320 (first iteration's audio)", output.Len())
+}
+
+func TestRepeat_SingleFetchMultipleReplays(t *testing.T) {
+	// Verify the player only fetches the URL once, even with repeat > 1.
+	audio := make([]byte, 160*2)
+	wav := buildWAV(1, 1, 8000, 16, audio)
+
+	var reqCount int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(wav)
+	}))
+	defer ts.Close()
+
+	p := NewPlayer(slog.Default())
+	var output bytes.Buffer
+	err := p.PlayAt8kHz(context.Background(), &output, ts.URL+"/audio.wav", "audio/wav", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqCount != 1 {
+		t.Errorf("server requests = %d, want 1 (single download)", reqCount)
+	}
+	// 3 iterations × 320 bytes of audio
+	if output.Len() != 320*3 {
+		t.Errorf("output size = %d, want %d (3 iterations)", output.Len(), 320*3)
 	}
 }
 

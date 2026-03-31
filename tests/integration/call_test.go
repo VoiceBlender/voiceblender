@@ -253,12 +253,14 @@ func decodeJSON(t *testing.T, resp *http.Response, v interface{}) {
 }
 
 type legView struct {
-	ID     string `json:"leg_id"`
-	Type   string `json:"type"`
-	State  string `json:"state"`
-	RoomID string `json:"room_id,omitempty"`
-	Muted  bool   `json:"muted"`
-	Held   bool   `json:"held"`
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	State      string            `json:"state"`
+	RoomID     string            `json:"room_id,omitempty"`
+	Muted      bool              `json:"muted"`
+	Deaf       bool              `json:"deaf"`
+	Held       bool              `json:"held"`
+	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 }
 
 type roomView struct {
