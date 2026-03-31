@@ -44,6 +44,8 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		switch req.Provider {
 		case "deepgram":
 			apiKey = s.Config.DeepgramAPIKey
+		case "azure":
+			apiKey = s.Config.AzureSpeechKey
 		default:
 			apiKey = s.Config.ElevenLabsAPIKey
 		}
@@ -78,6 +80,8 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 	switch req.Provider {
 	case "deepgram":
 		transcriber = stt.NewDeepgram(s.Log)
+	case "azure":
+		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
 	default:
 		transcriber = stt.NewElevenLabs(s.Log)
 	}
@@ -187,6 +191,8 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 		switch req.Provider {
 		case "deepgram":
 			apiKey = s.Config.DeepgramAPIKey
+		case "azure":
+			apiKey = s.Config.AzureSpeechKey
 		default:
 			apiKey = s.Config.ElevenLabsAPIKey
 		}
@@ -254,6 +260,8 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	switch state.provider {
 	case "deepgram":
 		transcriber = stt.NewDeepgram(s.Log)
+	case "azure":
+		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
 	default:
 		transcriber = stt.NewElevenLabs(s.Log)
 	}

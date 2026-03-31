@@ -11,6 +11,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"HTTP_ADDR", "ICE_SERVERS", "RECORDING_DIR", "LOG_LEVEL", "WEBHOOK_URL",
 		"WEBHOOK_SECRET", "RTP_PORT_MIN", "RTP_PORT_MAX",
 		"TTS_CACHE_ENABLED", "TTS_CACHE_DIR", "TTS_CACHE_INCLUDE_API_KEY",
+		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION",
 	} {
 		t.Setenv(key, "")
 	}
@@ -44,6 +45,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.TTSCacheDir != "/tmp/tts_cache" {
 		t.Errorf("TTSCacheDir = %q, want /tmp/tts_cache", cfg.TTSCacheDir)
 	}
+	if cfg.AzureSpeechRegion != "eastus" {
+		t.Errorf("AzureSpeechRegion = %q, want eastus", cfg.AzureSpeechRegion)
+	}
+	if cfg.AzureSpeechKey != "" {
+		t.Errorf("AzureSpeechKey = %q, want empty", cfg.AzureSpeechKey)
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
@@ -58,6 +65,8 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("WEBHOOK_SECRET", "s3cret")
 	t.Setenv("RTP_PORT_MIN", "30000")
 	t.Setenv("RTP_PORT_MAX", "40000")
+	t.Setenv("AZURE_SPEECH_KEY", "az-key-123")
+	t.Setenv("AZURE_SPEECH_REGION", "westeurope")
 
 	cfg := Load()
 
@@ -93,6 +102,12 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.RTPPortMax != 40000 {
 		t.Errorf("RTPPortMax = %d, want 40000", cfg.RTPPortMax)
+	}
+	if cfg.AzureSpeechKey != "az-key-123" {
+		t.Errorf("AzureSpeechKey = %q, want az-key-123", cfg.AzureSpeechKey)
+	}
+	if cfg.AzureSpeechRegion != "westeurope" {
+		t.Errorf("AzureSpeechRegion = %q, want westeurope", cfg.AzureSpeechRegion)
 	}
 }
 

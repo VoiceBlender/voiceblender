@@ -275,6 +275,14 @@ func (s *Server) resolveTTSProvider(req TTSRequest) (tts.Provider, string) {
 			return nil, ""
 		}
 		provider, name = tts.NewDeepgram(apiKey, s.Log), "deepgram"
+	case "azure":
+		if apiKey == "" {
+			apiKey = s.Config.AzureSpeechKey
+		}
+		if apiKey == "" {
+			return nil, ""
+		}
+		provider, name = tts.NewAzure(apiKey, s.Config.AzureSpeechRegion, s.Log), "azure"
 	default:
 		// ElevenLabs (default).
 		if apiKey == "" {
