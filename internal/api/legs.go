@@ -537,7 +537,10 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
-		startAMD()
+		// NOTE: AMD is NOT started here — early media carries ringback
+		// tones whose cadence (e.g. 2s on / 4s off) mimics a short human
+		// greeting and would cause false "human" classifications. AMD
+		// starts only after the call is answered (200 OK).
 		addToRoom()
 	}
 	if req.Privacy != "" {
