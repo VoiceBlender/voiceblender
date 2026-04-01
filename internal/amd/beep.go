@@ -21,7 +21,7 @@ type beepDetector struct {
 
 // newBeepDetector creates a detector scanning for tones in [minFreq, maxFreq].
 // energyRatio is the minimum fraction of frame energy that must be in the
-// target band (0.3 = 30%). minFrames is how many consecutive 20 ms frames
+// target band (0.2 = 20%). minFrames is how many consecutive 20 ms frames
 // must contain the tone before declaring a beep.
 func newBeepDetector(minFreq, maxFreq, energyRatio float64, minFrames int) *beepDetector {
 	return &beepDetector{

@@ -233,7 +233,7 @@ func (a *Analyzer) Run(ctx context.Context, reader io.Reader) Detection {
 const (
 	beepMinFreq     = 800.0  // Hz — lower bound of beep frequency range
 	beepMaxFreq     = 1200.0 // Hz — upper bound of beep frequency range
-	beepEnergyRatio = 0.3    // 30% of frame energy must be in target band
+	beepEnergyRatio = 0.2    // 20% of frame energy must be in target band
 	beepMinFrames   = 4      // 4 × 20ms = 80ms of sustained tone to confirm
 )
 
