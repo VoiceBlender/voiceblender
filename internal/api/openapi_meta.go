@@ -453,6 +453,18 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/amd", OperationID: "startAMDLeg",
+			Summary:     "Start answering machine detection on a connected leg",
+			Tags:        []string{"Legs"},
+			RequestType: AMDParams{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "AMD started"},
+				400: {Description: "Invalid AMD params or not a SIP leg"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg is not in connected state"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/ice-candidates", OperationID: "addICECandidate",
 			Summary: "Send a remote ICE candidate to a WebRTC leg (trickle ICE)",
 			Tags:    []string{"WebRTC"},

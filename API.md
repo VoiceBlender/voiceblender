@@ -1400,6 +1400,35 @@ The returned `leg_id` can be used with all `/v1/legs` and `/v1/rooms` endpoints.
 
 ---
 
+### POST /v1/legs/{id}/amd
+
+Start answering machine detection on an already-connected SIP leg. This is an alternative to including the `amd` object in `POST /v1/legs` — use this endpoint when AMD was not enabled at call creation time.
+
+All AMD parameters are optional. An empty request body `{}` enables AMD with all defaults. See **AMD Parameters** above for the full parameter reference.
+
+**Request:**
+
+```json
+{
+  "beep_timeout": 10000
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "status": "started"
+}
+```
+
+**Errors:**
+- `400` — Invalid AMD params or leg is not a SIP leg
+- `404` — Leg not found
+- `409` — Leg is not in `connected` state (AMD can only start on answered calls)
+
+---
+
 ### POST /v1/legs/{id}/ice-candidates
 
 Send a remote ICE candidate to the server for a WebRTC leg (trickle ICE).

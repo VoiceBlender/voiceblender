@@ -476,63 +476,16 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	}
 
 	// Prepare AMD if requested.
-	var amdAnalyzer *amd.Analyzer
-	var amdBuf *amdBuffer
+	var startAMD func()
 	if req.AMD != nil {
-		params := amd.MergeMillis(
-			amd.DefaultParams(),
-			req.AMD.InitialSilenceTimeout,
-			req.AMD.GreetingDuration,
-			req.AMD.AfterGreetingSilence,
-			req.AMD.TotalAnalysisTime,
-			req.AMD.MinimumWordLength,
-			req.AMD.BeepTimeout,
-		)
-		if err := params.Validate(); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AMD params: %v", err))
+		var err error
+		startAMD, err = s.prepareAMD(l, req.AMD)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		amdAnalyzer = amd.New(params)
-		amdBuf = newAMDBuffer(256) // ~5s of 20ms frames
-	}
-
-	// startAMD installs the AMD tap and launches the analyzer goroutine.
-	var amdStarted sync.Once
-	startAMD := func() {
-		if amdAnalyzer == nil {
-			return
-		}
-		amdStarted.Do(func() {
-			l.SetAMDTap(amdBuf)
-			go func() {
-				resampleReader := mixer.NewResampleReader(amdBuf, l.SampleRate(), mixer.SampleRate)
-				detection := amdAnalyzer.Run(l.Context(), resampleReader)
-
-				// Publish amd.result immediately.
-				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
-					LegScope:           events.LegScope{LegID: l.ID()},
-					Result:             string(detection.Result),
-					InitialSilenceMs:   detection.InitialSilenceMs,
-					GreetingDurationMs: detection.GreetingDurationMs,
-					TotalAnalysisMs:    detection.TotalAnalysisMs,
-				})
-
-				// If machine detected and beep timeout configured, keep
-				// listening for the beep tone on the same audio stream.
-				if detection.Result == amd.ResultMachine && amdAnalyzer.Params().BeepTimeout > 0 {
-					beep := amdAnalyzer.WaitForBeep(l.Context(), resampleReader)
-					if beep.Detected {
-						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
-							LegScope: events.LegScope{LegID: l.ID()},
-							BeepMs:   beep.BeepMs,
-						})
-					}
-				}
-
-				l.ClearAMDTap()
-				amdBuf.Close()
-			}()
-		})
+	} else {
+		startAMD = func() {}
 	}
 
 	// Build invite options.
@@ -741,6 +694,96 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "caller_cancel")
+}
+
+// prepareAMD creates an AMD analyzer and returns a function that, when called,
+// installs the tap and starts the analyzer goroutine. The returned function is
+// safe to call multiple times (only the first call has effect).
+func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
+	params := amd.MergeMillis(
+		amd.DefaultParams(),
+		req.InitialSilenceTimeout,
+		req.GreetingDuration,
+		req.AfterGreetingSilence,
+		req.TotalAnalysisTime,
+		req.MinimumWordLength,
+		req.BeepTimeout,
+	)
+	if err := params.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid AMD params: %w", err)
+	}
+
+	analyzer := amd.New(params)
+	buf := newAMDBuffer(256) // ~5s of 20ms frames
+
+	var once sync.Once
+	start := func() {
+		once.Do(func() {
+			l.SetAMDTap(buf)
+			go func() {
+				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.SampleRate)
+				detection := analyzer.Run(l.Context(), resampleReader)
+
+				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
+					LegScope:           events.LegScope{LegID: l.ID()},
+					Result:             string(detection.Result),
+					InitialSilenceMs:   detection.InitialSilenceMs,
+					GreetingDurationMs: detection.GreetingDurationMs,
+					TotalAnalysisMs:    detection.TotalAnalysisMs,
+				})
+
+				if detection.Result == amd.ResultMachine && analyzer.Params().BeepTimeout > 0 {
+					beep := analyzer.WaitForBeep(l.Context(), resampleReader)
+					if beep.Detected {
+						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
+							LegScope: events.LegScope{LegID: l.ID()},
+							BeepMs:   beep.BeepMs,
+						})
+					}
+				}
+
+				l.ClearAMDTap()
+				buf.Close()
+			}()
+		})
+	}
+	return start, nil
+}
+
+// startAMDLeg handles POST /v1/legs/{id}/amd — starts AMD on a connected leg.
+func (s *Server) startAMDLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "AMD is only supported on SIP legs")
+		return
+	}
+
+	if l.State() != leg.StateConnected {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg must be connected, current state: %s", l.State()))
+		return
+	}
+
+	var req AMDParams
+	if err := decodeJSON(r, &req); err != nil {
+		// Empty body is fine — use all defaults.
+		req = AMDParams{}
+	}
+
+	start, err := s.prepareAMD(sipLeg, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	start()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 }
 
 // amdBuffer is a channel-backed buffer that implements io.Writer (non-blocking,

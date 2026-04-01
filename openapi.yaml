@@ -882,6 +882,54 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/amd:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: startAMDLeg
+            summary: Start answering machine detection on a connected leg
+            description: >-
+                Start AMD on an already-connected SIP leg. This is an alternative
+                to including the `amd` object in the POST /v1/legs request — use
+                this endpoint when AMD was not enabled at call creation time.
+                All AMD parameters are optional; omitted or zero values use built-in
+                defaults. An empty request body enables AMD with all defaults.
+            tags:
+                - Legs
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AMDParams'
+            responses:
+                "200":
+                    description: AMD started
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    status:
+                                        type: string
+                                        example: started
+                "400":
+                    description: Invalid AMD params or not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                "404":
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                "409":
+                    description: Leg is not in connected state
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/ice-candidates:
         parameters:
             - $ref: '#/components/parameters/LegId'

@@ -91,6 +91,7 @@ POST   /v1/legs/{id}/record        # Start recording
 DELETE /v1/legs/{id}/record        # Stop recording
 POST   /v1/legs/{id}/stt           # Start speech-to-text
 DELETE /v1/legs/{id}/stt           # Stop speech-to-text
+POST   /v1/legs/{id}/amd            # Start answering machine detection
 POST   /v1/legs/{id}/agent         # Attach AI agent
 POST   /v1/legs/{id}/agent/message # Inject message into agent
 DELETE /v1/legs/{id}/agent         # Detach AI agent

@@ -277,3 +277,126 @@ func TestAMD_DefaultParams(t *testing.T) {
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
 }
+
+// --- POST /v1/legs/{id}/amd endpoint tests ---
+
+// TestAMD_PostEndpoint_Machine starts AMD via the POST endpoint after the call
+// is already connected, plays a continuous tone, and verifies machine detection.
+func TestAMD_PostEndpoint_Machine(t *testing.T) {
+	instA := newTestInstance(t, "amd-ep-machine-a")
+	instB := newTestInstance(t, "amd-ep-machine-b")
+
+	outID, inID := establishCall(t, instA, instB)
+
+	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), map[string]interface{}{
+		"initial_silence_timeout": 4000,
+		"greeting_duration":       1500,
+		"total_analysis_time":     8000,
+	})
+	if amdResp.StatusCode != http.StatusOK {
+		t.Fatalf("start AMD: unexpected status %d", amdResp.StatusCode)
+	}
+	amdResp.Body.Close()
+
+	playResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/play", instB.baseURL(), inID), map[string]interface{}{
+		"tone":   "us_dial",
+		"repeat": -1,
+	})
+	if playResp.StatusCode != http.StatusOK {
+		t.Fatalf("play: unexpected status %d", playResp.StatusCode)
+	}
+	playResp.Body.Close()
+
+	e := instA.collector.waitForMatch(t, events.AMDResult, func(e events.Event) bool {
+		return e.Data.GetLegID() == outID
+	}, 15*time.Second)
+
+	amdData := e.Data.(*events.AMDResultData)
+	if amdData.Result != "machine" {
+		t.Errorf("expected machine, got %s", amdData.Result)
+	}
+	t.Logf("POST endpoint AMD: %s (greeting=%dms total=%dms)",
+		amdData.Result, amdData.GreetingDurationMs, amdData.TotalAnalysisMs)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
+}
+
+// TestAMD_PostEndpoint_Defaults verifies POST /v1/legs/{id}/amd with empty body.
+func TestAMD_PostEndpoint_Defaults(t *testing.T) {
+	instA := newTestInstance(t, "amd-ep-def-a")
+	instB := newTestInstance(t, "amd-ep-def-b")
+
+	outID, _ := establishCall(t, instA, instB)
+
+	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), nil)
+	if amdResp.StatusCode != http.StatusOK {
+		t.Fatalf("start AMD: unexpected status %d", amdResp.StatusCode)
+	}
+	amdResp.Body.Close()
+
+	e := instA.collector.waitForMatch(t, events.AMDResult, func(e events.Event) bool {
+		return e.Data.GetLegID() == outID
+	}, 10*time.Second)
+
+	amdData := e.Data.(*events.AMDResultData)
+	t.Logf("POST endpoint defaults: %s (initial_silence=%dms total=%dms)",
+		amdData.Result, amdData.InitialSilenceMs, amdData.TotalAnalysisMs)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
+}
+
+// TestAMD_PostEndpoint_NotConnected verifies 409 when leg is not connected.
+func TestAMD_PostEndpoint_NotConnected(t *testing.T) {
+	instA := newTestInstance(t, "amd-ep-nc-a")
+	instB := newTestInstance(t, "amd-ep-nc-b")
+
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outLeg legView
+	decodeJSON(t, createResp, &outLeg)
+	waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outLeg.ID), nil)
+	if amdResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", amdResp.StatusCode)
+	}
+	amdResp.Body.Close()
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outLeg.ID))
+}
+
+// TestAMD_PostEndpoint_NotFound verifies 404 for non-existent leg.
+func TestAMD_PostEndpoint_NotFound(t *testing.T) {
+	instA := newTestInstance(t, "amd-ep-nf-a")
+
+	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), "nonexistent-id"), nil)
+	if amdResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", amdResp.StatusCode)
+	}
+	amdResp.Body.Close()
+}
+
+// TestAMD_PostEndpoint_InvalidParams verifies 400 for invalid AMD parameters.
+func TestAMD_PostEndpoint_InvalidParams(t *testing.T) {
+	instA := newTestInstance(t, "amd-ep-inv-a")
+	instB := newTestInstance(t, "amd-ep-inv-b")
+
+	outID, _ := establishCall(t, instA, instB)
+
+	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), map[string]interface{}{
+		"initial_silence_timeout": 5000,
+		"total_analysis_time":     2000,
+	})
+	if amdResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", amdResp.StatusCode)
+	}
+	amdResp.Body.Close()
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
+}
