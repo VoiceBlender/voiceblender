@@ -63,7 +63,15 @@ Originate an outbound SIP call.
     "username": "trunk-user",
     "password": "trunk-pass"
   },
-  "room_id": "room-123"
+  "room_id": "room-123",
+  "amd": {
+    "initial_silence_timeout": 2500,
+    "greeting_duration": 1500,
+    "after_greeting_silence": 800,
+    "total_analysis_time": 5000,
+    "minimum_word_length": 100,
+    "beep_timeout": 10000
+  }
 }
 ```
 
@@ -81,6 +89,26 @@ Originate an outbound SIP call.
 | `room_id` | string | no | Room ID to auto-add the leg to once media is ready. The leg joins the room on `early_media` (183+SDP) or `connected` (200 OK), whichever comes first. If the room does not exist, it is automatically created. |
 | `webhook_url` | string | no | Per-leg webhook URL. Events for this leg are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
+| `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
+
+**AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `initial_silence_timeout` | integer | 2500 | Max milliseconds of silence before declaring `no_speech`. |
+| `greeting_duration` | integer | 1500 | Speech duration threshold (ms). Continuous/cumulative speech exceeding this value classifies the answerer as `machine`. |
+| `after_greeting_silence` | integer | 800 | Silence duration (ms) after initial speech to declare `human`. |
+| `total_analysis_time` | integer | 5000 | Hard analysis deadline (ms). If no determination is made within this window, the result is `not_sure`. |
+| `minimum_word_length` | integer | 100 | Minimum speech burst duration (ms) to count as a word. Shorter bursts are treated as noise. |
+| `beep_timeout` | integer | 0 | After detecting `machine`, continue listening up to this many ms for the voicemail beep tone (800–1200 Hz). `0` = beep detection disabled. |
+
+Examples:
+
+```json
+"amd": {}                                          // all defaults
+"amd": { "beep_timeout": 10000 }                   // defaults + beep detection
+"amd": { "greeting_duration": 2000, "beep_timeout": 8000 }  // custom thresholds
+```
 
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
@@ -1532,6 +1560,33 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `agent.agent_response` | Agent generated a response | `leg_id` or `room_id`, `text` |
 | `room.created` | Room created | `room_id` |
 | `room.deleted` | Room deleted | `room_id` |
+| `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms`, `beep_detected`, `beep_ms` |
+
+#### `amd.result` — Answering Machine Detection
+
+Emitted when AMD analysis completes on an outbound call. The `result` field is one of:
+
+- `human` — Short greeting followed by silence (likely a person).
+- `machine` — Long greeting (likely voicemail or IVR).
+- `no_speech` — No speech detected within the initial silence timeout.
+- `not_sure` — Analysis timed out without a confident determination.
+
+```json
+{
+  "type": "amd.result",
+  "timestamp": "2026-04-01T12:00:00Z",
+  "instance_id": "abc-123",
+  "leg_id": "leg-456",
+  "result": "machine",
+  "initial_silence_ms": 120,
+  "greeting_duration_ms": 1680,
+  "total_analysis_ms": 1800,
+  "beep_detected": true,
+  "beep_ms": 3200
+}
+```
+
+When `beep_timeout` is set and the result is `machine`, the analyzer continues listening for the voicemail beep tone (800–1200 Hz). The `beep_detected` field indicates whether the beep was found within the timeout, and `beep_ms` is the time from analysis start to beep detection. Use this to know exactly when to start playing your voicemail message.
 
 #### `leg.disconnected` — CDR-Style Structure
 

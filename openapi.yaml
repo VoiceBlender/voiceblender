@@ -1901,9 +1901,49 @@ components:
                 webhook_secret:
                     type: string
                     description: HMAC-SHA256 signing secret for the per-leg webhook.
+                amd:
+                    description: >-
+                        Enable Answering Machine Detection on this outbound call.
+                        Disabled by default — omit the field entirely to skip AMD.
+                        Include the object to enable; all inner fields are optional
+                        and default to sensible values when omitted or set to zero
+                        (e.g. `"amd": {}` enables AMD with all defaults).
+                    allOf:
+                        - $ref: '#/components/schemas/AMDParams'
             required:
                 - type
                 - uri
+        AMDParams:
+            type: object
+            description: >-
+                Answering Machine Detection configuration. All fields are
+                optional — omitted or zero-valued fields use built-in defaults.
+                Pass an empty object (`{}`) to enable AMD with all defaults.
+            properties:
+                initial_silence_timeout:
+                    type: integer
+                    description: Max milliseconds of silence before declaring no_speech.
+                    default: 2500
+                greeting_duration:
+                    type: integer
+                    description: Speech duration threshold (ms) above which answerer is classified as machine.
+                    default: 1500
+                after_greeting_silence:
+                    type: integer
+                    description: Silence duration (ms) after initial speech to declare human.
+                    default: 800
+                total_analysis_time:
+                    type: integer
+                    description: Max analysis window in milliseconds.
+                    default: 5000
+                minimum_word_length:
+                    type: integer
+                    description: Minimum speech burst duration (ms) to count as a word.
+                    default: 100
+                beep_timeout:
+                    type: integer
+                    description: "Max time (ms) to wait for the voicemail beep after machine detection. 0 = disabled."
+                    default: 0
         RoomCreateRequest:
             type: object
             properties:
@@ -2779,3 +2819,35 @@ x-webhooks:
                                     text:
                                         type: string
                                         description: Agent response text
+    amd.result:
+        post:
+            summary: Answering machine detection completed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    result:
+                                        type: string
+                                        enum: [human, machine, no_speech, not_sure]
+                                        description: "Detection result: human, machine, no_speech, or not_sure"
+                                    initial_silence_ms:
+                                        type: integer
+                                        description: Milliseconds of silence before first speech
+                                    greeting_duration_ms:
+                                        type: integer
+                                        description: Milliseconds of speech in the greeting
+                                    total_analysis_ms:
+                                        type: integer
+                                        description: Total milliseconds of analysis before determination
+                                    beep_detected:
+                                        type: boolean
+                                        description: True if a voicemail beep tone was detected after machine classification
+                                    beep_ms:
+                                        type: integer
+                                        description: Milliseconds from analysis start to beep detection (0 if no beep)

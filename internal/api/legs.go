@@ -9,9 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"io"
+
+	"github.com/VoiceBlender/voiceblender/internal/amd"
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -394,7 +398,6 @@ func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "hung_up"})
 }
 
-
 func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 	var req CreateLegRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -472,6 +475,53 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		})
 	}
 
+	// Prepare AMD if requested.
+	var amdAnalyzer *amd.Analyzer
+	var amdBuf *amdBuffer
+	if req.AMD != nil {
+		params := amd.MergeMillis(
+			amd.DefaultParams(),
+			req.AMD.InitialSilenceTimeout,
+			req.AMD.GreetingDuration,
+			req.AMD.AfterGreetingSilence,
+			req.AMD.TotalAnalysisTime,
+			req.AMD.MinimumWordLength,
+			req.AMD.BeepTimeout,
+		)
+		if err := params.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AMD params: %v", err))
+			return
+		}
+		amdAnalyzer = amd.New(params)
+		amdBuf = newAMDBuffer(256) // ~5s of 20ms frames
+	}
+
+	// startAMD installs the AMD tap and launches the analyzer goroutine.
+	var amdStarted sync.Once
+	startAMD := func() {
+		if amdAnalyzer == nil {
+			return
+		}
+		amdStarted.Do(func() {
+			l.SetAMDTap(amdBuf)
+			go func() {
+				resampleReader := mixer.NewResampleReader(amdBuf, l.SampleRate(), mixer.SampleRate)
+				detection := amdAnalyzer.Run(l.Context(), resampleReader)
+				l.ClearAMDTap()
+				amdBuf.Close()
+				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
+					LegScope:           events.LegScope{LegID: l.ID()},
+					Result:             string(detection.Result),
+					InitialSilenceMs:   detection.InitialSilenceMs,
+					GreetingDurationMs: detection.GreetingDurationMs,
+					TotalAnalysisMs:    detection.TotalAnalysisMs,
+					BeepDetected:       detection.BeepDetected,
+					BeepMs:             detection.BeepMs,
+				})
+			}()
+		})
+	}
+
 	// Build invite options.
 	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
 	if req.Auth != nil {
@@ -487,6 +537,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		startAMD()
 		addToRoom()
 	}
 	if req.Privacy != "" {
@@ -549,6 +600,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		startAMD()
 		addToRoom()
 
 		// Monitor for remote hangup or max duration.
@@ -673,4 +725,69 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "caller_cancel")
+}
+
+// amdBuffer is a channel-backed buffer that implements io.Writer (non-blocking,
+// drops overflow) and io.Reader (blocking). This prevents the readLoop from
+// blocking when writing to the AMD tap.
+type amdBuffer struct {
+	ch     chan []byte
+	closed chan struct{}
+	buf    []byte // leftover from partial Read
+}
+
+func newAMDBuffer(cap int) *amdBuffer {
+	return &amdBuffer{
+		ch:     make(chan []byte, cap),
+		closed: make(chan struct{}),
+	}
+}
+
+// Write copies p and enqueues it. Non-blocking: drops if buffer full.
+func (b *amdBuffer) Write(p []byte) (int, error) {
+	frame := make([]byte, len(p))
+	copy(frame, p)
+	select {
+	case <-b.closed:
+		return len(p), nil
+	default:
+	}
+	select {
+	case b.ch <- frame:
+	default:
+		// drop on overflow
+	}
+	return len(p), nil
+}
+
+// Read blocks until data is available or the buffer is closed.
+func (b *amdBuffer) Read(p []byte) (int, error) {
+	// Serve leftover first.
+	if len(b.buf) > 0 {
+		n := copy(p, b.buf)
+		b.buf = b.buf[n:]
+		return n, nil
+	}
+	select {
+	case frame, ok := <-b.ch:
+		if !ok {
+			return 0, io.EOF
+		}
+		n := copy(p, frame)
+		if n < len(frame) {
+			b.buf = frame[n:]
+		}
+		return n, nil
+	case <-b.closed:
+		return 0, io.EOF
+	}
+}
+
+// Close signals the reader that no more data will arrive.
+func (b *amdBuffer) Close() {
+	select {
+	case <-b.closed:
+	default:
+		close(b.closed)
+	}
 }
