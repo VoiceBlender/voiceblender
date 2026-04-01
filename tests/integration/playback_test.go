@@ -38,7 +38,7 @@ func TestPlaybackVolume_Leg(t *testing.T) {
 
 	// Start a looping tone playback on the outbound leg.
 	startResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/play", instA.baseURL(), outID), map[string]interface{}{
-		"tone":   "dtmf_0",
+		"tone":   "us_dial",
 		"repeat": -1,
 		"volume": 0,
 	})
@@ -137,7 +137,7 @@ func TestPlaybackVolume_Room(t *testing.T) {
 
 	// Start a looping tone playback on the room.
 	startResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/play", instA.baseURL(), roomID), map[string]interface{}{
-		"tone":   "dtmf_0",
+		"tone":   "us_dial",
 		"repeat": -1,
 		"volume": 0,
 	})

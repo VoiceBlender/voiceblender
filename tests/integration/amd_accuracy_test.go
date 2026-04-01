@@ -19,24 +19,29 @@ import (
 	mp3 "github.com/hajimehoshi/go-mp3"
 )
 
-const greetingsDir = "../../tests/data/greetings"
+const (
+	dataDir      = "../../tests/data"
+	greetingsDir = dataDir + "/greetings"
+	staticDir    = dataDir + "/static_greetings"
+)
 
 // testSource defines a directory of audio files and the expected AMD result.
 type testSource struct {
-	dir      string     // subdirectory name under greetingsDir
+	dir      string     // absolute or relative path to audio directory
 	expected amd.Result // expected classification for all files
 }
 
-// machineSource are voicemail greeting recordings — expected: "machine".
+// machineSources are voicemail greeting recordings — expected: "machine".
 // humanSources are short human greetings — expected: "human".
 var machineSources = []testSource{
-	{"frankj-dob", amd.ResultMachine},
-	{"gavvllaw", amd.ResultMachine},
-	{"chetaniitbhilai", amd.ResultMachine},
+	{greetingsDir + "/frankj-dob", amd.ResultMachine},
+	{greetingsDir + "/gavvllaw", amd.ResultMachine},
+	{greetingsDir + "/chetaniitbhilai", amd.ResultMachine},
+	{staticDir, amd.ResultMachine},
 }
 
 var humanSources = []testSource{
-	{"human", amd.ResultHuman},
+	{greetingsDir + "/human", amd.ResultHuman},
 }
 
 type amdResult struct {
@@ -59,7 +64,7 @@ func TestAMD_Accuracy(t *testing.T) {
 // TestAMD_FalsePositives runs the AMD analyzer against short human greeting
 // recordings (expected: human) to check for false positives.
 func TestAMD_FalsePositives(t *testing.T) {
-	humanDir := filepath.Join(greetingsDir, "human")
+	humanDir := greetingsDir + "/human"
 	if _, err := os.Stat(humanDir); os.IsNotExist(err) {
 		t.Skip("human greetings not found — run 'make gen-human-greetings' first (requires ELEVENLABS_API_KEY)")
 	}
@@ -87,7 +92,7 @@ func runAccuracyTest(t *testing.T, sources []testSource) {
 	var total, correct int
 
 	for _, src := range sources {
-		dir := filepath.Join(greetingsDir, src.dir)
+		dir := src.dir
 		entries, err := os.ReadDir(dir)
 		if os.IsNotExist(err) {
 			t.Logf("skipping %s (directory not found)", src.dir)
@@ -109,7 +114,7 @@ func runAccuracyTest(t *testing.T, sources []testSource) {
 
 			path := filepath.Join(dir, name)
 			expected := src.expected
-			source := src.dir
+			source := filepath.Base(dir)
 			t.Run(source+"/"+name, func(t *testing.T) {
 				pcm, sr, err := decodeAudioFile(path)
 				if err != nil {
@@ -166,9 +171,10 @@ func runAccuracyTest(t *testing.T, sources []testSource) {
 
 	// Breakdown by source.
 	for _, src := range sources {
+		srcName := filepath.Base(src.dir)
 		var srcTotal, srcCorrect int
 		for _, r := range results {
-			if r.source == src.dir {
+			if r.source == srcName {
 				srcTotal++
 				if r.correct {
 					srcCorrect++
@@ -176,7 +182,7 @@ func runAccuracyTest(t *testing.T, sources []testSource) {
 			}
 		}
 		if srcTotal > 0 {
-			t.Logf("  %-20s %d/%d (%.0f%%) [expected: %s]", src.dir, srcCorrect, srcTotal,
+			t.Logf("  %-20s %d/%d (%.0f%%) [expected: %s]", srcName, srcCorrect, srcTotal,
 				float64(srcCorrect)/float64(srcTotal)*100, src.expected)
 		}
 	}
