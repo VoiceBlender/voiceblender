@@ -127,8 +127,9 @@ func WebhookFieldDescriptions() map[string]string {
 		"amd.result.initial_silence_ms":   "Milliseconds of silence before first speech",
 		"amd.result.greeting_duration_ms": "Milliseconds of speech in the greeting",
 		"amd.result.total_analysis_ms":    "Total milliseconds of analysis before determination",
-		"amd.result.beep_detected":        "True if a voicemail beep tone was detected after machine classification",
-		"amd.result.beep_ms":              "Milliseconds from analysis start to beep detection (0 if no beep)",
+
+		"amd.beep.leg_id":  "Leg identifier",
+		"amd.beep.beep_ms": "Milliseconds from machine detection to beep tone detection",
 	}
 }
 

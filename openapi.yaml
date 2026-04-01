@@ -2845,9 +2845,19 @@ x-webhooks:
                                     total_analysis_ms:
                                         type: integer
                                         description: Total milliseconds of analysis before determination
-                                    beep_detected:
-                                        type: boolean
-                                        description: True if a voicemail beep tone was detected after machine classification
+    amd.beep:
+        post:
+            summary: Voicemail beep tone detected after machine classification
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
                                     beep_ms:
                                         type: integer
-                                        description: Milliseconds from analysis start to beep detection (0 if no beep)
+                                        description: Milliseconds from machine detection to beep tone detection

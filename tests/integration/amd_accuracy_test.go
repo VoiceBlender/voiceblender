@@ -145,10 +145,10 @@ func runAccuracyTest(t *testing.T, sources []testSource) {
 				if !isCorrect {
 					mark = "MISS"
 				}
-				t.Logf("[%s] %-40s → %-10s (expect=%-7s greeting=%dms silence=%dms total=%dms beep=%v took=%v)",
+				t.Logf("[%s] %-40s → %-10s (expect=%-7s greeting=%dms silence=%dms total=%dms took=%v)",
 					mark, name, det.Result, expected,
 					det.GreetingDurationMs, det.InitialSilenceMs, det.TotalAnalysisMs,
-					det.BeepDetected, elapsed.Round(time.Millisecond))
+					elapsed.Round(time.Millisecond))
 			})
 		}
 	}

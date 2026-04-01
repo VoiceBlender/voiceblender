@@ -48,6 +48,7 @@ const (
 	AgentAgentResponse  EventType = "agent.agent_response"
 
 	AMDResult EventType = "amd.result"
+	AMDBeep   EventType = "amd.beep"
 )
 
 type Event struct {

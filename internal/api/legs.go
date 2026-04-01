@@ -507,17 +507,30 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			go func() {
 				resampleReader := mixer.NewResampleReader(amdBuf, l.SampleRate(), mixer.SampleRate)
 				detection := amdAnalyzer.Run(l.Context(), resampleReader)
-				l.ClearAMDTap()
-				amdBuf.Close()
+
+				// Publish amd.result immediately.
 				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
 					LegScope:           events.LegScope{LegID: l.ID()},
 					Result:             string(detection.Result),
 					InitialSilenceMs:   detection.InitialSilenceMs,
 					GreetingDurationMs: detection.GreetingDurationMs,
 					TotalAnalysisMs:    detection.TotalAnalysisMs,
-					BeepDetected:       detection.BeepDetected,
-					BeepMs:             detection.BeepMs,
 				})
+
+				// If machine detected and beep timeout configured, keep
+				// listening for the beep tone on the same audio stream.
+				if detection.Result == amd.ResultMachine && amdAnalyzer.Params().BeepTimeout > 0 {
+					beep := amdAnalyzer.WaitForBeep(l.Context(), resampleReader)
+					if beep.Detected {
+						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
+							LegScope: events.LegScope{LegID: l.ID()},
+							BeepMs:   beep.BeepMs,
+						})
+					}
+				}
+
+				l.ClearAMDTap()
+				amdBuf.Close()
 			}()
 		})
 	}

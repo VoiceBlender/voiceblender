@@ -42,8 +42,12 @@ type Detection struct {
 	InitialSilenceMs   int
 	GreetingDurationMs int
 	TotalAnalysisMs    int
-	BeepDetected       bool // true if a voicemail beep was detected after machine classification
-	BeepMs             int  // ms from analysis start to beep detection (0 if no beep)
+}
+
+// BeepResult holds the outcome of beep detection after a machine classification.
+type BeepResult struct {
+	Detected bool
+	BeepMs   int // ms from start of beep waiting to detection (0 if not detected)
 }
 
 // Analyzer performs answering machine detection on a 16 kHz PCM audio stream.
@@ -55,6 +59,9 @@ type Analyzer struct {
 func New(params Params) *Analyzer {
 	return &Analyzer{params: params}
 }
+
+// Params returns the analyzer's configuration.
+func (a *Analyzer) Params() Params { return a.params }
 
 // analysis state phases
 type phase int
@@ -178,16 +185,12 @@ func (a *Analyzer) Run(ctx context.Context, reader io.Reader) Detection {
 
 				// Long continuous/cumulative speech → machine.
 				if greetingDur >= a.params.GreetingDuration {
-					det := Detection{
+					return Detection{
 						Result:             ResultMachine,
 						InitialSilenceMs:   ms(initialSilence),
 						GreetingDurationMs: ms(greetingDur),
 						TotalAnalysisMs:    ms(elapsed),
 					}
-					if a.params.BeepTimeout > 0 {
-						a.waitForBeep(ctx, reader, &det)
-					}
-					return det
 				}
 			} else {
 				// Transition from speaking to silent.
@@ -234,10 +237,10 @@ const (
 	beepMinFrames   = 4      // 4 × 20ms = 80ms of sustained tone to confirm
 )
 
-// waitForBeep continues reading audio after a "machine" classification,
-// looking for the voicemail beep tone. It updates det in place if a beep is
-// found within BeepTimeout.
-func (a *Analyzer) waitForBeep(ctx context.Context, reader io.Reader, det *Detection) {
+// WaitForBeep continues reading audio after a "machine" classification,
+// looking for the voicemail beep tone (800–1200 Hz). It blocks until the beep
+// is found, the timeout expires, or the context is cancelled.
+func (a *Analyzer) WaitForBeep(ctx context.Context, reader io.Reader) BeepResult {
 	bd := newBeepDetector(beepMinFreq, beepMaxFreq, beepEnergyRatio, beepMinFrames)
 	buf := make([]byte, frameSizeBytes)
 	samples := make([]int16, samplesPerFrame)
@@ -247,12 +250,12 @@ func (a *Analyzer) waitForBeep(ctx context.Context, reader io.Reader, det *Detec
 
 	for waited < deadline {
 		if ctx.Err() != nil {
-			return
+			return BeepResult{}
 		}
 
 		_, err := io.ReadFull(reader, buf)
 		if err != nil {
-			return
+			return BeepResult{}
 		}
 
 		for i := range samples {
@@ -262,11 +265,10 @@ func (a *Analyzer) waitForBeep(ctx context.Context, reader io.Reader, det *Detec
 		waited += frameDuration
 
 		if bd.feed(samples) {
-			det.BeepDetected = true
-			det.BeepMs = det.TotalAnalysisMs + ms(waited)
-			return
+			return BeepResult{Detected: true, BeepMs: ms(waited)}
 		}
 	}
+	return BeepResult{}
 }
 
 // computeRMS returns the root-mean-square of int16 PCM samples.

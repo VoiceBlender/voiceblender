@@ -1560,7 +1560,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `agent.agent_response` | Agent generated a response | `leg_id` or `room_id`, `text` |
 | `room.created` | Room created | `room_id` |
 | `room.deleted` | Room deleted | `room_id` |
-| `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms`, `beep_detected`, `beep_ms` |
+| `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms` |
+| `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
 
 #### `amd.result` — Answering Machine Detection
 
@@ -1580,13 +1581,23 @@ Emitted when AMD analysis completes on an outbound call. The `result` field is o
   "result": "machine",
   "initial_silence_ms": 120,
   "greeting_duration_ms": 1680,
-  "total_analysis_ms": 1800,
-  "beep_detected": true,
-  "beep_ms": 3200
+  "total_analysis_ms": 1800
 }
 ```
 
-When `beep_timeout` is set and the result is `machine`, the analyzer continues listening for the voicemail beep tone (800–1200 Hz). The `beep_detected` field indicates whether the beep was found within the timeout, and `beep_ms` is the time from analysis start to beep detection. Use this to know exactly when to start playing your voicemail message.
+When `beep_timeout` is set and the result is `machine`, the `amd.result` event is sent immediately, then the analyzer continues listening for the voicemail beep tone (800–1200 Hz). If detected, a separate `amd.beep` event is emitted:
+
+```json
+{
+  "type": "amd.beep",
+  "timestamp": "2026-04-01T12:00:03Z",
+  "instance_id": "abc-123",
+  "leg_id": "leg-456",
+  "beep_ms": 1400
+}
+```
+
+The `beep_ms` field is the time from machine detection to beep detection. Use this event to know exactly when to start playing your voicemail message.
 
 #### `leg.disconnected` — CDR-Style Structure
 

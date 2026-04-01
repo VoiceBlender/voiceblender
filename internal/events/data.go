@@ -210,13 +210,18 @@ type AgentResponseData struct {
 }
 
 // AMDResultData is emitted when answering machine detection completes on an
-// outbound call.
+// outbound call. Sent immediately when a determination is made.
 type AMDResultData struct {
 	LegScope
 	Result             string `json:"result"`               // human, machine, no_speech, not_sure
 	InitialSilenceMs   int    `json:"initial_silence_ms"`   // ms of silence before first speech
 	GreetingDurationMs int    `json:"greeting_duration_ms"` // ms of speech in the greeting
 	TotalAnalysisMs    int    `json:"total_analysis_ms"`    // total ms of analysis
-	BeepDetected       bool   `json:"beep_detected"`        // true if voicemail beep was detected
-	BeepMs             int    `json:"beep_ms,omitempty"`    // ms from analysis start to beep (0 if no beep)
+}
+
+// AMDBeepData is emitted when the voicemail beep tone is detected after a
+// "machine" classification. Only sent when beep_timeout is configured.
+type AMDBeepData struct {
+	LegScope
+	BeepMs int `json:"beep_ms"` // ms from machine detection to beep
 }

@@ -461,7 +461,7 @@ func TestAnalyzer_MachineWithBeep(t *testing.T) {
 
 	loud := makeToneFrame(5000) // 440 Hz speech-like
 	silent := makeSilentFrame()
-	beep := makeSineFrame(1000, 10000) // 1000 Hz beep
+	beepTone := makeSineFrame(1000, 10000) // 1000 Hz beep
 
 	// Long speech (600ms > 500ms threshold) → machine, then silence, then beep.
 	speechFrames := framesForDuration(600 * time.Millisecond)
@@ -471,24 +471,28 @@ func TestAnalyzer_MachineWithBeep(t *testing.T) {
 	audio := buildAudio(
 		loud, speechFrames,
 		silent, silenceFrames,
-		beep, beepFrames,
+		beepTone, beepFrames,
 		silent, 10, // trailing silence
 	)
 
+	reader := bytes.NewReader(audio)
 	a := New(params)
-	det := a.Run(context.Background(), bytes.NewReader(audio))
+	det := a.Run(context.Background(), reader)
 
 	if det.Result != ResultMachine {
 		t.Fatalf("expected machine, got %s", det.Result)
 	}
-	if !det.BeepDetected {
+
+	// Now wait for beep on the remaining audio.
+	beep := a.WaitForBeep(context.Background(), reader)
+	if !beep.Detected {
 		t.Fatal("expected beep to be detected")
 	}
-	if det.BeepMs <= 0 {
-		t.Errorf("beep_ms should be positive, got %d", det.BeepMs)
+	if beep.BeepMs <= 0 {
+		t.Errorf("beep_ms should be positive, got %d", beep.BeepMs)
 	}
-	t.Logf("Machine with beep: greeting=%dms beep=%dms total=%dms",
-		det.GreetingDurationMs, det.BeepMs, det.TotalAnalysisMs)
+	t.Logf("Machine with beep: greeting=%dms beep_ms=%dms total=%dms",
+		det.GreetingDurationMs, beep.BeepMs, det.TotalAnalysisMs)
 }
 
 func TestAnalyzer_MachineNoBeepTimeout(t *testing.T) {
@@ -505,13 +509,16 @@ func TestAnalyzer_MachineNoBeepTimeout(t *testing.T) {
 
 	audio := buildAudio(loud, speechFrames, silent, silenceFrames)
 
+	reader := bytes.NewReader(audio)
 	a := New(params)
-	det := a.Run(context.Background(), bytes.NewReader(audio))
+	det := a.Run(context.Background(), reader)
 
 	if det.Result != ResultMachine {
 		t.Fatalf("expected machine, got %s", det.Result)
 	}
-	if det.BeepDetected {
+
+	beep := a.WaitForBeep(context.Background(), reader)
+	if beep.Detected {
 		t.Fatal("expected no beep detection (timeout)")
 	}
 }
@@ -522,12 +529,11 @@ func TestAnalyzer_MachineBeepDisabled(t *testing.T) {
 	params.BeepTimeout = 0 // disabled
 
 	loud := makeToneFrame(5000)
-	beep := makeSineFrame(1000, 10000)
 
-	// Machine detection followed by beep, but beep detection is disabled.
+	// Machine detection — beep detection not called since BeepTimeout=0.
 	speechFrames := framesForDuration(600 * time.Millisecond)
 
-	audio := buildAudio(loud, speechFrames, beep, 10)
+	audio := buildAudio(loud, speechFrames)
 
 	a := New(params)
 	det := a.Run(context.Background(), bytes.NewReader(audio))
@@ -535,7 +541,8 @@ func TestAnalyzer_MachineBeepDisabled(t *testing.T) {
 	if det.Result != ResultMachine {
 		t.Fatalf("expected machine, got %s", det.Result)
 	}
-	if det.BeepDetected {
-		t.Fatal("beep should not be detected when disabled")
+	// WaitForBeep should not be called when BeepTimeout=0; the caller checks this.
+	if a.Params().BeepTimeout != 0 {
+		t.Fatal("BeepTimeout should be 0")
 	}
 }
