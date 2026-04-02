@@ -5,6 +5,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
@@ -12,6 +13,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/VoiceBlender/voiceblender/internal/storage"
 	"github.com/VoiceBlender/voiceblender/internal/tts"
 
@@ -32,6 +34,9 @@ type Server struct {
 	Metrics   *metrics.Collector
 	Config    config.Config
 	Log       *slog.Logger
+
+	speakMu   sync.Mutex
+	speakDets map[string]*speaking.Detector
 }
 
 func NewServer(
@@ -61,6 +66,7 @@ func NewServer(
 		Metrics:   metricsCollector,
 		Config:    cfg,
 		Log:       log,
+		speakDets: make(map[string]*speaking.Detector),
 	}
 	s.routes()
 	return s

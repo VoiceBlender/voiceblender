@@ -37,9 +37,9 @@ func (g *guardedWriter) Close() {
 
 const (
 	SampleRate      = 16000
-	Ptime           = 20 // ms
+	Ptime           = 20                        // ms
 	SamplesPerFrame = SampleRate * Ptime / 1000 // 320
-	FrameSizeBytes  = SamplesPerFrame * 2        // 640 bytes (16-bit PCM)
+	FrameSizeBytes  = SamplesPerFrame * 2       // 640 bytes (16-bit PCM)
 )
 
 // Participant represents a single audio participant in the mixer.
@@ -72,9 +72,6 @@ type Participant struct {
 	// mixed-minus-self output inside mixTick, avoiding channel contention.
 	inject chan []byte
 
-	// Speaking detection state (accessed only under Mixer.mu).
-	speakState speakingState
-
 	// tap receives a copy of this participant's raw incoming PCM (for STT).
 	tap io.Writer
 	// outTap receives a copy of this participant's mixed-minus-self PCM (for stereo recording).
@@ -100,9 +97,6 @@ type Mixer struct {
 	tapOut io.Writer
 
 	comfortNoise *comfortnoise.Generator
-
-	// Speaking detection callback (set once, read under mu).
-	onSpeaking func(SpeakingEvent)
 }
 
 func New(log *slog.Logger) *Mixer {
@@ -117,14 +111,6 @@ func New(log *slog.Logger) *Mixer {
 // SetComfortNoise enables or disables comfort noise injection during silence.
 func (m *Mixer) SetComfortNoise(enabled bool) {
 	m.comfortNoise.SetEnabled(enabled)
-}
-
-// OnSpeaking registers a callback that fires when a participant starts or
-// stops speaking. Must be called before Start.
-func (m *Mixer) OnSpeaking(fn func(SpeakingEvent)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onSpeaking = fn
 }
 
 func (m *Mixer) SetTap(w io.Writer) {
@@ -175,19 +161,7 @@ func (m *Mixer) SetParticipantMuted(id string, muted bool) {
 		return
 	}
 	p.Muted.Store(muted)
-	var forceStopped bool
-	if muted && p.speakState.speaking {
-		p.speakState.speaking = false
-		p.speakState.activeFrames = 0
-		p.speakState.silentFrames = 0
-		forceStopped = true
-	}
-	cb := m.onSpeaking
 	m.mu.Unlock()
-
-	if forceStopped && cb != nil {
-		cb(SpeakingEvent{ParticipantID: id, Speaking: false})
-	}
 }
 
 // SetParticipantDeaf sets the deaf state for a participant. When deaf,
@@ -322,21 +296,14 @@ func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 func (m *Mixer) RemoveParticipant(id string) {
 	m.mu.Lock()
 	p, ok := m.participants[id]
-	var wasSpeaking bool
 	if ok {
-		wasSpeaking = p.speakState.speaking
 		delete(m.participants, id)
 		if p.guard != nil {
 			p.guard.Close() // prevent any further writes to the network
 		}
 		close(p.done) // signal readLoop/writeLoop to stop
 	}
-	cb := m.onSpeaking
 	m.mu.Unlock()
-
-	if wasSpeaking && cb != nil {
-		cb(SpeakingEvent{ParticipantID: id, Speaking: false})
-	}
 }
 
 func (m *Mixer) ParticipantCount() int {
@@ -572,38 +539,6 @@ func (m *Mixer) mixTick() {
 		}
 	}
 
-	// Speaking detection — compute energy per participant and update state.
-	var speakingEvents []SpeakingEvent
-	m.mu.Lock()
-	cb := m.onSpeaking
-	for i, p := range parts {
-		if p.WriteOnly {
-			continue
-		}
-		// Verify participant is still in the map (might have been removed
-		// between the snapshot and now).
-		if _, ok := m.participants[p.ID]; !ok {
-			continue
-		}
-		// Skip speaking detection for muted participants.
-		if muted[i] {
-			continue
-		}
-		rms := computeRMS(frames[i])
-		if p.speakState.update(rms) {
-			speakingEvents = append(speakingEvents, SpeakingEvent{
-				ParticipantID: p.ID,
-				Speaking:      p.speakState.speaking,
-			})
-		}
-	}
-	m.mu.Unlock()
-
-	for _, e := range speakingEvents {
-		if cb != nil {
-			cb(e)
-		}
-	}
 }
 
 func bytesToSamples(b []byte) []int16 {

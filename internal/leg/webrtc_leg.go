@@ -33,12 +33,12 @@ type WebRTCLeg struct {
 	pc         *webrtc.PeerConnection
 	localTrack *webrtc.TrackLocalStaticRTP
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	roomID     string
-	muted      atomic.Bool
-	deaf       atomic.Bool
-	createdAt  time.Time
+	ctx       context.Context
+	cancel    context.CancelFunc
+	roomID    string
+	muted     atomic.Bool
+	deaf      atomic.Bool
+	createdAt time.Time
 
 	// Ring buffers for mixer integration
 	inFrames  chan []byte // incoming PCM frames from browser
@@ -97,16 +97,18 @@ func (l *WebRTCLeg) SetRoomID(id string) {
 	l.roomID = id
 }
 
-func (l *WebRTCLeg) IsMuted() bool    { return l.muted.Load() }
-func (l *WebRTCLeg) SetMuted(m bool)  { l.muted.Store(m) }
-func (l *WebRTCLeg) IsDeaf() bool     { return l.deaf.Load() }
-func (l *WebRTCLeg) SetDeaf(d bool)   { l.deaf.Store(d) }
-func (l *WebRTCLeg) IsHeld() bool     { return false }
+func (l *WebRTCLeg) IsMuted() bool              { return l.muted.Load() }
+func (l *WebRTCLeg) SetMuted(m bool)            { l.muted.Store(m) }
+func (l *WebRTCLeg) IsDeaf() bool               { return l.deaf.Load() }
+func (l *WebRTCLeg) SetDeaf(d bool)             { l.deaf.Store(d) }
+func (l *WebRTCLeg) SetSpeakingTap(_ io.Writer) {}
+func (l *WebRTCLeg) ClearSpeakingTap()          {}
+func (l *WebRTCLeg) IsHeld() bool               { return false }
 
-func (l *WebRTCLeg) CreatedAt() time.Time  { return l.createdAt }
-func (l *WebRTCLeg) AnsweredAt() time.Time { return l.createdAt } // WebRTC legs are connected immediately
+func (l *WebRTCLeg) CreatedAt() time.Time          { return l.createdAt }
+func (l *WebRTCLeg) AnsweredAt() time.Time         { return l.createdAt } // WebRTC legs are connected immediately
 func (l *WebRTCLeg) SIPHeaders() map[string]string { return nil }
-func (l *WebRTCLeg) RTPStats() RTPStats             { return RTPStats{} }
+func (l *WebRTCLeg) RTPStats() RTPStats            { return RTPStats{} }
 
 func (l *WebRTCLeg) Answer(_ context.Context) error {
 	return fmt.Errorf("webrtc legs do not need explicit answer")

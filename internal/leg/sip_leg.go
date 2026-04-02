@@ -86,6 +86,10 @@ type SIPLeg struct {
 	// AMD tap — separate from inTap so recording and AMD can coexist.
 	amdTap io.Writer
 
+	// Speaking detection tap — receives decoded incoming PCM for voice
+	// activity detection. Separate from other taps so all can coexist.
+	speakingTap io.Writer
+
 	// Inbound RTP stream statistics for MOS calculation (protected by rtpStatsMu).
 	rtpStatsMu     sync.Mutex
 	rtpReceived    uint32
@@ -639,12 +643,16 @@ func (l *SIPLeg) readLoop() {
 		l.mu.RLock()
 		tap := l.inTap
 		at := l.amdTap
+		st := l.speakingTap
 		l.mu.RUnlock()
 		if tap != nil {
 			tap.Write(pcm)
 		}
 		if at != nil {
 			at.Write(pcm)
+		}
+		if st != nil {
+			st.Write(pcm)
 		}
 
 		// Push to inFrames, drop oldest on overflow
@@ -976,6 +984,21 @@ func (l *SIPLeg) ClearAMDTap() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.amdTap = nil
+}
+
+// SetSpeakingTap sets a writer that receives decoded incoming PCM for
+// voice activity detection.
+func (l *SIPLeg) SetSpeakingTap(w io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.speakingTap = w
+}
+
+// ClearSpeakingTap removes the speaking detection tap.
+func (l *SIPLeg) ClearSpeakingTap() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.speakingTap = nil
 }
 
 func (l *SIPLeg) OnDTMF(f func(digit rune)) {

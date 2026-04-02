@@ -1569,10 +1569,10 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.hold` | Leg put on hold (local or remote) | `leg_id`, `leg_type` |
 | `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `leg_type` |
 | `dtmf.received` | DTMF digit received | `leg_id`, `digit` |
-| `speaking.started` | Participant started speaking (room only) | `leg_id`, `room_id` |
-| `speaking.stopped` | Participant stopped speaking (room only) | `leg_id`, `room_id` |
+| `speaking.started` | Participant started speaking | `leg_id`, `room_id` (if in a room) |
+| `speaking.stopped` | Participant stopped speaking | `leg_id`, `room_id` (if in a room) |
 
-> **Note:** `speaking.started` and `speaking.stopped` events require the leg to be in a room. Voice activity detection runs inside the room mixer; standalone legs do not emit speaking events.
+> **Note:** `speaking.started` and `speaking.stopped` events fire for any connected leg, whether standalone or in a room. When the leg is in a room, the event includes `room_id`; standalone legs omit it.
 
 | `playback.started` | Playback began | `leg_id` or `room_id`, `playback_id` |
 | `playback.finished` | Playback ended | `leg_id` or `room_id`, `playback_id` |

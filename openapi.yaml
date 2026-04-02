@@ -2553,6 +2553,7 @@ x-webhooks:
     speaking.started:
         post:
             summary: Participant started speaking
+            description: Fires for any connected leg. When the leg is in a room, room_id is included.
             requestBody:
                 content:
                     application/json:
@@ -2565,10 +2566,11 @@ x-webhooks:
                                         description: Leg identifier
                                     room_id:
                                         type: string
-                                        description: Room identifier
+                                        description: Room identifier (present only when the leg is in a room)
     speaking.stopped:
         post:
             summary: Participant stopped speaking
+            description: Fires for any connected leg. When the leg is in a room, room_id is included.
             requestBody:
                 content:
                     application/json:
@@ -2581,7 +2583,7 @@ x-webhooks:
                                         description: Leg identifier
                                     room_id:
                                         type: string
-                                        description: Room identifier
+                                        description: Room identifier (present only when the leg is in a room)
     playback.started:
         post:
             summary: Playback began

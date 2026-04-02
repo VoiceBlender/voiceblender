@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 )
@@ -17,23 +16,13 @@ type Room struct {
 	log          *slog.Logger
 }
 
-func NewRoom(id string, bus *events.Bus, log *slog.Logger) *Room {
-	r := &Room{
+func NewRoom(id string, log *slog.Logger) *Room {
+	return &Room{
 		ID:           id,
 		participants: make(map[string]leg.Leg),
 		mix:          mixer.New(log),
 		log:          log,
 	}
-	r.mix.OnSpeaking(func(e mixer.SpeakingEvent) {
-		typ := events.SpeakingStarted
-		if !e.Speaking {
-			typ = events.SpeakingStopped
-		}
-		bus.Publish(typ, &events.SpeakingData{
-			LegRoomScope: events.LegRoomScope{LegID: e.ParticipantID, RoomID: id},
-		})
-	})
-	return r
 }
 
 func (r *Room) Mixer() *mixer.Mixer {

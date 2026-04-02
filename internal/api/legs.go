@@ -17,6 +17,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/go-chi/chi/v5"
@@ -362,6 +363,7 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 		s.Log.Debug("cleanupLeg hangup", "leg_id", l.ID(), "error", err)
 	}
 
+	s.stopSpeakingDetector(l.ID())
 	// Stop agent before recording so mixer taps can still be cleared.
 	s.cleanupLegAgent(l.ID())
 	// Stop recording before room removal so mixer taps can still be cleared.
@@ -569,6 +571,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		s.startSpeakingDetector(l)
 		startAMD()
 		addToRoom()
 
@@ -679,6 +682,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		s.startSpeakingDetector(l)
 
 		// Block until call ends (BYE received or context cancelled)
 		<-call.Dialog.Context().Done()
@@ -848,5 +852,37 @@ func (b *amdBuffer) Close() {
 	case <-b.closed:
 	default:
 		close(b.closed)
+	}
+}
+
+// startSpeakingDetector creates and starts a speaking detector for a connected leg.
+func (s *Server) startSpeakingDetector(l leg.Leg) {
+	det := speaking.New(l.ID(), l.SampleRate(), l.IsMuted, func(e speaking.Event) {
+		typ := events.SpeakingStarted
+		if !e.Speaking {
+			typ = events.SpeakingStopped
+		}
+		s.Bus.Publish(typ, &events.SpeakingData{
+			LegRoomScope: events.LegRoomScope{LegID: e.LegID, RoomID: l.RoomID()},
+		})
+	})
+	l.SetSpeakingTap(det)
+	det.Start()
+
+	s.speakMu.Lock()
+	s.speakDets[l.ID()] = det
+	s.speakMu.Unlock()
+}
+
+// stopSpeakingDetector stops and removes a speaking detector for a leg.
+func (s *Server) stopSpeakingDetector(legID string) {
+	s.speakMu.Lock()
+	det, ok := s.speakDets[legID]
+	if ok {
+		delete(s.speakDets, legID)
+	}
+	s.speakMu.Unlock()
+	if ok {
+		det.Stop()
 	}
 }

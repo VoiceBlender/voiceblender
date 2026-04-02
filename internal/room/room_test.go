@@ -31,36 +31,38 @@ func newMockLeg(id string) *mockLeg {
 	}
 }
 
-func (m *mockLeg) ID() string                                  { return m.id }
-func (m *mockLeg) Type() leg.LegType                           { return m.legType }
-func (m *mockLeg) State() leg.LegState                         { return m.state }
-func (m *mockLeg) SampleRate() int                             { return 16000 }
-func (m *mockLeg) AudioReader() io.Reader                      { return nil }
-func (m *mockLeg) AudioWriter() io.Writer                      { return nil }
-func (m *mockLeg) OnDTMF(func(digit rune))                     {}
+func (m *mockLeg) ID() string                                   { return m.id }
+func (m *mockLeg) Type() leg.LegType                            { return m.legType }
+func (m *mockLeg) State() leg.LegState                          { return m.state }
+func (m *mockLeg) SampleRate() int                              { return 16000 }
+func (m *mockLeg) AudioReader() io.Reader                       { return nil }
+func (m *mockLeg) AudioWriter() io.Writer                       { return nil }
+func (m *mockLeg) OnDTMF(func(digit rune))                      {}
 func (m *mockLeg) SendDTMF(ctx context.Context, d string) error { return nil }
-func (m *mockLeg) Hangup(ctx context.Context) error            { m.state = leg.StateHungUp; return nil }
-func (m *mockLeg) Answer(ctx context.Context) error            { return nil }
-func (m *mockLeg) Context() context.Context                    { return context.Background() }
-func (m *mockLeg) RoomID() string                              { return m.roomID }
-func (m *mockLeg) SetRoomID(id string)                         { m.roomID = id }
-func (m *mockLeg) IsMuted() bool                               { return m.muted }
-func (m *mockLeg) SetMuted(v bool)                             { m.muted = v }
-func (m *mockLeg) IsDeaf() bool                                { return m.deaf }
-func (m *mockLeg) SetDeaf(v bool)                              { m.deaf = v }
-func (m *mockLeg) IsHeld() bool                                { return false }
-func (m *mockLeg) CreatedAt() time.Time                        { return m.createdAt }
-func (m *mockLeg) AnsweredAt() time.Time                       { return time.Time{} }
-func (m *mockLeg) SIPHeaders() map[string]string               { return nil }
-func (m *mockLeg) RTPStats() leg.RTPStats                      { return leg.RTPStats{} }
+func (m *mockLeg) Hangup(ctx context.Context) error             { m.state = leg.StateHungUp; return nil }
+func (m *mockLeg) Answer(ctx context.Context) error             { return nil }
+func (m *mockLeg) Context() context.Context                     { return context.Background() }
+func (m *mockLeg) RoomID() string                               { return m.roomID }
+func (m *mockLeg) SetRoomID(id string)                          { m.roomID = id }
+func (m *mockLeg) IsMuted() bool                                { return m.muted }
+func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
+func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }
+func (m *mockLeg) SetDeaf(v bool)                               { m.deaf = v }
+func (m *mockLeg) SetSpeakingTap(w io.Writer)                   {}
+func (m *mockLeg) ClearSpeakingTap()                            {}
+func (m *mockLeg) IsHeld() bool                                 { return false }
+func (m *mockLeg) CreatedAt() time.Time                         { return m.createdAt }
+func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
+func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
+func (m *mockLeg) RTPStats() leg.RTPStats                       { return leg.RTPStats{} }
 
-func newTestBus() *events.Bus { return events.NewBus("test") }
+func newTestBus() *events.Bus  { return events.NewBus("test") }
 func newTestLog() *slog.Logger { return slog.Default() }
 
 // --- Room tests ---
 
 func TestRoom_AddLeg(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	l := newMockLeg("leg-1")
 
 	r.AddLeg(l)
@@ -74,7 +76,7 @@ func TestRoom_AddLeg(t *testing.T) {
 }
 
 func TestRoom_AddMultipleLegs(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	r.AddLeg(newMockLeg("a"))
 	r.AddLeg(newMockLeg("b"))
 	r.AddLeg(newMockLeg("c"))
@@ -85,7 +87,7 @@ func TestRoom_AddMultipleLegs(t *testing.T) {
 }
 
 func TestRoom_RemoveLeg(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -100,12 +102,12 @@ func TestRoom_RemoveLeg(t *testing.T) {
 }
 
 func TestRoom_RemoveLeg_Nonexistent(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	r.RemoveLeg("nonexistent") // should not panic
 }
 
 func TestRoom_DetachLeg(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -125,7 +127,7 @@ func TestRoom_DetachLeg(t *testing.T) {
 }
 
 func TestRoom_DetachLeg_NotFound(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	_, ok := r.DetachLeg("nonexistent")
 	if ok {
 		t.Error("expected false")
@@ -133,7 +135,7 @@ func TestRoom_DetachLeg_NotFound(t *testing.T) {
 }
 
 func TestRoom_Participants(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	r.AddLeg(newMockLeg("a"))
 	r.AddLeg(newMockLeg("b"))
 
@@ -144,7 +146,7 @@ func TestRoom_Participants(t *testing.T) {
 }
 
 func TestRoom_Close(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -159,7 +161,7 @@ func TestRoom_Close(t *testing.T) {
 }
 
 func TestRoom_Mixer(t *testing.T) {
-	r := NewRoom("r1", newTestBus(), newTestLog())
+	r := NewRoom("r1", newTestLog())
 	if r.Mixer() == nil {
 		t.Fatal("expected non-nil mixer")
 	}

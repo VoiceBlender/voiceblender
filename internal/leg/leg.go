@@ -70,6 +70,8 @@ type Leg interface {
 	SetMuted(muted bool)
 	IsDeaf() bool
 	SetDeaf(deaf bool)
+	SetSpeakingTap(w io.Writer)
+	ClearSpeakingTap()
 	IsHeld() bool
 	CreatedAt() time.Time
 	AnsweredAt() time.Time

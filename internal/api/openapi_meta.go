@@ -63,9 +63,9 @@ func WebhookFieldDescriptions() map[string]string {
 
 		// speaking
 		"speaking.started.leg_id":  "Leg identifier",
-		"speaking.started.room_id": "Room identifier",
+		"speaking.started.room_id": "Room identifier (present only when the leg is in a room)",
 		"speaking.stopped.leg_id":  "Leg identifier",
-		"speaking.stopped.room_id": "Room identifier",
+		"speaking.stopped.room_id": "Room identifier (present only when the leg is in a room)",
 
 		// playback
 		"playback.started.leg_id":       "Leg identifier",

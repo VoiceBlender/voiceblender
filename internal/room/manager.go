@@ -12,11 +12,11 @@ import (
 )
 
 type Manager struct {
-	mu       sync.RWMutex
-	rooms    map[string]*Room
-	legMgr   *leg.Manager
-	bus      *events.Bus
-	log      *slog.Logger
+	mu     sync.RWMutex
+	rooms  map[string]*Room
+	legMgr *leg.Manager
+	bus    *events.Bus
+	log    *slog.Logger
 }
 
 func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager {
@@ -40,7 +40,7 @@ func (m *Manager) Create(id string) (*Room, error) {
 		return nil, fmt.Errorf("room %s already exists", id)
 	}
 
-	r := NewRoom(id, m.bus, m.log)
+	r := NewRoom(id, m.log)
 	m.rooms[id] = r
 	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id}})
 	return r, nil
@@ -122,7 +122,7 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	m.mu.Lock()
 	toRoom, ok := m.rooms[toRoomID]
 	if !ok {
-		toRoom = NewRoom(toRoomID, m.bus, m.log)
+		toRoom = NewRoom(toRoomID, m.log)
 		m.rooms[toRoomID] = toRoom
 		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID}})
 	}
