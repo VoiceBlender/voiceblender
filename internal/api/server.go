@@ -118,6 +118,7 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/agent/deepgram", s.agentLegDeepgram)
 		r.Post("/legs/{id}/agent/message", s.agentLegMessage)
 		r.Delete("/legs/{id}/agent", s.stopAgentLeg)
+		r.Post("/legs/{id}/amd", s.startAMDLeg)
 		r.Post("/legs/{id}/ice-candidates", s.webrtcAddCandidate)
 		r.Get("/legs/{id}/ice-candidates", s.webrtcGetCandidates)
 

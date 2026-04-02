@@ -34,6 +34,7 @@ type CreateLegRequest struct {
 	Auth          *SIPAuth          `json:"auth,omitempty"`           // SIP digest auth credentials (optional)
 	WebhookURL    string            `json:"webhook_url,omitempty"`    // route events for this leg to this URL
 	WebhookSecret string            `json:"webhook_secret,omitempty"` // HMAC secret for webhook signature
+	AMD           *AMDParams        `json:"amd,omitempty"`            // enable answering machine detection on outbound calls
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
@@ -49,6 +50,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"auth":           {Description: "SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials."},
 	"webhook_url":    {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
+	"amd":            {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
 }
 
 // SIPAuth holds SIP digest authentication credentials.
@@ -60,6 +62,26 @@ type SIPAuth struct {
 var sipAuthFields = map[string]FieldEnrichment{
 	"username": {Description: "SIP auth username"},
 	"password": {Description: "SIP auth password"},
+}
+
+// AMDParams configures per-call Answering Machine Detection thresholds.
+// All durations are in milliseconds. Zero values fall back to global defaults.
+type AMDParams struct {
+	InitialSilenceTimeout int `json:"initial_silence_timeout,omitempty"` // ms — max silence before no_speech
+	GreetingDuration      int `json:"greeting_duration,omitempty"`       // ms — speech threshold for machine
+	AfterGreetingSilence  int `json:"after_greeting_silence,omitempty"`  // ms — silence after speech for human
+	TotalAnalysisTime     int `json:"total_analysis_time,omitempty"`     // ms — hard analysis deadline
+	MinimumWordLength     int `json:"minimum_word_length,omitempty"`     // ms — min speech burst to count
+	BeepTimeout           int `json:"beep_timeout,omitempty"`            // ms — time to wait for beep after machine (0=disabled)
+}
+
+var amdParamsFields = map[string]FieldEnrichment{
+	"initial_silence_timeout": {Description: "Max milliseconds of silence before declaring no_speech", Default: 2500},
+	"greeting_duration":       {Description: "Speech duration threshold (ms) above which answerer is classified as machine", Default: 1500},
+	"after_greeting_silence":  {Description: "Silence duration (ms) after initial speech to declare human", Default: 800},
+	"total_analysis_time":     {Description: "Max analysis window in milliseconds", Default: 5000},
+	"minimum_word_length":     {Description: "Minimum speech burst duration (ms) to count as a word", Default: 100},
+	"beep_timeout":            {Description: "Max time (ms) to wait for the voicemail beep after machine detection. 0 or omitted = disabled.", Default: 0},
 }
 
 // LegView is the JSON representation of a leg.
@@ -307,6 +329,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("RoomView", roomViewFields)
 	collect("CreateLegRequest", createLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
+	collect("AMDParams", amdParamsFields)
 	collect("CreateRoomRequest", createRoomRequestFields)
 	collect("AddLegRequest", addLegRequestFields)
 	collect("PlaybackRequest", playbackRequestFields)

@@ -9,9 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"io"
+
+	"github.com/VoiceBlender/voiceblender/internal/amd"
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -394,7 +398,6 @@ func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "hung_up"})
 }
 
-
 func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 	var req CreateLegRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -472,6 +475,19 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		})
 	}
 
+	// Prepare AMD if requested.
+	var startAMD func()
+	if req.AMD != nil {
+		var err error
+		startAMD, err = s.prepareAMD(l, req.AMD)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		startAMD = func() {}
+	}
+
 	// Build invite options.
 	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
 	if req.Auth != nil {
@@ -487,6 +503,10 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		// NOTE: AMD is NOT started here — early media carries ringback
+		// tones whose cadence (e.g. 2s on / 4s off) mimics a short human
+		// greeting and would cause false "human" classifications. AMD
+		// starts only after the call is answered (200 OK).
 		addToRoom()
 	}
 	if req.Privacy != "" {
@@ -549,6 +569,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID()},
 			LegType:  string(l.Type()),
 		})
+		startAMD()
 		addToRoom()
 
 		// Monitor for remote hangup or max duration.
@@ -673,4 +694,159 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "caller_cancel")
+}
+
+// prepareAMD creates an AMD analyzer and returns a function that, when called,
+// installs the tap and starts the analyzer goroutine. The returned function is
+// safe to call multiple times (only the first call has effect).
+func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
+	params := amd.MergeMillis(
+		amd.DefaultParams(),
+		req.InitialSilenceTimeout,
+		req.GreetingDuration,
+		req.AfterGreetingSilence,
+		req.TotalAnalysisTime,
+		req.MinimumWordLength,
+		req.BeepTimeout,
+	)
+	if err := params.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid AMD params: %w", err)
+	}
+
+	analyzer := amd.New(params)
+	buf := newAMDBuffer(256) // ~5s of 20ms frames
+
+	var once sync.Once
+	start := func() {
+		once.Do(func() {
+			l.SetAMDTap(buf)
+			go func() {
+				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.SampleRate)
+				detection := analyzer.Run(l.Context(), resampleReader)
+
+				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
+					LegScope:           events.LegScope{LegID: l.ID()},
+					Result:             string(detection.Result),
+					InitialSilenceMs:   detection.InitialSilenceMs,
+					GreetingDurationMs: detection.GreetingDurationMs,
+					TotalAnalysisMs:    detection.TotalAnalysisMs,
+				})
+
+				if detection.Result == amd.ResultMachine && analyzer.Params().BeepTimeout > 0 {
+					beep := analyzer.WaitForBeep(l.Context(), resampleReader)
+					if beep.Detected {
+						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
+							LegScope: events.LegScope{LegID: l.ID()},
+							BeepMs:   beep.BeepMs,
+						})
+					}
+				}
+
+				l.ClearAMDTap()
+				buf.Close()
+			}()
+		})
+	}
+	return start, nil
+}
+
+// startAMDLeg handles POST /v1/legs/{id}/amd — starts AMD on a connected leg.
+func (s *Server) startAMDLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "AMD is only supported on SIP legs")
+		return
+	}
+
+	if l.State() != leg.StateConnected {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg must be connected, current state: %s", l.State()))
+		return
+	}
+
+	var req AMDParams
+	if err := decodeJSON(r, &req); err != nil {
+		// Empty body is fine — use all defaults.
+		req = AMDParams{}
+	}
+
+	start, err := s.prepareAMD(sipLeg, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	start()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+}
+
+// amdBuffer is a channel-backed buffer that implements io.Writer (non-blocking,
+// drops overflow) and io.Reader (blocking). This prevents the readLoop from
+// blocking when writing to the AMD tap.
+type amdBuffer struct {
+	ch     chan []byte
+	closed chan struct{}
+	buf    []byte // leftover from partial Read
+}
+
+func newAMDBuffer(cap int) *amdBuffer {
+	return &amdBuffer{
+		ch:     make(chan []byte, cap),
+		closed: make(chan struct{}),
+	}
+}
+
+// Write copies p and enqueues it. Non-blocking: drops if buffer full.
+func (b *amdBuffer) Write(p []byte) (int, error) {
+	frame := make([]byte, len(p))
+	copy(frame, p)
+	select {
+	case <-b.closed:
+		return len(p), nil
+	default:
+	}
+	select {
+	case b.ch <- frame:
+	default:
+		// drop on overflow
+	}
+	return len(p), nil
+}
+
+// Read blocks until data is available or the buffer is closed.
+func (b *amdBuffer) Read(p []byte) (int, error) {
+	// Serve leftover first.
+	if len(b.buf) > 0 {
+		n := copy(p, b.buf)
+		b.buf = b.buf[n:]
+		return n, nil
+	}
+	select {
+	case frame, ok := <-b.ch:
+		if !ok {
+			return 0, io.EOF
+		}
+		n := copy(p, frame)
+		if n < len(frame) {
+			b.buf = frame[n:]
+		}
+		return n, nil
+	case <-b.closed:
+		return 0, io.EOF
+	}
+}
+
+// Close signals the reader that no more data will arrive.
+func (b *amdBuffer) Close() {
+	select {
+	case <-b.closed:
+	default:
+		close(b.closed)
+	}
 }

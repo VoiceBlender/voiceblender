@@ -8,18 +8,18 @@ import (
 type EventType string
 
 const (
-	LegRinging     EventType = "leg.ringing"
-	LegConnected   EventType = "leg.connected"
+	LegRinging      EventType = "leg.ringing"
+	LegConnected    EventType = "leg.connected"
 	LegDisconnected EventType = "leg.disconnected"
-	LegJoinedRoom  EventType = "leg.joined_room"
-	LegLeftRoom    EventType = "leg.left_room"
-	LegEarlyMedia  EventType = "leg.early_media"
-	LegMuted       EventType = "leg.muted"
-	LegUnmuted     EventType = "leg.unmuted"
-	LegDeaf        EventType = "leg.deaf"
-	LegUndeaf      EventType = "leg.undeaf"
-	LegHold        EventType = "leg.hold"
-	LegUnhold      EventType = "leg.unhold"
+	LegJoinedRoom   EventType = "leg.joined_room"
+	LegLeftRoom     EventType = "leg.left_room"
+	LegEarlyMedia   EventType = "leg.early_media"
+	LegMuted        EventType = "leg.muted"
+	LegUnmuted      EventType = "leg.unmuted"
+	LegDeaf         EventType = "leg.deaf"
+	LegUndeaf       EventType = "leg.undeaf"
+	LegHold         EventType = "leg.hold"
+	LegUnhold       EventType = "leg.unhold"
 
 	DTMFReceived EventType = "dtmf.received"
 
@@ -46,6 +46,9 @@ const (
 	AgentDisconnected   EventType = "agent.disconnected"
 	AgentUserTranscript EventType = "agent.user_transcript"
 	AgentAgentResponse  EventType = "agent.agent_response"
+
+	AMDResult EventType = "amd.result"
+	AMDBeep   EventType = "amd.beep"
 )
 
 type Event struct {

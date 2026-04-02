@@ -55,6 +55,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 
 | Package | Tests | Description |
 |---------|-------|-------------|
+| `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
 | `internal/mixer` | 11 | Audio mixing, resampling (8kHz/16kHz), playback sources, tap recording, speaking detection |
 | `internal/codec` | 9 | G.722 encode/decode, silence/tone round-trips, up/downsample |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
@@ -110,6 +111,79 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
 | `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs |
 | `TestMute_BeforeRoomJoin` | Mute before joining room, verify it persists |
+| `TestAMD_Human` | AMD classifies short tone burst as `human` |
+| `TestAMD_Machine` | AMD classifies continuous tone as `machine` |
+| `TestAMD_NoSpeech` | AMD returns `no_speech` when no audio is played |
+| `TestAMD_Disabled` | No AMD event when `amd` field is omitted |
+| `TestAMD_InvalidParams` | Invalid AMD parameters are rejected with 400 |
+| `TestAMD_DefaultParams` | Empty `"amd": {}` uses all defaults |
+
+---
+
+## AMD Accuracy Tests
+
+The accuracy tests run the AMD analyzer directly against real audio files (no SIP transport) to measure classification accuracy at scale. They require test data to be downloaded or generated first.
+
+### Test data setup
+
+```bash
+# Download voicemail greeting recordings (machine-expected)
+make download-greetings
+
+# Generate short human greeting WAV files via ElevenLabs TTS (human-expected)
+# Requires ELEVENLABS_API_KEY — generates 46 greetings in 11 languages with 3s trailing silence
+ELEVENLABS_API_KEY=sk-... make gen-human-greetings
+```
+
+Test data is stored in `tests/data/greetings/` and gitignored. Directory structure:
+
+```
+tests/data/greetings/
+  frankj-dob/       # 7 MP3 voicemail greetings (expected: machine)
+  gavvllaw/         # 34 MP3/WAV voicemail greetings (expected: machine)
+  chetaniitbhilai/  # 7 WAV voicemail greetings (expected: machine)
+  human/            # 46 WAV short human greetings in 11 languages (expected: human)
+```
+
+### Run accuracy tests
+
+```bash
+# Voicemail greetings — expected: machine (requires make download-greetings)
+go test -tags integration -v -run TestAMD_Accuracy ./tests/integration/
+
+# Human greetings — expected: human (requires make gen-human-greetings)
+go test -tags integration -v -run TestAMD_FalsePositives ./tests/integration/
+
+# Combined report — both machine and human sources
+go test -tags integration -v -run TestAMD_AccuracyAll ./tests/integration/
+```
+
+Tests skip automatically if the required test data is not present.
+
+### Accuracy test list
+
+| Test | Description |
+|------|-------------|
+| `TestAMD_Accuracy` | Voicemail greetings (48 files, 3 sources) — expected `machine` |
+| `TestAMD_FalsePositives` | Human greetings (46 files, 11 languages) — expected `human` |
+| `TestAMD_AccuracyAll` | Combined report across all sources |
+
+### Example output
+
+```
+=== AMD Accuracy Report ===
+Total files:  94
+Correct:      93
+Accuracy:     98.9%
+
+  frankj-dob           7/7 (100%)   [expected: machine]
+  gavvllaw             34/34 (100%) [expected: machine]
+  chetaniitbhilai      6/7 (86%)    [expected: machine]
+  human                46/46 (100%) [expected: human]
+
+Misclassified files:
+  chetaniitbhilai/vm1_output.wav  got=no_speech  expected=machine (greeting=0ms silence=2500ms)
+```
 
 ---
 

@@ -36,16 +36,16 @@ type SIPLeg struct {
 	inbound  *sipmod.InboundCall
 	outbound *sipmod.OutboundCall
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	roomID     string
-	muted      atomic.Bool
-	deaf       atomic.Bool
-	createdAt  time.Time
-	answeredAt time.Time // zero if never answered
+	ctx           context.Context
+	cancel        context.CancelFunc
+	roomID        string
+	muted         atomic.Bool
+	deaf          atomic.Bool
+	createdAt     time.Time
+	answeredAt    time.Time     // zero if never answered
 	answerCh      chan struct{} // signaled by REST answer endpoint (inbound only)
 	connectedCh   chan struct{} // closed when leg reaches connected state
-	connectedOnce sync.Once    // ensures connectedCh is closed exactly once
+	connectedOnce sync.Once     // ensures connectedCh is closed exactly once
 	onDTMF        func(digit rune)
 	lastDTMFTS    uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
 	onRTPTimeout  func() // called when no RTP received within timeout
@@ -72,7 +72,7 @@ type SIPLeg struct {
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
 	dtmfCh    chan string // DTMF digits to send in writeLoop
 
-	earlyMediaSDP []byte         // SDP sent in 183, reused in 200 OK on Answer
+	earlyMediaSDP []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders    map[string]string // X-* headers from inbound INVITE or outbound request
 
 	engine          *sipmod.Engine    // for sending re-INVITEs
@@ -83,14 +83,17 @@ type SIPLeg struct {
 	inTap  io.Writer // copy of decoded incoming PCM (before inFrames)
 	outTap io.Writer // copy of outgoing PCM (from writeLoop, including silence)
 
+	// AMD tap — separate from inTap so recording and AMD can coexist.
+	amdTap io.Writer
+
 	// Inbound RTP stream statistics for MOS calculation (protected by rtpStatsMu).
-	rtpStatsMu    sync.Mutex
-	rtpReceived   uint32
-	rtpFirstSeq   uint16
-	rtpLastSeq    uint16
-	rtpHasFirst   bool
-	rtpJitter     float64 // running jitter in RTP clock units (RFC 3550 §A.8)
-	rtpLastTransit int64  // last transit time in RTP clock units
+	rtpStatsMu     sync.Mutex
+	rtpReceived    uint32
+	rtpFirstSeq    uint16
+	rtpLastSeq     uint16
+	rtpHasFirst    bool
+	rtpJitter      float64 // running jitter in RTP clock units (RFC 3550 §A.8)
+	rtpLastTransit int64   // last transit time in RTP clock units
 
 	log *slog.Logger
 }
@@ -305,10 +308,10 @@ func (l *SIPLeg) SetRoomID(id string) {
 	l.roomID = id
 }
 
-func (l *SIPLeg) IsMuted() bool    { return l.muted.Load() }
-func (l *SIPLeg) SetMuted(m bool)  { l.muted.Store(m) }
-func (l *SIPLeg) IsDeaf() bool     { return l.deaf.Load() }
-func (l *SIPLeg) SetDeaf(d bool)   { l.deaf.Store(d) }
+func (l *SIPLeg) IsMuted() bool   { return l.muted.Load() }
+func (l *SIPLeg) SetMuted(m bool) { l.muted.Store(m) }
+func (l *SIPLeg) IsDeaf() bool    { return l.deaf.Load() }
+func (l *SIPLeg) SetDeaf(d bool)  { l.deaf.Store(d) }
 
 func (l *SIPLeg) CreatedAt() time.Time { return l.createdAt }
 
@@ -632,12 +635,16 @@ func (l *SIPLeg) readLoop() {
 		// Convert decoded samples at native rate to PCM bytes
 		pcm := samplesToBytes(samples)
 
-		// Write to incoming tap (for recording) before pushing to inFrames.
+		// Write to incoming taps before pushing to inFrames.
 		l.mu.RLock()
 		tap := l.inTap
+		at := l.amdTap
 		l.mu.RUnlock()
 		if tap != nil {
 			tap.Write(pcm)
+		}
+		if at != nil {
+			at.Write(pcm)
 		}
 
 		// Push to inFrames, drop oldest on overflow
@@ -954,6 +961,21 @@ func (l *SIPLeg) ClearOutTap() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.outTap = nil
+}
+
+// SetAMDTap sets a writer that receives decoded incoming PCM for answering
+// machine detection. Separate from inTap so AMD and recording can coexist.
+func (l *SIPLeg) SetAMDTap(w io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.amdTap = w
+}
+
+// ClearAMDTap removes the AMD tap.
+func (l *SIPLeg) ClearAMDTap() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.amdTap = nil
 }
 
 func (l *SIPLeg) OnDTMF(f func(digit rune)) {

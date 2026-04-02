@@ -16,6 +16,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
 - **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
 - **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat, Deepgram) with mid-session context injection
+- **Answering Machine Detection (AMD)** -- per-call analysis of outbound call audio to classify the answerer as human, machine, no-speech, or not-sure; optional voicemail beep detection via Goertzel frequency analysis
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
 - **Prometheus metrics** -- operational metrics exposed at `GET /metrics` (active legs/rooms, call durations, disconnect reasons, Go runtime). See [API.md](API.md) for the full metric reference. Profiling via `go tool pprof` is available at `/debug/pprof/` when built with `-tags pprof`.
 
@@ -90,6 +91,7 @@ POST   /v1/legs/{id}/record        # Start recording
 DELETE /v1/legs/{id}/record        # Stop recording
 POST   /v1/legs/{id}/stt           # Start speech-to-text
 DELETE /v1/legs/{id}/stt           # Stop speech-to-text
+POST   /v1/legs/{id}/amd            # Start answering machine detection
 POST   /v1/legs/{id}/agent         # Attach AI agent
 POST   /v1/legs/{id}/agent/message # Inject message into agent
 DELETE /v1/legs/{id}/agent         # Detach AI agent
@@ -165,6 +167,7 @@ internal/
   room/                 Room + Manager
   mixer/                Multi-party audio mixer (mixed-minus-self)
   codec/                Codec adapters (PCMU, PCMA, G.722, Opus)
+  amd/                  Answering machine detection (Goertzel beep detector)
   events/               Event bus + webhook delivery
   playback/             Audio file playback
   recording/            WAV recording

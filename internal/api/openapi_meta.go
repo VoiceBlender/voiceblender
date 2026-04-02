@@ -80,9 +80,9 @@ func WebhookFieldDescriptions() map[string]string {
 		"playback.error.error":          "Error message",
 
 		// tts
-		"tts.started.leg_id":  "Leg identifier",
-		"tts.started.room_id": "Room identifier",
-		"tts.started.tts_id":  "TTS playback identifier",
+		"tts.started.leg_id":   "Leg identifier",
+		"tts.started.room_id":  "Room identifier",
+		"tts.started.tts_id":   "TTS playback identifier",
 		"tts.finished.leg_id":  "Leg identifier",
 		"tts.finished.room_id": "Room identifier",
 		"tts.finished.tts_id":  "TTS playback identifier",
@@ -121,6 +121,15 @@ func WebhookFieldDescriptions() map[string]string {
 		"agent.agent_response.leg_id":     "Leg identifier",
 		"agent.agent_response.room_id":    "Room identifier",
 		"agent.agent_response.text":       "Agent response text",
+
+		"amd.result.leg_id":               "Leg identifier",
+		"amd.result.result":               "Detection result: human, machine, no_speech, or not_sure",
+		"amd.result.initial_silence_ms":   "Milliseconds of silence before first speech",
+		"amd.result.greeting_duration_ms": "Milliseconds of speech in the greeting",
+		"amd.result.total_analysis_ms":    "Total milliseconds of analysis before determination",
+
+		"amd.beep.leg_id":  "Leg identifier",
+		"amd.beep.beep_ms": "Milliseconds from machine detection to beep tone detection",
 	}
 }
 
@@ -128,13 +137,13 @@ func WebhookFieldDescriptions() map[string]string {
 // fields in webhook events (e.g. cdr.reason, cdr.duration_total).
 func WebhookNestedFieldDescriptions() map[string]string {
 	return map[string]string{
-		"CallCDR.reason":           "Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.",
-		"CallCDR.duration_total":   "Seconds from leg creation to disconnect",
-		"CallCDR.duration_answered": "Seconds from answer to disconnect (0 if never answered)",
-		"CallQuality.mos_score":           "Mean Opinion Score (1.0–5.0) estimated via simplified E-model (ITU-T G.107) from packet loss and jitter",
+		"CallCDR.reason":                   "Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.",
+		"CallCDR.duration_total":           "Seconds from leg creation to disconnect",
+		"CallCDR.duration_answered":        "Seconds from answer to disconnect (0 if never answered)",
+		"CallQuality.mos_score":            "Mean Opinion Score (1.0–5.0) estimated via simplified E-model (ITU-T G.107) from packet loss and jitter",
 		"CallQuality.rtp_packets_received": "Total inbound RTP audio packets received",
-		"CallQuality.rtp_packets_lost":    "Estimated lost packets based on sequence number gaps",
-		"CallQuality.rtp_jitter_ms":       "Inter-arrival jitter in milliseconds (RFC 3550 §A.8)",
+		"CallQuality.rtp_packets_lost":     "Estimated lost packets based on sequence number gaps",
+		"CallQuality.rtp_jitter_ms":        "Inter-arrival jitter in milliseconds (RFC 3550 §A.8)",
 	}
 }
 
@@ -156,8 +165,8 @@ func RoutesMetadata() []RouteMeta {
 		// ── Legs ────────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/legs", OperationID: "createLeg",
-			Summary: "Originate an outbound SIP call",
-			Tags:    []string{"Legs"},
+			Summary:     "Originate an outbound SIP call",
+			Tags:        []string{"Legs"},
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Leg created", Type: LegView{}},
@@ -441,6 +450,18 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent stopped"},
 				404: {Description: "No agent attached to this leg"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/amd", OperationID: "startAMDLeg",
+			Summary:     "Start answering machine detection on a connected leg",
+			Tags:        []string{"Legs"},
+			RequestType: AMDParams{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "AMD started"},
+				400: {Description: "Invalid AMD params or not a SIP leg"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg is not in connected state"},
 			},
 		},
 		{
