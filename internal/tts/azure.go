@@ -57,8 +57,17 @@ func (a *Azure) Synthesize(ctx context.Context, text string, opts Options) (*Res
 	req.Header.Set("Content-Type", "application/ssml+xml")
 	req.Header.Set("X-Microsoft-OutputFormat", "raw-16khz-16bit-mono-pcm")
 	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	req.Header.Set("User-Agent", "voiceblender")
 
-	a.log.Debug("azure synthesize", "voice", voice, "lang", lang, "text_len", len(text))
+	a.log.Debug("azure synthesize request",
+		"url", url,
+		"region", a.region,
+		"voice", voice,
+		"lang", lang,
+		"text_len", len(text),
+		"ssml_len", len(ssml),
+		"ssml", ssml,
+	)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -67,8 +76,26 @@ func (a *Azure) Synthesize(ctx context.Context, text string, opts Options) (*Res
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("azure: status %d: %s", resp.StatusCode, string(errBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		a.log.Error("azure synthesize failed",
+			"status", resp.StatusCode,
+			"url", url,
+			"region", a.region,
+			"voice", voice,
+			"lang", lang,
+			"body", string(errBody),
+			"content_type", resp.Header.Get("Content-Type"),
+			"ms_error_code", resp.Header.Get("X-Microsoft-Error-Code"),
+			"ms_error_msg", resp.Header.Get("X-Microsoft-Error-Message"),
+			"ms_tts_error", resp.Header.Get("X-Microsoft-Tts-Error"),
+			"ssml", ssml,
+		)
+		return nil, fmt.Errorf("azure: status %d: body=%q ms-error-code=%q ms-error-message=%q",
+			resp.StatusCode,
+			string(errBody),
+			resp.Header.Get("X-Microsoft-Error-Code"),
+			resp.Header.Get("X-Microsoft-Error-Message"),
+		)
 	}
 
 	return &Result{
