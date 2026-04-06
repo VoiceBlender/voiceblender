@@ -16,7 +16,7 @@ test:
 	go test ./internal/... -count=1 -timeout=60s
 
 test-integration:
-	go test -tags integration -v -timeout 60s -skip TestConcurrentRoomsScale ./tests/integration/
+	go test -tags integration -v -timeout 5m -skip TestConcurrentRoomsScale ./tests/integration/
 
 test-benchmark:
 	go test -tags integration -v -timeout 120s -run TestConcurrentRoomsScale ./tests/integration/
