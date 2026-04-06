@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func mustNewCache(t *testing.T) *tts.Cache {
 	t.Helper()
-	c, err := tts.NewCache(t.TempDir(), false)
+	c, err := tts.NewCache(t.TempDir(), false, slog.Default())
 	if err != nil {
 		t.Fatalf("NewCache: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestTTSCache_ErrorNotCached(t *testing.T) {
 
 func TestTTSCache_APIKeyIsolation(t *testing.T) {
 	// When includeAPIKey=true, different API keys must produce separate entries.
-	c, err := tts.NewCache(t.TempDir(), true)
+	c, err := tts.NewCache(t.TempDir(), true, slog.Default())
 	if err != nil {
 		t.Fatalf("NewCache: %v", err)
 	}

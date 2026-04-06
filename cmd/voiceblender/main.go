@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -96,7 +97,7 @@ func main() {
 	// TTS cache (optional)
 	var ttsCache *tts.Cache
 	if cfg.TTSCacheEnabled {
-		c, err := tts.NewCache(cfg.TTSCacheDir, cfg.TTSCacheIncludeAPIKey)
+		c, err := tts.NewCache(cfg.TTSCacheDir, cfg.TTSCacheIncludeAPIKey, log)
 		if err != nil {
 			log.Error("failed to create TTS cache", "error", err)
 			os.Exit(1)
@@ -161,7 +162,7 @@ func main() {
 		log.Info("shutting down")
 
 		// Shutdown HTTP
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5000000000) // 5 seconds
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		httpSrv.Shutdown(shutdownCtx)
 
