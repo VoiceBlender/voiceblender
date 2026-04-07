@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -19,17 +20,18 @@ import (
 type Cache struct {
 	dir           string
 	includeAPIKey bool
+	log           *slog.Logger
 }
 
 // NewCache creates a Cache that stores entries under dir, creating the
 // directory if it does not exist. When includeAPIKey is true, the API key is
 // part of the cache key — use this when different keys map to different
 // accounts with distinct voice clones or quotas.
-func NewCache(dir string, includeAPIKey bool) (*Cache, error) {
+func NewCache(dir string, includeAPIKey bool, log *slog.Logger) (*Cache, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("tts cache: create dir %s: %w", dir, err)
 	}
-	return &Cache{dir: dir, includeAPIKey: includeAPIKey}, nil
+	return &Cache{dir: dir, includeAPIKey: includeAPIKey, log: log}, nil
 }
 
 // WrapProvider returns a Provider that transparently caches synthesis results
@@ -84,7 +86,9 @@ func (cp *cachedProvider) Synthesize(ctx context.Context, text string, opts Opti
 	}
 
 	// Write to disk atomically (best-effort; don't fail synthesis on write error).
-	_ = writeCacheFile(path, result.MimeType, data)
+	if err := writeCacheFile(path, result.MimeType, data); err != nil {
+		cp.cache.log.Warn("tts cache write failed", "path", path, "error", err)
+	}
 
 	return &Result{
 		Audio:    io.NopCloser(bytes.NewReader(data)),
