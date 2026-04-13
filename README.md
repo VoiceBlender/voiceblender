@@ -63,6 +63,8 @@ All configuration is via environment variables:
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
 | `RTP_PORT_MIN` | `10000` | Minimum UDP port for RTP/RTCP media |
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
+| `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
+| `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
 
 ## Links
 

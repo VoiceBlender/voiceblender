@@ -17,6 +17,7 @@ import (
 	"errors"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/VoiceBlender/voiceblender/internal/jitter"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/emiago/sipgo/sip"
 	"github.com/google/uuid"
@@ -68,9 +69,18 @@ type SIPLeg struct {
 	rtpPT     uint8 // negotiated RTP payload type (may differ from codec default for dynamic PTs)
 	encoder   codec.Encoder
 	decoder   codec.Decoder
-	inFrames  chan []byte // decoded native-rate PCM from readLoop
+	inFrames  chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
 	dtmfCh    chan string // DTMF digits to send in writeLoop
+
+	// Optional ingress jitter buffer. When non-nil, readLoop pushes decoded
+	// PCM into jb keyed by RTP sequence number, and popLoop drains jb at a
+	// fixed cadence into inFrames. When nil, readLoop pushes directly to
+	// inFrames (passthrough — zero added latency, no reordering).
+	jb           *jitter.Buffer
+	jbTargetMs   int // target delay in ms; 0 = disabled
+	jbMaxMs      int // max queue depth in ms
+	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
 
 	earlyMediaSDP []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders    map[string]string // X-* headers from inbound INVITE or outbound request
@@ -100,6 +110,34 @@ type SIPLeg struct {
 	rtpLastTransit int64   // last transit time in RTP clock units
 
 	log *slog.Logger
+}
+
+// SetJitterBuffer configures the SIP ingress jitter buffer. targetMs is the
+// target play-out delay (e.g. 60 for 60 ms); 0 disables the buffer entirely
+// (passthrough). maxMs caps the queue depth; 0 means "use a sensible
+// default" (300 ms). Call before the leg's media pipeline is established.
+func (l *SIPLeg) SetJitterBuffer(targetMs, maxMs int) {
+	if targetMs < 0 {
+		targetMs = 0
+	}
+	if maxMs <= 0 {
+		maxMs = 300
+	}
+	if maxMs < targetMs {
+		maxMs = targetMs
+	}
+	l.mu.Lock()
+	l.jbTargetMs = targetMs
+	l.jbMaxMs = maxMs
+	l.mu.Unlock()
+}
+
+// JitterBufferMs returns the configured target delay in milliseconds (0 =
+// disabled).
+func (l *SIPLeg) JitterBufferMs() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.jbTargetMs
 }
 
 func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
@@ -525,16 +563,61 @@ func (l *SIPLeg) setupMedia() {
 	l.outFrames = make(chan []byte, 5)
 	l.dtmfCh = make(chan string, 5)
 
+	// 20 ms of samples at the codec's native rate, 16-bit mono LE.
+	l.jbFrameBytes = l.codecType.SampleRate() / 50 * 2
+
+	// Construct the jitter buffer if enabled.
+	if l.jbTargetMs > 0 {
+		l.jb = jitter.NewMs(l.jbTargetMs, l.jbMaxMs, 20)
+	}
+
 	l.log.Info("SIP leg media setup",
 		"leg_id", l.id,
 		"codec", l.codecType.String(),
 		"payload_type", l.rtpPT,
 		"sample_rate", l.codecType.SampleRate(),
 		"clock_rate", l.codecType.ClockRate(),
+		"jitter_buffer_ms", l.jbTargetMs,
 	)
 
 	go l.readLoop()
+	if l.jb != nil {
+		go l.popLoop()
+	}
 	go l.writeLoop()
+}
+
+// popLoop drains the jitter buffer at a fixed 20 ms cadence and pushes the
+// resulting PCM frame (or silence on underrun) into inFrames. Runs only
+// when an ingress jitter buffer is enabled; otherwise readLoop pushes
+// directly.
+func (l *SIPLeg) popLoop() {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		pcm, ok := l.jb.Pop()
+		if !ok {
+			// Warm-up or underrun — push a silence frame so the mixer's
+			// downstream pull still finds something at this tick.
+			pcm = make([]byte, l.jbFrameBytes)
+		}
+		select {
+		case l.inFrames <- pcm:
+		default:
+			// Consumer behind — drop oldest (same overflow policy as the
+			// passthrough path used to have).
+			select {
+			case <-l.inFrames:
+			default:
+			}
+			l.inFrames <- pcm
+		}
+	}
 }
 
 // readLoop reads RTP packets from the UDP socket, decodes audio, and pushes
@@ -655,7 +738,13 @@ func (l *SIPLeg) readLoop() {
 			st.Write(pcm)
 		}
 
-		// Push to inFrames, drop oldest on overflow
+		// Route to jitter buffer if enabled, otherwise push directly to
+		// inFrames with drop-oldest-on-overflow (preserves legacy
+		// passthrough behavior).
+		if l.jb != nil {
+			l.jb.Push(pkt.SequenceNumber, pcm)
+			continue
+		}
 		select {
 		case l.inFrames <- pcm:
 		default:

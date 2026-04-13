@@ -445,6 +445,10 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 
 	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Log)
 
+	// Apply server-default jitter buffer. No per-request override: jitter
+	// buffer tuning is operator-driven via the SIP_JITTER_BUFFER_MS env var.
+	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
+
 	l.OnDTMF(func(digit rune) {
 		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
 			LegScope: events.LegScope{LegID: l.ID()},
@@ -618,6 +622,11 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
 	s.LegMgr.Add(l)
+
+	// Apply server-default jitter buffer to inbound legs. No per-call
+	// override for inbound: inbound tuning is operator-driven via the
+	// SIP_JITTER_BUFFER_MS env var.
+	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 
 	// Route events for this leg to the per-leg webhook. Extract URL from SIP
 	// X-Webhook-URL header, falling back to the configured default.

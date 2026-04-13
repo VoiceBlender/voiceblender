@@ -34,6 +34,8 @@ type Config struct {
 	TTSCacheIncludeAPIKey bool
 	RTPPortMin            int
 	RTPPortMax            int
+	SIPJitterBufferMs     int
+	SIPJitterBufferMaxMs  int
 }
 
 func Load() Config {
@@ -63,6 +65,8 @@ func Load() Config {
 		TTSCacheIncludeAPIKey: os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
 		RTPPortMin:            envInt("RTP_PORT_MIN", 10000),
 		RTPPortMax:            envInt("RTP_PORT_MAX", 20000),
+		SIPJitterBufferMs:     envInt("SIP_JITTER_BUFFER_MS", 0),
+		SIPJitterBufferMaxMs:  envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 	}
 }
 

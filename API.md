@@ -110,6 +110,15 @@ Examples:
 "amd": { "greeting_duration": 2000, "beep_timeout": 8000 }  // custom thresholds
 ```
 
+**Jitter Buffer:** The SIP ingress jitter buffer absorbs variation in RTP packet arrival times. When enabled, packets are reordered by sequence number and released to the decoder at a fixed 20 ms cadence; late packets that miss their slot are replaced with silence. The buffer adds latency equal to its target depth, so it is **off by default** — turn it on only when network jitter is a real concern (PSTN trunks, mobile carriers, satellite links), not for latency-sensitive voice-agent legs.
+
+Configured server-wide:
+
+- `SIP_JITTER_BUFFER_MS` — target delay in ms, applied to every SIP leg. `0` = disabled passthrough (default).
+- `SIP_JITTER_BUFFER_MAX_MS` — queue cap in ms (default `300`). Frames beyond this are dropped oldest-first to catch up after a stall.
+
+WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
+
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.

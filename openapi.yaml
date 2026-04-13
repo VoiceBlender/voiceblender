@@ -64,6 +64,12 @@ info:
         - name: TTS_CACHE_INCLUDE_API_KEY
           default: "false"
           description: Include API key in TTS cache key; set true if different keys map to different voice clones
+        - name: SIP_JITTER_BUFFER_MS
+          default: "0"
+          description: SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg.
+        - name: SIP_JITTER_BUFFER_MAX_MS
+          default: "300"
+          description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
     version: 1.0.0
     license:
         name: MIT
