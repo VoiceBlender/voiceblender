@@ -412,6 +412,8 @@ func configVars() *seq {
 		{Name: "TTS_CACHE_ENABLED", Default: "false", Description: "Enable disk-backed TTS audio cache; cached audio persists across restarts"},
 		{Name: "TTS_CACHE_DIR", Default: "/tmp/tts_cache", Description: "Directory for cached TTS audio files (used when TTS_CACHE_ENABLED=true)"},
 		{Name: "TTS_CACHE_INCLUDE_API_KEY", Default: "false", Description: "Include API key in TTS cache key; set true if different keys map to different voice clones"},
+		{Name: "SIP_JITTER_BUFFER_MS", Default: "0", Description: "SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg."},
+		{Name: "SIP_JITTER_BUFFER_MAX_MS", Default: "300", Description: "Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall."},
 	}
 	s := newSeq()
 	for _, v := range vars {

@@ -62,6 +62,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
+| `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
 
 ---
 
