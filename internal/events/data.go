@@ -180,6 +180,16 @@ type RecordingFinishedData struct {
 	Channels         map[string]recording.ChannelInfo `json:"channels,omitempty"`
 }
 
+type RecordingPausedData struct {
+	LegRoomScope
+	File string `json:"file"`
+}
+
+type RecordingResumedData struct {
+	LegRoomScope
+	File string `json:"file"`
+}
+
 // --- STT ---
 
 type STTTextData struct {

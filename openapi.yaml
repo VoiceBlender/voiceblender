@@ -43,15 +43,6 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
-        - name: DEEPGRAM_API_KEY
-          default: ""
-          description: API key for Deepgram STT and TTS
-        - name: AZURE_SPEECH_KEY
-          default: ""
-          description: Subscription key for Azure Cognitive Speech Services (TTS and STT)
-        - name: AZURE_SPEECH_REGION
-          default: eastus
-          description: Azure region for Speech Services (e.g. eastus, westeurope)
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -73,12 +64,6 @@ info:
         - name: TTS_CACHE_INCLUDE_API_KEY
           default: "false"
           description: Include API key in TTS cache key; set true if different keys map to different voice clones
-        - name: RTP_PORT_MIN
-          default: "10000"
-          description: Minimum UDP port for RTP/RTCP media
-        - name: RTP_PORT_MAX
-          default: "20000"
-          description: Maximum UDP port for RTP/RTCP media
     version: 1.0.0
     license:
         name: MIT
@@ -590,6 +575,50 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/record/pause:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: pauseRecordLeg
+            summary: Pause a leg recording
+            description: 'Replaces incoming audio with silence on the active recording until `/record/resume` is called. The WAV''s timeline is preserved (silent gap where audio was paused), so reviewers can see exactly when sensitive data was excluded. Idempotent: calling while already paused returns `status: already_paused`.'
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Recording paused (or already paused)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No recording in progress
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/record/resume:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: resumeRecordLeg
+            summary: Resume a paused leg recording
+            description: 'Resumes writing real audio after a prior `/record/pause`. Idempotent: calling while not paused returns `status: not_paused`.'
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Recording resumed (or was not paused)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No recording in progress
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/stt:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -897,43 +926,34 @@ paths:
         post:
             operationId: startAMDLeg
             summary: Start answering machine detection on a connected leg
-            description: >-
-                Start AMD on an already-connected SIP leg. This is an alternative
-                to including the `amd` object in the POST /v1/legs request — use
-                this endpoint when AMD was not enabled at call creation time.
-                All AMD parameters are optional; omitted or zero values use built-in
-                defaults. An empty request body enables AMD with all defaults.
             tags:
                 - Legs
             requestBody:
-                required: false
+                required: true
                 content:
                     application/json:
                         schema:
                             $ref: '#/components/schemas/AMDParams'
             responses:
-                "200":
+                '200':
                     description: AMD started
                     content:
                         application/json:
                             schema:
-                                properties:
-                                    status:
-                                        type: string
-                                        example: started
-                "400":
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
                     description: Invalid AMD params or not a SIP leg
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-                "404":
+                '404':
                     description: Leg not found
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-                "409":
+                '409':
                     description: Leg is not in connected state
                     content:
                         application/json:
@@ -1318,6 +1338,50 @@ paths:
             responses:
                 '200':
                     description: Recording stopped
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No recording in progress
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/record/pause:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: pauseRecordRoom
+            summary: Pause a room recording
+            description: 'Replaces the room mix with silence on the active recording until `/record/resume` is called. When multi-channel recording is active, every per-participant track is paused too (including tracks for participants who join while paused). Idempotent: returns `status: already_paused` when already paused.'
+            tags:
+                - Rooms
+            responses:
+                '200':
+                    description: Recording paused (or already paused)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No recording in progress
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/record/resume:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: resumeRecordRoom
+            summary: Resume a paused room recording
+            description: Resumes writing real audio after a prior `/record/pause`. Resumes every per-participant track if multi-channel recording is active. Idempotent.
+            tags:
+                - Rooms
+            responses:
+                '200':
+                    description: Recording resumed (or was not paused)
                     content:
                         application/json:
                             schema:
@@ -1959,48 +2023,13 @@ components:
                     type: string
                     description: HMAC-SHA256 signing secret for the per-leg webhook.
                 amd:
-                    description: >-
-                        Enable Answering Machine Detection on this outbound call.
-                        Disabled by default — omit the field entirely to skip AMD.
-                        Include the object to enable; all inner fields are optional
-                        and default to sensible values when omitted or set to zero
-                        (e.g. `"amd": {}` enables AMD with all defaults).
+                    description: Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable.
+                    nullable: true
                     allOf:
                         - $ref: '#/components/schemas/AMDParams'
             required:
                 - type
                 - uri
-        AMDParams:
-            type: object
-            description: >-
-                Answering Machine Detection configuration. All fields are
-                optional — omitted or zero-valued fields use built-in defaults.
-                Pass an empty object (`{}`) to enable AMD with all defaults.
-            properties:
-                initial_silence_timeout:
-                    type: integer
-                    description: Max milliseconds of silence before declaring no_speech.
-                    default: 2500
-                greeting_duration:
-                    type: integer
-                    description: Speech duration threshold (ms) above which answerer is classified as machine.
-                    default: 1500
-                after_greeting_silence:
-                    type: integer
-                    description: Silence duration (ms) after initial speech to declare human.
-                    default: 800
-                total_analysis_time:
-                    type: integer
-                    description: Max analysis window in milliseconds.
-                    default: 5000
-                minimum_word_length:
-                    type: integer
-                    description: Minimum speech burst duration (ms) to count as a word.
-                    default: 100
-                beep_timeout:
-                    type: integer
-                    description: "Max time (ms) to wait for the voicemail beep after machine detection. 0 = disabled."
-                    default: 0
         RoomCreateRequest:
             type: object
             properties:
@@ -2159,14 +2188,13 @@ components:
                     default: false
                 provider:
                     type: string
-                    description: 'STT provider: "elevenlabs" (default), "deepgram", or "azure"'
+                    description: 'STT provider: "elevenlabs" (default) or "deepgram"'
                     enum:
                         - elevenlabs
                         - deepgram
-                        - azure
                 api_key:
                     type: string
-                    description: API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY, or AZURE_SPEECH_KEY env var depending on provider)
+                    description: API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)
             required:
                 - language
                 - partial
@@ -2178,7 +2206,7 @@ components:
                     description: Text to synthesize
                 voice:
                     type: string
-                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en). Azure: voice name (e.g. en-US-JennyNeural, pl-PL-MarekNeural).'
+                    description: 'Provider-specific voice identifier. ElevenLabs: voice name or ID. AWS Polly: voice ID (e.g. Joanna, Matthew). Google Cloud: voice name — either full format (e.g. en-US-Neural2-F) or short name for Gemini models (e.g. Achernar, Kore). Deepgram: model name (e.g. aura-2-asteria-en).'
                 model_id:
                     type: string
                     description: 'Provider-specific model/engine. ElevenLabs: model ID. AWS Polly: engine (standard, neural, long-form, generative; default neural). Google Cloud: model name (e.g. gemini-2.5-pro-tts, chirp3-hd).'
@@ -2196,16 +2224,15 @@ components:
                     maximum: 8
                 provider:
                     type: string
-                    description: 'TTS provider: "elevenlabs" (default), "aws", "google", "deepgram", or "azure"'
+                    description: 'TTS provider: "elevenlabs" (default), "aws", "google", or "deepgram"'
                     enum:
                         - elevenlabs
                         - aws
                         - google
                         - deepgram
-                        - azure
                 api_key:
                     type: string
-                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var). Azure: subscription key override (falls back to AZURE_SPEECH_KEY env var).'
+                    description: 'ElevenLabs: API key override (falls back to ELEVENLABS_API_KEY env var). AWS: optional ACCESS_KEY:SECRET_KEY override (falls back to default AWS credential chain). Google Cloud: optional API key override (falls back to Application Default Credentials). Deepgram: API key override (falls back to DEEPGRAM_API_KEY env var).'
             required:
                 - text
                 - voice
@@ -2248,6 +2275,33 @@ components:
                     description: SDP offer from the browser
             required:
                 - sdp
+        AMDParams:
+            type: object
+            properties:
+                initial_silence_timeout:
+                    type: integer
+                    description: Max milliseconds of silence before declaring no_speech
+                    default: 2500
+                greeting_duration:
+                    type: integer
+                    description: Speech duration threshold (ms) above which answerer is classified as machine
+                    default: 1500
+                after_greeting_silence:
+                    type: integer
+                    description: Silence duration (ms) after initial speech to declare human
+                    default: 800
+                total_analysis_time:
+                    type: integer
+                    description: Max analysis window in milliseconds
+                    default: 5000
+                minimum_word_length:
+                    type: integer
+                    description: Minimum speech burst duration (ms) to count as a word
+                    default: 100
+                beep_timeout:
+                    type: integer
+                    description: Max time (ms) to wait for the voicemail beep after machine detection. 0 or omitted = disabled.
+                    default: 0
         SIPAuth:
             type: object
             properties:
@@ -2299,6 +2353,8 @@ components:
                 - tts.error
                 - recording.started
                 - recording.finished
+                - recording.paused
+                - recording.resumed
                 - room.created
                 - room.deleted
                 - stt.text
@@ -2564,7 +2620,6 @@ x-webhooks:
     speaking.started:
         post:
             summary: Participant started speaking
-            description: Fires for any connected leg. When the leg is in a room, room_id is included.
             requestBody:
                 content:
                     application/json:
@@ -2581,7 +2636,6 @@ x-webhooks:
     speaking.stopped:
         post:
             summary: Participant stopped speaking
-            description: Fires for any connected leg. When the leg is in a room, room_id is included.
             requestBody:
                 content:
                     application/json:
@@ -2759,6 +2813,42 @@ x-webhooks:
                                         type: object
                                         additionalProperties:
                                             $ref: '#/components/schemas/ChannelInfo'
+    recording.paused:
+        post:
+            summary: Recording paused (audio replaced with silence)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                        description: Room identifier
+                                    file:
+                                        type: string
+    recording.resumed:
+        post:
+            summary: Recording resumed from a paused state
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                        description: Room identifier
+                                    file:
+                                        type: string
     room.created:
         post:
             summary: Room created
@@ -2880,45 +2970,3 @@ x-webhooks:
                                     text:
                                         type: string
                                         description: Agent response text
-    amd.result:
-        post:
-            summary: Answering machine detection completed
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                        description: Leg identifier
-                                    result:
-                                        type: string
-                                        enum: [human, machine, no_speech, not_sure]
-                                        description: "Detection result: human, machine, no_speech, or not_sure"
-                                    initial_silence_ms:
-                                        type: integer
-                                        description: Milliseconds of silence before first speech
-                                    greeting_duration_ms:
-                                        type: integer
-                                        description: Milliseconds of speech in the greeting
-                                    total_analysis_ms:
-                                        type: integer
-                                        description: Total milliseconds of analysis before determination
-    amd.beep:
-        post:
-            summary: Voicemail beep tone detected after machine classification
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                        description: Leg identifier
-                                    beep_ms:
-                                        type: integer
-                                        description: Milliseconds from machine detection to beep tone detection

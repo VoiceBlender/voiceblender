@@ -97,9 +97,9 @@ func (s *seq) add(val interface{}) *seq {
 
 // Package-level enrichment data loaded from the api package.
 var (
-	schemaEnrichments              map[string]api.FieldEnrichment
-	webhookFieldDescs              map[string]string
-	webhookNestedFieldDescs        map[string]string
+	schemaEnrichments       map[string]api.FieldEnrichment
+	webhookFieldDescs       map[string]string
+	webhookNestedFieldDescs map[string]string
 )
 
 // schemaRegistry collects named schemas and deduplicates.
@@ -616,6 +616,8 @@ func allWebhookEvents() []webhookEventMeta {
 		{events.TTSError, "TTS synthesis or playback failed", reflect.TypeOf(events.TTSErrorData{})},
 		{events.RecordingStarted, "Recording began", reflect.TypeOf(events.RecordingStartedData{})},
 		{events.RecordingFinished, "Recording ended", reflect.TypeOf(events.RecordingFinishedData{})},
+		{events.RecordingPaused, "Recording paused (audio replaced with silence)", reflect.TypeOf(events.RecordingPausedData{})},
+		{events.RecordingResumed, "Recording resumed from a paused state", reflect.TypeOf(events.RecordingResumedData{})},
 		{events.RoomCreated, "Room created", reflect.TypeOf(events.RoomCreatedData{})},
 		{events.RoomDeleted, "Room deleted", reflect.TypeOf(events.RoomDeletedData{})},
 		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},
@@ -947,24 +949,24 @@ func buildSchemas() *omap {
 // the existing spec naming conventions.
 func schemaDisplayName(goName string) string {
 	nameMap := map[string]string{
-		"LegView":            "Leg",
-		"RoomView":           "Room",
-		"CreateLegRequest":   "CreateLegRequest",
-		"SIPAuth":            "SIPAuth",
-		"CreateRoomRequest":  "RoomCreateRequest",
-		"AddLegRequest":      "AddLegRequest",
-		"PlaybackRequest":    "PlaybackRequest",
-		"VolumeRequest":      "VolumeRequest",
-		"DTMFRequest":        "DTMFRequest",
-		"TTSRequest":         "TTSRequest",
-		"STTRequest":         "STTRequest",
-		"RecordRequest":      "RecordingRequest",
-		"ElevenLabsAgentRequest":  "ElevenLabsAgentRequest",
-		"VAPIAgentRequest":        "VAPIAgentRequest",
-		"PipecatAgentRequest":     "PipecatAgentRequest",
-		"DeepgramAgentRequest":    "DeepgramAgentRequest",
-		"AgentMessageRequest":     "AgentMessageRequest",
-		"WebRTCOfferRequest": "WebRTCOfferRequest",
+		"LegView":                "Leg",
+		"RoomView":               "Room",
+		"CreateLegRequest":       "CreateLegRequest",
+		"SIPAuth":                "SIPAuth",
+		"CreateRoomRequest":      "RoomCreateRequest",
+		"AddLegRequest":          "AddLegRequest",
+		"PlaybackRequest":        "PlaybackRequest",
+		"VolumeRequest":          "VolumeRequest",
+		"DTMFRequest":            "DTMFRequest",
+		"TTSRequest":             "TTSRequest",
+		"STTRequest":             "STTRequest",
+		"RecordRequest":          "RecordingRequest",
+		"ElevenLabsAgentRequest": "ElevenLabsAgentRequest",
+		"VAPIAgentRequest":       "VAPIAgentRequest",
+		"PipecatAgentRequest":    "PipecatAgentRequest",
+		"DeepgramAgentRequest":   "DeepgramAgentRequest",
+		"AgentMessageRequest":    "AgentMessageRequest",
+		"WebRTCOfferRequest":     "WebRTCOfferRequest",
 	}
 	if display, ok := nameMap[goName]; ok {
 		return display
