@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-audio/audio"
@@ -17,6 +18,11 @@ import (
 )
 
 // Recorder captures PCM audio to a WAV file.
+//
+// When paused, the recorder keeps draining its input reader(s) but writes
+// silence (zeroed samples) instead of the real audio. This preserves the
+// recording's timeline so reviewers see a gap exactly where sensitive data
+// was exchanged, rather than a shorter file that conceals it.
 type Recorder struct {
 	mu        sync.Mutex
 	recording bool
@@ -24,6 +30,7 @@ type Recorder struct {
 	filePath  string
 	done      chan struct{}
 	log       *slog.Logger
+	paused    atomic.Bool
 }
 
 func NewRecorder(log *slog.Logger) *Recorder {
@@ -47,7 +54,7 @@ func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sa
 	go func() {
 		defer r.clearRecording()
 		defer close(r.done)
-		err := recordMono(cancel.ctx, reader, f, int(sampleRate))
+		err := r.recordMono(cancel.ctx, reader, f, int(sampleRate))
 		if err != nil && cancel.ctx.Err() == nil {
 			r.log.Error("recording error", "error", err)
 		}
@@ -68,7 +75,7 @@ func (r *Recorder) StartStereo(ctx context.Context, left, right io.Reader, dir s
 	go func() {
 		defer r.clearRecording()
 		defer close(r.done)
-		err := recordStereo(cancel.ctx, left, right, f, int(sampleRate))
+		err := r.recordStereo(cancel.ctx, left, right, f, int(sampleRate))
 		if err != nil && cancel.ctx.Err() == nil {
 			r.log.Error("stereo recording error", "error", err)
 		}
@@ -150,8 +157,39 @@ func (r *Recorder) IsRecording() bool {
 	return r.recording
 }
 
+// Pause instructs the recorder to replace incoming audio with silence
+// until Resume is called. Returns true if the state changed (i.e., the
+// recorder was running and not already paused).
+func (r *Recorder) Pause() bool {
+	r.mu.Lock()
+	running := r.recording
+	r.mu.Unlock()
+	if !running {
+		return false
+	}
+	return r.paused.CompareAndSwap(false, true)
+}
+
+// Resume undoes a prior Pause. Returns true if the state changed.
+func (r *Recorder) Resume() bool {
+	r.mu.Lock()
+	running := r.recording
+	r.mu.Unlock()
+	if !running {
+		return false
+	}
+	return r.paused.CompareAndSwap(true, false)
+}
+
+// IsPaused reports whether the recorder is currently paused.
+func (r *Recorder) IsPaused() bool {
+	return r.paused.Load()
+}
+
 // recordMono writes raw PCM data as a mono WAV file using go-audio/wav.
-func recordMono(ctx context.Context, reader io.Reader, f *os.File, sampleRate int) error {
+// While paused, incoming samples are replaced with silence so the written
+// WAV preserves real-time duration.
+func (r *Recorder) recordMono(ctx context.Context, reader io.Reader, f *os.File, sampleRate int) error {
 	defer f.Close()
 
 	enc := wav.NewEncoder(f, sampleRate, 16, 1, 1) // mono, PCM format=1
@@ -174,6 +212,9 @@ func recordMono(ctx context.Context, reader io.Reader, f *os.File, sampleRate in
 		n, err := reader.Read(buf)
 		if n > 0 {
 			samples := bytesToInt(buf[:n])
+			if r.paused.Load() {
+				zeroInts(samples)
+			}
 			intBuf.Data = samples
 			if werr := enc.Write(intBuf); werr != nil {
 				return werr
@@ -187,7 +228,8 @@ func recordMono(ctx context.Context, reader io.Reader, f *os.File, sampleRate in
 
 // recordStereo reads one frame at a time from left and right readers,
 // interleaves the samples [L0, R0, L1, R1, ...], and writes a stereo WAV file.
-func recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sampleRate int) error {
+// While paused, interleaved samples are zeroed.
+func (r *Recorder) recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sampleRate int) error {
 	defer f.Close()
 
 	enc := wav.NewEncoder(f, sampleRate, 16, 2, 1) // stereo, PCM format=1
@@ -222,9 +264,11 @@ func recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sample
 
 		if nSamples > 0 {
 			interleaved := make([]int, nSamples*2)
-			for i := 0; i < nSamples; i++ {
-				interleaved[i*2] = int(int16(binary.LittleEndian.Uint16(leftBuf[i*2:])))
-				interleaved[i*2+1] = int(int16(binary.LittleEndian.Uint16(rightBuf[i*2:])))
+			if !r.paused.Load() {
+				for i := 0; i < nSamples; i++ {
+					interleaved[i*2] = int(int16(binary.LittleEndian.Uint16(leftBuf[i*2:])))
+					interleaved[i*2+1] = int(int16(binary.LittleEndian.Uint16(rightBuf[i*2:])))
+				}
 			}
 			intBuf.Data = interleaved
 			if werr := enc.Write(intBuf); werr != nil {
@@ -235,6 +279,13 @@ func recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sample
 		if lerr != nil || rerr != nil {
 			return nil
 		}
+	}
+}
+
+// zeroInts sets every element of s to 0.
+func zeroInts(s []int) {
+	for i := range s {
+		s[i] = 0
 	}
 }
 

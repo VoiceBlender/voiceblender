@@ -561,6 +561,66 @@ Stop recording a leg.
 
 ---
 
+### POST /v1/legs/{id}/record/pause
+
+Pause the active recording for a leg. While paused, the WAV continues to advance in real time but the audio is replaced with silence, so the file preserves the full session duration with a clearly silent gap where sensitive data was excluded (e.g. credit-card capture, PII exchange). Both sides of a stereo recording are silenced together.
+
+Idempotent: calling while already paused returns `status: already_paused`.
+
+**Response:** `200 OK`
+
+```json
+{"status": "paused"}
+```
+
+or, if already paused:
+
+```json
+{"status": "already_paused"}
+```
+
+Emits a `recording.paused` event.
+
+**Errors:** `404` — No recording in progress
+
+---
+
+### POST /v1/legs/{id}/record/resume
+
+Resume a previously paused leg recording. Idempotent: calling while not paused returns `status: not_paused`.
+
+**Response:** `200 OK`
+
+```json
+{"status": "resumed"}
+```
+
+Emits a `recording.resumed` event.
+
+**Errors:** `404` — No recording in progress
+
+**Example — pause around sensitive data:**
+
+```bash
+# Start recording
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/record
+
+# ... agent collects call details ...
+
+# Pause before asking for credit card
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/record/pause
+
+# ... agent collects card number + CVV ...
+
+# Resume for the rest of the call
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/record/resume
+
+# Stop when done
+curl -X DELETE http://localhost:8080/v1/legs/$LEG_ID/record
+```
+
+---
+
 ### POST /v1/legs/{id}/stt
 
 Start real-time speech-to-text transcription on a leg.
@@ -1119,6 +1179,40 @@ Multi-channel recording — includes a single multi-channel WAV with channel met
 
 ---
 
+### POST /v1/rooms/{id}/record/pause
+
+Pause the active room recording. The room-mix WAV is silenced. If `multi_channel: true` was used when starting the recording, every per-participant track is paused too — including tracks for participants that join the room **while the recording is paused**, so sensitive data can't leak in via a new leg.
+
+Idempotent: returns `status: already_paused` if already paused.
+
+**Response:** `200 OK`
+
+```json
+{"status": "paused"}
+```
+
+Emits a `recording.paused` event.
+
+**Errors:** `404` — No recording in progress
+
+---
+
+### POST /v1/rooms/{id}/record/resume
+
+Resume a previously paused room recording. Resumes every per-participant track if multi-channel recording is active. Idempotent: returns `status: not_paused` if not paused.
+
+**Response:** `200 OK`
+
+```json
+{"status": "resumed"}
+```
+
+Emits a `recording.resumed` event.
+
+**Errors:** `404` — No recording in progress
+
+---
+
 ### POST /v1/rooms/{id}/stt
 
 Start real-time speech-to-text on all participants in a room.
@@ -1595,6 +1689,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
 | `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
 | `recording.finished` | Recording ended | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
+| `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
+| `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |

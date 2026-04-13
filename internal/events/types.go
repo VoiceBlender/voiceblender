@@ -33,6 +33,8 @@ const (
 
 	RecordingStarted  EventType = "recording.started"
 	RecordingFinished EventType = "recording.finished"
+	RecordingPaused   EventType = "recording.paused"
+	RecordingResumed  EventType = "recording.resumed"
 
 	SpeakingStarted EventType = "speaking.started"
 	SpeakingStopped EventType = "speaking.stopped"

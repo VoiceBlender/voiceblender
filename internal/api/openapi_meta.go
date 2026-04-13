@@ -98,6 +98,10 @@ func WebhookFieldDescriptions() map[string]string {
 		"recording.finished.leg_id":  "Leg identifier",
 		"recording.finished.room_id": "Room identifier",
 		"recording.finished.file":    "Recording file path or S3 URI",
+		"recording.paused.leg_id":    "Leg identifier",
+		"recording.paused.room_id":   "Room identifier",
+		"recording.resumed.leg_id":   "Leg identifier",
+		"recording.resumed.room_id":  "Room identifier",
 
 		// room
 		"room.created.room_id": "Room identifier",
@@ -350,6 +354,30 @@ func RoutesMetadata() []RouteMeta {
 			Tags:    []string{"Legs"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording stopped"},
+				404: {Description: "No recording in progress"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/record/pause", OperationID: "pauseRecordLeg",
+			Summary: "Pause a leg recording",
+			Description: "Replaces incoming audio with silence on the active recording until " +
+				"`/record/resume` is called. The WAV's timeline is preserved (silent gap where " +
+				"audio was paused), so reviewers can see exactly when sensitive data was excluded. " +
+				"Idempotent: calling while already paused returns `status: already_paused`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Recording paused (or already paused)"},
+				404: {Description: "No recording in progress"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/record/resume", OperationID: "resumeRecordLeg",
+			Summary: "Resume a paused leg recording",
+			Description: "Resumes writing real audio after a prior `/record/pause`. Idempotent: " +
+				"calling while not paused returns `status: not_paused`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Recording resumed (or was not paused)"},
 				404: {Description: "No recording in progress"},
 			},
 		},
@@ -613,6 +641,30 @@ func RoutesMetadata() []RouteMeta {
 			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording stopped"},
+				404: {Description: "No recording in progress"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/record/pause", OperationID: "pauseRecordRoom",
+			Summary: "Pause a room recording",
+			Description: "Replaces the room mix with silence on the active recording until " +
+				"`/record/resume` is called. When multi-channel recording is active, every " +
+				"per-participant track is paused too (including tracks for participants who " +
+				"join while paused). Idempotent: returns `status: already_paused` when already paused.",
+			Tags: []string{"Rooms"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Recording paused (or already paused)"},
+				404: {Description: "No recording in progress"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/record/resume", OperationID: "resumeRecordRoom",
+			Summary: "Resume a paused room recording",
+			Description: "Resumes writing real audio after a prior `/record/pause`. Resumes " +
+				"every per-participant track if multi-channel recording is active. Idempotent.",
+			Tags: []string{"Rooms"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Recording resumed (or was not paused)"},
 				404: {Description: "No recording in progress"},
 			},
 		},

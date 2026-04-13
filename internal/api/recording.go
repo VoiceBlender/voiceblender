@@ -34,6 +34,7 @@ type legRecordInfo struct {
 type multiChannelState struct {
 	mu        sync.Mutex
 	active    bool
+	paused    bool
 	startTime time.Time
 	storage   storage.Backend
 	dir       string
@@ -69,6 +70,13 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 		m.ClearParticipantRecordTap(legID)
 		pw.Close()
 		return
+	}
+
+	// If the room recording is currently paused, a late-joining participant
+	// must start paused too so their audio isn't captured while sensitive
+	// data is being handled.
+	if mc.paused {
+		rec.Pause()
 	}
 
 	mc.recorders[legID] = rec
@@ -432,6 +440,44 @@ func (s *Server) stopRecordLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "file": fpath})
 }
 
+func (s *Server) pauseRecordLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	legRecorders.Lock()
+	rec, ok := legRecorders.m[id]
+	legRecorders.Unlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "no recording in progress")
+		return
+	}
+	if !rec.Pause() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
+		return
+	}
+	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
+		LegRoomScope: events.LegRoomScope{LegID: id},
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
+}
+
+func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	legRecorders.Lock()
+	rec, ok := legRecorders.m[id]
+	legRecorders.Unlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "no recording in progress")
+		return
+	}
+	if !rec.Resume() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
+		return
+	}
+	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
+		LegRoomScope: events.LegRoomScope{LegID: id},
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
+}
+
 func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	rm, ok := s.RoomMgr.Get(id)
@@ -604,6 +650,80 @@ func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
 
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// setRoomRecordingPaused applies paused to the room mix recorder and, if
+// multi-channel recording is active, to every per-participant recorder as
+// well. Returns true if any recorder's state actually changed.
+func setRoomRecordingPaused(roomID string, paused bool) (changed bool, found bool) {
+	roomRecorders.Lock()
+	rec, ok := roomRecorders.m[roomID]
+	roomRecorders.Unlock()
+	if !ok {
+		return false, false
+	}
+	if paused {
+		changed = rec.Pause()
+	} else {
+		changed = rec.Resume()
+	}
+
+	roomMultiChannel.Lock()
+	mc := roomMultiChannel.m[roomID]
+	roomMultiChannel.Unlock()
+	if mc != nil {
+		mc.mu.Lock()
+		mc.paused = paused
+		recs := make([]*recording.Recorder, 0, len(mc.recorders))
+		for _, r := range mc.recorders {
+			recs = append(recs, r)
+		}
+		mc.mu.Unlock()
+		for _, r := range recs {
+			var c bool
+			if paused {
+				c = r.Pause()
+			} else {
+				c = r.Resume()
+			}
+			changed = changed || c
+		}
+	}
+	return changed, true
+}
+
+func (s *Server) pauseRecordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	changed, ok := setRoomRecordingPaused(id, true)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no recording in progress")
+		return
+	}
+	if !changed {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
+		return
+	}
+	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
+		LegRoomScope: events.LegRoomScope{RoomID: id},
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
+}
+
+func (s *Server) resumeRecordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	changed, ok := setRoomRecordingPaused(id, false)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no recording in progress")
+		return
+	}
+	if !changed {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
+		return
+	}
+	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
+		LegRoomScope: events.LegRoomScope{RoomID: id},
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
 }
 
 // stopRoomRecordingIfEmpty stops the room's recording when no leg participants

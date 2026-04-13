@@ -109,6 +109,8 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 | `TestRecording_StopWithNoRecording` | Stop without active recording returns 404 |
 | `TestRecording_StorageFileExplicit` | Explicit `storage=file` works |
 | `TestRecording_StorageS3NotConfigured` | `storage=s3` without config returns 400 |
+| `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop |
+| `TestRecording_PauseResume_Room` | Room-level pause/resume with events |
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
 | `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs |
 | `TestMute_BeforeRoomJoin` | Mute before joining room, verify it persists |
