@@ -63,6 +63,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
+| `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
 
 ---
 
@@ -121,6 +122,10 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 | `TestAMD_Disabled` | No AMD event when `amd` field is omitted |
 | `TestAMD_InvalidParams` | Invalid AMD parameters are rejected with 400 |
 | `TestAMD_DefaultParams` | Empty `"amd": {}` uses all defaults |
+| `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |
+| `TestTransfer_Inbound_DeclinedByDefault` | With default `SIP_REFER_AUTO_DIAL=false` the peer's REFER gets 603 and an audit event |
+| `TestTransfer_NotConnected` | `/transfer` on a ringing leg returns 409 |
+| `TestTransfer_BadRequest` | Missing or malformed `target` returns 400 |
 
 ---
 

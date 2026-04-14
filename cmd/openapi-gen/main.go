@@ -414,6 +414,7 @@ func configVars() *seq {
 		{Name: "TTS_CACHE_INCLUDE_API_KEY", Default: "false", Description: "Include API key in TTS cache key; set true if different keys map to different voice clones"},
 		{Name: "SIP_JITTER_BUFFER_MS", Default: "0", Description: "SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg."},
 		{Name: "SIP_JITTER_BUFFER_MAX_MS", Default: "300", Description: "Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall."},
+		{Name: "SIP_REFER_AUTO_DIAL", Default: "false", Description: "When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag."},
 	}
 	s := newSeq()
 	for _, v := range vars {
@@ -620,6 +621,11 @@ func allWebhookEvents() []webhookEventMeta {
 		{events.RecordingFinished, "Recording ended", reflect.TypeOf(events.RecordingFinishedData{})},
 		{events.RecordingPaused, "Recording paused (audio replaced with silence)", reflect.TypeOf(events.RecordingPausedData{})},
 		{events.RecordingResumed, "Recording resumed from a paused state", reflect.TypeOf(events.RecordingResumedData{})},
+		{events.LegTransferInitiated, "We sent a SIP REFER (transfer initiated by the operator)", reflect.TypeOf(events.LegTransferInitiatedData{})},
+		{events.LegTransferRequested, "We received a SIP REFER from the peer", reflect.TypeOf(events.LegTransferRequestedData{})},
+		{events.LegTransferProgress, "Transfer progress reported via NOTIFY sipfrag", reflect.TypeOf(events.LegTransferProgressData{})},
+		{events.LegTransferCompleted, "Transfer reached terminal 2xx", reflect.TypeOf(events.LegTransferCompletedData{})},
+		{events.LegTransferFailed, "Transfer failed (REFER rejected, sipfrag non-2xx, or local error)", reflect.TypeOf(events.LegTransferFailedData{})},
 		{events.RoomCreated, "Room created", reflect.TypeOf(events.RoomCreatedData{})},
 		{events.RoomDeleted, "Room deleted", reflect.TypeOf(events.RoomDeletedData{})},
 		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},

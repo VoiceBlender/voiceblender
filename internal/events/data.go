@@ -80,6 +80,54 @@ type LegUnholdData struct {
 	LegType string `json:"leg_type"`
 }
 
+// --- Transfer (SIP REFER) ---
+
+// LegTransferInitiatedData fires after we successfully send a REFER request
+// to a leg's peer (202 Accepted received).
+type LegTransferInitiatedData struct {
+	LegScope
+	Kind          string `json:"kind"` // "blind" or "attended"
+	Target        string `json:"target"`
+	ReplacesLegID string `json:"replaces_leg_id,omitempty"`
+}
+
+// LegTransferRequestedData fires when a peer sends us a REFER targeting one
+// of our legs. Declined=true means we rejected it (default-deny when
+// SIP_REFER_AUTO_DIAL=false); declined=false means we accepted (202) and
+// will originate the new leg.
+type LegTransferRequestedData struct {
+	LegScope
+	Kind           string `json:"kind"`
+	Target         string `json:"target"`
+	ReplacesCallID string `json:"replaces_call_id,omitempty"`
+	Declined       bool   `json:"declined"`
+}
+
+// LegTransferProgressData fires for each NOTIFY sipfrag we receive from the
+// transferee while it executes a transfer we initiated.
+type LegTransferProgressData struct {
+	LegScope
+	StatusCode int    `json:"status_code"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// LegTransferCompletedData fires once a transfer reaches a terminal 2xx state.
+type LegTransferCompletedData struct {
+	LegScope
+	StatusCode int    `json:"status_code"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// LegTransferFailedData fires when a transfer ends in a non-2xx terminal
+// state, when the REFER itself is rejected, or when the implicit
+// subscription expires without a final NOTIFY.
+type LegTransferFailedData struct {
+	LegScope
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // --- leg.disconnected with CDR-style nesting ---
 
 type LegDisconnectedData struct {

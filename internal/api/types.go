@@ -53,6 +53,17 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"amd":            {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
 }
 
+// TransferRequest is the body for POST /v1/legs/{id}/transfer.
+type TransferRequest struct {
+	Target        string `json:"target"`                    // SIP URI of the third party
+	ReplacesLegID string `json:"replaces_leg_id,omitempty"` // attended transfer: existing leg whose dialog is replaced
+}
+
+var transferRequestFields = map[string]FieldEnrichment{
+	"target":          {Description: "SIP URI to transfer the call to (e.g. \"sip:bob@example.com\")."},
+	"replaces_leg_id": {Description: "ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer."},
+}
+
 // SIPAuth holds SIP digest authentication credentials.
 type SIPAuth struct {
 	Username string `json:"username"`
@@ -330,6 +341,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("CreateLegRequest", createLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)
+	collect("TransferRequest", transferRequestFields)
 	collect("CreateRoomRequest", createRoomRequestFields)
 	collect("AddLegRequest", addLegRequestFields)
 	collect("PlaybackRequest", playbackRequestFields)

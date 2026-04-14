@@ -44,20 +44,22 @@ type Engine struct {
 
 	onInvite   func(call *InboundCall)
 	onReInvite func(callID string, direction string) []byte // returns SDP answer for 200 OK
-	codecs    []codec.CodecType
-	bindIP    string // externally-reachable IP (for SDP/Contact)
-	listenIP  string // original bind address (for ListenAndServe)
-	bindPort  int
-	portAlloc *PortAllocator
-	log       *slog.Logger
+	onRefer    func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
+	onNotify   func(callID string, statusCode int, reason string, terminated bool)
+	codecs     []codec.CodecType
+	bindIP     string // externally-reachable IP (for SDP/Contact)
+	listenIP   string // original bind address (for ListenAndServe)
+	bindPort   int
+	portAlloc  *PortAllocator
+	log        *slog.Logger
 }
 
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
 type InboundCall struct {
 	Dialog    *sipgo.DialogServerSession
-	From      string     // caller URI user part
-	To        string     // callee URI user part
-	RemoteSDP *SDPMedia  // parsed offer SDP
+	From      string    // caller URI user part
+	To        string    // callee URI user part
+	RemoteSDP *SDPMedia // parsed offer SDP
 	Request   *sip.Request
 
 	// Session timer (RFC 4028) — populated when remote requests timers.
@@ -160,6 +162,22 @@ func (e *Engine) OnInvite(handler func(*InboundCall)) {
 // returns the SDP body to include in the 200 OK response (nil = no SDP).
 func (e *Engine) OnReInvite(handler func(callID string, direction string) []byte) {
 	e.onReInvite = handler
+}
+
+// OnRefer registers a handler for in-dialog REFER requests (transfer). The
+// handler is responsible for sending the SIP response (typically 202
+// Accepted, or 603 Decline when transfers are disabled). req is provided
+// so the handler can pass it to sip.NewResponseFromRequest.
+func (e *Engine) OnRefer(handler func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)) {
+	e.onRefer = handler
+}
+
+// OnNotify registers a handler for in-dialog NOTIFY requests carrying a
+// "refer" subscription (RFC 3515 sipfrag). It is invoked once per NOTIFY
+// with the subscription's terminal/transient SIP status parsed from the
+// sipfrag body.
+func (e *Engine) OnNotify(handler func(callID string, statusCode int, reason string, terminated bool)) {
+	e.onNotify = handler
 }
 
 // handleReInvite processes an in-dialog re-INVITE (e.g. hold/unhold).
@@ -388,6 +406,63 @@ func (e *Engine) registerHandlers() {
 		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
 		tx.Respond(res)
 	})
+
+	e.server.OnRefer(e.handleRefer)
+	e.server.OnNotify(e.handleNotify)
+}
+
+// handleRefer processes an inbound in-dialog REFER. The configured onRefer
+// handler decides whether to accept (202) or decline (e.g. 603).
+func (e *Engine) handleRefer(req *sip.Request, tx sip.ServerTransaction) {
+	callID := ""
+	if cid := req.CallID(); cid != nil {
+		callID = cid.Value()
+	}
+	hdr := req.GetHeader("Refer-To")
+	if hdr == nil {
+		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing Refer-To", nil)
+		tx.Respond(res)
+		return
+	}
+	target, replaces, err := ParseReferTo(hdr.Value())
+	if err != nil {
+		e.log.Error("REFER: bad Refer-To", "error", err, "value", hdr.Value())
+		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Refer-To", nil)
+		tx.Respond(res)
+		return
+	}
+	if e.onRefer == nil {
+		// No transfer support wired — politely decline.
+		res := sip.NewResponseFromRequest(req, 501, "Not Implemented", nil)
+		tx.Respond(res)
+		return
+	}
+	e.onRefer(callID, target, replaces, req, tx)
+}
+
+// handleNotify processes an inbound in-dialog NOTIFY. We care only about
+// "refer" subscriptions — anything else gets 200 OK and is ignored.
+func (e *Engine) handleNotify(req *sip.Request, tx sip.ServerTransaction) {
+	// Always 200 OK first — the subscription protocol expects fast acks.
+	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	tx.Respond(res)
+
+	if e.onNotify == nil {
+		return
+	}
+	if ev := req.GetHeader("Event"); ev == nil || !strings.HasPrefix(strings.ToLower(ev.Value()), "refer") {
+		return
+	}
+	terminated := false
+	if ss := req.GetHeader("Subscription-State"); ss != nil {
+		terminated = strings.HasPrefix(strings.ToLower(ss.Value()), "terminated")
+	}
+	code, reason := ParseSipfrag(req.Body())
+	callID := ""
+	if cid := req.CallID(); cid != nil {
+		callID = cid.Value()
+	}
+	e.onNotify(callID, code, reason, terminated)
 }
 
 // Serve starts the SIP server and blocks until ctx is cancelled.
@@ -398,12 +473,12 @@ func (e *Engine) Serve(ctx context.Context) error {
 
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
-	Codecs       []codec.CodecType // Override engine codecs for this call; nil = use engine default
-	Headers      []sip.Header      // Extra SIP headers to include in the INVITE
-	FromUser     string            // Override the user part of the From header (caller ID)
+	Codecs       []codec.CodecType                              // Override engine codecs for this call; nil = use engine default
+	Headers      []sip.Header                                   // Extra SIP headers to include in the INVITE
+	FromUser     string                                         // Override the user part of the From header (caller ID)
 	OnEarlyMedia func(remoteSDP *SDPMedia, rtpSess *RTPSession) // Called on first 183 with SDP
-	AuthUsername string            // SIP digest auth username (optional)
-	AuthPassword string            // SIP digest auth password (optional)
+	AuthUsername string                                         // SIP digest auth username (optional)
+	AuthPassword string                                         // SIP digest auth password (optional)
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.

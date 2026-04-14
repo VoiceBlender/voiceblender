@@ -128,3 +128,21 @@ func (m *Manager) All() map[string]Leg {
 	}
 	return cp
 }
+
+// FindSIPByCallID returns the SIPLeg whose dialog Call-ID matches the given
+// value, or nil if none. Used to route in-dialog requests (e.g. REFER,
+// NOTIFY) back to the leg that owns the dialog.
+func (m *Manager) FindSIPByCallID(callID string) *SIPLeg {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, l := range m.legs {
+		s, ok := l.(*SIPLeg)
+		if !ok {
+			continue
+		}
+		if s.CallID() == callID {
+			return s
+		}
+	}
+	return nil
+}

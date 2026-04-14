@@ -139,6 +139,10 @@ func main() {
 	// Register re-INVITE handler for hold/unhold detection
 	engine.OnReInvite(apiSrv.HandleReInvite)
 
+	// Register REFER + NOTIFY handlers for SIP transfer (RFC 3515).
+	engine.OnRefer(apiSrv.HandleIncomingRefer)
+	engine.OnNotify(apiSrv.HandleReferNotify)
+
 	// Run SIP and HTTP servers
 	g, gCtx := errgroup.WithContext(ctx)
 

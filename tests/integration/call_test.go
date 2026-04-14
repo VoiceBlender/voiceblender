@@ -32,22 +32,28 @@ import (
 // ---------------------------------------------------------------------------
 
 type testInstance struct {
-	name     string
-	cfg      config.Config
-	bus      *events.Bus
-	webhooks *events.WebhookRegistry
-	legMgr   *leg.Manager
-	roomMgr  *room.Manager
-	engine   *sipmod.Engine
-	apiSrv   *api.Server
-	httpSrv  *http.Server
-	httpAddr string // "127.0.0.1:<port>"
-	sipPort  int
+	name      string
+	cfg       config.Config
+	bus       *events.Bus
+	webhooks  *events.WebhookRegistry
+	legMgr    *leg.Manager
+	roomMgr   *room.Manager
+	engine    *sipmod.Engine
+	apiSrv    *api.Server
+	httpSrv   *http.Server
+	httpAddr  string // "127.0.0.1:<port>"
+	sipPort   int
 	collector *eventCollector
-	cancel   context.CancelFunc
+	cancel    context.CancelFunc
 }
 
 func newTestInstance(t *testing.T, name string) *testInstance {
+	return newTestInstanceWithOpts(t, name, nil)
+}
+
+// newTestInstanceWithOpts is like newTestInstance but lets the test mutate
+// the config (e.g. enable SIP_REFER_AUTO_DIAL) before the server is wired.
+func newTestInstanceWithOpts(t *testing.T, name string, mutate func(*config.Config)) *testInstance {
 	t.Helper()
 
 	// Find a free UDP port for SIP.
@@ -70,6 +76,9 @@ func newTestInstance(t *testing.T, name string) *testInstance {
 		HTTPAddr:     "127.0.0.1:0",
 		RecordingDir: recDir,
 	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
 
 	bus := events.NewBus("test")
 	webhooks := events.NewWebhookRegistry(bus, log, "", "")
@@ -91,6 +100,8 @@ func newTestInstance(t *testing.T, name string) *testInstance {
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
+	engine.OnRefer(apiSrv.HandleIncomingRefer)
+	engine.OnNotify(apiSrv.HandleReferNotify)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

@@ -21,6 +21,12 @@ const (
 	LegHold         EventType = "leg.hold"
 	LegUnhold       EventType = "leg.unhold"
 
+	LegTransferInitiated EventType = "leg.transfer_initiated"
+	LegTransferRequested EventType = "leg.transfer_requested"
+	LegTransferProgress  EventType = "leg.transfer_progress"
+	LegTransferCompleted EventType = "leg.transfer_completed"
+	LegTransferFailed    EventType = "leg.transfer_failed"
+
 	DTMFReceived EventType = "dtmf.received"
 
 	PlaybackStarted  EventType = "playback.started"

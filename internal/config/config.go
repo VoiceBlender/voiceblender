@@ -36,6 +36,7 @@ type Config struct {
 	RTPPortMax            int
 	SIPJitterBufferMs     int
 	SIPJitterBufferMaxMs  int
+	SIPReferAutoDial      bool
 }
 
 func Load() Config {
@@ -67,6 +68,7 @@ func Load() Config {
 		RTPPortMax:            envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:     envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:  envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPReferAutoDial:      os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 	}
 }
 

@@ -37,6 +37,8 @@ type Server struct {
 
 	speakMu   sync.Mutex
 	speakDets map[string]*speaking.Detector
+
+	transfers *transferStore
 }
 
 func NewServer(
@@ -67,6 +69,7 @@ func NewServer(
 		Config:    cfg,
 		Log:       log,
 		speakDets: make(map[string]*speaking.Detector),
+		transfers: newTransferStore(),
 	}
 	s.routes()
 	return s
@@ -108,6 +111,7 @@ func (s *Server) routes() {
 		r.Delete("/legs/{id}/deaf", s.undeafLeg)
 		r.Post("/legs/{id}/hold", s.holdLeg)
 		r.Delete("/legs/{id}/hold", s.unholdLeg)
+		r.Post("/legs/{id}/transfer", s.transferLeg)
 		r.Delete("/legs/{id}", s.deleteLeg)
 		r.Post("/legs/{id}/dtmf", s.sendDTMF)
 		r.Post("/legs/{id}/play", s.playLeg)

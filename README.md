@@ -65,6 +65,7 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
+| `SIP_REFER_AUTO_DIAL` | `false` | Accept incoming SIP REFER requests and auto-dial the transferred call. **Default-deny** (toll-fraud risk). Outbound transfers via the REST API are unaffected. |
 
 ## Links
 
@@ -88,6 +89,7 @@ POST   /v1/legs/{id}/mute          # Mute
 DELETE /v1/legs/{id}/mute          # Unmute
 POST   /v1/legs/{id}/hold          # Put on hold
 DELETE /v1/legs/{id}/hold          # Resume from hold
+POST   /v1/legs/{id}/transfer      # SIP REFER (blind or attended)
 POST   /v1/legs/{id}/dtmf          # Send DTMF digits
 POST   /v1/legs/{id}/play          # Play audio or tone
 DELETE /v1/legs/{id}/play/{pbID}   # Stop playback

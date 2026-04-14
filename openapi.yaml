@@ -70,6 +70,9 @@ info:
         - name: SIP_JITTER_BUFFER_MAX_MS
           default: "300"
           description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
+        - name: SIP_REFER_AUTO_DIAL
+          default: "false"
+          description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
     version: 1.0.0
     license:
         name: MIT
@@ -338,6 +341,48 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '409':
                     description: Leg is not held
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/transfer:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: transferLeg
+            summary: Transfer a SIP leg via REFER
+            description: Sends a SIP REFER (RFC 3515) inside the leg's existing dialog asking the peer to transfer to `target`. Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog identity is embedded as a Replaces parameter per RFC 3891). Progress is reported via `leg.transfer_progress` events derived from NOTIFY sipfrag messages from the peer; on terminal 2xx the leg (and the replaces leg, if any) is hung up automatically.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TransferRequest'
+            responses:
+                '202':
+                    description: REFER sent and accepted by the peer
+                '400':
+                    description: Missing or invalid target URI
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg not connected, not a SIP leg, or replaces_leg_id is invalid
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '502':
+                    description: Peer rejected the REFER
                     content:
                         application/json:
                             schema:
@@ -2244,6 +2289,17 @@ components:
                 - voice
                 - model_id
                 - volume
+        TransferRequest:
+            type: object
+            properties:
+                target:
+                    type: string
+                    description: SIP URI to transfer the call to (e.g. "sip:bob@example.com").
+                replaces_leg_id:
+                    type: string
+                    description: ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer.
+            required:
+                - target
         VAPIAgentRequest:
             type: object
             properties:
@@ -2361,6 +2417,11 @@ components:
                 - recording.finished
                 - recording.paused
                 - recording.resumed
+                - leg.transfer_initiated
+                - leg.transfer_requested
+                - leg.transfer_progress
+                - leg.transfer_completed
+                - leg.transfer_failed
                 - room.created
                 - room.deleted
                 - stt.text
@@ -2855,6 +2916,113 @@ x-webhooks:
                                         description: Room identifier
                                     file:
                                         type: string
+    leg.transfer_initiated:
+        post:
+            summary: We sent a SIP REFER (transfer initiated by the operator)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    kind:
+                                        type: string
+                                        description: 'Transfer kind: "blind" or "attended"'
+                                    target:
+                                        type: string
+                                        description: SIP URI to which the leg is being transferred
+                                    replaces_leg_id:
+                                        type: string
+                                        description: Leg whose dialog is replaced (attended transfer only)
+    leg.transfer_requested:
+        post:
+            summary: We received a SIP REFER from the peer
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    kind:
+                                        type: string
+                                        description: 'Transfer kind: "blind" or "attended"'
+                                    target:
+                                        type: string
+                                        description: SIP URI requested by the peer
+                                    replaces_call_id:
+                                        type: string
+                                        description: Call-ID present in the Refer-To Replaces parameter (attended only)
+                                    declined:
+                                        type: boolean
+                                        description: True when the REFER was declined (e.g. SIP_REFER_AUTO_DIAL=false)
+    leg.transfer_progress:
+        post:
+            summary: Transfer progress reported via NOTIFY sipfrag
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    status_code:
+                                        type: integer
+                                        description: Provisional SIP status from the NOTIFY sipfrag
+                                    reason:
+                                        type: string
+                                        description: Reason phrase
+    leg.transfer_completed:
+        post:
+            summary: Transfer reached terminal 2xx
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    status_code:
+                                        type: integer
+                                        description: Final 2xx SIP status from the NOTIFY sipfrag
+                                    reason:
+                                        type: string
+                                        description: Reason phrase
+    leg.transfer_failed:
+        post:
+            summary: Transfer failed (REFER rejected, sipfrag non-2xx, or local error)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    status_code:
+                                        type: integer
+                                        description: Final non-2xx SIP status (when applicable)
+                                    reason:
+                                        type: string
+                                        description: Reason phrase
+                                    error:
+                                        type: string
+                                        description: Local error message (when no SIP status applies)
     room.created:
         post:
             summary: Room created
