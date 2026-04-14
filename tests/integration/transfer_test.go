@@ -66,16 +66,21 @@ func TestTransfer_Inbound_DeclinedByDefault(t *testing.T) {
 	transferResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
 		"target": fmt.Sprintf("sip:test@127.0.0.1:%d", instC.sipPort),
 	})
-	// REFER will be sent but rejected with 603 — our SendRefer surfaces
-	// that as 502 Bad Gateway from the REST call.
-	if transferResp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("transfer: status %d, want 502 (peer declined)", transferResp.StatusCode)
+	// REST accepts the request asynchronously (202) regardless of how
+	// the peer responds. The peer's 603 Decline surfaces on the event bus.
+	if transferResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d, want 202", transferResp.StatusCode)
 	}
 
-	// instance B should have published an audit event for the declined REFER.
+	// instance B should publish an audit event for the declined REFER.
 	instB.collector.waitForMatch(t, events.LegTransferRequested, func(e events.Event) bool {
 		d, ok := e.Data.(*events.LegTransferRequestedData)
 		return ok && d.Declined
+	}, 3*time.Second)
+
+	// instance A should publish transfer_failed once the REFER is rejected.
+	instA.collector.waitForMatch(t, events.LegTransferFailed, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
 	}, 3*time.Second)
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
@@ -119,6 +124,10 @@ func TestTransfer_BadRequest(t *testing.T) {
 	}
 	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{"target": "not a uri"}); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad uri: expected 400, got %d", r.StatusCode)
+	}
+	// "sip:" parses under sipgo but has no host — must be rejected.
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{"target": "sip:"}); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("sip: bare scheme: expected 400, got %d", r.StatusCode)
 	}
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))

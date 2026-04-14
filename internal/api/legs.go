@@ -353,24 +353,11 @@ func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
 }
 
-// cleanupLeg stops any active recording, removes the leg from its room (if any),
-// and removes it from the leg manager. Must be called on every disconnect path.
+// cleanupLeg tears down the leg. Order matters: room removal first so the
+// mixer stops pushing frames before Hangup closes the socket.
+// Caller MUST publish LegDisconnected before any webhook is cleared.
 func (s *Server) cleanupLeg(l leg.Leg) {
-	// Ensure the leg's RTP session is closed and its context cancelled so that
-	// any readers (recording, agent) unblock promptly. For remote-BYE the dialog
-	// is already done; the BYE send error is harmless and ignored.
-	if err := l.Hangup(context.Background()); err != nil {
-		s.Log.Debug("cleanupLeg hangup", "leg_id", l.ID(), "error", err)
-	}
-
-	s.stopSpeakingDetector(l.ID())
-	// Stop agent before recording so mixer taps can still be cleared.
-	s.cleanupLegAgent(l.ID())
-	// Stop recording before room removal so mixer taps can still be cleared.
-	s.stopLegRecording(l.ID())
-
 	if roomID := l.RoomID(); roomID != "" {
-		// Stop per-participant recording before removing from mixer.
 		s.onLegLeavingRoomRecording(roomID, l.ID())
 		if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
 			s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
@@ -378,10 +365,15 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 		s.stopRoomAgentIfEmpty(roomID)
 		s.stopRoomRecordingIfEmpty(roomID)
 	}
+
+	if err := l.Hangup(context.Background()); err != nil {
+		s.Log.Debug("cleanupLeg hangup", "leg_id", l.ID(), "error", err)
+	}
+
+	s.stopSpeakingDetector(l.ID())
+	s.cleanupLegAgent(l.ID())
+	s.stopLegRecording(l.ID())
 	s.LegMgr.Remove(l.ID())
-	// Note: ClearLegWebhook is intentionally NOT called here. The caller
-	// must publish LegDisconnected before clearing the webhook, otherwise
-	// the event has no route and is silently dropped.
 }
 
 func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {

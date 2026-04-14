@@ -350,8 +350,8 @@ paths:
             - $ref: '#/components/parameters/LegId'
         post:
             operationId: transferLeg
-            summary: Transfer a SIP leg via REFER
-            description: Sends a SIP REFER (RFC 3515) inside the leg's existing dialog asking the peer to transfer to `target`. Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog identity is embedded as a Replaces parameter per RFC 3891). Progress is reported via `leg.transfer_progress` events derived from NOTIFY sipfrag messages from the peer; on terminal 2xx the leg (and the replaces leg, if any) is hung up automatically.
+            summary: Transfer a SIP leg via REFER (asynchronous)
+            description: Asynchronously transfers a SIP leg. The HTTP call returns 202 as soon as the request is validated; the REFER is sent in the background and its outcome is surfaced through `leg.transfer_initiated` / `leg.transfer_progress` / `leg.transfer_completed` / `leg.transfer_failed` events. Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog identity is embedded as a Replaces parameter per RFC 3891). On terminal 2xx the leg (and the replaces leg, if any) is hung up automatically.
             tags:
                 - Legs
             requestBody:
@@ -362,9 +362,9 @@ paths:
                             $ref: '#/components/schemas/TransferRequest'
             responses:
                 '202':
-                    description: REFER sent and accepted by the peer
+                    description: Transfer request accepted for processing
                 '400':
-                    description: Missing or invalid target URI
+                    description: Missing or invalid target URI (including URIs without a host such as sip:)
                     content:
                         application/json:
                             schema:
@@ -377,12 +377,6 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '409':
                     description: Leg not connected, not a SIP leg, or replaces_leg_id is invalid
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-                '502':
-                    description: Peer rejected the REFER
                     content:
                         application/json:
                             schema:

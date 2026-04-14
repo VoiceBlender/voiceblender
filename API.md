@@ -320,13 +320,14 @@ Transfer a SIP leg to a third party using SIP REFER (RFC 3515). Supports both **
 { "status": "transfer_initiated" }
 ```
 
-**Events emitted:** `leg.transfer_initiated`, then `leg.transfer_progress` per NOTIFY, then either `leg.transfer_completed` or `leg.transfer_failed`.
+The REST call returns immediately after validating the request. The REFER is sent in the background and its outcome (accepted, rejected, or network error) surfaces on the event bus.
+
+**Events emitted:** `leg.transfer_initiated` when the peer's 202 Accepted arrives, then `leg.transfer_progress` per NOTIFY sipfrag, then either `leg.transfer_completed` or `leg.transfer_failed`. If the peer rejects the REFER outright (e.g. 603 Decline), only `leg.transfer_failed` fires.
 
 **Errors:**
-- `400` — Missing or invalid `target`
+- `400` — Missing or invalid `target` (including URIs without a host such as `sip:`)
 - `404` — Leg not found
 - `409` — Leg not connected, not a SIP leg, or `replaces_leg_id` is not a connected SIP leg
-- `502` — Peer rejected the REFER
 
 ---
 

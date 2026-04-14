@@ -121,7 +121,12 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("create server: %w", err)
 	}
 
-	client, err := sipgo.NewClient(ua)
+	// Pin Via sent-by to advertiseIP — wildcard binds make the response
+	// path unroutable, so peers black-hole our REFER/BYE/re-INVITE 200s.
+	client, err := sipgo.NewClient(ua,
+		sipgo.WithClientHostname(advertiseIP),
+		sipgo.WithClientPort(cfg.BindPort),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create client: %w", err)
 	}
@@ -390,10 +395,13 @@ func (e *Engine) registerHandlers() {
 	})
 
 	e.server.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
-		// Try inbound dialog cache first, then outbound
 		if err := e.dsCache.ReadBye(req, tx); err != nil {
 			if err := e.dcCache.ReadBye(req, tx); err != nil {
-				e.log.Debug("read bye: no matching dialog", "error", err)
+				// RFC 3261 §8.2.2.1
+				e.log.Debug("BYE: no matching dialog, replying 481", "error", err)
+				if rerr := e.respondFromSource(tx, req, 481, "Call/Transaction Does Not Exist"); rerr != nil {
+					e.log.Error("BYE: respond 481 failed", "error", rerr)
+				}
 			}
 		}
 	})
@@ -411,41 +419,56 @@ func (e *Engine) registerHandlers() {
 	e.server.OnNotify(e.handleNotify)
 }
 
-// handleRefer processes an inbound in-dialog REFER. The configured onRefer
-// handler decides whether to accept (202) or decline (e.g. 603).
+// RespondFromSource pins the response destination to the request's UDP
+// source so peers with unroutable Via headers still get our reply.
+func (e *Engine) RespondFromSource(tx sip.ServerTransaction, req *sip.Request, statusCode int, reason string) error {
+	res := sip.NewResponseFromRequest(req, statusCode, reason, nil)
+	if src := req.Source(); src != "" {
+		res.SetDestination(src)
+	}
+	return tx.Respond(res)
+}
+
+func (e *Engine) respondFromSource(tx sip.ServerTransaction, req *sip.Request, statusCode int, reason string) error {
+	return e.RespondFromSource(tx, req, statusCode, reason)
+}
+
+// handleRefer dispatches inbound REFER to the onRefer hook (which decides 202 vs decline).
 func (e *Engine) handleRefer(req *sip.Request, tx sip.ServerTransaction) {
+	e.log.Info("REFER received", "call_id", req.CallID().Value(), "from", req.From().Address.String(), "source", req.Source())
 	callID := ""
 	if cid := req.CallID(); cid != nil {
 		callID = cid.Value()
 	}
 	hdr := req.GetHeader("Refer-To")
 	if hdr == nil {
-		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing Refer-To", nil)
-		tx.Respond(res)
+		if err := e.respondFromSource(tx, req, sip.StatusBadRequest, "Missing Refer-To"); err != nil {
+			e.log.Error("REFER: respond 400 failed", "error", err)
+		}
 		return
 	}
 	target, replaces, err := ParseReferTo(hdr.Value())
 	if err != nil {
 		e.log.Error("REFER: bad Refer-To", "error", err, "value", hdr.Value())
-		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Refer-To", nil)
-		tx.Respond(res)
+		if err := e.respondFromSource(tx, req, sip.StatusBadRequest, "Bad Refer-To"); err != nil {
+			e.log.Error("REFER: respond 400 failed", "error", err)
+		}
 		return
 	}
 	if e.onRefer == nil {
-		// No transfer support wired — politely decline.
-		res := sip.NewResponseFromRequest(req, 501, "Not Implemented", nil)
-		tx.Respond(res)
+		if err := e.respondFromSource(tx, req, 501, "Not Implemented"); err != nil {
+			e.log.Error("REFER: respond 501 failed", "error", err)
+		}
 		return
 	}
 	e.onRefer(callID, target, replaces, req, tx)
 }
 
-// handleNotify processes an inbound in-dialog NOTIFY. We care only about
-// "refer" subscriptions — anything else gets 200 OK and is ignored.
+// handleNotify acks any in-dialog NOTIFY and dispatches "refer" sipfrag bodies.
 func (e *Engine) handleNotify(req *sip.Request, tx sip.ServerTransaction) {
-	// Always 200 OK first — the subscription protocol expects fast acks.
-	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
-	tx.Respond(res)
+	if err := e.respondFromSource(tx, req, sip.StatusOK, "OK"); err != nil {
+		e.log.Error("NOTIFY: respond 200 failed", "error", err)
+	}
 
 	if e.onNotify == nil {
 		return

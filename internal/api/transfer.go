@@ -20,8 +20,6 @@ const (
 	transferOutbound transferDirection = iota // we sent REFER, awaiting NOTIFY
 )
 
-// transferState records what we need to know about an outstanding transfer
-// when subsequent NOTIFY sipfrag messages arrive on the same dialog.
 type transferState struct {
 	legID         string
 	replacesLegID string
@@ -30,9 +28,7 @@ type transferState struct {
 	direction     transferDirection
 }
 
-// transferStore is a small Call-ID → transferState map. Outbound transfers
-// only — inbound REFERs are handled inline because their progress is driven
-// by our own outbound origination, not by a NOTIFY we receive.
+// transferStore maps Call-ID → outbound transferState (for routing NOTIFYs).
 type transferStore struct {
 	mu sync.Mutex
 	m  map[string]*transferState
@@ -61,9 +57,7 @@ func (t *transferStore) del(callID string) {
 	delete(t.m, callID)
 }
 
-// transferLeg implements POST /v1/legs/{id}/transfer — sends a SIP REFER on
-// the leg's existing dialog asking the peer to transfer to the target URI.
-// Blind transfer when ReplacesLegID is empty; attended otherwise.
+// transferLeg implements POST /v1/legs/{id}/transfer.
 func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -81,6 +75,11 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 	target := sip.Uri{}
 	if err := sip.ParseUri(req.Target, &target); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid target URI: %v", err))
+		return
+	}
+	// sipgo's ParseUri accepts "sip:" with no host.
+	if target.Host == "" {
+		writeError(w, http.StatusBadRequest, "target URI missing host")
 		return
 	}
 
@@ -118,9 +117,7 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "replaces_leg_id has no usable dialog identity")
 			return
 		}
-		// Per RFC 3891 the to-tag/from-tag in Replaces are written from the
-		// perspective of the party being replaced. From our local view that
-		// translates to: from-tag = our local tag, to-tag = our remote tag.
+		// RFC 3891: tags are from the replaced party's view → swap.
 		replaces = &sipmod.ReplacesParams{
 			CallID:  callID,
 			FromTag: localTag,
@@ -130,20 +127,8 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		replacesLeg = osl
 	}
 
-	if err := sl.Transfer(r.Context(), req.Target, replaces); err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("send REFER: %v", err))
-		return
-	}
-
-	s.Bus.Publish(events.LegTransferInitiated, &events.LegTransferInitiatedData{
-		LegScope:      events.LegScope{LegID: sl.ID()},
-		Kind:          kind,
-		Target:        req.Target,
-		ReplacesLegID: req.ReplacesLegID,
-	})
-
-	// Remember enough state to act on subsequent NOTIFY sipfrag messages
-	// addressed to this leg's dialog.
+	// Registered before Transfer() so NOTIFY arriving immediately after
+	// the peer's 202 finds a route entry.
 	s.transfers.set(sl.CallID(), &transferState{
 		legID:         sl.ID(),
 		replacesLegID: req.ReplacesLegID,
@@ -152,13 +137,38 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		direction:     transferOutbound,
 	})
 
+	// Some peers skip 202 Accepted and signal only via NOTIFY; emit
+	// transfer_initiated before Do() so the event fires regardless.
+	s.Bus.Publish(events.LegTransferInitiated, &events.LegTransferInitiatedData{
+		LegScope:      events.LegScope{LegID: sl.ID()},
+		Kind:          kind,
+		Target:        req.Target,
+		ReplacesLegID: req.ReplacesLegID,
+	})
+
+	// Use the leg's context, not r.Context() (HTTP request closes early).
+	go func() {
+		callID := sl.CallID()
+		if err := sl.Transfer(sl.Context(), req.Target, replaces); err != nil {
+			// NOTIFY-terminated may have resolved this already.
+			if _, stillPending := s.transfers.get(callID); !stillPending {
+				s.Log.Debug("transfer REFER returned after NOTIFY-terminated resolution", "leg_id", sl.ID(), "error", err)
+				return
+			}
+			s.Log.Info("transfer REFER failed", "leg_id", sl.ID(), "error", err)
+			s.transfers.del(callID)
+			s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
+				LegScope: events.LegScope{LegID: sl.ID()},
+				Error:    err.Error(),
+			})
+			return
+		}
+	}()
+
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "transfer_initiated"})
 }
 
-// HandleReferNotify is invoked by the SIP engine for every NOTIFY sipfrag
-// arriving on a leg that owns an outstanding outbound transfer. It
-// translates the sipfrag status into transfer events and, on terminal
-// success, hangs up the legs that the transfer obsoleted.
+// HandleReferNotify dispatches NOTIFY sipfrag updates for outbound transfers.
 func (s *Server) HandleReferNotify(callID string, statusCode int, reason string, terminated bool) {
 	st, ok := s.transfers.get(callID)
 	if !ok || st.direction != transferOutbound {
@@ -183,8 +193,6 @@ func (s *Server) HandleReferNotify(callID string, statusCode int, reason string,
 			StatusCode: statusCode,
 			Reason:     reason,
 		})
-		// Standard semantics: once the peer has the new call, the
-		// original leg(s) are obsolete. Hang them up.
 		if l, ok := s.LegMgr.Get(st.legID); ok {
 			if sl, ok := l.(*leg.SIPLeg); ok && sl.State() != leg.StateHungUp {
 				s.cleanupLeg(sl)
@@ -205,9 +213,7 @@ func (s *Server) HandleReferNotify(callID string, statusCode int, reason string,
 	})
 }
 
-// HandleIncomingRefer is invoked by the SIP engine for every inbound REFER.
-// Default-deny: when SIP_REFER_AUTO_DIAL is unset (false) we 603 Decline
-// every REFER and emit an audit event so operators can monitor attempts.
+// HandleIncomingRefer handles inbound REFER. Default-deny via SIP_REFER_AUTO_DIAL.
 func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.ReplacesParams, req *sip.Request, tx sip.ServerTransaction) {
 	kind := "blind"
 	replacesCallID := ""
@@ -224,8 +230,9 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 
 	if !s.Config.SIPReferAutoDial {
 		if tx != nil {
-			res := sip.NewResponseFromRequest(req, 603, "Decline", nil)
-			tx.Respond(res)
+			if err := s.SIPEngine.RespondFromSource(tx, req, 603, "Decline"); err != nil {
+				s.Log.Error("REFER respond 603 failed", "error", err)
+			}
 		}
 		s.Bus.Publish(events.LegTransferRequested, &events.LegTransferRequestedData{
 			LegScope:       scope,
@@ -238,18 +245,21 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 	}
 
 	if sl == nil {
-		// We accepted REFER (auto-dial enabled) but can't find the leg
-		// to drive NOTIFY against — reject so the peer doesn't wait.
+		// Auto-dial on but no leg matches — can't NOTIFY back, so reject.
 		if tx != nil {
-			res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
-			tx.Respond(res)
+			if err := s.SIPEngine.RespondFromSource(tx, req, 481, "Call/Transaction Does Not Exist"); err != nil {
+				s.Log.Error("REFER respond 481 failed", "error", err)
+			}
 		}
 		return
 	}
 
 	if tx != nil {
-		res := sip.NewResponseFromRequest(req, sip.StatusAccepted, "Accepted", nil)
-		tx.Respond(res)
+		if err := s.SIPEngine.RespondFromSource(tx, req, sip.StatusAccepted, "Accepted"); err != nil {
+			s.Log.Error("REFER respond 202 failed", "error", err)
+		} else {
+			s.Log.Info("REFER accepted with 202", "leg_id", sl.ID(), "target", target)
+		}
 	}
 	s.Bus.Publish(events.LegTransferRequested, &events.LegTransferRequestedData{
 		LegScope:       scope,
@@ -259,13 +269,10 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 		Declined:       false,
 	})
 
-	// Originate the new outbound leg toward target. Wire its lifecycle
-	// callbacks to ship NOTIFY sipfrag back to the referrer leg.
 	go s.originateForRefer(sl, target, replaces)
 }
 
-// originateForRefer dials the REFER target and reports progress to the
-// referrer via NOTIFY sipfrag. Called from HandleIncomingRefer.
+// originateForRefer dials the REFER target and NOTIFYs sipfrag back to referrer.
 func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces *sipmod.ReplacesParams) {
 	recipient := sip.Uri{}
 	if err := sip.ParseUri(target, &recipient); err != nil {
@@ -281,7 +288,6 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		URI:      target,
 	})
 
-	// Active subscription: 100 Trying.
 	if err := referrer.SendNotifySipfrag(context.Background(), 100, "Trying", false); err != nil {
 		s.Log.Warn("transfer NOTIFY 100 failed", "error", err)
 	}
@@ -319,7 +325,6 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		LegType:  string(newLeg.Type()),
 	})
 
-	// Final NOTIFY: terminated, 200 OK.
 	if err := referrer.SendNotifySipfrag(context.Background(), 200, "OK", true); err != nil {
 		s.Log.Warn("transfer NOTIFY 200 failed", "error", err)
 	}
@@ -329,13 +334,10 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		Reason:     "OK",
 	})
 
-	// Hang up the referrer leg — our peer asked to be transferred away.
 	s.cleanupLeg(referrer)
 	s.publishDisconnect(referrer, "transfer_completed")
 }
 
-// notifyAndFail sends a final NOTIFY sipfrag with a non-2xx status and
-// publishes a transfer_failed event for the referrer leg.
 func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason string) {
 	if referrer != nil {
 		referrer.SendNotifySipfrag(context.Background(), statusCode, reason, true)

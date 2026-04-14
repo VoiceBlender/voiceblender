@@ -297,19 +297,20 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/transfer", OperationID: "transferLeg",
-			Summary: "Transfer a SIP leg via REFER",
-			Description: "Sends a SIP REFER (RFC 3515) inside the leg's existing dialog asking the peer to transfer to `target`. " +
-				"Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog identity is " +
-				"embedded as a Replaces parameter per RFC 3891). Progress is reported via `leg.transfer_progress` events derived from " +
-				"NOTIFY sipfrag messages from the peer; on terminal 2xx the leg (and the replaces leg, if any) is hung up automatically.",
+			Summary: "Transfer a SIP leg via REFER (asynchronous)",
+			Description: "Asynchronously transfers a SIP leg. The HTTP call returns 202 as soon as the request is validated; " +
+				"the REFER is sent in the background and its outcome is surfaced through `leg.transfer_initiated` / " +
+				"`leg.transfer_progress` / `leg.transfer_completed` / `leg.transfer_failed` events. " +
+				"Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog " +
+				"identity is embedded as a Replaces parameter per RFC 3891). On terminal 2xx the leg (and the replaces leg, " +
+				"if any) is hung up automatically.",
 			Tags:        []string{"Legs"},
 			RequestType: TransferRequest{},
 			Responses: map[int]ResponseMeta{
-				202: {Description: "REFER sent and accepted by the peer"},
-				400: {Description: "Missing or invalid target URI"},
+				202: {Description: "Transfer request accepted for processing"},
+				400: {Description: "Missing or invalid target URI (including URIs without a host such as sip:)"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg not connected, not a SIP leg, or replaces_leg_id is invalid"},
-				502: {Description: "Peer rejected the REFER"},
 			},
 		},
 		{

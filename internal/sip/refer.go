@@ -11,17 +11,14 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// ReplacesParams identifies the dialog of an existing call so a SIP REFER
-// recipient can construct an INVITE with a Replaces header (RFC 3891) — the
-// mechanism behind attended transfer.
+// ReplacesParams carries the Replaces header dialog identity (RFC 3891).
 type ReplacesParams struct {
-	CallID  string // dialog Call-ID
-	ToTag   string // dialog "remote" tag (To from caller's view)
-	FromTag string // dialog "local" tag  (From from caller's view)
+	CallID  string
+	ToTag   string
+	FromTag string
 }
 
-// String renders the Replaces value the way it appears as a URI parameter
-// inside a Refer-To header: callid;to-tag=...;from-tag=...
+// String formats as the Replaces value embedded in a Refer-To URI.
 func (p *ReplacesParams) String() string {
 	if p == nil {
 		return ""
@@ -29,18 +26,10 @@ func (p *ReplacesParams) String() string {
 	return fmt.Sprintf("%s;to-tag=%s;from-tag=%s", p.CallID, p.ToTag, p.FromTag)
 }
 
-// SendRefer sends a REFER request inside an existing dialog. dialog must be
-// either *sipgo.DialogServerSession or *sipgo.DialogClientSession (same
-// constraint as SendReInvite). On success the peer has accepted the
-// transfer (202 Accepted) and will emit NOTIFY sipfrag updates for the
-// transfer subscription created implicitly by RFC 3515.
+// SendRefer sends an in-dialog REFER, returning nil on 202 Accepted.
 func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo string, replaces *ReplacesParams) error {
-	// Build the Refer-To value. If a Replaces parameter is supplied it
-	// goes inside the URI as a header (?Replaces=...) per RFC 3891 §4.
 	target := referTo
 	if replaces != nil {
-		// URL-encode the embedded URI parameter; semicolons inside the
-		// Replaces value would otherwise terminate the URI parameters.
 		target = fmt.Sprintf("%s?Replaces=%s", referTo, url.QueryEscape(replaces.String()))
 	}
 	referToHdr := sip.NewHeader("Refer-To", "<"+target+">")
@@ -75,9 +64,7 @@ func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo stri
 	}
 }
 
-// SendNotifySipfrag sends an in-dialog NOTIFY for a "refer" subscription.
-// statusCode/reason are formatted as a sipfrag body ("SIP/2.0 200 OK").
-// terminated=true marks the subscription as terminated (final NOTIFY).
+// SendNotifySipfrag sends a "refer" subscription NOTIFY with a sipfrag body.
 func (e *Engine) SendNotifySipfrag(ctx context.Context, dialog interface{}, statusCode int, reason string, terminated bool) error {
 	subState := "active;expires=60"
 	if terminated {
@@ -108,13 +95,7 @@ func (e *Engine) SendNotifySipfrag(ctx context.Context, dialog interface{}, stat
 	}
 }
 
-// ParseReferTo extracts the bare URI and (when present) the Replaces
-// parameters from a Refer-To header value of the form
-//
-//	<sip:bob@host>
-//	<sip:bob@host?Replaces=callid%3Bto-tag%3Dxx%3Bfrom-tag%3Dyy>
-//
-// The function is permissive about angle brackets and percent-encoding.
+// ParseReferTo extracts the bare URI and (optional) Replaces from a Refer-To.
 func ParseReferTo(value string) (string, *ReplacesParams, error) {
 	v := strings.TrimSpace(value)
 	v = strings.TrimPrefix(v, "<")
@@ -125,8 +106,6 @@ func ParseReferTo(value string) (string, *ReplacesParams, error) {
 	if !hasParams {
 		return uri, nil, nil
 	}
-	// Refer-To URI parameters are application/x-www-form-urlencoded-like:
-	// header=value pairs separated by '&'.
 	for _, pair := range strings.Split(raw, "&") {
 		k, val, ok := strings.Cut(pair, "=")
 		if !ok {
@@ -139,7 +118,6 @@ func ParseReferTo(value string) (string, *ReplacesParams, error) {
 		if err != nil {
 			return uri, nil, fmt.Errorf("Refer-To Replaces decode: %w", err)
 		}
-		// callid;to-tag=...;from-tag=...
 		parts := strings.Split(decoded, ";")
 		rp := &ReplacesParams{CallID: parts[0]}
 		for _, p := range parts[1:] {
@@ -159,14 +137,12 @@ func ParseReferTo(value string) (string, *ReplacesParams, error) {
 	return uri, nil, nil
 }
 
-// ParseSipfrag extracts the status line of a sipfrag body. Returns
-// (statusCode, reasonPhrase) or (0, "") if the body cannot be parsed.
+// ParseSipfrag returns (statusCode, reason) from a sipfrag status line, or (0,"").
 func ParseSipfrag(body []byte) (int, string) {
 	line := string(body)
 	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
 		line = line[:i]
 	}
-	// "SIP/2.0 200 OK"
 	parts := strings.SplitN(line, " ", 3)
 	if len(parts) < 2 || !strings.HasPrefix(parts[0], "SIP/") {
 		return 0, ""

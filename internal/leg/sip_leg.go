@@ -944,31 +944,31 @@ func (l *SIPLeg) writeLoop() {
 
 func (l *SIPLeg) Hangup(ctx context.Context) error {
 	l.setState(StateHungUp)
-	defer l.cancel()
+	// Cancel up front so downstream goroutines unblock without waiting on BYE.
+	l.cancel()
 
-	// Cancel hold timer if active.
 	l.mu.Lock()
 	if l.holdTimer != nil {
 		l.holdTimer.Stop()
 		l.holdTimer = nil
 	}
 	l.mu.Unlock()
-
-	// Cancel session timer if active.
 	l.stopSessionTimer()
 
-	// Close RTP session
 	if l.rtpSess != nil {
 		l.rtpSess.Close()
 	}
 
-	// Send BYE via dialog
-	if l.inbound != nil {
-		return l.inbound.Dialog.Bye(ctx)
-	}
-	if l.outbound != nil {
-		return l.outbound.Dialog.Bye(ctx)
-	}
+	// BYE is fire-and-forget so a non-responsive peer can't stall callers.
+	go func(inbound *sipmod.InboundCall, outbound *sipmod.OutboundCall) {
+		byeCtx, byeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer byeCancel()
+		if inbound != nil {
+			inbound.Dialog.Bye(byeCtx)
+		} else if outbound != nil {
+			outbound.Dialog.Bye(byeCtx)
+		}
+	}(l.inbound, l.outbound)
 	return nil
 }
 
