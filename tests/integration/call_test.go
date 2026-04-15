@@ -1108,6 +1108,42 @@ func TestMute_LegInRoom(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 }
 
+// TestAddLegToRoom_JoinMutedAndDeaf verifies that a leg can be added to a
+// room pre-muted and pre-deafened in a single atomic request, with no
+// intermediate window where un-muted audio enters the mix.
+func TestAddLegToRoom_JoinMutedAndDeaf(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/rooms/%s/legs", instA.baseURL(), rm.ID), map[string]interface{}{
+		"leg_id": outboundID,
+		"mute":   true,
+		"deaf":   true,
+	})
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add leg: unexpected status %d", addResp.StatusCode)
+	}
+	addResp.Body.Close()
+	instA.collector.waitForMatch(t, events.LegJoinedRoom, nil, 3*time.Second)
+
+	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+	var gotLeg legView
+	decodeJSON(t, getResp, &gotLeg)
+	if !gotLeg.Muted {
+		t.Error("expected leg to be muted after join")
+	}
+	if !gotLeg.Deaf {
+		t.Error("expected leg to be deaf after join")
+	}
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
 func TestMute_SpeakingEventsSuppressed(t *testing.T) {
 	instA := newTestInstance(t, "instance-a")
 	instB := newTestInstance(t, "instance-b")

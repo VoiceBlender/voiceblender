@@ -116,6 +116,7 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
 | `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs |
 | `TestMute_BeforeRoomJoin` | Mute before joining room, verify it persists |
+| `TestAddLegToRoom_JoinMutedAndDeaf` | Join a room already muted + deaf via `mute`/`deaf` on `POST /v1/rooms/{id}/legs` (race-free) |
 | `TestAMD_Human` | AMD classifies short tone burst as `human` |
 | `TestAMD_Machine` | AMD classifies continuous tone as `machine` |
 | `TestAMD_NoSpeech` | AMD returns `no_speech` when no audio is played |

@@ -2002,6 +2002,12 @@ components:
                 leg_id:
                     type: string
                     description: ID of the leg to add
+                mute:
+                    type: boolean
+                    description: If set, apply this mute state to the leg atomically before it joins the mixer (no race where un-muted audio enters the mix). Omit to leave current state untouched (useful when moving between rooms).
+                deaf:
+                    type: boolean
+                    description: If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched.
             required:
                 - leg_id
         AgentMessageRequest:

@@ -973,6 +973,22 @@ If the leg is already in a different room, it is atomically moved — detached f
 { "leg_id": "550e8400-e29b-41d4-a716-446655440000" }
 ```
 
+Join already muted / deaf:
+
+```json
+{
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "mute": true,
+  "deaf": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `leg_id` | string | yes | ID of the leg to add |
+| `mute` | bool | no | Apply this mute state to the leg atomically before it joins the mixer — prevents the race where one frame of un-muted audio leaks into the mix between add and `/mute`. Omit to leave current state untouched (useful on move). |
+| `deaf` | bool | no | Apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched. |
+
 **Response (added):** `200 OK`
 
 ```json

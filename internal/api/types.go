@@ -145,10 +145,14 @@ var roomViewFields = map[string]FieldEnrichment{
 // AddLegRequest is the request body for POST /v1/rooms/{id}/legs.
 type AddLegRequest struct {
 	LegID string `json:"leg_id"`
+	Mute  *bool  `json:"mute,omitempty"`
+	Deaf  *bool  `json:"deaf,omitempty"`
 }
 
 var addLegRequestFields = map[string]FieldEnrichment{
 	"leg_id": {Description: "ID of the leg to add"},
+	"mute":   {Description: "If set, apply this mute state to the leg atomically before it joins the mixer (no race where un-muted audio enters the mix). Omit to leave current state untouched (useful when moving between rooms)."},
+	"deaf":   {Description: "If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched."},
 }
 
 // PlaybackRequest is the request body for POST /v1/legs/{id}/play and POST /v1/rooms/{id}/play.

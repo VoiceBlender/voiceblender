@@ -87,6 +87,16 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Apply mute/deaf before the leg enters the mixer so the participant
+	// is added with the desired state in a single atomic step (no frame
+	// of un-muted audio leaks into the mix).
+	if req.Mute != nil {
+		l.SetMuted(*req.Mute)
+	}
+	if req.Deaf != nil {
+		l.SetDeaf(*req.Deaf)
+	}
+
 	// If the leg is already in a room, move it instead of adding.
 	if fromRoomID, inRoom := s.RoomMgr.FindLegRoom(req.LegID); inRoom {
 		if fromRoomID == roomID {
