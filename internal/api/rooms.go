@@ -96,6 +96,9 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 	if req.Deaf != nil {
 		l.SetDeaf(*req.Deaf)
 	}
+	if req.AcceptDTMF != nil {
+		l.SetAcceptDTMF(*req.AcceptDTMF)
+	}
 
 	// If the leg is already in a room, move it instead of adding.
 	if fromRoomID, inRoom := s.RoomMgr.FindLegRoom(req.LegID); inRoom {

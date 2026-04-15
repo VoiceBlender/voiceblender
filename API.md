@@ -358,6 +358,61 @@ Send DTMF digits on a leg (RFC 4733 telephone-event).
 
 ---
 
+### DTMF broadcast
+
+When a leg in a room receives DTMF (e.g. the SIP peer presses a key), VoiceBlender forwards
+that digit to every other leg in the same room that has DTMF reception enabled. The originating
+leg always emits its `dtmf.received` event regardless.
+
+WebRTC legs are skipped as recipients (DTMF send over WebRTC is not yet implemented). The sending
+leg is excluded from the broadcast.
+
+DTMF reception is **on by default** for every leg. To control it:
+
+- At originate: set `accept_dtmf: false` in the `POST /v1/legs` body.
+- When adding to a room: set `accept_dtmf: false` in the `POST /v1/rooms/{id}/legs` body.
+- At runtime: `POST /v1/legs/{id}/dtmf/reject` (disable) and `POST /v1/legs/{id}/dtmf/accept` (re-enable).
+
+The current state is exposed as `accept_dtmf` on the leg view returned by `GET /v1/legs/{id}`.
+
+---
+
+### POST /v1/legs/{id}/dtmf/accept
+
+Allow this leg to receive DTMF digits forwarded from other legs in the same room. Default state for new legs.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "dtmf_accepting" }
+```
+
+**Errors:**
+- `404` — Leg not found
+
+---
+
+### POST /v1/legs/{id}/dtmf/reject
+
+Block this leg from receiving DTMF digits forwarded from other legs in the same room. The leg's own DTMF (received from its far end) still emits a `dtmf.received` event.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "dtmf_rejecting" }
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/abc-123/dtmf/reject
+```
+
+**Errors:**
+- `404` — Leg not found
+
+---
+
 ### POST /v1/legs/{id}/play
 
 Start audio playback to a leg. Fetches audio from a URL or generates a built-in telephone tone.

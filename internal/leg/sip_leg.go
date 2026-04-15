@@ -42,6 +42,7 @@ type SIPLeg struct {
 	roomID        string
 	muted         atomic.Bool
 	deaf          atomic.Bool
+	acceptDTMF    atomic.Bool
 	createdAt     time.Time
 	answeredAt    time.Time     // zero if never answered
 	answerCh      chan struct{} // signaled by REST answer endpoint (inbound only)
@@ -180,6 +181,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		supportedCodecs: engine.Codecs(),
 		log:             log,
 	}
+	l.acceptDTMF.Store(true)
 
 	// Copy session timer params from inbound call.
 	if call.SessionTimer != nil {
@@ -205,6 +207,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 		cancel:     cancel,
 		log:        log,
 	}
+	l.acceptDTMF.Store(true)
 
 	// Negotiate codec from the remote answer SDP
 	negotiated, _, ok := sipmod.NegotiateCodec(call.RemoteSDP, engine.Codecs())
@@ -229,7 +232,7 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 		supported = codecs
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &SIPLeg{
+	l := &SIPLeg{
 		id:              uuid.New().String(),
 		legType:         TypeSIPOutbound,
 		state:           StateRinging,
@@ -241,6 +244,8 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 		supportedCodecs: supported,
 		log:             log,
 	}
+	l.acceptDTMF.Store(true)
+	return l
 }
 
 // SetupEarlyMediaOutbound configures the media pipeline from a 183 response's
@@ -350,10 +355,12 @@ func (l *SIPLeg) SetRoomID(id string) {
 	l.roomID = id
 }
 
-func (l *SIPLeg) IsMuted() bool   { return l.muted.Load() }
-func (l *SIPLeg) SetMuted(m bool) { l.muted.Store(m) }
-func (l *SIPLeg) IsDeaf() bool    { return l.deaf.Load() }
-func (l *SIPLeg) SetDeaf(d bool)  { l.deaf.Store(d) }
+func (l *SIPLeg) IsMuted() bool             { return l.muted.Load() }
+func (l *SIPLeg) SetMuted(m bool)           { l.muted.Store(m) }
+func (l *SIPLeg) AcceptDTMF() bool          { return l.acceptDTMF.Load() }
+func (l *SIPLeg) SetAcceptDTMF(accept bool) { l.acceptDTMF.Store(accept) }
+func (l *SIPLeg) IsDeaf() bool              { return l.deaf.Load() }
+func (l *SIPLeg) SetDeaf(d bool)            { l.deaf.Store(d) }
 
 func (l *SIPLeg) CreatedAt() time.Time { return l.createdAt }
 

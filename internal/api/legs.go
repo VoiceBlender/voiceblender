@@ -31,6 +31,7 @@ func toLegView(l leg.Leg) LegView {
 		RoomID:     l.RoomID(),
 		Muted:      l.IsMuted(),
 		Deaf:       l.IsDeaf(),
+		AcceptDTMF: l.AcceptDTMF(),
 		Held:       l.IsHeld(),
 		SIPHeaders: l.SIPHeaders(),
 	}
@@ -441,11 +442,16 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	// buffer tuning is operator-driven via the SIP_JITTER_BUFFER_MS env var.
 	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 
+	if req.AcceptDTMF != nil {
+		l.SetAcceptDTMF(*req.AcceptDTMF)
+	}
+
 	l.OnDTMF(func(digit rune) {
 		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
 			LegScope: events.LegScope{LegID: l.ID()},
 			Digit:    string(digit),
 		})
+		s.broadcastDTMF(l.ID(), digit)
 	})
 
 	l.OnRTPTimeout(func() {
@@ -660,6 +666,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 				LegScope: events.LegScope{LegID: l.ID()},
 				Digit:    string(digit),
 			})
+			s.broadcastDTMF(l.ID(), digit)
 		})
 
 		l.OnRTPTimeout(func() {

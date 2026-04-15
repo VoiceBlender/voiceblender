@@ -10,7 +10,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at 16 kHz
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
-- **DTMF** -- send and receive RFC 4733 telephone-events
+- **DTMF** -- send and receive RFC 4733 telephone-events; digits received on a leg are auto-broadcast to other legs in the same room (per-leg `accept_dtmf` opt-out)
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
@@ -91,6 +91,8 @@ POST   /v1/legs/{id}/hold          # Put on hold
 DELETE /v1/legs/{id}/hold          # Resume from hold
 POST   /v1/legs/{id}/transfer      # SIP REFER (blind or attended)
 POST   /v1/legs/{id}/dtmf          # Send DTMF digits
+POST   /v1/legs/{id}/dtmf/accept   # Re-enable DTMF reception (default)
+POST   /v1/legs/{id}/dtmf/reject   # Stop receiving DTMF broadcast from peers
 POST   /v1/legs/{id}/play          # Play audio or tone
 DELETE /v1/legs/{id}/play/{pbID}   # Stop playback
 POST   /v1/legs/{id}/tts           # Text-to-speech

@@ -326,6 +326,28 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/dtmf/accept", OperationID: "acceptDTMFLeg",
+			Summary: "Enable DTMF reception on a leg",
+			Description: "Allow this leg to receive DTMF digits broadcast from other legs in the same room. " +
+				"This is the default state for new legs.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "DTMF reception enabled"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/dtmf/reject", OperationID: "rejectDTMFLeg",
+			Summary: "Disable DTMF reception on a leg",
+			Description: "Block this leg from receiving DTMF digits broadcast from other legs in the same room. " +
+				"DTMF received from this leg's own far end is still emitted as a leg.dtmf event.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "DTMF reception disabled"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/play", OperationID: "playLeg",
 			Summary:     "Start audio playback to a leg",
 			Tags:        []string{"Legs"},

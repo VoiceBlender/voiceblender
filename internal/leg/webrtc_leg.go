@@ -33,12 +33,13 @@ type WebRTCLeg struct {
 	pc         *webrtc.PeerConnection
 	localTrack *webrtc.TrackLocalStaticRTP
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	roomID    string
-	muted     atomic.Bool
-	deaf      atomic.Bool
-	createdAt time.Time
+	ctx        context.Context
+	cancel     context.CancelFunc
+	roomID     string
+	muted      atomic.Bool
+	deaf       atomic.Bool
+	acceptDTMF atomic.Bool
+	createdAt  time.Time
 
 	// Ring buffers for mixer integration
 	inFrames  chan []byte // incoming PCM frames from browser
@@ -66,6 +67,7 @@ func NewWebRTCLeg(pc *webrtc.PeerConnection, localTrack *webrtc.TrackLocalStatic
 		outFrames:  make(chan []byte, 5),
 		log:        log,
 	}
+	l.acceptDTMF.Store(true)
 
 	// Start outbound writer goroutine
 	go l.writeLoop()
@@ -101,6 +103,8 @@ func (l *WebRTCLeg) IsMuted() bool              { return l.muted.Load() }
 func (l *WebRTCLeg) SetMuted(m bool)            { l.muted.Store(m) }
 func (l *WebRTCLeg) IsDeaf() bool               { return l.deaf.Load() }
 func (l *WebRTCLeg) SetDeaf(d bool)             { l.deaf.Store(d) }
+func (l *WebRTCLeg) AcceptDTMF() bool           { return l.acceptDTMF.Load() }
+func (l *WebRTCLeg) SetAcceptDTMF(a bool)       { l.acceptDTMF.Store(a) }
 func (l *WebRTCLeg) SetSpeakingTap(_ io.Writer) {}
 func (l *WebRTCLeg) ClearSpeakingTap()          {}
 func (l *WebRTCLeg) IsHeld() bool               { return false }

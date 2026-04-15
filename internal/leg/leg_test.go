@@ -9,14 +9,15 @@ import (
 
 // mockLeg implements the Leg interface for testing the Manager.
 type mockLeg struct {
-	id        string
-	legType   LegType
-	state     LegState
-	roomID    string
-	muted     bool
-	deaf      bool
-	held      bool
-	createdAt time.Time
+	id         string
+	legType    LegType
+	state      LegState
+	roomID     string
+	muted      bool
+	deaf       bool
+	acceptDTMF bool
+	held       bool
+	createdAt  time.Time
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -45,6 +46,8 @@ func (m *mockLeg) IsMuted() bool                                { return m.muted
 func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }
 func (m *mockLeg) SetDeaf(v bool)                               { m.deaf = v }
+func (m *mockLeg) AcceptDTMF() bool                             { return m.acceptDTMF }
+func (m *mockLeg) SetAcceptDTMF(v bool)                         { m.acceptDTMF = v }
 func (m *mockLeg) SetSpeakingTap(w io.Writer)                   {}
 func (m *mockLeg) ClearSpeakingTap()                            {}
 func (m *mockLeg) IsHeld() bool                                 { return m.held }

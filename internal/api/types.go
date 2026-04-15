@@ -35,6 +35,7 @@ type CreateLegRequest struct {
 	WebhookURL    string            `json:"webhook_url,omitempty"`    // route events for this leg to this URL
 	WebhookSecret string            `json:"webhook_secret,omitempty"` // HMAC secret for webhook signature
 	AMD           *AMDParams        `json:"amd,omitempty"`            // enable answering machine detection on outbound calls
+	AcceptDTMF    *bool             `json:"accept_dtmf,omitempty"`    // if false, leg will not receive DTMF broadcast from other legs in the same room
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
@@ -51,6 +52,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"webhook_url":    {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
 	"amd":            {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
+	"accept_dtmf":    {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 }
 
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.
@@ -103,6 +105,7 @@ type LegView struct {
 	RoomID     string            `json:"room_id,omitempty"`
 	Muted      bool              `json:"muted"`
 	Deaf       bool              `json:"deaf"`
+	AcceptDTMF bool              `json:"accept_dtmf"`
 	Held       bool              `json:"held"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 }
@@ -114,6 +117,7 @@ var legViewFields = map[string]FieldEnrichment{
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},
 	"deaf":        {Description: "Whether the leg is deaf (cannot hear others)"},
+	"accept_dtmf": {Description: "Whether the leg receives DTMF digits broadcast from other legs in the same room. Defaults to true."},
 	"held":        {Description: "Whether the call is on hold (SIP legs only)"},
 	"sip_headers": {Description: "X-* headers from the inbound INVITE. Only present on sip_inbound legs."},
 }
@@ -144,15 +148,17 @@ var roomViewFields = map[string]FieldEnrichment{
 
 // AddLegRequest is the request body for POST /v1/rooms/{id}/legs.
 type AddLegRequest struct {
-	LegID string `json:"leg_id"`
-	Mute  *bool  `json:"mute,omitempty"`
-	Deaf  *bool  `json:"deaf,omitempty"`
+	LegID      string `json:"leg_id"`
+	Mute       *bool  `json:"mute,omitempty"`
+	Deaf       *bool  `json:"deaf,omitempty"`
+	AcceptDTMF *bool  `json:"accept_dtmf,omitempty"`
 }
 
 var addLegRequestFields = map[string]FieldEnrichment{
-	"leg_id": {Description: "ID of the leg to add"},
-	"mute":   {Description: "If set, apply this mute state to the leg atomically before it joins the mixer (no race where un-muted audio enters the mix). Omit to leave current state untouched (useful when moving between rooms)."},
-	"deaf":   {Description: "If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched."},
+	"leg_id":      {Description: "ID of the leg to add"},
+	"mute":        {Description: "If set, apply this mute state to the leg atomically before it joins the mixer (no race where un-muted audio enters the mix). Omit to leave current state untouched (useful when moving between rooms)."},
+	"deaf":        {Description: "If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched."},
+	"accept_dtmf": {Description: "If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true)."},
 }
 
 // PlaybackRequest is the request body for POST /v1/legs/{id}/play and POST /v1/rooms/{id}/play.

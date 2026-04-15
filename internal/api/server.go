@@ -114,6 +114,8 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/transfer", s.transferLeg)
 		r.Delete("/legs/{id}", s.deleteLeg)
 		r.Post("/legs/{id}/dtmf", s.sendDTMF)
+		r.Post("/legs/{id}/dtmf/accept", s.acceptDTMFLeg)
+		r.Post("/legs/{id}/dtmf/reject", s.rejectDTMFLeg)
 		r.Post("/legs/{id}/play", s.playLeg)
 		r.Delete("/legs/{id}/play/{playbackID}", s.stopPlayLeg)
 		r.Patch("/legs/{id}/play/{playbackID}", s.volumePlayLeg)
