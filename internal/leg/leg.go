@@ -61,6 +61,8 @@ type Leg interface {
 	AudioWriter() io.Writer
 	OnDTMF(func(digit rune))
 	SendDTMF(ctx context.Context, digits string) error
+	AcceptDTMF() bool
+	SetAcceptDTMF(accept bool)
 	Hangup(ctx context.Context) error
 	Answer(ctx context.Context) error
 	Context() context.Context

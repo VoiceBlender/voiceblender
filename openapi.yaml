@@ -420,6 +420,50 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/dtmf/accept:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: acceptDTMFLeg
+            summary: Enable DTMF reception on a leg
+            description: Allow this leg to receive DTMF digits broadcast from other legs in the same room. This is the default state for new legs.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: DTMF reception enabled
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/dtmf/reject:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: rejectDTMFLeg
+            summary: Disable DTMF reception on a leg
+            description: Block this leg from receiving DTMF digits broadcast from other legs in the same room. DTMF received from this leg's own far end is still emitted as a leg.dtmf event.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: DTMF reception disabled
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/play:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -1943,6 +1987,9 @@ components:
                 deaf:
                     type: boolean
                     description: Whether the leg is deaf (cannot hear others)
+                accept_dtmf:
+                    type: boolean
+                    description: Whether the leg receives DTMF digits broadcast from other legs in the same room. Defaults to true.
                 held:
                     type: boolean
                     description: Whether the call is on hold (SIP legs only)
@@ -1957,6 +2004,7 @@ components:
                 - state
                 - muted
                 - deaf
+                - accept_dtmf
                 - held
         Room:
             type: object
@@ -2008,6 +2056,9 @@ components:
                 deaf:
                     type: boolean
                     description: If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched.
+                accept_dtmf:
+                    type: boolean
+                    description: If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true).
             required:
                 - leg_id
         AgentMessageRequest:
@@ -2078,6 +2129,10 @@ components:
                     nullable: true
                     allOf:
                         - $ref: '#/components/schemas/AMDParams'
+                accept_dtmf:
+                    type: boolean
+                    description: If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.
+                    default: true
             required:
                 - type
                 - uri

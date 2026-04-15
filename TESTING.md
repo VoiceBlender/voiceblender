@@ -91,6 +91,7 @@ go test -tags integration -v -timeout 60s ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestOutboundInbound_Connect ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestRecording ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integration/
 ```
 
 ### Integration test list
@@ -123,6 +124,10 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 | `TestAMD_Disabled` | No AMD event when `amd` field is omitted |
 | `TestAMD_InvalidParams` | Invalid AMD parameters are rejected with 400 |
 | `TestAMD_DefaultParams` | Empty `"amd": {}` uses all defaults |
+| `TestDTMFBroadcast_Default` | DTMF received on one leg is forwarded to other legs in the same room |
+| `TestDTMFBroadcast_RejectAtRuntime` | `POST /v1/legs/{id}/dtmf/reject` blocks reception; `accept` re-enables it |
+| `TestDTMFBroadcast_RejectAtOriginate` | `accept_dtmf:false` in originate body blocks reception from the start |
+| `TestDTMFBroadcast_SenderExcluded` | Originating leg never receives a forwarded copy of its own DTMF |
 | `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |
 | `TestTransfer_Inbound_DeclinedByDefault` | With default `SIP_REFER_AUTO_DIAL=false` the peer's REFER gets 603 and an audit event |
 | `TestTransfer_NotConnected` | `/transfer` on a ringing leg returns 409 |
