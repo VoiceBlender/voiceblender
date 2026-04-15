@@ -202,7 +202,9 @@ The scaling benchmark creates many concurrent rooms with 2 SIP legs each and mea
 
 - **Setup throughput** — rooms/sec and per-room latency percentiles
 - **Resource usage** — goroutines and heap allocation at each stage
-- **Audio latency** — end-to-end impulse injection through the full SIP + mixer path
+- **CPU usage** — process CPU consumed during the steady-state sustain phase, normalized as % of one core, % of all cores, and µs of CPU per room-second (linux/darwin only, via `getrusage`)
+- **Call quality** — per-leg MOS score, RTP jitter, and packet loss aggregated from `leg.disconnected` events (min/avg/p50/p95 across all legs, both instances)
+- **Audio latency** — end-to-end impulse injection through the full SIP + mixer path, located via cross-correlation against the known impulse waveform (immune to codec pre-ringing)
 - **Connection health** — verifies all legs remain connected under load
 - **Teardown throughput** — cleanup speed
 
@@ -233,6 +235,33 @@ For large room counts, increase the timeout accordingly (~1s per 10 rooms for se
 
 ```bash
 go test -tags integration -v -timeout 120s -run 'TestConcurrentRoomsScale/rooms_25$' ./tests/integration/
+```
+
+### Opus codec variant
+
+`TestConcurrentRoomsScaleOpus` runs the same workload but negotiates the **Opus** codec on every leg (48 kHz native, gopus encode/decode, 6× resampling to/from the 16 kHz mixer). It accepts the same `-bench-rooms` / `BENCH_ROOMS`, `-bench-latency-rooms`, and `-bench-latency-trials` flags. Compare its log output against `TestConcurrentRoomsScale` (PCMU baseline) to characterize codec-path overhead.
+
+```bash
+# Default scales with Opus
+go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScaleOpus ./tests/integration/
+
+# Custom scales
+go test -tags integration -v -timeout 600s -run TestConcurrentRoomsScaleOpus ./tests/integration/ -bench-rooms=50,100,200
+
+# Side-by-side PCMU vs Opus at one scale
+BENCH_ROOMS=50 go test -tags integration -v -timeout 300s -run 'TestConcurrentRoomsScale(Opus)?$' ./tests/integration/
+```
+
+### Dedicated Opus latency test
+
+`TestOpusAudioLatency` characterizes the Opus codec round-trip with a single 2-leg room and many trials (default 100), reporting min/avg/p50/p90/p95/p99/max/stddev. Runs without the throughput stress of the scale benchmark, giving a clean distribution.
+
+```bash
+# Default 100 trials (~30s)
+go test -tags integration -v -timeout 120s -run TestOpusAudioLatency ./tests/integration/
+
+# Custom trial count
+OPUS_LATENCY_TRIALS=500 go test -tags integration -v -timeout 300s -run TestOpusAudioLatency ./tests/integration/
 ```
 
 ### Audio latency measurement

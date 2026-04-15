@@ -48,13 +48,27 @@ type testInstance struct {
 }
 
 func newTestInstance(t *testing.T, name string) *testInstance {
-	return newTestInstanceWithOpts(t, name, nil)
+	return newTestInstanceFull(t, name, nil, nil)
 }
 
 // newTestInstanceWithOpts is like newTestInstance but lets the test mutate
 // the config (e.g. enable SIP_REFER_AUTO_DIAL) before the server is wired.
 func newTestInstanceWithOpts(t *testing.T, name string, mutate func(*config.Config)) *testInstance {
+	return newTestInstanceFull(t, name, mutate, nil)
+}
+
+// newTestInstanceWithCodecs is like newTestInstance but overrides the SIP
+// engine's advertised codec list. Pass nil for the default (PCMU).
+func newTestInstanceWithCodecs(t *testing.T, name string, codecs []codec.CodecType) *testInstance {
+	return newTestInstanceFull(t, name, nil, codecs)
+}
+
+func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config), codecs []codec.CodecType) *testInstance {
 	t.Helper()
+
+	if len(codecs) == 0 {
+		codecs = []codec.CodecType{codec.CodecPCMU}
+	}
 
 	// Find a free UDP port for SIP.
 	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -90,7 +104,7 @@ func newTestInstanceWithOpts(t *testing.T, name string, mutate func(*config.Conf
 		ListenIP: "127.0.0.1",
 		BindPort: sipPort,
 		SIPHost:  name,
-		Codecs:   []codec.CodecType{codec.CodecPCMU},
+		Codecs:   codecs,
 		Log:      log,
 	})
 	if err != nil {
