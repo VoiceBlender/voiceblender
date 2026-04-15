@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/google/uuid"
 )
@@ -104,7 +106,7 @@ func getLatencyTrials() int {
 func TestConcurrentRoomsScale(t *testing.T) {
 	for _, numRooms := range parseBenchRooms() {
 		t.Run(fmt.Sprintf("rooms_%d", numRooms), func(t *testing.T) {
-			benchScale(t, numRooms)
+			benchScale(t, numRooms, "PCMU", nil)
 		})
 	}
 }
@@ -123,18 +125,21 @@ type roomSetup struct {
 }
 
 // benchScale runs the concurrent room test reporting results via t.Logf.
-func benchScale(t *testing.T, numRooms int) {
-	instA := newTestInstance(t, "bench-a")
-	instB := newTestInstance(t, "bench-b")
+// codecName is the wire codec advertised in leg-creation requests (e.g.
+// "PCMU", "opus"). engineCodecs overrides the SIP engine's advertised
+// codec list; nil defaults to PCMU.
+func benchScale(t *testing.T, numRooms int, codecName string, engineCodecs []codec.CodecType) {
+	instA := newTestInstanceWithCodecs(t, "bench-a", engineCodecs)
+	instB := newTestInstanceWithCodecs(t, "bench-b", engineCodecs)
 
-	t.Logf("=== Concurrent rooms benchmark: %d rooms, %d calls ===", numRooms, numRooms*2)
+	t.Logf("=== Concurrent rooms benchmark [%s]: %d rooms, %d calls ===", codecName, numRooms, numRooms*2)
 
 	var memBefore runtime.MemStats
 	runtime.ReadMemStats(&memBefore)
 
 	// Phase 1: Create calls and rooms concurrently.
 	setupStart := time.Now()
-	rooms, setupLatencies := setupRooms(t, instA, instB, numRooms)
+	rooms, setupLatencies := setupRooms(t, instA, instB, numRooms, codecName)
 	setupDur := time.Since(setupStart)
 
 	var memAfterSetup runtime.MemStats
@@ -148,15 +153,22 @@ func benchScale(t *testing.T, numRooms int) {
 		float64(memAfterSetup.HeapAlloc)/1e6,
 		float64(memAfterSetup.HeapAlloc-memBefore.HeapAlloc)/1e6)
 
-	// Phase 2: Let audio mix for a sustained period.
+	// Phase 2: Let audio mix for a sustained period. CPU usage during
+	// this window is the cleanest signal of steady-state per-room cost
+	// — no setup work, no teardown, just N rooms mixing audio.
 	sustainDur := 3 * time.Second
 	t.Logf("Phase 2 — Sustaining %d rooms for %v...", len(rooms), sustainDur)
+	cpuBeforeSustain := snapCPU()
+	sustainStart := time.Now()
 	time.Sleep(sustainDur)
+	sustainWall := time.Since(sustainStart)
+	cpuSustain := snapCPU().sub(cpuBeforeSustain)
 
 	var memAfterSustain runtime.MemStats
 	runtime.ReadMemStats(&memAfterSustain)
 	t.Logf("  Goroutines after sustain: %d", runtime.NumGoroutine())
 	t.Logf("  Heap alloc after sustain: %.1f MB", float64(memAfterSustain.HeapAlloc)/1e6)
+	logCPU(t, "  Sustain CPU", cpuSustain, sustainWall, len(rooms))
 
 	// Verify all legs are still connected.
 	var disconnected int
@@ -189,9 +201,16 @@ func benchScale(t *testing.T, numRooms int) {
 		len(rooms), teardownDur, float64(len(rooms))/teardownDur.Seconds())
 	logLatencyStats(t, "  room teardown", teardownLatencies)
 
-	// Final goroutine count (after cleanup settles).
+	// Final goroutine count (after cleanup settles). Sleep also gives
+	// any in-flight leg.disconnected events time to land in the
+	// per-instance event collectors before we read them.
 	time.Sleep(500 * time.Millisecond)
 	t.Logf("Final goroutines: %d", runtime.NumGoroutine())
+
+	// Per-leg call-quality stats (computed by sip_leg from RTP
+	// statistics, attached to leg.disconnected events). Higher MOS is
+	// better; expected range ~3.5–4.5 for clean loopback.
+	logCallQuality(t, "  call quality", []*testInstance{instA, instB})
 }
 
 // ---------------------------------------------------------------------------
@@ -230,35 +249,6 @@ func measureLatencySample(t *testing.T, instA, instB *testInstance, rooms []room
 	return latencies
 }
 
-// impulseDetector is an io.Writer that records the timestamp when it first
-// receives audio samples above a threshold.
-type impulseDetector struct {
-	threshold int16
-	detected  chan time.Time
-	once      sync.Once
-}
-
-func newImpulseDetector(threshold int16) *impulseDetector {
-	return &impulseDetector{
-		threshold: threshold,
-		detected:  make(chan time.Time, 1),
-	}
-}
-
-func (d *impulseDetector) Write(p []byte) (int, error) {
-	nSamples := len(p) / 2
-	for i := 0; i < nSamples; i++ {
-		sample := int16(binary.LittleEndian.Uint16(p[i*2:]))
-		if sample > d.threshold || sample < -d.threshold {
-			d.once.Do(func() {
-				d.detected <- time.Now()
-			})
-			break
-		}
-	}
-	return len(p), nil
-}
-
 // generateImpulse creates a 20ms frame of a 1kHz sine wave at near-max
 // amplitude. At 8kHz sample rate: 160 samples = 320 bytes.
 func generateImpulse(sampleRate int) []byte {
@@ -272,13 +262,163 @@ func generateImpulse(sampleRate int) []byte {
 	return buf
 }
 
-// measureOneLatency injects an impulse through senderID's AudioWriter on
-// instB, and detects it via the mixer's participant output tap on instA.
+// ---------------------------------------------------------------------------
+// Cross-correlation latency measurement
+// ---------------------------------------------------------------------------
 //
-// Path: B.sender.writeLoop → RTP → A.sender.readLoop → mixer →
-// mixed-minus-self for receiver → participantOutTap → detector.
+// We can't use a simple amplitude-threshold detector: with Opus (and any
+// perceptual codec), quantization transients can exceed a naive threshold
+// before the reconstructed impulse arrives, biasing latency low. Instead,
+// the detector buffers all tap audio for a fixed window, then locates the
+// impulse by cross-correlating against the known reference waveform.
+//
+// Works equally well for PCMU (no pre-ringing) and Opus (heavy pre-ringing)
+// because we lock onto the correlation RISING EDGE, not its global max —
+// the plateau of a long sine reference against a long sine impulse
+// otherwise introduces ~20ms measurement jitter from FP/int noise picking
+// different plateau edges.
+
+// Mixer tap rate — see internal/mixer/mixer.go (SampleRate=16000,
+// SamplesPerFrame=320, FrameSizeBytes=640; one Write per 20ms tick).
+const mixerTapSampleRate = 16000
+
+// correlationDetector buffers per-tick audio frames with their wall-clock
+// arrival time so an offline correlation pass can locate the impulse.
+type correlationDetector struct {
+	mu     sync.Mutex
+	frames []capturedFrame
+}
+
+type capturedFrame struct {
+	t       time.Time
+	samples []int16
+}
+
+func newCorrelationDetector() *correlationDetector {
+	return &correlationDetector{}
+}
+
+func (d *correlationDetector) Write(p []byte) (int, error) {
+	now := time.Now()
+	n := len(p) / 2
+	samples := make([]int16, n)
+	for i := 0; i < n; i++ {
+		samples[i] = int16(binary.LittleEndian.Uint16(p[i*2:]))
+	}
+	d.mu.Lock()
+	d.frames = append(d.frames, capturedFrame{t: now, samples: samples})
+	d.mu.Unlock()
+	return len(p), nil
+}
+
+// findImpulseTime cross-correlates the captured audio against ref and
+// returns the wall-clock time of the impulse rising edge. Returns false
+// if the capture is shorter than the reference, or the peak score is
+// below minPeakFraction × the reference self-correlation (impulse
+// arrived too attenuated, or never arrived).
+func (d *correlationDetector) findImpulseTime(ref []int16, sampleRate int, minPeakFraction float64) (time.Time, bool) {
+	d.mu.Lock()
+	frames := make([]capturedFrame, len(d.frames))
+	copy(frames, d.frames)
+	d.mu.Unlock()
+
+	if len(frames) == 0 {
+		return time.Time{}, false
+	}
+
+	var all []int16
+	frameStartIdx := make([]int, len(frames))
+	for i, f := range frames {
+		frameStartIdx[i] = len(all)
+		all = append(all, f.samples...)
+	}
+	if len(all) < len(ref) {
+		return time.Time{}, false
+	}
+
+	var refSelf int64
+	for _, s := range ref {
+		refSelf += int64(s) * int64(s)
+	}
+
+	maxOff := len(all) - len(ref)
+	scores := make([]int64, maxOff+1)
+	var bestScore int64
+	for i := 0; i <= maxOff; i++ {
+		var score int64
+		for j := 0; j < len(ref); j++ {
+			score += int64(all[i+j]) * int64(ref[j])
+		}
+		scores[i] = score
+		if score > bestScore {
+			bestScore = score
+		}
+	}
+	if bestScore <= 0 {
+		return time.Time{}, false
+	}
+
+	peakFrac := float64(bestScore) / float64(refSelf)
+	if peakFrac < minPeakFraction {
+		return time.Time{}, false
+	}
+
+	// Lock onto the correlation rising edge: the first offset where
+	// the score crosses a high fraction of the peak. Immune to the
+	// ~20ms plateau-edge jitter that picking the global max would
+	// introduce when the reference and impulse are both long sine
+	// waves.
+	const onsetFrac = 0.95
+	threshold := int64(onsetFrac * float64(bestScore))
+	bestIdx := -1
+	for i, s := range scores {
+		if s >= threshold {
+			bestIdx = i
+			break
+		}
+	}
+	if bestIdx < 0 {
+		return time.Time{}, false
+	}
+
+	// The mixer writes the tap frame after computing 20ms of audio,
+	// so frame.t marks the END of that 20ms window — sample k of a
+	// frame of length L corresponds to frame.t - L/sr + k/sr.
+	frameIdx := sort.Search(len(frameStartIdx), func(i int) bool {
+		return frameStartIdx[i] > bestIdx
+	}) - 1
+	if frameIdx < 0 {
+		frameIdx = 0
+	}
+	offsetInFrame := bestIdx - frameStartIdx[frameIdx]
+	samplePeriod := time.Second / time.Duration(sampleRate)
+	frameLen := len(frames[frameIdx].samples)
+	return frames[frameIdx].t.Add(time.Duration(offsetInFrame-frameLen) * samplePeriod), true
+}
+
+// generateSineSamples produces a sineHz sine of the given duration at
+// the given sample rate and amplitude (0–1). Used as the
+// cross-correlation reference at the mixer's tap rate.
+func generateSineSamples(sampleRate, sineHz int, dur time.Duration, amplitude float64) []int16 {
+	n := int(int64(sampleRate) * int64(dur) / int64(time.Second))
+	out := make([]int16, n)
+	a := float64(math.MaxInt16) * amplitude
+	for i := 0; i < n; i++ {
+		out[i] = int16(a * math.Sin(2*math.Pi*float64(sineHz)*float64(i)/float64(sampleRate)))
+	}
+	return out
+}
+
+// measureOneLatency injects an impulse through inboundID1's AudioWriter
+// on instB, captures the resulting audio via the mixer's participant
+// output tap for outboundID2 on instA, and cross-correlates to find the
+// impulse arrival time.
+//
+// Path: B.sender.writeLoop → Opus/PCMU encode → RTP → A.sender.readLoop
+//
+//	→ decode → mixer (mix-minus-self) → A.outboundID2 participantOutTap
+//	→ correlationDetector.
 func measureOneLatency(instA, instB *testInstance, rs roomSetup) (time.Duration, error) {
-	// Get B-side sender leg to inject audio.
 	senderLeg, ok := instB.legMgr.Get(rs.inboundID1)
 	if !ok {
 		return 0, fmt.Errorf("sender leg %s not found on B", rs.inboundID1)
@@ -292,35 +432,42 @@ func measureOneLatency(instA, instB *testInstance, rs roomSetup) (time.Duration,
 		return 0, fmt.Errorf("sender has no audio writer")
 	}
 
-	// Get A-side room's mixer and install detector on receiver's output tap.
-	// The participant out tap receives the mixed-minus-self audio for that
-	// participant, which includes the sender's audio.
 	rm, ok := instA.roomMgr.Get(rs.roomID)
 	if !ok {
 		return 0, fmt.Errorf("room %s not found on A", rs.roomID)
 	}
-	detector := newImpulseDetector(500)
+
+	const (
+		impulseFrames   = 5
+		frameDur        = 20 * time.Millisecond
+		captureWindow   = 300 * time.Millisecond
+		minPeakFraction = 0.70
+	)
+	refDur := time.Duration(impulseFrames) * frameDur
+	ref := generateSineSamples(mixerTapSampleRate, 1000, refDur, 0.9)
+
+	detector := newCorrelationDetector()
 	rm.Mixer().SetParticipantOutTap(rs.outboundID2, detector)
 	defer rm.Mixer().ClearParticipantOutTap(rs.outboundID2)
 
-	// Small delay to let any in-flight silence frames drain.
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	impulse := generateImpulse(senderLeg.SampleRate())
 
 	sendTime := time.Now()
-	// Write several frames to survive any channel buffering.
-	for i := 0; i < 5; i++ {
-		w.Write(impulse)
+	for i := 0; i < impulseFrames; i++ {
+		if _, err := w.Write(impulse); err != nil {
+			return 0, fmt.Errorf("write impulse: %w", err)
+		}
 	}
 
-	// Wait for detection with timeout.
-	select {
-	case detectTime := <-detector.detected:
-		return detectTime.Sub(sendTime), nil
-	case <-time.After(1 * time.Second):
-		return 0, fmt.Errorf("impulse not detected within 1s")
+	time.Sleep(captureWindow)
+
+	arrivalTime, ok := detector.findImpulseTime(ref, mixerTapSampleRate, minPeakFraction)
+	if !ok {
+		return 0, fmt.Errorf("impulse not located (peak too weak — likely never arrived)")
 	}
+	return arrivalTime.Sub(sendTime), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +476,7 @@ func measureOneLatency(instA, instB *testInstance, rs roomSetup) (time.Duration,
 
 // setupRooms creates numRooms rooms with 2 legs each. Uses concurrency
 // bounded by GOMAXPROCS to avoid overwhelming SIP/UDP.
-func setupRooms(t testing.TB, instA, instB *testInstance, numRooms int) ([]roomSetup, []time.Duration) {
+func setupRooms(t testing.TB, instA, instB *testInstance, numRooms int, codecName string) ([]roomSetup, []time.Duration) {
 	t.Helper()
 
 	workers := runtime.GOMAXPROCS(0)
@@ -357,7 +504,7 @@ func setupRooms(t testing.TB, instA, instB *testInstance, numRooms int) ([]roomS
 			defer wg.Done()
 			for idx := range work {
 				start := time.Now()
-				rs, err := setupOneRoom(instA, instB, idx)
+				rs, err := setupOneRoom(instA, instB, idx, codecName)
 				latencies[idx] = time.Since(start)
 				if err != nil {
 					setupErrors.Add(1)
@@ -390,11 +537,11 @@ func setupRooms(t testing.TB, instA, instB *testInstance, numRooms int) ([]roomS
 // the inbound leg on instB (matched by X-Correlation-ID header), answers it,
 // and waits for both to connect.
 // Returns (outbound leg ID on A, inbound leg ID on B).
-func establishOneLeg(instA, instB *testInstance) (outboundID, inboundID string, err error) {
+func establishOneLeg(instA, instB *testInstance, codecName string) (outboundID, inboundID string, err error) {
 	correlationID := uuid.New().String()
 	headers := map[string]string{"X-Correlation-ID": correlationID}
 
-	outboundID, err = doCreateLeg(instA.baseURL(), instB.sipPort, headers)
+	outboundID, err = doCreateLeg(instA.baseURL(), instB.sipPort, headers, codecName)
 	if err != nil {
 		return "", "", fmt.Errorf("create outbound leg: %w", err)
 	}
@@ -444,9 +591,9 @@ func waitForCorrelatedLeg(baseURL, correlationID string, timeout time.Duration) 
 	return "", fmt.Errorf("timeout waiting for correlated inbound leg")
 }
 
-func setupOneRoom(instA, instB *testInstance, idx int) (roomSetup, error) {
+func setupOneRoom(instA, instB *testInstance, idx int, codecName string) (roomSetup, error) {
 	// 1. Establish first leg (outbound on A → inbound on B, answered).
-	out1, in1, err := establishOneLeg(instA, instB)
+	out1, in1, err := establishOneLeg(instA, instB, codecName)
 	if err != nil {
 		return roomSetup{}, fmt.Errorf("leg 1: %w", err)
 	}
@@ -463,7 +610,7 @@ func setupOneRoom(instA, instB *testInstance, idx int) (roomSetup, error) {
 	}
 
 	// 4. Establish second leg.
-	out2, in2, err := establishOneLeg(instA, instB)
+	out2, in2, err := establishOneLeg(instA, instB, codecName)
 	if err != nil {
 		return roomSetup{}, fmt.Errorf("leg 2: %w", err)
 	}
@@ -509,11 +656,14 @@ func teardownRooms(t testing.TB, instA *testInstance, rooms []roomSetup) []time.
 // HTTP helpers (non-fatal — return errors for concurrent use)
 // ---------------------------------------------------------------------------
 
-func doCreateLeg(baseURL string, targetSIPPort int, headers map[string]string) (string, error) {
+func doCreateLeg(baseURL string, targetSIPPort int, headers map[string]string, codecName string) (string, error) {
+	if codecName == "" {
+		codecName = "PCMU"
+	}
 	reqBody := map[string]interface{}{
 		"type":   "sip",
 		"uri":    fmt.Sprintf("sip:bench@127.0.0.1:%d", targetSIPPort),
-		"codecs": []string{"PCMU"},
+		"codecs": []string{codecName},
 	}
 	if len(headers) > 0 {
 		reqBody["headers"] = headers
@@ -653,4 +803,70 @@ func logLatencyStats(t testing.TB, label string, latencies []time.Duration) {
 func logTB(t testing.TB, format string, args ...interface{}) {
 	t.Helper()
 	t.Logf(format, args...)
+}
+
+// logCallQuality walks each instance's event collector for
+// leg.disconnected events and reports per-leg RTP-derived call quality
+// (MOS, packets received/lost, jitter). Empty if no quality data was
+// captured (e.g. legs torn down before any RTP arrived).
+func logCallQuality(t testing.TB, label string, instances []*testInstance) {
+	t.Helper()
+
+	var mos, jitter []float64
+	var totalRecv, totalLost uint64
+	for _, inst := range instances {
+		inst.collector.mu.Lock()
+		evs := make([]events.Event, len(inst.collector.events))
+		copy(evs, inst.collector.events)
+		inst.collector.mu.Unlock()
+		for _, e := range evs {
+			if e.Type != events.LegDisconnected {
+				continue
+			}
+			d, ok := e.Data.(*events.LegDisconnectedData)
+			if !ok || d.Quality == nil {
+				continue
+			}
+			mos = append(mos, d.Quality.MOSScore)
+			jitter = append(jitter, d.Quality.JitterMs)
+			totalRecv += uint64(d.Quality.PacketsReceived)
+			totalLost += uint64(d.Quality.PacketsLost)
+		}
+	}
+
+	if len(mos) == 0 {
+		t.Logf("%s: no RTP quality samples captured", label)
+		return
+	}
+
+	mosMin, mosAvg, mosP50, mosP95 := floatStats(mos)
+	jMin, jAvg, jP50, jP95 := floatStats(jitter)
+	lossPct := 0.0
+	if totalRecv+totalLost > 0 {
+		lossPct = 100 * float64(totalLost) / float64(totalRecv+totalLost)
+	}
+	t.Logf("%s (n=%d legs): MOS min=%.2f avg=%.2f p50=%.2f p95=%.2f | jitter min=%.1fms avg=%.1fms p50=%.1fms p95=%.1fms | packets recv=%d lost=%d (%.3f%%)",
+		label, len(mos), mosMin, mosAvg, mosP50, mosP95, jMin, jAvg, jP50, jP95, totalRecv, totalLost, lossPct)
+}
+
+func floatStats(vals []float64) (min, avg, p50, p95 float64) {
+	if len(vals) == 0 {
+		return
+	}
+	sorted := make([]float64, len(vals))
+	copy(sorted, vals)
+	sort.Float64s(sorted)
+	min = sorted[0]
+	var sum float64
+	for _, v := range sorted {
+		sum += v
+	}
+	avg = sum / float64(len(sorted))
+	p50 = sorted[len(sorted)*50/100]
+	p95idx := len(sorted) * 95 / 100
+	if p95idx >= len(sorted) {
+		p95idx = len(sorted) - 1
+	}
+	p95 = sorted[p95idx]
+	return
 }

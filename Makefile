@@ -19,7 +19,7 @@ test-integration:
 	go test -tags integration -v -timeout 5m -skip TestConcurrentRoomsScale ./tests/integration/
 
 test-benchmark:
-	go test -tags integration -v -timeout 120s -run TestConcurrentRoomsScale ./tests/integration/
+	go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
 
 test-all: test test-integration test-benchmark
 

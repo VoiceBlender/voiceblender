@@ -20,7 +20,7 @@ require (
 	github.com/pion/sdp/v3 v3.0.18
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
-	github.com/thesyncim/gopus v0.0.0-20260301161129-cb01d5874d1d
+	github.com/thesyncim/gopus v0.0.0-20260412203938-9030a4886313
 	github.com/zaf/g711 v1.4.0
 	golang.org/x/sync v0.20.0
 	google.golang.org/api v0.247.0

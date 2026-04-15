@@ -15,7 +15,11 @@ type OpusEncoder struct {
 
 // NewOpusEncoder creates a new Opus encoder configured for 48kHz mono VoIP.
 func NewOpusEncoder() (*OpusEncoder, error) {
-	enc, err := gopus.NewEncoder(48000, 1, gopus.ApplicationVoIP)
+	enc, err := gopus.NewEncoder(gopus.EncoderConfig{
+		SampleRate:  48000,
+		Channels:    1,
+		Application: gopus.ApplicationVoIP,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("gopus.NewEncoder: %w", err)
 	}
