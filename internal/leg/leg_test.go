@@ -42,6 +42,8 @@ func (m *mockLeg) Answer(ctx context.Context) error             { return nil }
 func (m *mockLeg) Context() context.Context                     { return context.Background() }
 func (m *mockLeg) RoomID() string                               { return m.roomID }
 func (m *mockLeg) SetRoomID(id string)                          { m.roomID = id }
+func (m *mockLeg) AppID() string                                { return "" }
+func (m *mockLeg) SetAppID(string)                              {}
 func (m *mockLeg) IsMuted() bool                                { return m.muted }
 func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }

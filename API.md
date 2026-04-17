@@ -1592,6 +1592,88 @@ The server sends application-level pings every 30 seconds. The connection is als
 
 ---
 
+### GET /v1/events/ws
+
+Upgrade to a WebSocket connection and receive all events in real-time as JSON text frames. The JSON shape is identical to webhook payloads (same `Event.MarshalJSON` format).
+
+**Upgrade:** Standard HTTP → WebSocket upgrade. No request body.
+
+**Query Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
+
+Set `app_id` on legs via `POST /v1/legs` body or `X-App-ID` SIP header on inbound calls. Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+
+**Example with filter:**
+
+```bash
+websocat "ws://localhost:8080/v1/events/ws?app_id=^billing$"
+```
+
+#### Message Format
+
+**Server → Client (on connect):**
+
+```json
+{"type": "connected"}
+```
+
+**Server → Client (event):**
+
+```json
+{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
+```
+
+Events use the same flattened JSON envelope as webhook POSTs. Clients already parsing webhook payloads can reuse the same deserializer.
+
+**Server → Client (keepalive ping):**
+
+```json
+{"type": "ping", "event_id": 1}
+```
+
+**Client → Server (keepalive pong):**
+
+```json
+{"type": "pong"}
+```
+
+**Client → Server (disconnect):**
+
+```json
+{"type": "stop"}
+```
+
+**Client → Server (future commands):**
+
+All client messages support an optional `request_id` field that is echoed back in any response. Unknown message types receive an error response:
+
+```json
+// Client sends:
+{"type": "unknown_cmd", "request_id": "req-42"}
+
+// Server responds:
+{"type": "error", "request_id": "req-42", "data": {"message": "unknown command: unknown_cmd"}}
+```
+
+The server sends application-level pings every 30 seconds. If a client reads too slowly, events are buffered (up to 256). When the buffer is full, events are dropped and the server sends a notification before the next successfully delivered event:
+
+```json
+{"type": "events_dropped", "count": 12}
+```
+
+On receiving this, the client should resync state via REST (e.g. `GET /v1/legs`, `GET /v1/rooms`) since it may have missed transitions.
+
+**Example:**
+
+```bash
+websocat ws://localhost:8080/v1/events/ws
+```
+
+---
+
 ## WebRTC
 
 ### POST /v1/webrtc/offer

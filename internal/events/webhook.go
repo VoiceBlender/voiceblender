@@ -54,7 +54,7 @@ func NewWebhookRegistry(bus *Bus, log *slog.Logger, globalURL, globalSecret stri
 		workCh:        make(chan deliveryJob, 1000),
 		stopCh:        make(chan struct{}),
 	}
-	bus.Subscribe(r.dispatch)
+	_ = bus.Subscribe(r.dispatch)
 	for i := 0; i < 10; i++ {
 		go r.worker()
 	}

@@ -28,7 +28,7 @@ func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager
 	}
 }
 
-func (m *Manager) Create(id string) (*Room, error) {
+func (m *Manager) Create(id, appID string) (*Room, error) {
 	if id == "" {
 		id = uuid.New().String()
 	}
@@ -40,9 +40,9 @@ func (m *Manager) Create(id string) (*Room, error) {
 		return nil, fmt.Errorf("room %s already exists", id)
 	}
 
-	r := NewRoom(id, m.log)
+	r := NewRoom(id, appID, m.log)
 	m.rooms[id] = r
-	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id}})
+	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id, AppID: appID}})
 	return r, nil
 }
 
@@ -86,7 +86,7 @@ func (m *Manager) Delete(id string) error {
 	}
 	wg.Wait()
 	r.Close()
-	m.bus.Publish(events.RoomDeleted, &events.RoomDeletedData{RoomScope: events.RoomScope{RoomID: id}})
+	m.bus.Publish(events.RoomDeleted, &events.RoomDeletedData{RoomScope: events.RoomScope{RoomID: id, AppID: r.AppID}})
 	return nil
 }
 
@@ -107,7 +107,7 @@ func (m *Manager) AddLeg(roomID, legID string) error {
 
 	r.AddLeg(l)
 	m.bus.Publish(events.LegJoinedRoom, &events.LegJoinedRoomData{
-		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID},
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: l.AppID()},
 	})
 	return nil
 }
@@ -122,9 +122,9 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	m.mu.Lock()
 	toRoom, ok := m.rooms[toRoomID]
 	if !ok {
-		toRoom = NewRoom(toRoomID, m.log)
+		toRoom = NewRoom(toRoomID, "", m.log)
 		m.rooms[toRoomID] = toRoom
-		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID}})
+		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID, AppID: toRoom.AppID}})
 	}
 	m.mu.Unlock()
 
@@ -135,10 +135,10 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	toRoom.AddLeg(l)
 
 	m.bus.Publish(events.LegLeftRoom, &events.LegLeftRoomData{
-		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: fromRoomID},
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: fromRoomID, AppID: l.AppID()},
 	})
 	m.bus.Publish(events.LegJoinedRoom, &events.LegJoinedRoomData{
-		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: toRoomID},
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: toRoomID, AppID: l.AppID()},
 	})
 	return nil
 }
@@ -164,8 +164,12 @@ func (m *Manager) RemoveLeg(roomID, legID string) error {
 	}
 
 	r.RemoveLeg(legID)
+	legAppID := ""
+	if l, ok := m.legMgr.Get(legID); ok {
+		legAppID = l.AppID()
+	}
 	m.bus.Publish(events.LegLeftRoom, &events.LegLeftRoomData{
-		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID},
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: legAppID},
 	})
 	return nil
 }

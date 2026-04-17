@@ -68,6 +68,8 @@ type Leg interface {
 	Context() context.Context
 	RoomID() string
 	SetRoomID(id string)
+	AppID() string
+	SetAppID(id string)
 	IsMuted() bool
 	SetMuted(muted bool)
 	IsDeaf() bool

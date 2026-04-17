@@ -89,10 +89,10 @@ func (sb *streamBuffer) Close() {
 
 type agentInfo struct {
 	session  agent.Provider
-	sourceID string         // mixer playback source / participant ID
-	pipes    []*pipeWriter  // pipes to close on cleanup
-	speakBuf *streamBuffer  // paced speak buffer (closed before RemoveParticipant)
-	roomID   string         // for leg agents: which room (if any)
+	sourceID string             // mixer playback source / participant ID
+	pipes    []*pipeWriter      // pipes to close on cleanup
+	speakBuf *streamBuffer      // paced speak buffer (closed before RemoveParticipant)
+	roomID   string             // for leg agents: which room (if any)
 	cancel   context.CancelFunc // for room agents: dedicated context
 }
 
@@ -217,27 +217,28 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 	legAgents.Unlock()
 
 	bus := s.Bus
+	agentAppID := l.AppID()
 	cb := agent.Callbacks{
 		OnConnected: func(conversationID string) {
 			bus.Publish(events.AgentConnected, &events.AgentConnectedData{
-				LegRoomScope:   events.LegRoomScope{LegID: id},
+				LegRoomScope:   events.LegRoomScope{LegID: id, AppID: agentAppID},
 				ConversationID: conversationID,
 			})
 		},
 		OnDisconnected: func() {
 			bus.Publish(events.AgentDisconnected, &events.AgentDisconnectedData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: agentAppID},
 			})
 		},
 		OnUserTranscript: func(text string) {
 			bus.Publish(events.AgentUserTranscript, &events.AgentTranscriptData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: agentAppID},
 				Text:         text,
 			})
 		},
 		OnAgentResponse: func(text string) {
 			bus.Publish(events.AgentAgentResponse, &events.AgentResponseData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: agentAppID},
 				Text:         text,
 			})
 		},
@@ -506,27 +507,28 @@ func (s *Server) startRoomAgent(w http.ResponseWriter, r *http.Request, provider
 	roomAgents.Unlock()
 
 	bus := s.Bus
+	roomAgentAppID := rm.AppID
 	cb := agent.Callbacks{
 		OnConnected: func(conversationID string) {
 			bus.Publish(events.AgentConnected, &events.AgentConnectedData{
-				LegRoomScope:   events.LegRoomScope{RoomID: id},
+				LegRoomScope:   events.LegRoomScope{RoomID: id, AppID: roomAgentAppID},
 				ConversationID: conversationID,
 			})
 		},
 		OnDisconnected: func() {
 			bus.Publish(events.AgentDisconnected, &events.AgentDisconnectedData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAgentAppID},
 			})
 		},
 		OnUserTranscript: func(text string) {
 			bus.Publish(events.AgentUserTranscript, &events.AgentTranscriptData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAgentAppID},
 				Text:         text,
 			})
 		},
 		OnAgentResponse: func(text string) {
 			bus.Publish(events.AgentAgentResponse, &events.AgentResponseData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAgentAppID},
 				Text:         text,
 			})
 		},

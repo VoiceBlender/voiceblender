@@ -33,6 +33,7 @@ func toLegView(l leg.Leg) LegView {
 		Deaf:       l.IsDeaf(),
 		AcceptDTMF: l.AcceptDTMF(),
 		Held:       l.IsHeld(),
+		AppID:      l.AppID(),
 		SIPHeaders: l.SIPHeaders(),
 	}
 }
@@ -42,7 +43,7 @@ func toLegView(l leg.Leg) LegView {
 func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 	now := time.Now()
 	d := &events.LegDisconnectedData{
-		LegScope: events.LegScope{LegID: l.ID()},
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		CDR: events.CallCDR{
 			Reason:        reason,
 			DurationTotal: roundTo2(now.Sub(l.CreatedAt()).Seconds()),
@@ -208,7 +209,7 @@ func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Bus.Publish(events.LegMuted, &events.LegMutedData{LegScope: events.LegScope{LegID: id}})
+	s.Bus.Publish(events.LegMuted, &events.LegMutedData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "muted"})
 }
 
@@ -229,7 +230,7 @@ func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Bus.Publish(events.LegUnmuted, &events.LegUnmutedData{LegScope: events.LegScope{LegID: id}})
+	s.Bus.Publish(events.LegUnmuted, &events.LegUnmutedData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unmuted"})
 }
 
@@ -249,7 +250,7 @@ func (s *Server) deafLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Bus.Publish(events.LegDeaf, &events.LegDeafData{LegScope: events.LegScope{LegID: id}})
+	s.Bus.Publish(events.LegDeaf, &events.LegDeafData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deaf"})
 }
 
@@ -269,7 +270,7 @@ func (s *Server) undeafLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.Bus.Publish(events.LegUndeaf, &events.LegUndeafData{LegScope: events.LegScope{LegID: id}})
+	s.Bus.Publish(events.LegUndeaf, &events.LegUndeafData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undeaf"})
 }
 
@@ -299,13 +300,13 @@ func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setupHoldCallbacks(l *leg.SIPLeg) {
 	l.OnHold(func() {
 		s.Bus.Publish(events.LegHold, &events.LegHoldData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
 	})
 	l.OnUnhold(func() {
 		s.Bus.Publish(events.LegUnhold, &events.LegUnholdData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
 	})
@@ -429,7 +430,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	// Ensure room exists if room_id is specified; create it if it doesn't.
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
-			if _, err := s.RoomMgr.Create(req.RoomID); err != nil {
+			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID); err != nil {
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
 				return
 			}
@@ -445,10 +446,13 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	if req.AcceptDTMF != nil {
 		l.SetAcceptDTMF(*req.AcceptDTMF)
 	}
+	if req.AppID != "" {
+		l.SetAppID(req.AppID)
+	}
 
 	l.OnDTMF(func(digit rune) {
 		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			Digit:    string(digit),
 		})
 		s.broadcastDTMF(l.ID(), digit)
@@ -504,7 +508,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			return
 		}
 		s.Bus.Publish(events.LegEarlyMedia, &events.LegEarlyMediaData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
 		// NOTE: AMD is NOT started here — early media carries ringback
@@ -525,7 +529,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		s.Webhooks.SetLegWebhook(l.ID(), req.WebhookURL, req.WebhookSecret)
 	}
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
-		LegScope:   events.LegScope{LegID: l.ID()},
+		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		URI:        req.URI,
 		From:       req.From,
 		SIPHeaders: req.Headers,
@@ -570,7 +574,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		})
 
 		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
 		s.startSpeakingDetector(l)
@@ -619,6 +623,9 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	}
 
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
+	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
+		l.SetAppID(appID)
+	}
 	s.LegMgr.Add(l)
 
 	// Apply server-default jitter buffer to inbound legs. No per-call
@@ -644,7 +651,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	}
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
-		LegScope:   events.LegScope{LegID: l.ID()},
+		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		From:       call.From,
 		To:         call.To,
 		SIPHeaders: l.SIPHeaders(),
@@ -663,7 +670,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		// Set up DTMF event forwarding
 		l.OnDTMF(func(digit rune) {
 			s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
-				LegScope: events.LegScope{LegID: l.ID()},
+				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 				Digit:    string(digit),
 			})
 			s.broadcastDTMF(l.ID(), digit)
@@ -687,7 +694,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		})
 
 		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-			LegScope: events.LegScope{LegID: l.ID()},
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
 		s.startSpeakingDetector(l)
@@ -737,7 +744,7 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 				detection := analyzer.Run(l.Context(), resampleReader)
 
 				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
-					LegScope:           events.LegScope{LegID: l.ID()},
+					LegScope:           events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 					Result:             string(detection.Result),
 					InitialSilenceMs:   detection.InitialSilenceMs,
 					GreetingDurationMs: detection.GreetingDurationMs,
@@ -748,7 +755,7 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 					beep := analyzer.WaitForBeep(l.Context(), resampleReader)
 					if beep.Detected {
 						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
-							LegScope: events.LegScope{LegID: l.ID()},
+							LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 							BeepMs:   beep.BeepMs,
 						})
 					}
@@ -871,7 +878,7 @@ func (s *Server) startSpeakingDetector(l leg.Leg) {
 			typ = events.SpeakingStopped
 		}
 		s.Bus.Publish(typ, &events.SpeakingData{
-			LegRoomScope: events.LegRoomScope{LegID: e.LegID, RoomID: l.RoomID()},
+			LegRoomScope: events.LegRoomScope{LegID: e.LegID, RoomID: l.RoomID(), AppID: l.AppID()},
 		})
 	})
 	l.SetSpeakingTap(det)

@@ -89,9 +89,10 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 
 	playRate := uint32(mixer.SampleRate) // always play at mixer rate
 
+	appID := l.AppID()
 	player.OnStart(func() {
 		s.Bus.Publish(events.PlaybackStarted, &events.PlaybackStartedData{
-			LegRoomScope: events.LegRoomScope{LegID: id},
+			LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 			PlaybackID:   playbackID,
 		})
 	})
@@ -101,7 +102,7 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 			spec, ok := playback.LookupTone(req.Tone)
 			if !ok {
 				s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-					LegRoomScope: events.LegRoomScope{LegID: id},
+					LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 					PlaybackID:   playbackID,
 					Error:        fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
 				})
@@ -120,13 +121,13 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 		legPlayers.Unlock()
 		if err != nil && err != context.Canceled {
 			s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				PlaybackID:   playbackID,
 				Error:        err.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				PlaybackID:   playbackID,
 			})
 		}
@@ -207,9 +208,10 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 	roomPlayers.m[id][playbackID] = player
 	roomPlayers.Unlock()
 
+	roomAppID := rm.AppID
 	player.OnStart(func() {
 		s.Bus.Publish(events.PlaybackStarted, &events.PlaybackStartedData{
-			LegRoomScope: events.LegRoomScope{RoomID: id},
+			LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 			PlaybackID:   playbackID,
 		})
 	})
@@ -222,7 +224,7 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 				pw.Close()
 				rm.Mixer().RemoveParticipant(playbackID)
 				s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-					LegRoomScope: events.LegRoomScope{RoomID: id},
+					LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 					PlaybackID:   playbackID,
 					Error:        fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
 				})
@@ -245,13 +247,13 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 		if err != nil && err != context.Canceled {
 			s.Log.Debug("room playback error", "room_id", id, "error", err)
 			s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				PlaybackID:   playbackID,
 				Error:        err.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				PlaybackID:   playbackID,
 			})
 		}
@@ -342,7 +344,7 @@ func (s *Server) volumePlayRoom(w http.ResponseWriter, r *http.Request) {
 type legPlaybackWriter struct {
 	legID        string
 	leg          leg.Leg
-	directWriter io.Writer   // leg.AudioWriter(), captured once
+	directWriter io.Writer // leg.AudioWriter(), captured once
 	roomMgr      *room.Manager
 }
 

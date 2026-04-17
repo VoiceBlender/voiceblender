@@ -9,18 +9,30 @@ type Handler func(Event)
 
 type Bus struct {
 	mu         sync.RWMutex
-	handlers   []Handler
+	handlers   map[uint64]Handler
+	nextID     uint64
 	instanceID string
 }
 
 func NewBus(instanceID string) *Bus {
-	return &Bus{instanceID: instanceID}
+	return &Bus{
+		handlers:   make(map[uint64]Handler),
+		instanceID: instanceID,
+	}
 }
 
-func (b *Bus) Subscribe(h Handler) {
+// Subscribe registers h and returns an unsubscribe function that removes it.
+func (b *Bus) Subscribe(h Handler) func() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.handlers = append(b.handlers, h)
+	id := b.nextID
+	b.nextID++
+	b.handlers[id] = h
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		delete(b.handlers, id)
+		b.mu.Unlock()
+	}
 }
 
 func (b *Bus) Publish(typ EventType, data EventData) {
@@ -31,8 +43,10 @@ func (b *Bus) Publish(typ EventType, data EventData) {
 		Data:       data,
 	}
 	b.mu.RLock()
-	handlers := make([]Handler, len(b.handlers))
-	copy(handlers, b.handlers)
+	handlers := make([]Handler, 0, len(b.handlers))
+	for _, h := range b.handlers {
+		handlers = append(handlers, h)
+	}
 	b.mu.RUnlock()
 	for _, h := range handlers {
 		h(e)

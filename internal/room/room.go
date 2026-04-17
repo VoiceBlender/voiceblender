@@ -10,15 +10,17 @@ import (
 
 type Room struct {
 	ID           string
+	AppID        string
 	mu           sync.RWMutex
 	participants map[string]leg.Leg
 	mix          *mixer.Mixer
 	log          *slog.Logger
 }
 
-func NewRoom(id string, log *slog.Logger) *Room {
+func NewRoom(id, appID string, log *slog.Logger) *Room {
 	return &Room{
 		ID:           id,
+		AppID:        appID,
 		participants: make(map[string]leg.Leg),
 		mix:          mixer.New(log),
 		log:          log,

@@ -1800,6 +1800,16 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /events/ws:
+        get:
+            operationId: wsEvents
+            summary: WebSocket event stream
+            description: Upgrades to a WebSocket connection and streams all events in real-time as JSON text frames. The JSON shape is identical to webhook payloads. The server sends a `{"type":"connected"}` message on connect, followed by events and periodic `{"type":"ping"}` keepalives. Clients may send `{"type":"pong"}` or `{"type":"stop"}` to close gracefully. Unknown message types receive an error response with the echoed `request_id` (reserved for future commands).
+            tags:
+                - Events
+            responses:
+                '101':
+                    description: WebSocket upgrade successful. Server sends events as JSON text frames.
     /webrtc/offer:
         post:
             operationId: webrtcOffer
@@ -1993,6 +2003,9 @@ components:
                 held:
                     type: boolean
                     description: Whether the call is on hold (SIP legs only)
+                app_id:
+                    type: string
+                    description: Application identifier for event stream filtering.
                 sip_headers:
                     type: object
                     additionalProperties:
@@ -2015,6 +2028,9 @@ components:
                 id:
                     type: string
                     description: Room identifier
+                app_id:
+                    type: string
+                    description: Application identifier for event stream filtering.
                 participants:
                     type: array
                     items:
@@ -2133,6 +2149,9 @@ components:
                     type: boolean
                     description: If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.
                     default: true
+                app_id:
+                    type: string
+                    description: Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app.
             required:
                 - type
                 - uri
@@ -2149,6 +2168,9 @@ components:
                 webhook_secret:
                     type: string
                     description: HMAC-SHA256 signing secret for the per-room webhook.
+                app_id:
+                    type: string
+                    description: Application identifier. Carried through to all events for this room. Use to filter the WebSocket event stream by app.
             required:
                 - id
         DTMFRequest:
@@ -2512,6 +2534,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     leg_type:
                                         type: string
                                         description: Leg type (e.g. sip_inbound, sip_outbound)
@@ -2542,6 +2566,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     leg_type:
                                         type: string
                                         description: Leg type (e.g. sip_outbound)
@@ -2558,6 +2584,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     leg_type:
                                         type: string
                                         description: Leg type (e.g. sip_inbound, sip_outbound, webrtc)
@@ -2574,6 +2602,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     cdr:
                                         type: object
                                         properties:
@@ -2649,6 +2679,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
     leg.left_room:
         post:
             summary: Leg removed from a room
@@ -2665,6 +2697,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
     leg.muted:
         post:
             summary: Leg muted
@@ -2678,6 +2712,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
     leg.unmuted:
         post:
             summary: Leg unmuted
@@ -2691,6 +2727,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
     leg.hold:
         post:
             summary: Leg put on hold (local or remote)
@@ -2704,6 +2742,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     leg_type:
                                         type: string
                                         description: 'Hold direction: "local" (we put them on hold) or "remote" (they put us on hold)'
@@ -2720,6 +2760,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     leg_type:
                                         type: string
                                         description: 'Hold direction: "local" or "remote"'
@@ -2736,6 +2778,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     digit:
                                         type: string
                                         description: DTMF digit received
@@ -2755,6 +2799,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier (present only when the leg is in a room)
+                                    app_id:
+                                        type: string
     speaking.stopped:
         post:
             summary: Participant stopped speaking
@@ -2771,6 +2817,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier (present only when the leg is in a room)
+                                    app_id:
+                                        type: string
     playback.started:
         post:
             summary: Playback began
@@ -2787,6 +2835,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     playback_id:
                                         type: string
                                         description: Playback identifier
@@ -2806,6 +2856,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     playback_id:
                                         type: string
                                         description: Playback identifier
@@ -2825,6 +2877,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     playback_id:
                                         type: string
                                         description: Playback identifier
@@ -2847,6 +2901,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     tts_id:
                                         type: string
                                         description: TTS playback identifier
@@ -2866,6 +2922,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     tts_id:
                                         type: string
                                         description: TTS playback identifier
@@ -2885,6 +2943,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     tts_id:
                                         type: string
                                         description: TTS playback identifier
@@ -2907,6 +2967,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     file:
                                         type: string
                                         description: Recording file path or S3 URI
@@ -2926,6 +2988,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     file:
                                         type: string
                                         description: Recording file path or S3 URI
@@ -2951,6 +3015,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     file:
                                         type: string
     recording.resumed:
@@ -2969,6 +3035,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     file:
                                         type: string
     leg.transfer_initiated:
@@ -2984,6 +3052,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     kind:
                                         type: string
                                         description: 'Transfer kind: "blind" or "attended"'
@@ -3006,6 +3076,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     kind:
                                         type: string
                                         description: 'Transfer kind: "blind" or "attended"'
@@ -3031,6 +3103,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     status_code:
                                         type: integer
                                         description: Provisional SIP status from the NOTIFY sipfrag
@@ -3050,6 +3124,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     status_code:
                                         type: integer
                                         description: Final 2xx SIP status from the NOTIFY sipfrag
@@ -3069,6 +3145,8 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
                                     status_code:
                                         type: integer
                                         description: Final non-2xx SIP status (when applicable)
@@ -3091,6 +3169,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
     room.deleted:
         post:
             summary: Room deleted
@@ -3104,6 +3184,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
     stt.text:
         post:
             summary: Speech-to-text transcript
@@ -3120,6 +3202,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     text:
                                         type: string
                                         description: Transcribed text
@@ -3142,6 +3226,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     conversation_id:
                                         type: string
                                         description: Provider-assigned conversation identifier
@@ -3161,6 +3247,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
     agent.user_transcript:
         post:
             summary: User speech transcribed by agent
@@ -3177,6 +3265,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     text:
                                         type: string
                                         description: User speech text
@@ -3196,6 +3286,8 @@ x-webhooks:
                                     room_id:
                                         type: string
                                         description: Room identifier
+                                    app_id:
+                                        type: string
                                     text:
                                         type: string
                                         description: Agent response text

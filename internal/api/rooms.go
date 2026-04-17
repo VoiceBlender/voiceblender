@@ -15,7 +15,7 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		req.ID = ""
 	}
 
-	room, err := s.RoomMgr.Create(req.ID)
+	room, err := s.RoomMgr.Create(req.ID, req.AppID)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -23,7 +23,7 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	if req.WebhookURL != "" {
 		s.Webhooks.SetRoomWebhook(room.ID, req.WebhookURL, req.WebhookSecret)
 	}
-	writeJSON(w, http.StatusCreated, RoomView{ID: room.ID, Participants: []LegView{}})
+	writeJSON(w, http.StatusCreated, RoomView{ID: room.ID, AppID: room.AppID, Participants: []LegView{}})
 }
 
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +35,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		for j, p := range parts {
 			pViews[j] = toLegView(p)
 		}
-		views[i] = RoomView{ID: rm.ID, Participants: pViews}
+		views[i] = RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews}
 	}
 	writeJSON(w, http.StatusOK, views)
 }
@@ -52,7 +52,7 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 	for j, p := range parts {
 		pViews[j] = toLegView(p)
 	}
-	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, Participants: pViews})
+	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews})
 }
 
 func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
@@ -73,18 +73,18 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	// Auto-create the room if it doesn't exist.
-	if _, ok := s.RoomMgr.Get(roomID); !ok {
-		if _, err := s.RoomMgr.Create(roomID); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
-			return
-		}
-	}
-
 	l, ok := s.LegMgr.Get(req.LegID)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("leg %s not found", req.LegID))
 		return
+	}
+
+	// Auto-create the room if it doesn't exist, inheriting app_id from the leg.
+	if _, ok := s.RoomMgr.Get(roomID); !ok {
+		if _, err := s.RoomMgr.Create(roomID, l.AppID()); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
+			return
+		}
 	}
 
 	// Apply mute/deaf before the leg enters the mixer so the participant

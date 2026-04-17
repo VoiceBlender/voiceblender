@@ -20,7 +20,7 @@ func TestNewBus(t *testing.T) {
 func TestBus_Subscribe_Publish(t *testing.T) {
 	bus := NewBus("test")
 	received := make(chan Event, 1)
-	bus.Subscribe(func(e Event) {
+	_ = bus.Subscribe(func(e Event) {
 		received <- e
 	})
 
@@ -47,7 +47,7 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 	var count atomic.Int32
 
 	for i := 0; i < 3; i++ {
-		bus.Subscribe(func(e Event) {
+		_ = bus.Subscribe(func(e Event) {
 			count.Add(1)
 		})
 	}
@@ -59,10 +59,32 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 	}
 }
 
+func TestBus_Unsubscribe(t *testing.T) {
+	bus := NewBus("test")
+	var count1, count2 atomic.Int32
+
+	unsub1 := bus.Subscribe(func(e Event) { count1.Add(1) })
+	_ = bus.Subscribe(func(e Event) { count2.Add(1) })
+
+	bus.Publish(RoomCreated, &RoomCreatedData{RoomScope: RoomScope{RoomID: "r1"}})
+	if count1.Load() != 1 || count2.Load() != 1 {
+		t.Fatalf("before unsub: count1=%d count2=%d, want 1,1", count1.Load(), count2.Load())
+	}
+
+	unsub1()
+	bus.Publish(RoomCreated, &RoomCreatedData{RoomScope: RoomScope{RoomID: "r2"}})
+	if count1.Load() != 1 {
+		t.Errorf("after unsub: count1=%d, want 1 (handler should be removed)", count1.Load())
+	}
+	if count2.Load() != 2 {
+		t.Errorf("after unsub: count2=%d, want 2", count2.Load())
+	}
+}
+
 func TestBus_PublishSetsTimestamp(t *testing.T) {
 	bus := NewBus("inst")
 	var got Event
-	bus.Subscribe(func(e Event) { got = e })
+	_ = bus.Subscribe(func(e Event) { got = e })
 
 	before := time.Now().UTC()
 	bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})

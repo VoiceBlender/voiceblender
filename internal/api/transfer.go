@@ -140,7 +140,7 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 	// Some peers skip 202 Accepted and signal only via NOTIFY; emit
 	// transfer_initiated before Do() so the event fires regardless.
 	s.Bus.Publish(events.LegTransferInitiated, &events.LegTransferInitiatedData{
-		LegScope:      events.LegScope{LegID: sl.ID()},
+		LegScope:      events.LegScope{LegID: sl.ID(), AppID: sl.AppID()},
 		Kind:          kind,
 		Target:        req.Target,
 		ReplacesLegID: req.ReplacesLegID,
@@ -158,7 +158,7 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 			s.Log.Info("transfer REFER failed", "leg_id", sl.ID(), "error", err)
 			s.transfers.del(callID)
 			s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
-				LegScope: events.LegScope{LegID: sl.ID()},
+				LegScope: events.LegScope{LegID: sl.ID(), AppID: sl.AppID()},
 				Error:    err.Error(),
 			})
 			return
@@ -175,6 +175,9 @@ func (s *Server) HandleReferNotify(callID string, statusCode int, reason string,
 		return
 	}
 	scope := events.LegScope{LegID: st.legID}
+	if l, ok := s.LegMgr.Get(st.legID); ok {
+		scope.AppID = l.AppID()
+	}
 
 	if !terminated {
 		s.Bus.Publish(events.LegTransferProgress, &events.LegTransferProgressData{
@@ -226,6 +229,7 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 	scope := events.LegScope{}
 	if sl != nil {
 		scope.LegID = sl.ID()
+		scope.AppID = sl.AppID()
 	}
 
 	if !s.Config.SIPReferAutoDial {
@@ -284,7 +288,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	newLeg.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 	s.LegMgr.Add(newLeg)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
-		LegScope: events.LegScope{LegID: newLeg.ID()},
+		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
 		URI:      target,
 	})
 
@@ -321,7 +325,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	}
 
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-		LegScope: events.LegScope{LegID: newLeg.ID()},
+		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
 		LegType:  string(newLeg.Type()),
 	})
 
@@ -329,7 +333,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		s.Log.Warn("transfer NOTIFY 200 failed", "error", err)
 	}
 	s.Bus.Publish(events.LegTransferCompleted, &events.LegTransferCompletedData{
-		LegScope:   events.LegScope{LegID: referrer.ID()},
+		LegScope:   events.LegScope{LegID: referrer.ID(), AppID: referrer.AppID()},
 		StatusCode: 200,
 		Reason:     "OK",
 	})
@@ -342,7 +346,7 @@ func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason stri
 	if referrer != nil {
 		referrer.SendNotifySipfrag(context.Background(), statusCode, reason, true)
 		s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
-			LegScope:   events.LegScope{LegID: referrer.ID()},
+			LegScope:   events.LegScope{LegID: referrer.ID(), AppID: referrer.AppID()},
 			StatusCode: statusCode,
 			Reason:     reason,
 		})
