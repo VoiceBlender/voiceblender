@@ -160,6 +160,35 @@ func TestDTMFBroadcast_RejectAtOriginate(t *testing.T) {
 	assertNoDTMF(t, b.inst3, b.legBOnInst3, "9")
 }
 
+func TestDTMFBroadcast_SequenceNumbers(t *testing.T) {
+	b := setupDTMFBridge(t, nil, nil)
+
+	sendDTMFFrom(t, b.inst2, b.legAOnInst2, "1")
+	waitForDTMF(t, b.inst1, b.legAOnInst1, "1")
+
+	sendDTMFFrom(t, b.inst2, b.legAOnInst2, "2")
+	waitForDTMF(t, b.inst1, b.legAOnInst1, "2")
+
+	sendDTMFFrom(t, b.inst2, b.legAOnInst2, "3")
+	waitForDTMF(t, b.inst1, b.legAOnInst1, "3")
+
+	dtmfEvents := b.inst1.collector.matchAll(events.DTMFReceived, func(e events.Event) bool {
+		return e.Data.GetLegID() == b.legAOnInst1
+	})
+
+	if len(dtmfEvents) != 3 {
+		t.Fatalf("got %d DTMF events for leg A, want 3", len(dtmfEvents))
+	}
+
+	for i, e := range dtmfEvents {
+		d := e.Data.(*events.DTMFReceivedData)
+		wantSeq := uint64(i + 1)
+		if d.Seq != wantSeq {
+			t.Errorf("event[%d] seq = %d, want %d", i, d.Seq, wantSeq)
+		}
+	}
+}
+
 func TestDTMFBroadcast_SenderExcluded(t *testing.T) {
 	b := setupDTMFBridge(t, nil, nil)
 

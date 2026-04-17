@@ -176,6 +176,80 @@ func TestLegRoomScope(t *testing.T) {
 
 // --- WebhookRegistry tests ---
 
+func TestDTMFReceivedData_SeqField(t *testing.T) {
+	bus := NewBus("test")
+	var got Event
+	_ = bus.Subscribe(func(e Event) { got = e })
+
+	bus.Publish(DTMFReceived, &DTMFReceivedData{
+		LegScope: LegScope{LegID: "leg-1"},
+		Digit:    "5",
+		Seq:      42,
+	})
+
+	d, ok := got.Data.(*DTMFReceivedData)
+	if !ok {
+		t.Fatal("expected *DTMFReceivedData")
+	}
+	if d.Seq != 42 {
+		t.Errorf("Seq = %d, want 42", d.Seq)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["seq"] != float64(42) {
+		t.Errorf("JSON seq = %v, want 42", m["seq"])
+	}
+}
+
+func TestDTMFReceivedData_SeqIndependentPerClosure(t *testing.T) {
+	bus := NewBus("test")
+	var collected []Event
+	_ = bus.Subscribe(func(e Event) { collected = append(collected, e) })
+
+	var seqA, seqB atomic.Uint64
+	emitA := func(digit string) {
+		seq := seqA.Add(1)
+		bus.Publish(DTMFReceived, &DTMFReceivedData{
+			LegScope: LegScope{LegID: "leg-A"},
+			Digit:    digit,
+			Seq:      seq,
+		})
+	}
+	emitB := func(digit string) {
+		seq := seqB.Add(1)
+		bus.Publish(DTMFReceived, &DTMFReceivedData{
+			LegScope: LegScope{LegID: "leg-B"},
+			Digit:    digit,
+			Seq:      seq,
+		})
+	}
+
+	emitA("1")
+	emitA("2")
+	emitB("5")
+	emitA("3")
+	emitB("6")
+
+	if len(collected) != 5 {
+		t.Fatalf("got %d events, want 5", len(collected))
+	}
+
+	wantSeqs := []uint64{1, 2, 1, 3, 2}
+	for i, e := range collected {
+		d := e.Data.(*DTMFReceivedData)
+		if d.Seq != wantSeqs[i] {
+			t.Errorf("event[%d] Seq = %d, want %d", i, d.Seq, wantSeqs[i])
+		}
+	}
+}
+
 func TestWebhookRegistry_LegWebhook(t *testing.T) {
 	bus := NewBus("test")
 	log := slog.Default()

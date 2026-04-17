@@ -183,6 +183,7 @@ type SpeakingData struct {
 type DTMFReceivedData struct {
 	LegScope
 	Digit string `json:"digit"`
+	Seq   uint64 `json:"seq"`
 }
 
 // --- Playback ---
