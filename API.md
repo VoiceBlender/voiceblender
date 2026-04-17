@@ -1592,6 +1592,116 @@ The server sends application-level pings every 30 seconds. The connection is als
 
 ---
 
+### GET /v1/vsi (VSI)
+
+Upgrade to a WebSocket connection and receive all events in real-time as JSON text frames. The JSON shape is identical to webhook payloads (same `Event.MarshalJSON` format).
+
+**Upgrade:** Standard HTTP → WebSocket upgrade. No request body.
+
+**Query Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
+
+Set `app_id` on legs via `POST /v1/legs` body or `X-App-ID` SIP header on inbound calls. Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+
+**Example with filter:**
+
+```bash
+websocat "ws://localhost:8080/v1/vsi?app_id=^billing$"
+```
+
+#### Message Format
+
+**Server → Client (on connect):**
+
+```json
+{"type": "connected"}
+```
+
+**Server → Client (event):**
+
+```json
+{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
+```
+
+Events use the same flattened JSON envelope as webhook POSTs. Clients already parsing webhook payloads can reuse the same deserializer.
+
+**Server → Client (keepalive ping):**
+
+```json
+{"type": "ping", "event_id": 1}
+```
+
+**Client → Server (keepalive pong):**
+
+```json
+{"type": "pong"}
+```
+
+**Client → Server (disconnect):**
+
+```json
+{"type": "stop"}
+```
+
+**Client → Server (commands):**
+
+The WebSocket accepts bidirectional commands using the same naming as the REST API. All commands support an optional `request_id` echoed back in the response.
+
+```json
+// Client sends:
+{"type": "mute_leg", "request_id": "req-1", "payload": {"id": "abc-123"}}
+
+// Server responds (success):
+{"type": "mute_leg.result", "request_id": "req-1", "data": {"status": "muted"}}
+
+// Server responds (error):
+{"type": "error", "request_id": "req-1", "data": {"code": 404, "message": "leg not found"}}
+```
+
+#### Available commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `list_legs` | *(none)* | List all legs |
+| `get_leg` | `{"id":"..."}` | Get a single leg |
+| `create_leg` | `CreateLegRequest` | Create a leg (not yet implemented over WS; use REST) |
+| `delete_leg` | `{"id":"..."}` | Hang up and delete a leg |
+| `answer_leg` | `{"id":"..."}` | Answer a ringing inbound leg |
+| `mute_leg` | `{"id":"..."}` | Mute a leg |
+| `unmute_leg` | `{"id":"..."}` | Unmute a leg |
+| `deaf_leg` | `{"id":"..."}` | Deafen a leg |
+| `undeaf_leg` | `{"id":"..."}` | Undeafen a leg |
+| `hold_leg` | `{"id":"..."}` | Put a SIP leg on hold |
+| `unhold_leg` | `{"id":"..."}` | Resume a held SIP leg |
+| `send_leg_dtmf` | `{"id":"...","digits":"123"}` | Send DTMF digits on a leg |
+| `accept_leg_dtmf` | `{"id":"..."}` | Enable DTMF reception |
+| `reject_leg_dtmf` | `{"id":"..."}` | Disable DTMF reception |
+| `list_rooms` | *(none)* | List all rooms |
+| `get_room` | `{"id":"..."}` | Get a single room |
+| `create_room` | `CreateRoomRequest` | Create a room |
+| `delete_room` | `{"id":"..."}` | Delete a room |
+| `add_leg_to_room` | `{"room_id":"...","leg_id":"..."}` | Add or move leg to room (supports `mute`, `deaf`, `accept_dtmf`) |
+| `remove_leg_from_room` | `{"room_id":"...","leg_id":"..."}` | Remove leg from room |
+
+The server sends application-level pings every 30 seconds. If a client reads too slowly, events are buffered (up to 256). When the buffer is full, events are dropped and the server sends a notification before the next successfully delivered event:
+
+```json
+{"type": "events_dropped", "count": 12}
+```
+
+On receiving this, the client should resync state via REST (e.g. `GET /v1/legs`, `GET /v1/rooms`) since it may have missed transitions.
+
+**Example:**
+
+```bash
+websocat ws://localhost:8080/v1/vsi
+```
+
+---
+
 ## WebRTC
 
 ### POST /v1/webrtc/offer

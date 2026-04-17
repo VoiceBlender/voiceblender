@@ -842,6 +842,22 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 
+		// ── Event Stream ────────────────────────────────────────────────
+		{
+			Method: "GET", Path: "/vsi", OperationID: "vsi",
+			Summary: "VoiceBlender Streaming Interface (VSI)",
+			Description: "Upgrades to a WebSocket connection and streams all events in real-time as " +
+				"JSON text frames. The JSON shape is identical to webhook payloads. " +
+				"The server sends a `{\"type\":\"connected\"}` message on connect, followed by events " +
+				"and periodic `{\"type\":\"ping\"}` keepalives. " +
+				"Clients may send `{\"type\":\"pong\"}` or `{\"type\":\"stop\"}` to close gracefully. " +
+				"Unknown message types receive an error response with the echoed `request_id` (reserved for future commands).",
+			Tags: []string{"Events"},
+			Responses: map[int]ResponseMeta{
+				101: {Description: "WebSocket upgrade successful. Server sends events as JSON text frames."},
+			},
+		},
+
 		// ── WebRTC ──────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/webrtc/offer", OperationID: "webrtcOffer",

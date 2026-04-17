@@ -6,32 +6,39 @@ import "github.com/VoiceBlender/voiceblender/internal/recording"
 type EventData interface {
 	GetLegID() string
 	GetRoomID() string
+	GetAppID() string
 }
 
 // LegScope embeds in events scoped to a single leg.
 type LegScope struct {
 	LegID string `json:"leg_id"`
+	AppID string `json:"app_id,omitempty"`
 }
 
 func (b LegScope) GetLegID() string  { return b.LegID }
 func (b LegScope) GetRoomID() string { return "" }
+func (b LegScope) GetAppID() string  { return b.AppID }
 
 // RoomScope embeds in events scoped to a single room.
 type RoomScope struct {
 	RoomID string `json:"room_id"`
+	AppID  string `json:"app_id,omitempty"`
 }
 
 func (b RoomScope) GetLegID() string  { return "" }
 func (b RoomScope) GetRoomID() string { return b.RoomID }
+func (b RoomScope) GetAppID() string  { return b.AppID }
 
 // LegRoomScope embeds in events that may target a leg, a room, or both.
 type LegRoomScope struct {
 	LegID  string `json:"leg_id,omitempty"`
 	RoomID string `json:"room_id,omitempty"`
+	AppID  string `json:"app_id,omitempty"`
 }
 
 func (b LegRoomScope) GetLegID() string  { return b.LegID }
 func (b LegRoomScope) GetRoomID() string { return b.RoomID }
+func (b LegRoomScope) GetAppID() string  { return b.AppID }
 
 // --- Leg lifecycle events ---
 

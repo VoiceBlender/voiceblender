@@ -103,7 +103,7 @@ func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 	time.Sleep(200 * time.Millisecond)
 
 	ec := newEventCollector()
-	bus.Subscribe(ec.handle)
+	_ = bus.Subscribe(ec.handle)
 
 	inst := &testInstance{
 		name:      name,

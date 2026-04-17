@@ -353,7 +353,7 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 	legRecorders.Unlock()
 
 	s.Bus.Publish(events.RecordingStarted, &events.RecordingStartedData{
-		LegRoomScope: events.LegRoomScope{LegID: id},
+		LegRoomScope: events.LegRoomScope{LegID: id, AppID: l.AppID()},
 		File:         fpath,
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "recording", "file": fpath})
@@ -423,8 +423,12 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 		}
 	}
 
+	legAppID := ""
+	if ll, ok := s.LegMgr.Get(legID); ok {
+		legAppID = ll.AppID()
+	}
 	s.Bus.Publish(events.RecordingFinished, &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{LegID: legID},
+		LegRoomScope: events.LegRoomScope{LegID: legID, AppID: legAppID},
 		File:         location,
 	})
 	return location, true
@@ -453,8 +457,12 @@ func (s *Server) pauseRecordLeg(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
 		return
 	}
+	legAppID := ""
+	if ll, ok := s.LegMgr.Get(id); ok {
+		legAppID = ll.AppID()
+	}
 	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
-		LegRoomScope: events.LegRoomScope{LegID: id},
+		LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
 }
@@ -472,8 +480,12 @@ func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
 		return
 	}
+	legAppID := ""
+	if ll, ok := s.LegMgr.Get(id); ok {
+		legAppID = ll.AppID()
+	}
 	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
-		LegRoomScope: events.LegRoomScope{LegID: id},
+		LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
 }
@@ -552,7 +564,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Bus.Publish(events.RecordingStarted, &events.RecordingStartedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id},
+		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: rm.AppID},
 		File:         fpath,
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "recording", "file": fpath})
@@ -628,9 +640,13 @@ func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	roomAppID := ""
+	if rm, ok := s.RoomMgr.Get(id); ok {
+		roomAppID = rm.AppID
+	}
 	resp := map[string]interface{}{"status": "stopped", "file": location}
 	evtData := &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id},
+		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 		File:         location,
 	}
 	if mcResult != nil {
@@ -703,8 +719,12 @@ func (s *Server) pauseRecordRoom(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
 		return
 	}
+	roomAppID := ""
+	if rm, ok := s.RoomMgr.Get(id); ok {
+		roomAppID = rm.AppID
+	}
 	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id},
+		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
 }
@@ -720,8 +740,12 @@ func (s *Server) resumeRecordRoom(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
 		return
 	}
+	roomAppID := ""
+	if rm, ok := s.RoomMgr.Get(id); ok {
+		roomAppID = rm.AppID
+	}
 	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id},
+		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
 }
@@ -739,8 +763,12 @@ func (s *Server) stopRoomRecordingIfEmpty(roomID string) {
 		return
 	}
 
+	roomAppID := ""
+	if rm, ok := s.RoomMgr.Get(roomID); ok {
+		roomAppID = rm.AppID
+	}
 	evtData := &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{RoomID: roomID},
+		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 		File:         location,
 	}
 	if mcResult != nil {

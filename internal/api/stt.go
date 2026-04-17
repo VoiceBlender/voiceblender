@@ -121,10 +121,11 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bus := s.Bus
+	legAppID := l.AppID()
 	cb := func(text string, isFinal bool) {
 		s.Log.Info("stt callback fired", "leg_id", id, "text", text, "is_final", isFinal)
 		bus.Publish(events.STTText, &events.STTTextData{
-			LegRoomScope: events.LegRoomScope{LegID: id},
+			LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
 			Text:         text,
 			IsFinal:      isFinal,
 		})
@@ -272,10 +273,11 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	bus := s.Bus
 	opts := state.opts
 	apiKey := state.apiKey
+	sttAppID := l.AppID()
 
 	cb := func(text string, isFinal bool) {
 		bus.Publish(events.STTText, &events.STTTextData{
-			LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID},
+			LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: sttAppID},
 			Text:         text,
 			IsFinal:      isFinal,
 		})

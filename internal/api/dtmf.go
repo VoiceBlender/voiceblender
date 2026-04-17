@@ -9,13 +9,24 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func (s *Server) sendDTMF(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doSendLegDTMF(ctx context.Context, id, digits string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
+
+	if digits == "" {
+		return newAPIError(http.StatusBadRequest, "digits required")
+	}
+
+	if err := l.SendDTMF(ctx, digits); err != nil {
+		return newAPIError(http.StatusInternalServerError, "%s", err.Error())
+	}
+	return nil
+}
+
+func (s *Server) sendDTMF(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
 
 	var req DTMFRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -23,37 +34,46 @@ func (s *Server) sendDTMF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Digits == "" {
-		writeError(w, http.StatusBadRequest, "digits required")
-		return
-	}
-
-	if err := l.SendDTMF(r.Context(), req.Digits); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.doSendLegDTMF(r.Context(), id, req.Digits); err != nil {
+		handleAPIError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
-func (s *Server) acceptDTMFLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doAcceptLegDTMF(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 	l.SetAcceptDTMF(true)
+	return nil
+}
+
+func (s *Server) acceptDTMFLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doAcceptLegDTMF(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "dtmf_accepting"})
+}
+
+func (s *Server) doRejectLegDTMF(id string) error {
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	l.SetAcceptDTMF(false)
+	return nil
 }
 
 func (s *Server) rejectDTMFLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
+	if err := s.doRejectLegDTMF(id); err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	l.SetAcceptDTMF(false)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "dtmf_rejecting"})
 }
 

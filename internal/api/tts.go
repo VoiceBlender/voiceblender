@@ -67,6 +67,7 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ttsID := "tts-" + uuid.New().String()[:8]
+	appID := l.AppID()
 	player := playback.NewPlayer(s.Log)
 	player.SetVolume(req.Volume)
 
@@ -93,7 +94,7 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 			}
 			legPlayers.Unlock()
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 				Error:        err.Error(),
 			})
@@ -103,7 +104,7 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 
 		player.OnStart(func() {
 			s.Bus.Publish(events.TTSStarted, &events.TTSStartedData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 			})
 		})
@@ -119,13 +120,13 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 
 		if playErr != nil && playErr != context.Canceled {
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 				Error:        playErr.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
-				LegRoomScope: events.LegRoomScope{LegID: id},
+				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 			})
 		}
@@ -178,6 +179,7 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ttsID := "tts-" + uuid.New().String()[:8]
+	roomAppID := rm.AppID
 
 	pr, pw := io.Pipe()
 	rm.Mixer().AddPlaybackSource(ttsID, pr)
@@ -208,7 +210,7 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 			}
 			roomPlayers.Unlock()
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 				Error:        err.Error(),
 			})
@@ -218,7 +220,7 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 
 		player.OnStart(func() {
 			s.Bus.Publish(events.TTSStarted, &events.TTSStartedData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 			})
 		})
@@ -237,13 +239,13 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 		if playErr != nil && playErr != context.Canceled {
 			s.Log.Debug("room TTS playback error", "room_id", id, "error", playErr)
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 				Error:        playErr.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
-				LegRoomScope: events.LegRoomScope{RoomID: id},
+				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 			})
 		}

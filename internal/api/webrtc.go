@@ -115,7 +115,7 @@ func (s *Server) webrtcOffer(w http.ResponseWriter, r *http.Request) {
 	// Register leg immediately — no waiting for ICE gathering
 	s.LegMgr.Add(l)
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-		LegScope: events.LegScope{LegID: l.ID()},
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		LegType:  "webrtc",
 	})
 

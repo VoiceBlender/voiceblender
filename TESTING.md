@@ -92,6 +92,7 @@ go test -tags integration -v -timeout 60s -run TestOutboundInbound_Connect ./tes
 go test -tags integration -v -timeout 60s -run TestRecording ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 ```
 
 ### Integration test list
@@ -128,6 +129,12 @@ go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integra
 | `TestDTMFBroadcast_RejectAtRuntime` | `POST /v1/legs/{id}/dtmf/reject` blocks reception; `accept` re-enables it |
 | `TestDTMFBroadcast_RejectAtOriginate` | `accept_dtmf:false` in originate body blocks reception from the start |
 | `TestDTMFBroadcast_SenderExcluded` | Originating leg never receives a forwarded copy of its own DTMF |
+| `TestWSEvents_ConnectedAndEvents` | Connect to `/v1/vsi`, originate a call, verify `leg.ringing` event arrives |
+| `TestWSEvents_UnknownCommand` | Send unknown command with `request_id`, verify error response echoes it |
+| `TestWSEvents_StopCommand` | Send `stop`, verify server closes the connection |
+| `TestWSCommands_RoomLifecycle` | Create, get, list, delete room via WS commands; error on deleted room |
+| `TestWSCommands_MuteLeg` | Mute/get_leg via WS; error on missing leg; error on unknown command |
+| `TestWSEvents_AppIDFilter` | Two WS clients (filtered + unfiltered), two legs with different `app_id`; filtered client only sees matching events |
 | `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |
 | `TestTransfer_Inbound_DeclinedByDefault` | With default `SIP_REFER_AUTO_DIAL=false` the peer's REFER gets 603 and an audit event |
 | `TestTransfer_NotConnected` | `/transfer` on a ringing leg returns 409 |

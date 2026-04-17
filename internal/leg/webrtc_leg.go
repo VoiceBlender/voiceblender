@@ -36,6 +36,7 @@ type WebRTCLeg struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	roomID     string
+	appID      string
 	muted      atomic.Bool
 	deaf       atomic.Bool
 	acceptDTMF atomic.Bool
@@ -97,6 +98,18 @@ func (l *WebRTCLeg) SetRoomID(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.roomID = id
+}
+
+func (l *WebRTCLeg) AppID() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.appID
+}
+
+func (l *WebRTCLeg) SetAppID(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.appID = id
 }
 
 func (l *WebRTCLeg) IsMuted() bool              { return l.muted.Load() }

@@ -161,6 +161,9 @@ func (s *Server) routes() {
 		r.Delete("/rooms/{id}/agent", s.stopAgentRoom)
 		r.Get("/rooms/{id}/ws", s.wsRoom)
 
+		// Event stream
+		r.Get("/vsi", s.vsi)
+
 		// WebRTC
 		r.Post("/webrtc/offer", s.webrtcOffer)
 

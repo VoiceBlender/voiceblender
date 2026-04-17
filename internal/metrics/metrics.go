@@ -97,7 +97,7 @@ func New(bus *events.Bus) *Collector {
 		c.callTotalDurationSeconds,
 	)
 
-	bus.Subscribe(c.handle)
+	_ = bus.Subscribe(c.handle)
 	return c
 }
 

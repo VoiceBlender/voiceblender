@@ -33,6 +33,8 @@ func (m *apiMockLeg) Answer(context.Context) error           { return nil }
 func (m *apiMockLeg) Context() context.Context               { return context.Background() }
 func (m *apiMockLeg) RoomID() string                         { return m.roomID }
 func (m *apiMockLeg) SetRoomID(id string)                    { m.roomID = id }
+func (m *apiMockLeg) AppID() string                          { return "" }
+func (m *apiMockLeg) SetAppID(string)                        {}
 func (m *apiMockLeg) IsMuted() bool                          { return m.muted }
 func (m *apiMockLeg) SetMuted(v bool)                        { m.muted = v }
 func (m *apiMockLeg) IsDeaf() bool                           { return m.deaf }

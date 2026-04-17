@@ -36,6 +36,7 @@ type CreateLegRequest struct {
 	WebhookSecret string            `json:"webhook_secret,omitempty"` // HMAC secret for webhook signature
 	AMD           *AMDParams        `json:"amd,omitempty"`            // enable answering machine detection on outbound calls
 	AcceptDTMF    *bool             `json:"accept_dtmf,omitempty"`    // if false, leg will not receive DTMF broadcast from other legs in the same room
+	AppID         string            `json:"app_id,omitempty"`         // application identifier for event stream filtering
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
@@ -53,6 +54,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
 	"amd":            {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
 	"accept_dtmf":    {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
+	"app_id":         {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 }
 
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.
@@ -107,6 +109,7 @@ type LegView struct {
 	Deaf       bool              `json:"deaf"`
 	AcceptDTMF bool              `json:"accept_dtmf"`
 	Held       bool              `json:"held"`
+	AppID      string            `json:"app_id,omitempty"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 }
 
@@ -119,6 +122,7 @@ var legViewFields = map[string]FieldEnrichment{
 	"deaf":        {Description: "Whether the leg is deaf (cannot hear others)"},
 	"accept_dtmf": {Description: "Whether the leg receives DTMF digits broadcast from other legs in the same room. Defaults to true."},
 	"held":        {Description: "Whether the call is on hold (SIP legs only)"},
+	"app_id":      {Description: "Application identifier for event stream filtering."},
 	"sip_headers": {Description: "X-* headers from the inbound INVITE. Only present on sip_inbound legs."},
 }
 
@@ -127,22 +131,26 @@ type CreateRoomRequest struct {
 	ID            string `json:"id"`
 	WebhookURL    string `json:"webhook_url,omitempty"`
 	WebhookSecret string `json:"webhook_secret,omitempty"`
+	AppID         string `json:"app_id,omitempty"`
 }
 
 var createRoomRequestFields = map[string]FieldEnrichment{
 	"id":             {Description: "Custom room ID (auto-generated UUID if omitted)"},
 	"webhook_url":    {Description: "Route all events for this room exclusively to this URL instead of global webhooks.", Format: "uri"},
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-room webhook."},
+	"app_id":         {Description: "Application identifier. Carried through to all events for this room. Use to filter the WebSocket event stream by app."},
 }
 
 // RoomView is the JSON representation of a room.
 type RoomView struct {
 	ID           string    `json:"id"`
+	AppID        string    `json:"app_id,omitempty"`
 	Participants []LegView `json:"participants"`
 }
 
 var roomViewFields = map[string]FieldEnrichment{
 	"id":           {Description: "Room identifier"},
+	"app_id":       {Description: "Application identifier for event stream filtering."},
 	"participants": {Description: "Legs currently in this room"},
 }
 
