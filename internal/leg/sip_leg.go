@@ -452,6 +452,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
 		sip.StatusSessionInProgress, "Session Progress",
 		answerSDP,
 		sip.NewHeader("Content-Type", "application/sdp"),
+		l.engine.ServerHeader(),
 	); err != nil {
 		rtpSess.Close()
 		return fmt.Errorf("send 183: %w", err)
@@ -480,11 +481,15 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 				sip.NewHeader("Content-Type", "application/sdp"),
 				sip.NewHeader("Supported", "timer"),
 				sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
+				l.engine.ServerHeader(),
 			); err != nil {
 				return fmt.Errorf("respond SDP: %w", err)
 			}
 		} else {
-			if err := l.inbound.Dialog.RespondSDP(sdp); err != nil {
+			if err := l.inbound.Dialog.Respond(sip.StatusOK, "OK", sdp,
+				sip.NewHeader("Content-Type", "application/sdp"),
+				l.engine.ServerHeader(),
+			); err != nil {
 				return fmt.Errorf("respond SDP: %w", err)
 			}
 		}
@@ -533,12 +538,16 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 			sip.NewHeader("Content-Type", "application/sdp"),
 			sip.NewHeader("Supported", "timer"),
 			sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
+			l.engine.ServerHeader(),
 		); err != nil {
 			rtpSess.Close()
 			return fmt.Errorf("respond SDP: %w", err)
 		}
 	} else {
-		if err := l.inbound.Dialog.RespondSDP(answerSDP); err != nil {
+		if err := l.inbound.Dialog.Respond(sip.StatusOK, "OK", answerSDP,
+			sip.NewHeader("Content-Type", "application/sdp"),
+			l.engine.ServerHeader(),
+		); err != nil {
 			rtpSess.Close()
 			return fmt.Errorf("respond SDP: %w", err)
 		}

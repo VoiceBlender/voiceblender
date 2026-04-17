@@ -50,6 +50,7 @@ type Engine struct {
 	bindIP     string // externally-reachable IP (for SDP/Contact)
 	listenIP   string // original bind address (for ListenAndServe)
 	bindPort   int
+	sipHost    string
 	portAlloc  *PortAllocator
 	log        *slog.Logger
 }
@@ -149,6 +150,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		bindIP:    advertiseIP,
 		listenIP:  listenIP,
 		bindPort:  cfg.BindPort,
+		sipHost:   cfg.SIPHost,
 		portAlloc: cfg.PortAllocator,
 		log:       cfg.Log,
 	}
@@ -228,6 +230,7 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
+	res.AppendHeader(e.ServerHeader())
 	if len(answerSDP) > 0 {
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	}
@@ -316,6 +319,7 @@ func (e *Engine) registerHandlers() {
 		if err != nil {
 			e.log.Error("read invite failed", "error", err)
 			res := sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "Internal Server Error", nil)
+			res.AppendHeader(e.ServerHeader())
 			tx.Respond(res)
 			return
 		}
@@ -323,7 +327,7 @@ func (e *Engine) registerHandlers() {
 		remoteSDP, err := ParseSDP(req.Body())
 		if err != nil {
 			e.log.Error("parse offer SDP failed", "error", err)
-			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil)
+			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil, e.ServerHeader())
 			return
 		}
 
@@ -412,6 +416,7 @@ func (e *Engine) registerHandlers() {
 		// layer handles both 487 (for INVITE) and 200 OK (for CANCEL)
 		// automatically.  Respond 481 per RFC 3261 §9.2.
 		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
+		res.AppendHeader(e.ServerHeader())
 		tx.Respond(res)
 	})
 
@@ -423,6 +428,7 @@ func (e *Engine) registerHandlers() {
 // source so peers with unroutable Via headers still get our reply.
 func (e *Engine) RespondFromSource(tx sip.ServerTransaction, req *sip.Request, statusCode int, reason string) error {
 	res := sip.NewResponseFromRequest(req, statusCode, reason, nil)
+	res.AppendHeader(e.ServerHeader())
 	if src := req.Source(); src != "" {
 		res.SetDestination(src)
 	}
@@ -657,6 +663,15 @@ func (e *Engine) Codecs() []codec.CodecType {
 // BindIP returns the engine's bind IP address.
 func (e *Engine) BindIP() string {
 	return e.bindIP
+}
+
+func (e *Engine) SIPHost() string {
+	return e.sipHost
+}
+
+// ServerHeader returns a SIP Server header for UAS responses.
+func (e *Engine) ServerHeader() sip.Header {
+	return sip.NewHeader("Server", e.sipHost)
 }
 
 // PortAllocator returns the engine's port allocator (nil if OS-assigned).

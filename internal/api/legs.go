@@ -609,11 +609,11 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.
 func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// Send provisional responses
-	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil); err != nil {
+	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("failed to send 100 Trying", "error", err)
 		return
 	}
-	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil); err != nil {
+	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("failed to send 180 Ringing", "error", err)
 		return
 	}
