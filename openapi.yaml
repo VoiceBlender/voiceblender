@@ -1800,10 +1800,10 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-    /events/ws:
+    /vsi:
         get:
-            operationId: wsEvents
-            summary: WebSocket event stream
+            operationId: vsi
+            summary: VoiceBlender Streaming Interface (VSI)
             description: Upgrades to a WebSocket connection and streams all events in real-time as JSON text frames. The JSON shape is identical to webhook payloads. The server sends a `{"type":"connected"}` message on connect, followed by events and periodic `{"type":"ping"}` keepalives. Clients may send `{"type":"pong"}` or `{"type":"stop"}` to close gracefully. Unknown message types receive an error response with the echoed `request_id` (reserved for future commands).
             tags:
                 - Events

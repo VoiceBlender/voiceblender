@@ -142,26 +142,31 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doAnswerLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "only SIP inbound legs can be answered")
-		return
+		return newAPIError(http.StatusBadRequest, "only SIP inbound legs can be answered")
 	}
 
 	if l.State() != leg.StateRinging && l.State() != leg.StateEarlyMedia {
-		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, expected ringing or early_media", l.State()))
-		return
+		return newAPIError(http.StatusConflict, "leg is %s, expected ringing or early_media", l.State())
 	}
 
 	sipLeg.SignalAnswer()
+	return nil
+}
+
+func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doAnswerLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "answering"})
 }
 
@@ -192,17 +197,14 @@ func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "early_media"})
 }
 
-func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doMuteLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	l.SetMuted(true)
 
-	// Sync to mixer if the leg is in a room.
 	if roomID := l.RoomID(); roomID != "" {
 		if rm, ok := s.RoomMgr.Get(roomID); ok {
 			rm.Mixer().SetParticipantMuted(id, true)
@@ -210,20 +212,26 @@ func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Bus.Publish(events.LegMuted, &events.LegMutedData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
+	return nil
+}
+
+func (s *Server) muteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doMuteLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "muted"})
 }
 
-func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doUnmuteLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	l.SetMuted(false)
 
-	// Sync to mixer if the leg is in a room.
 	if roomID := l.RoomID(); roomID != "" {
 		if rm, ok := s.RoomMgr.Get(roomID); ok {
 			rm.Mixer().SetParticipantMuted(id, false)
@@ -231,15 +239,22 @@ func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Bus.Publish(events.LegUnmuted, &events.LegUnmutedData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
+	return nil
+}
+
+func (s *Server) unmuteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doUnmuteLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unmuted"})
 }
 
-func (s *Server) deafLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doDeafLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	l.SetDeaf(true)
@@ -251,15 +266,22 @@ func (s *Server) deafLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Bus.Publish(events.LegDeaf, &events.LegDeafData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
+	return nil
+}
+
+func (s *Server) deafLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doDeafLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deaf"})
 }
 
-func (s *Server) undeafLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doUndeafLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	l.SetDeaf(false)
@@ -271,28 +293,42 @@ func (s *Server) undeafLeg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Bus.Publish(events.LegUndeaf, &events.LegUndeafData{LegScope: events.LegScope{LegID: id, AppID: l.AppID()}})
+	return nil
+}
+
+func (s *Server) undeafLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doUndeafLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undeaf"})
 }
 
-func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doHoldLeg(ctx context.Context, id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "only SIP legs support hold")
-		return
+		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
 	}
 
-	if err := sipLeg.Hold(r.Context()); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+	if err := sipLeg.Hold(ctx); err != nil {
+		return newAPIError(http.StatusConflict, "%s", err.Error())
 	}
 
+	return nil
+}
+
+func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doHoldLeg(r.Context(), id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "held"})
 }
 
@@ -333,25 +369,30 @@ func (s *Server) HandleReInvite(callID string, direction string) []byte {
 	return nil
 }
 
-func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doUnholdLeg(ctx context.Context, id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "only SIP legs support hold")
-		return
+		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
 	}
 
-	if err := sipLeg.Unhold(r.Context()); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+	if err := sipLeg.Unhold(ctx); err != nil {
+		return newAPIError(http.StatusConflict, "%s", err.Error())
 	}
 
+	return nil
+}
+
+func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doUnholdLeg(r.Context(), id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
 }
 
@@ -378,19 +419,26 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.LegMgr.Remove(l.ID())
 }
 
-func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doDeleteLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
-	if err := l.Hangup(r.Context()); err != nil {
+	if err := l.Hangup(context.Background()); err != nil {
 		s.Log.Warn("hangup error", "error", err)
 	}
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "api_hangup")
+	return nil
+}
+
+func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doDeleteLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "hung_up"})
 }
 

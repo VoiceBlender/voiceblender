@@ -1,29 +1,36 @@
 package api
 
 import (
-	"fmt"
+	"context"
 	"net/http"
 
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/go-chi/chi/v5"
 )
 
-func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
-	var req CreateRoomRequest
-	if err := decodeJSON(r, &req); err != nil {
-		// Allow empty body
-		req.ID = ""
-	}
-
+func (s *Server) doCreateRoom(req CreateRoomRequest) (RoomView, error) {
 	room, err := s.RoomMgr.Create(req.ID, req.AppID)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+		return RoomView{}, newAPIError(http.StatusConflict, "%s", err.Error())
 	}
 	if req.WebhookURL != "" {
 		s.Webhooks.SetRoomWebhook(room.ID, req.WebhookURL, req.WebhookSecret)
 	}
-	writeJSON(w, http.StatusCreated, RoomView{ID: room.ID, AppID: room.AppID, Participants: []LegView{}})
+	return RoomView{ID: room.ID, AppID: room.AppID, Participants: []LegView{}}, nil
+}
+
+func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
+	var req CreateRoomRequest
+	if err := decodeJSON(r, &req); err != nil {
+		req = CreateRoomRequest{}
+	}
+
+	view, err := s.doCreateRoom(req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
 }
 
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
@@ -55,41 +62,39 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews})
 }
 
-func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doDeleteRoom(id string) error {
 	s.cleanupRoomAgent(id)
 	s.Webhooks.ClearRoomWebhook(id)
 	if err := s.RoomMgr.Delete(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		return newAPIError(http.StatusNotFound, "%s", err.Error())
+	}
+	return nil
+}
+
+func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doDeleteRoom(id); err != nil {
+		handleAPIError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
-	roomID := chi.URLParam(r, "id")
-	var req AddLegRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
+func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRequest) (interface{}, error) {
 	l, ok := s.LegMgr.Get(req.LegID)
 	if !ok {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("leg %s not found", req.LegID))
-		return
+		return nil, newAPIError(http.StatusBadRequest, "leg %s not found", req.LegID)
 	}
 
 	// Auto-create the room if it doesn't exist, inheriting app_id from the leg.
 	if _, ok := s.RoomMgr.Get(roomID); !ok {
 		if _, err := s.RoomMgr.Create(roomID, l.AppID()); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
-			return
+			return nil, newAPIError(http.StatusInternalServerError, "create room: %v", err)
 		}
 	}
 
 	// Apply mute/deaf before the leg enters the mixer so the participant
-	// is added with the desired state in a single atomic step (no frame
-	// of un-muted audio leaks into the mix).
+	// is added with the desired state in a single atomic step.
 	if req.Mute != nil {
 		l.SetMuted(*req.Mute)
 	}
@@ -103,51 +108,67 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 	// If the leg is already in a room, move it instead of adding.
 	if fromRoomID, inRoom := s.RoomMgr.FindLegRoom(req.LegID); inRoom {
 		if fromRoomID == roomID {
-			writeError(w, http.StatusBadRequest, "leg already in this room")
-			return
+			return nil, newAPIError(http.StatusBadRequest, "leg already in this room")
 		}
-		// Stop per-participant recording in the old room before moving.
 		s.onLegLeavingRoomRecording(fromRoomID, req.LegID)
 		if err := s.RoomMgr.MoveLeg(fromRoomID, roomID, req.LegID); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 		}
 		s.onLegJoinedRoom(roomID, req.LegID)
 		s.stopRoomAgentIfEmpty(fromRoomID)
-		writeJSON(w, http.StatusOK, map[string]string{
+		return map[string]string{
 			"status": "moved",
 			"from":   fromRoomID,
 			"to":     roomID,
-		})
-		return
+		}, nil
 	}
 
 	// Auto-answer ringing inbound SIP legs before adding to the room.
 	if sipLeg, ok := l.(*leg.SIPLeg); ok && l.State() == leg.StateRinging && l.Type() == leg.TypeSIPInbound {
 		sipLeg.SignalAnswer()
-		if err := sipLeg.WaitConnected(r.Context()); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("auto-answer failed: %v", err))
-			return
+		if err := sipLeg.WaitConnected(ctx); err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "auto-answer failed: %v", err)
 		}
 	}
 
 	if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 	s.onLegJoinedRoom(roomID, req.LegID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
+	return map[string]string{"status": "added"}, nil
+}
+
+func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
+	roomID := chi.URLParam(r, "id")
+	var req AddLegRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	result, err := s.doAddLegToRoom(r.Context(), roomID, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) doRemoveLegFromRoom(roomID, legID string) error {
+	s.onLegLeavingRoomRecording(roomID, legID)
+	if err := s.RoomMgr.RemoveLeg(roomID, legID); err != nil {
+		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
+	s.stopRoomAgentIfEmpty(roomID)
+	return nil
 }
 
 func (s *Server) removeLegFromRoom(w http.ResponseWriter, r *http.Request) {
 	roomID := chi.URLParam(r, "id")
 	legID := chi.URLParam(r, "legID")
-	// Stop per-participant recording before removing from mixer.
-	s.onLegLeavingRoomRecording(roomID, legID)
-	if err := s.RoomMgr.RemoveLeg(roomID, legID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := s.doRemoveLegFromRoom(roomID, legID); err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	s.stopRoomAgentIfEmpty(roomID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }

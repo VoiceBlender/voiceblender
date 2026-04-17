@@ -14,28 +14,27 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
-// wsEventsInMsg is the wire format for client → server messages on the event
+// vsiInMsg is the wire format for client → server messages on the VSI
 // WebSocket. The Type field selects the operation; RequestID, when set, is
 // echoed back in the response so the client can correlate async replies.
-// Payload carries command-specific data (unused in v1, reserved for future
-// commands like originate/mute/dtmf).
-type wsEventsInMsg struct {
+// Payload carries command-specific data.
+type vsiInMsg struct {
 	Type      string          `json:"type"`
 	RequestID string          `json:"request_id,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
-// wsEventsOutMsg is the wire format for server → client response messages
+// vsiOutMsg is the wire format for server → client response messages
 // (distinct from streamed events which use the Event.MarshalJSON shape).
-type wsEventsOutMsg struct {
+type vsiOutMsg struct {
 	Type      string      `json:"type"`
 	RequestID string      `json:"request_id,omitempty"`
 	Data      interface{} `json:"data,omitempty"`
 }
 
-const wsEventsBufSize = 256
+const vsiBufSize = 256
 
-func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
+func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	// Parse optional app_id regex filter before upgrade so we can reject with 400.
 	var appFilter *regexp.Regexp
 	if pattern := r.URL.Query().Get("app_id"); pattern != "" {
@@ -49,13 +48,13 @@ func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
 
 	conn, _, _, err := ws.UpgradeHTTP(r, w)
 	if err != nil {
-		s.Log.Error("ws events upgrade failed", "error", err)
+		s.Log.Error("vsi upgrade failed", "error", err)
 		return
 	}
 	defer conn.Close()
 
 	var dropped atomic.Int64
-	ch := make(chan events.Event, wsEventsBufSize)
+	ch := make(chan events.Event, vsiBufSize)
 	unsub := s.Bus.Subscribe(func(e events.Event) {
 		if appFilter != nil && !appFilter.MatchString(e.Data.GetAppID()) {
 			return
@@ -72,11 +71,11 @@ func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
 
 	connMsg, _ := json.Marshal(map[string]string{"type": "connected"})
 	if err := lw.writeText(connMsg); err != nil {
-		s.Log.Error("ws events send connected failed", "error", err)
+		s.Log.Error("vsi send connected failed", "error", err)
 		return
 	}
 
-	s.Log.Info("ws events client connected")
+	s.Log.Info("vsi client connected")
 
 	var closed atomic.Bool
 	done := make(chan struct{})
@@ -88,7 +87,7 @@ func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
 			select {
 			case e := <-ch:
 				if n := dropped.Swap(0); n > 0 {
-					s.Log.Warn("ws events: notifying client of dropped events", "count", n)
+					s.Log.Warn("vsi: notifying client of dropped events", "count", n)
 					notice, _ := json.Marshal(map[string]interface{}{
 						"type":  "events_dropped",
 						"count": n,
@@ -99,7 +98,7 @@ func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
 				}
 				data, err := json.Marshal(e)
 				if err != nil {
-					s.Log.Warn("ws events marshal failed", "type", e.Type, "error", err)
+					s.Log.Warn("vsi marshal failed", "type", e.Type, "error", err)
 					continue
 				}
 				if err := lw.writeText(data); err != nil {
@@ -137,13 +136,13 @@ func (s *Server) wsEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Recv loop with typed dispatch.
-	s.wsEventsRecvLoop(conn, lw, &closed)
+	s.vsiRecvLoop(conn, lw, &closed)
 
 	close(done)
-	s.Log.Info("ws events client disconnected")
+	s.Log.Info("vsi client disconnected")
 }
 
-func (s *Server) wsEventsRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed *atomic.Bool) {
+func (s *Server) vsiRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed *atomic.Bool) {
 	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
 	rd := &wsutil.Reader{
 		Source: conn,
@@ -175,9 +174,9 @@ func (s *Server) wsEventsRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed
 			continue
 		}
 
-		var msg wsEventsInMsg
+		var msg vsiInMsg
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			s.wsEventsSendResponse(lw, "", "error",
+			s.vsiSendResponse(lw, "", "error",
 				map[string]string{"message": "invalid JSON"})
 			continue
 		}
@@ -189,14 +188,13 @@ func (s *Server) wsEventsRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed
 			closed.Store(true)
 			return
 		default:
-			s.wsEventsSendResponse(lw, msg.RequestID, "error",
-				map[string]string{"message": "unknown command: " + msg.Type})
+			s.wsHandleCommand(lw, msg)
 		}
 	}
 }
 
-func (s *Server) wsEventsSendResponse(lw *wsLockedWriter, requestID, typ string, data interface{}) {
-	resp := wsEventsOutMsg{
+func (s *Server) vsiSendResponse(lw *wsLockedWriter, requestID, typ string, data interface{}) {
+	resp := vsiOutMsg{
 		Type:      typ,
 		RequestID: requestID,
 		Data:      data,

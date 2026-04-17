@@ -162,7 +162,7 @@ func (s *Server) routes() {
 		r.Get("/rooms/{id}/ws", s.wsRoom)
 
 		// Event stream
-		r.Get("/events/ws", s.wsEvents)
+		r.Get("/vsi", s.vsi)
 
 		// WebRTC
 		r.Post("/webrtc/offer", s.webrtcOffer)

@@ -844,8 +844,8 @@ func RoutesMetadata() []RouteMeta {
 
 		// ── Event Stream ────────────────────────────────────────────────
 		{
-			Method: "GET", Path: "/events/ws", OperationID: "wsEvents",
-			Summary: "WebSocket event stream",
+			Method: "GET", Path: "/vsi", OperationID: "vsi",
+			Summary: "VoiceBlender Streaming Interface (VSI)",
 			Description: "Upgrades to a WebSocket connection and streams all events in real-time as " +
 				"JSON text frames. The JSON shape is identical to webhook payloads. " +
 				"The server sends a `{\"type\":\"connected\"}` message on connect, followed by events " +

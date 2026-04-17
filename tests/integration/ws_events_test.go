@@ -24,21 +24,21 @@ type wsEventFrame struct {
 	InstanceID string `json:"instance_id,omitempty"`
 }
 
-func dialEventsWS(t *testing.T, inst *testInstance) net.Conn {
-	return dialEventsWSFiltered(t, inst, "")
+func dialVSI(t *testing.T, inst *testInstance) net.Conn {
+	return dialVSIFiltered(t, inst, "")
 }
 
-func dialEventsWSFiltered(t *testing.T, inst *testInstance, appIDFilter string) net.Conn {
+func dialVSIFiltered(t *testing.T, inst *testInstance, appIDFilter string) net.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	url := fmt.Sprintf("ws://%s/v1/events/ws", inst.httpAddr)
+	url := fmt.Sprintf("ws://%s/v1/vsi", inst.httpAddr)
 	if appIDFilter != "" {
 		url += "?app_id=" + appIDFilter
 	}
 	conn, _, _, err := ws.Dial(ctx, url)
 	if err != nil {
-		t.Fatalf("dial events ws: %v", err)
+		t.Fatalf("dial vsi: %v", err)
 	}
 	return conn
 }
@@ -61,7 +61,7 @@ func TestWSEvents_ConnectedAndEvents(t *testing.T) {
 	instA := newTestInstance(t, "ws-a")
 	instB := newTestInstance(t, "ws-b")
 
-	conn := dialEventsWS(t, instA)
+	conn := dialVSI(t, instA)
 	defer conn.Close()
 
 	// First frame should be {"type":"connected"}.
@@ -99,7 +99,7 @@ func TestWSEvents_ConnectedAndEvents(t *testing.T) {
 
 func TestWSEvents_UnknownCommand(t *testing.T) {
 	inst := newTestInstance(t, "ws-cmd")
-	conn := dialEventsWS(t, inst)
+	conn := dialVSI(t, inst)
 	defer conn.Close()
 
 	// Consume the "connected" frame.
@@ -126,7 +126,7 @@ func TestWSEvents_UnknownCommand(t *testing.T) {
 
 func TestWSEvents_StopCommand(t *testing.T) {
 	inst := newTestInstance(t, "ws-stop")
-	conn := dialEventsWS(t, inst)
+	conn := dialVSI(t, inst)
 	defer conn.Close()
 
 	readWSFrame(t, conn, 5*time.Second)
@@ -144,17 +144,155 @@ func TestWSEvents_StopCommand(t *testing.T) {
 	}
 }
 
+func TestWSCommands_RoomLifecycle(t *testing.T) {
+	inst := newTestInstance(t, "ws-cmd")
+	conn := dialVSI(t, inst)
+	defer conn.Close()
+	readWSFrame(t, conn, 5*time.Second) // consume "connected"
+
+	// create_room
+	send := func(typ string, payload interface{}) wsEventFrame {
+		t.Helper()
+		p, _ := json.Marshal(payload)
+		msg, _ := json.Marshal(map[string]interface{}{
+			"type":       typ,
+			"request_id": typ,
+			"payload":    json.RawMessage(p),
+		})
+		if err := wsutil.WriteClientText(conn, msg); err != nil {
+			t.Fatalf("write %s: %v", typ, err)
+		}
+		// Read frames until we get the result/error for this request_id.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			f := readWSFrame(t, conn, 5*time.Second)
+			if f.RequestID == typ {
+				return f
+			}
+		}
+		t.Fatalf("no response for %s", typ)
+		return wsEventFrame{}
+	}
+
+	f := send("create_room", map[string]string{"id": "ws-room", "app_id": "test-app"})
+	if f.Type != "create_room.result" {
+		t.Fatalf("create_room type = %q, want create_room.result", f.Type)
+	}
+
+	// get_room
+	f = send("get_room", map[string]string{"id": "ws-room"})
+	if f.Type != "get_room.result" {
+		t.Fatalf("get_room type = %q", f.Type)
+	}
+
+	// list_rooms
+	sendRaw := func(typ string) wsEventFrame {
+		t.Helper()
+		msg, _ := json.Marshal(map[string]interface{}{
+			"type":       typ,
+			"request_id": typ,
+		})
+		if err := wsutil.WriteClientText(conn, msg); err != nil {
+			t.Fatalf("write %s: %v", typ, err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			f := readWSFrame(t, conn, 5*time.Second)
+			if f.RequestID == typ {
+				return f
+			}
+		}
+		t.Fatalf("no response for %s", typ)
+		return wsEventFrame{}
+	}
+
+	f = sendRaw("list_rooms")
+	if f.Type != "list_rooms.result" {
+		t.Fatalf("list_rooms type = %q", f.Type)
+	}
+
+	// delete_room
+	f = send("delete_room", map[string]string{"id": "ws-room"})
+	if f.Type != "delete_room.result" {
+		t.Fatalf("delete_room type = %q", f.Type)
+	}
+
+	// get_room on deleted room → error
+	f = send("get_room", map[string]string{"id": "ws-room"})
+	if f.Type != "error" {
+		t.Fatalf("get_room on deleted = %q, want error", f.Type)
+	}
+}
+
+func TestWSCommands_MuteLeg(t *testing.T) {
+	instA := newTestInstance(t, "ws-mute-a")
+	instB := newTestInstance(t, "ws-mute-b")
+
+	// Establish a call via HTTP first.
+	outboundID, _ := establishCall(t, instA, instB)
+
+	conn := dialVSI(t, instA)
+	defer conn.Close()
+	readWSFrame(t, conn, 5*time.Second)
+
+	sendCmd := func(typ string, payload interface{}) wsEventFrame {
+		t.Helper()
+		p, _ := json.Marshal(payload)
+		msg, _ := json.Marshal(map[string]interface{}{
+			"type":       typ,
+			"request_id": typ,
+			"payload":    json.RawMessage(p),
+		})
+		if err := wsutil.WriteClientText(conn, msg); err != nil {
+			t.Fatalf("write %s: %v", typ, err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			f := readWSFrame(t, conn, 5*time.Second)
+			if f.RequestID == typ {
+				return f
+			}
+		}
+		t.Fatalf("no response for %s", typ)
+		return wsEventFrame{}
+	}
+
+	// mute_leg
+	f := sendCmd("mute_leg", map[string]string{"id": outboundID})
+	if f.Type != "mute_leg.result" {
+		t.Fatalf("mute type = %q", f.Type)
+	}
+
+	// get_leg — verify muted
+	f = sendCmd("get_leg", map[string]string{"id": outboundID})
+	if f.Type != "get_leg.result" {
+		t.Fatalf("get_leg type = %q", f.Type)
+	}
+
+	// mute on missing leg → error
+	f = sendCmd("mute_leg", map[string]string{"id": "nonexistent"})
+	if f.Type != "error" {
+		t.Fatalf("mute missing = %q, want error", f.Type)
+	}
+
+	// unknown command → error
+	f = sendCmd("fly_to_moon", map[string]string{})
+	if f.Type != "error" {
+		t.Fatalf("unknown cmd = %q, want error", f.Type)
+	}
+}
+
 func TestWSEvents_AppIDFilter(t *testing.T) {
 	instA := newTestInstance(t, "ws-filter-a")
 	instB := newTestInstance(t, "ws-filter-b")
 
 	// Client filtering for app_id=billing only.
-	connBilling := dialEventsWSFiltered(t, instA, "^billing$")
+	connBilling := dialVSIFiltered(t, instA, "^billing$")
 	defer connBilling.Close()
 	readWSFrame(t, connBilling, 5*time.Second) // consume "connected"
 
 	// Client with no filter (receives everything).
-	connAll := dialEventsWS(t, instA)
+	connAll := dialVSI(t, instA)
 	defer connAll.Close()
 	readWSFrame(t, connAll, 5*time.Second) // consume "connected"
 
