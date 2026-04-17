@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"io"
@@ -498,10 +499,13 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		l.SetAppID(req.AppID)
 	}
 
+	var dtmfSeq atomic.Uint64
 	l.OnDTMF(func(digit rune) {
+		seq := dtmfSeq.Add(1)
 		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			Digit:    string(digit),
+			Seq:      seq,
 		})
 		s.broadcastDTMF(l.ID(), digit)
 	})
@@ -716,10 +720,13 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		}
 
 		// Set up DTMF event forwarding
+		var dtmfSeq atomic.Uint64
 		l.OnDTMF(func(digit rune) {
+			seq := dtmfSeq.Add(1)
 			s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
 				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 				Digit:    string(digit),
+				Seq:      seq,
 			})
 			s.broadcastDTMF(l.ID(), digit)
 		})

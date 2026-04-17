@@ -219,6 +219,18 @@ func (ec *eventCollector) waitForMatch(t *testing.T, typ events.EventType, pred 
 	return events.Event{}
 }
 
+func (ec *eventCollector) matchAll(typ events.EventType, pred func(events.Event) bool) []events.Event {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	var result []events.Event
+	for _, e := range ec.events {
+		if e.Type == typ && (pred == nil || pred(e)) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
 func (ec *eventCollector) hasEvent(typ events.EventType, pred func(events.Event) bool) bool {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()

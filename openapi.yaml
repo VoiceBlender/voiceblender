@@ -2783,6 +2783,8 @@ x-webhooks:
                                     digit:
                                         type: string
                                         description: DTMF digit received
+                                    seq:
+                                        type: integer
     speaking.started:
         post:
             summary: Participant started speaking

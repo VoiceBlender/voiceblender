@@ -1908,7 +1908,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.transfer_progress` | NOTIFY sipfrag for an in-flight transfer | `leg_id`, `status_code`, `reason` |
 | `leg.transfer_completed` | Transfer reached terminal 2xx; leg is hung up | `leg_id`, `status_code`, `reason` |
 | `leg.transfer_failed` | Transfer ended in non-2xx or local error | `leg_id`, `status_code`, `reason`, `error` |
-| `dtmf.received` | DTMF digit received | `leg_id`, `digit` |
+| `dtmf.received` | DTMF digit received | `leg_id`, `digit`, `seq` |
 | `speaking.started` | Participant started speaking | `leg_id`, `room_id` (if in a room) |
 | `speaking.stopped` | Participant stopped speaking | `leg_id`, `room_id` (if in a room) |
 

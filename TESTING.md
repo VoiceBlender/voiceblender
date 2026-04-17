@@ -128,6 +128,7 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestDTMFBroadcast_Default` | DTMF received on one leg is forwarded to other legs in the same room |
 | `TestDTMFBroadcast_RejectAtRuntime` | `POST /v1/legs/{id}/dtmf/reject` blocks reception; `accept` re-enables it |
 | `TestDTMFBroadcast_RejectAtOriginate` | `accept_dtmf:false` in originate body blocks reception from the start |
+| `TestDTMFBroadcast_SequenceNumbers` | DTMF events carry monotonically increasing per-leg sequence numbers |
 | `TestDTMFBroadcast_SenderExcluded` | Originating leg never receives a forwarded copy of its own DTMF |
 | `TestWSEvents_ConnectedAndEvents` | Connect to `/v1/vsi`, originate a call, verify `leg.ringing` event arrives |
 | `TestWSEvents_UnknownCommand` | Send unknown command with `request_id`, verify error response echoes it |
