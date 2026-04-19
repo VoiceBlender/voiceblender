@@ -83,12 +83,13 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	recDir := t.TempDir()
 
 	cfg := config.Config{
-		SIPBindIP:    "127.0.0.1",
-		SIPListenIP:  "127.0.0.1",
-		SIPPort:      fmt.Sprintf("%d", sipPort),
-		SIPHost:      name,
-		HTTPAddr:     "127.0.0.1:0",
-		RecordingDir: recDir,
+		SIPBindIP:         "127.0.0.1",
+		SIPListenIP:       "127.0.0.1",
+		SIPPort:           fmt.Sprintf("%d", sipPort),
+		SIPHost:           name,
+		HTTPAddr:          "127.0.0.1:0",
+		RecordingDir:      recDir,
+		DefaultSampleRate: 16000,
 	}
 	if mutate != nil {
 		mutate(&cfg)

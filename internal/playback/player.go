@@ -66,7 +66,7 @@ func (p *Player) OnStart(fn func()) {
 // repeat controls looping: 0 or 1 = play once, -1 = infinite, N > 1 = N times.
 // Blocks until playback completes or is stopped.
 func (p *Player) Play(ctx context.Context, writer io.Writer, url string, mimeType string, repeat int) error {
-	return p.playAt(ctx, writer, url, mimeType, uint32(mixer.SampleRate), repeat)
+	return p.playAt(ctx, writer, url, mimeType, uint32(mixer.DefaultSampleRate), repeat)
 }
 
 // PlayAt8kHz fetches audio and streams 8kHz mono 16-bit PCM to writer.
@@ -76,10 +76,10 @@ func (p *Player) PlayAt8kHz(ctx context.Context, writer io.Writer, url string, m
 	return p.playAt(ctx, writer, url, mimeType, 8000, repeat)
 }
 
-// PlayReader streams audio from an io.Reader at 16kHz (mixer native rate).
+// PlayReader streams audio from an io.Reader at 16kHz (default mixer rate).
 // Unlike Play, it does not fetch from a URL and plays only once.
 func (p *Player) PlayReader(ctx context.Context, writer io.Writer, reader io.Reader, mimeType string) error {
-	return p.playReader(ctx, writer, reader, mimeType, uint32(mixer.SampleRate))
+	return p.playReader(ctx, writer, reader, mimeType, uint32(mixer.DefaultSampleRate))
 }
 
 // PlayReaderAt8kHz streams audio from an io.Reader at 8kHz (leg native rate).

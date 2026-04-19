@@ -5,18 +5,26 @@ import (
 	"net/http"
 
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) doCreateRoom(req CreateRoomRequest) (RoomView, error) {
-	room, err := s.RoomMgr.Create(req.ID, req.AppID)
+	rate := req.SampleRate
+	if rate == 0 {
+		rate = s.Config.DefaultSampleRate
+	}
+	if !mixer.ValidSampleRate(rate) {
+		return RoomView{}, newAPIError(http.StatusBadRequest, "invalid sample_rate: must be 8000, 16000, or 48000")
+	}
+	room, err := s.RoomMgr.Create(req.ID, req.AppID, rate)
 	if err != nil {
 		return RoomView{}, newAPIError(http.StatusConflict, "%s", err.Error())
 	}
 	if req.WebhookURL != "" {
 		s.Webhooks.SetRoomWebhook(room.ID, req.WebhookURL, req.WebhookSecret)
 	}
-	return RoomView{ID: room.ID, AppID: room.AppID, Participants: []LegView{}}, nil
+	return RoomView{ID: room.ID, AppID: room.AppID, SampleRate: room.SampleRate, Participants: []LegView{}}, nil
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +50,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		for j, p := range parts {
 			pViews[j] = toLegView(p)
 		}
-		views[i] = RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews}
+		views[i] = RoomView{ID: rm.ID, AppID: rm.AppID, SampleRate: rm.SampleRate, Participants: pViews}
 	}
 	writeJSON(w, http.StatusOK, views)
 }
@@ -59,7 +67,7 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 	for j, p := range parts {
 		pViews[j] = toLegView(p)
 	}
-	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews})
+	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, AppID: rm.AppID, SampleRate: rm.SampleRate, Participants: pViews})
 }
 
 func (s *Server) doDeleteRoom(id string) error {
@@ -88,7 +96,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 
 	// Auto-create the room if it doesn't exist, inheriting app_id from the leg.
 	if _, ok := s.RoomMgr.Get(roomID); !ok {
-		if _, err := s.RoomMgr.Create(roomID, l.AppID()); err != nil {
+		if _, err := s.RoomMgr.Create(roomID, l.AppID(), s.Config.DefaultSampleRate); err != nil {
 			return nil, newAPIError(http.StatusInternalServerError, "create room: %v", err)
 		}
 	}

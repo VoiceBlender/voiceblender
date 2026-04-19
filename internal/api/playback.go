@@ -87,7 +87,12 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 	legPlayers.m[id][playbackID] = player
 	legPlayers.Unlock()
 
-	playRate := uint32(mixer.SampleRate) // always play at mixer rate
+	playRate := uint32(mixer.DefaultSampleRate)
+	if roomID := l.RoomID(); roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			playRate = uint32(rm.Mixer().SampleRate())
+		}
+	}
 
 	appID := l.AppID()
 	player.OnStart(func() {
@@ -230,11 +235,11 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			toneReader := playback.NewToneReader(spec, 16000)
-			err = player.PlayReader(parts[0].Context(), pw, toneReader, "audio/pcm;rate=16000")
+			roomRate := rm.Mixer().SampleRate()
+			toneReader := playback.NewToneReader(spec, roomRate)
+			err = player.PlayReaderAtRate(parts[0].Context(), pw, toneReader, fmt.Sprintf("audio/pcm;rate=%d", roomRate), uint32(roomRate))
 		} else {
-			// Play outputs 16kHz PCM (mixer native rate) into the pipe
-			err = player.Play(parts[0].Context(), pw, req.URL, req.MimeType, req.Repeat)
+			err = player.PlayAtRate(parts[0].Context(), pw, req.URL, req.MimeType, uint32(rm.Mixer().SampleRate()), req.Repeat)
 		}
 		pw.Close()
 		rm.Mixer().RemoveParticipant(playbackID)
@@ -360,7 +365,7 @@ func (w *legPlaybackWriter) Write(p []byte) (int, error) {
 	}
 	// Not in a room — resample from 16kHz to leg's native rate and write.
 	legRate := uint32(w.leg.SampleRate())
-	mixRate := uint32(mixer.SampleRate)
+	mixRate := uint32(mixer.DefaultSampleRate)
 	if legRate == mixRate {
 		return w.directWriter.Write(p)
 	}

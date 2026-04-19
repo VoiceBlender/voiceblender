@@ -109,7 +109,13 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 			})
 		})
 
-		playErr := player.PlayReaderAtRate(l.Context(), writer, result.Audio, result.MimeType, uint32(mixer.SampleRate))
+		ttsRate := uint32(mixer.DefaultSampleRate)
+		if roomID := l.RoomID(); roomID != "" {
+			if rm, ok := s.RoomMgr.Get(roomID); ok {
+				ttsRate = uint32(rm.Mixer().SampleRate())
+			}
+		}
+		playErr := player.PlayReaderAtRate(l.Context(), writer, result.Audio, result.MimeType, ttsRate)
 
 		legPlayers.Lock()
 		delete(legPlayers.m[id], ttsID)
@@ -225,7 +231,7 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 			})
 		})
 
-		playErr := player.PlayReader(parts[0].Context(), pw, result.Audio, result.MimeType)
+		playErr := player.PlayReaderAtRate(parts[0].Context(), pw, result.Audio, result.MimeType, uint32(rm.Mixer().SampleRate()))
 		pw.Close()
 		rm.Mixer().RemoveParticipant(ttsID)
 

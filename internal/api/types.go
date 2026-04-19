@@ -132,6 +132,7 @@ type CreateRoomRequest struct {
 	WebhookURL    string `json:"webhook_url,omitempty"`
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 	AppID         string `json:"app_id,omitempty"`
+	SampleRate    int    `json:"sample_rate,omitempty"`
 }
 
 var createRoomRequestFields = map[string]FieldEnrichment{
@@ -139,18 +140,21 @@ var createRoomRequestFields = map[string]FieldEnrichment{
 	"webhook_url":    {Description: "Route all events for this room exclusively to this URL instead of global webhooks.", Format: "uri"},
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-room webhook."},
 	"app_id":         {Description: "Application identifier. Carried through to all events for this room. Use to filter the WebSocket event stream by app."},
+	"sample_rate":    {Description: "Mixer sample rate in Hz. Allowed values: 8000, 16000, 48000. Default: 16000.", Enum: []string{"8000", "16000", "48000"}, Default: 16000},
 }
 
 // RoomView is the JSON representation of a room.
 type RoomView struct {
 	ID           string    `json:"id"`
 	AppID        string    `json:"app_id,omitempty"`
+	SampleRate   int       `json:"sample_rate"`
 	Participants []LegView `json:"participants"`
 }
 
 var roomViewFields = map[string]FieldEnrichment{
 	"id":           {Description: "Room identifier"},
 	"app_id":       {Description: "Application identifier for event stream filtering."},
+	"sample_rate":  {Description: "Mixer sample rate in Hz (8000, 16000, or 48000)."},
 	"participants": {Description: "Legs currently in this room"},
 }
 

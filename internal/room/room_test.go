@@ -67,7 +67,7 @@ func newTestLog() *slog.Logger { return slog.Default() }
 // --- Room tests ---
 
 func TestRoom_AddLeg(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	l := newMockLeg("leg-1")
 
 	r.AddLeg(l)
@@ -81,7 +81,7 @@ func TestRoom_AddLeg(t *testing.T) {
 }
 
 func TestRoom_AddMultipleLegs(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	r.AddLeg(newMockLeg("a"))
 	r.AddLeg(newMockLeg("b"))
 	r.AddLeg(newMockLeg("c"))
@@ -92,7 +92,7 @@ func TestRoom_AddMultipleLegs(t *testing.T) {
 }
 
 func TestRoom_RemoveLeg(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -107,12 +107,12 @@ func TestRoom_RemoveLeg(t *testing.T) {
 }
 
 func TestRoom_RemoveLeg_Nonexistent(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	r.RemoveLeg("nonexistent") // should not panic
 }
 
 func TestRoom_DetachLeg(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -132,7 +132,7 @@ func TestRoom_DetachLeg(t *testing.T) {
 }
 
 func TestRoom_DetachLeg_NotFound(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	_, ok := r.DetachLeg("nonexistent")
 	if ok {
 		t.Error("expected false")
@@ -140,7 +140,7 @@ func TestRoom_DetachLeg_NotFound(t *testing.T) {
 }
 
 func TestRoom_Participants(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	r.AddLeg(newMockLeg("a"))
 	r.AddLeg(newMockLeg("b"))
 
@@ -151,7 +151,7 @@ func TestRoom_Participants(t *testing.T) {
 }
 
 func TestRoom_Close(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	l := newMockLeg("leg-1")
 	r.AddLeg(l)
 
@@ -166,7 +166,7 @@ func TestRoom_Close(t *testing.T) {
 }
 
 func TestRoom_Mixer(t *testing.T) {
-	r := NewRoom("r1", "", newTestLog())
+	r := NewRoom("r1", "", 0, newTestLog())
 	if r.Mixer() == nil {
 		t.Fatal("expected non-nil mixer")
 	}
@@ -178,7 +178,7 @@ func TestManager_Create(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	r, err := mgr.Create("", "")
+	r, err := mgr.Create("", "", 0)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestManager_Create_CustomID(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	r, err := mgr.Create("my-room", "")
+	r, err := mgr.Create("my-room", "", 0)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -204,8 +204,8 @@ func TestManager_Create_Duplicate(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	mgr.Create("r1", "")
-	_, err := mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
+	_, err := mgr.Create("r1", "", 0)
 	if err == nil {
 		t.Error("expected error for duplicate room")
 	}
@@ -215,7 +215,7 @@ func TestManager_Get(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 
 	r, ok := mgr.Get("r1")
 	if !ok {
@@ -240,8 +240,8 @@ func TestManager_List(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	mgr.Create("a", "")
-	mgr.Create("b", "")
+	mgr.Create("a", "", 0)
+	mgr.Create("b", "", 0)
 
 	rooms := mgr.List()
 	if len(rooms) != 2 {
@@ -253,7 +253,7 @@ func TestManager_Delete(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 
 	if err := mgr.Delete("r1"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -278,7 +278,7 @@ func TestManager_AddLeg(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, bus, newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 	l := newMockLeg("leg-1")
 	legMgr.Add(l)
 
@@ -306,7 +306,7 @@ func TestManager_AddLeg_RoomNotFound(t *testing.T) {
 func TestManager_AddLeg_LegNotFound(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 
 	err := mgr.AddLeg("r1", "nonexistent")
 	if err == nil {
@@ -317,7 +317,7 @@ func TestManager_AddLeg_LegNotFound(t *testing.T) {
 func TestManager_AddLeg_NotConnected(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, newTestBus(), newTestLog())
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 
 	l := newMockLeg("leg-1")
 	l.state = leg.StateRinging
@@ -334,7 +334,7 @@ func TestManager_RemoveLeg(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, bus, newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 	l := newMockLeg("leg-1")
 	legMgr.Add(l)
 	mgr.AddLeg("r1", "leg-1")
@@ -355,7 +355,7 @@ func TestManager_FindLegRoom(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, bus, newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 	l := newMockLeg("leg-1")
 	legMgr.Add(l)
 	mgr.AddLeg("r1", "leg-1")
@@ -384,8 +384,8 @@ func TestManager_MoveLeg(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, bus, newTestLog())
 
-	mgr.Create("r1", "")
-	mgr.Create("r2", "")
+	mgr.Create("r1", "", 0)
+	mgr.Create("r2", "", 0)
 	l := newMockLeg("leg-1")
 	legMgr.Add(l)
 	mgr.AddLeg("r1", "leg-1")
@@ -415,7 +415,7 @@ func TestManager_Events(t *testing.T) {
 	legMgr := leg.NewManager()
 	mgr := NewManager(legMgr, bus, newTestLog())
 
-	mgr.Create("r1", "")
+	mgr.Create("r1", "", 0)
 
 	found := false
 	for _, et := range eventTypes {

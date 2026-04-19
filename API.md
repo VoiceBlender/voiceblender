@@ -954,6 +954,7 @@ A **room** is a multi-party audio conference. Legs added to a room hear mixed au
 ```json
 {
   "id": "room-123",
+  "sample_rate": 16000,
   "participants": [
     { "id": "leg-uuid", "type": "sip_inbound", "state": "connected", "room_id": "room-123" }
   ]
@@ -969,18 +970,21 @@ Create a room.
 **Request:**
 
 ```json
-{ "id": "my-custom-room-id" }
+{ "id": "my-custom-room-id", "sample_rate": 48000 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | no | Custom room ID. Auto-generated UUID if omitted. |
+| `sample_rate` | integer | no | Mixer sample rate in Hz. Allowed values: `8000`, `16000`, `48000`. Default: `16000`. Higher rates preserve more audio fidelity but use proportionally more CPU and memory. |
 | `webhook_url` | string | no | Per-room webhook URL. Events for this room are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-room webhook. |
 
 **Response:** `201 Created` — Room object (empty participants)
 
-**Errors:** `409` — Room ID already exists
+**Errors:**
+- `400` — Invalid sample rate
+- `409` — Room ID already exists
 
 ---
 
@@ -1202,7 +1206,7 @@ Events `tts.started` and `tts.finished` are emitted.
 
 ### POST /v1/rooms/{id}/record
 
-Start recording the full room mix to a WAV file (16kHz, 16-bit, mono).
+Start recording the full room mix to a WAV file (16-bit, mono, at the room's configured sample rate).
 
 **Request:**
 

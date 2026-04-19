@@ -14,7 +14,6 @@ import (
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
-	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/VoiceBlender/voiceblender/internal/recording"
 	"github.com/VoiceBlender/voiceblender/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -32,15 +31,16 @@ type legRecordInfo struct {
 // At stop time, all per-participant WAVs are merged into a single
 // multi-channel WAV with silence padding for join/leave time alignment.
 type multiChannelState struct {
-	mu        sync.Mutex
-	active    bool
-	paused    bool
-	startTime time.Time
-	storage   storage.Backend
-	dir       string
-	recorders map[string]*recording.Recorder // legID → recorder
-	pipes     map[string]*pipeWriter         // legID → pipe writer (to close on stop)
-	files     map[string]string              // legID → local WAV path (finalized)
+	mu         sync.Mutex
+	active     bool
+	paused     bool
+	startTime  time.Time
+	sampleRate int
+	storage    storage.Backend
+	dir        string
+	recorders  map[string]*recording.Recorder // legID → recorder
+	pipes      map[string]*pipeWriter         // legID → pipe writer (to close on stop)
+	files      map[string]string              // legID → local WAV path (finalized)
 	// Channel assignment — preserves order for deterministic channel mapping.
 	participantOrder []string
 	// Timing — join/leave offsets relative to startTime.
@@ -64,7 +64,7 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 	m.SetParticipantRecordTap(legID, pw)
 
 	rec := recording.NewRecorder(mc.log)
-	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mixer.SampleRate))
+	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mc.sampleRate))
 	if err != nil {
 		mc.log.Error("multi-channel: failed to start per-leg recording", "leg_id", legID, "error", err)
 		m.ClearParticipantRecordTap(legID)
@@ -144,7 +144,7 @@ func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResul
 	}
 	mc.mu.Unlock()
 
-	result, err := recording.MergeMultiChannel(mc.dir, inputs, totalDuration, mixer.SampleRate)
+	result, err := recording.MergeMultiChannel(mc.dir, inputs, totalDuration, mc.sampleRate)
 	if err != nil {
 		mc.log.Error("multi-channel: merge failed", "error", err)
 		return nil, err
@@ -289,7 +289,7 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 		mix.SetParticipantTap(id, leftPW)
 		mix.SetParticipantOutTap(id, rightPW)
 
-		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(mixer.SampleRate))
+		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
 		if recErr != nil {
 			mix.ClearParticipantTap(id)
 			mix.ClearParticipantOutTap(id)
@@ -520,8 +520,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	rm.Mixer().SetTap(pw)
 
 	rec := recording.NewRecorder(s.Log)
-	// Room recordings come from the mixer tap which runs at 16kHz
-	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(mixer.SampleRate))
+	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -544,6 +543,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 		mc := &multiChannelState{
 			active:       true,
 			startTime:    time.Now(),
+			sampleRate:   rm.Mixer().SampleRate(),
 			storage:      backend,
 			dir:          s.Config.RecordingDir,
 			recorders:    make(map[string]*recording.Recorder),

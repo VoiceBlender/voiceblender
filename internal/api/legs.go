@@ -479,7 +479,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	// Ensure room exists if room_id is specified; create it if it doesn't.
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
-			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID); err != nil {
+			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID, s.Config.DefaultSampleRate); err != nil {
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
 				return
 			}
@@ -795,7 +795,7 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 		once.Do(func() {
 			l.SetAMDTap(buf)
 			go func() {
-				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.SampleRate)
+				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.DefaultSampleRate)
 				detection := analyzer.Run(l.Context(), resampleReader)
 
 				s.Bus.Publish(events.AMDResult, &events.AMDResultData{

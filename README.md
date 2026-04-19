@@ -8,7 +8,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
-- **Multi-party rooms** -- mix N participants with mixed-minus-self audio at 16 kHz
+- **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events; digits received on a leg are auto-broadcast to other legs in the same room (per-leg `accept_dtmf` opt-out)
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 upload
@@ -66,6 +66,7 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
+| `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
 | `SIP_REFER_AUTO_DIAL` | `false` | Accept incoming SIP REFER requests and auto-dial the transferred call. **Default-deny** (toll-fraud risk). Outbound transfers via the REST API are unaffected. |
 
 ## Links

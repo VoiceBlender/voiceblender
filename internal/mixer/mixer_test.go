@@ -33,9 +33,12 @@ func (cw *captureWriter) Bytes() []byte {
 
 func TestMixer_PlaybackSource_SingleParticipant(t *testing.T) {
 	log := slog.Default()
-	m := New(log)
+	m := New(log, DefaultSampleRate)
 	m.Start()
 	defer m.Stop()
+
+	fsz := m.frameSizeBytes
+	spf := m.samplesPerFrame
 
 	// Create a participant (SIP leg) that just receives audio
 	participantReader, participantFeeder := io.Pipe()
@@ -45,7 +48,7 @@ func TestMixer_PlaybackSource_SingleParticipant(t *testing.T) {
 
 	// Feed silence from the participant (they're not speaking)
 	go func() {
-		silence := make([]byte, FrameSizeBytes)
+		silence := make([]byte, fsz)
 		ticker := time.NewTicker(time.Duration(Ptime) * time.Millisecond)
 		defer ticker.Stop()
 		for i := 0; i < 5; i++ {
@@ -64,9 +67,9 @@ func TestMixer_PlaybackSource_SingleParticipant(t *testing.T) {
 	var expectedSamples []int16
 	go func() {
 		for f := 0; f < numFrames; f++ {
-			frame := make([]byte, FrameSizeBytes)
-			for i := 0; i < SamplesPerFrame; i++ {
-				val := int16((f+1) * 100 * (i%10 + 1))
+			frame := make([]byte, fsz)
+			for i := 0; i < spf; i++ {
+				val := int16((f + 1) * 100 * (i%10 + 1))
 				binary.LittleEndian.PutUint16(frame[i*2:], uint16(val))
 			}
 			playbackWriter.Write(frame)
@@ -77,7 +80,7 @@ func TestMixer_PlaybackSource_SingleParticipant(t *testing.T) {
 
 	// Build expected samples
 	for f := 0; f < numFrames; f++ {
-		for i := 0; i < SamplesPerFrame; i++ {
+		for i := 0; i < spf; i++ {
 			expectedSamples = append(expectedSamples, int16((f+1)*100*(i%10+1)))
 		}
 	}
@@ -112,10 +115,10 @@ func TestMixer_PlaybackSource_SingleParticipant(t *testing.T) {
 	}
 
 	// Align to frame boundary
-	startIdx = (startIdx / SamplesPerFrame) * SamplesPerFrame
+	startIdx = (startIdx / spf) * spf
 
 	// Check we have enough samples
-	needSamples := numFrames * SamplesPerFrame
+	needSamples := numFrames * spf
 	if startIdx+needSamples > len(gotSamples) {
 		t.Fatalf("not enough captured samples: have %d from idx %d, need %d",
 			len(gotSamples)-startIdx, startIdx, needSamples)
@@ -152,16 +155,18 @@ func TestMixer_PlaybackSource_BufferedNoDrops(t *testing.T) {
 	// Verify that the playback source doesn't lose frames even under timing pressure.
 	// Write frames faster than the mixer ticks, then verify all frames were received.
 	log := slog.Default()
-	m := New(log)
+	m := New(log, DefaultSampleRate)
 	m.Start()
 	defer m.Stop()
+
+	fsz := m.frameSizeBytes
 
 	participantReader, participantFeeder := io.Pipe()
 	capture := &captureWriter{}
 	m.AddParticipant("leg1", participantReader, capture)
 
 	go func() {
-		silence := make([]byte, FrameSizeBytes)
+		silence := make([]byte, fsz)
 		ticker := time.NewTicker(time.Duration(Ptime) * time.Millisecond)
 		defer ticker.Stop()
 		for i := 0; i < 20; i++ {
@@ -178,7 +183,7 @@ func TestMixer_PlaybackSource_BufferedNoDrops(t *testing.T) {
 	numFrames := 10
 	go func() {
 		for f := 0; f < numFrames; f++ {
-			frame := make([]byte, FrameSizeBytes)
+			frame := make([]byte, fsz)
 			// Use frame number as a marker in first sample
 			binary.LittleEndian.PutUint16(frame[0:], uint16(int16(1000+f)))
 			playbackWriter.Write(frame)
@@ -193,7 +198,7 @@ func TestMixer_PlaybackSource_BufferedNoDrops(t *testing.T) {
 	data := capture.Bytes()
 	// Extract first sample of each frame
 	var frameMarkers []int16
-	for i := 0; i+FrameSizeBytes <= len(data); i += FrameSizeBytes {
+	for i := 0; i+fsz <= len(data); i += fsz {
 		s := int16(binary.LittleEndian.Uint16(data[i:]))
 		if s >= 1000 && s < 1000+int16(numFrames) {
 			frameMarkers = append(frameMarkers, s)
@@ -209,9 +214,12 @@ func TestMixer_PlaybackSource_BufferedNoDrops(t *testing.T) {
 
 func TestMixer_TapRecording(t *testing.T) {
 	log := slog.Default()
-	m := New(log)
+	m := New(log, DefaultSampleRate)
 	m.Start()
 	defer m.Stop()
+
+	fsz := m.frameSizeBytes
+	spf := m.samplesPerFrame
 
 	// Set up tap
 	tap := &captureWriter{}
@@ -227,7 +235,7 @@ func TestMixer_TapRecording(t *testing.T) {
 	m.AddParticipant("leg-tap", participantReader, devNull)
 
 	go func() {
-		silence := make([]byte, FrameSizeBytes)
+		silence := make([]byte, fsz)
 		for i := 0; i < 5; i++ {
 			participantFeeder.Write(silence)
 			time.Sleep(time.Duration(Ptime) * time.Millisecond)
@@ -238,8 +246,8 @@ func TestMixer_TapRecording(t *testing.T) {
 	// Write 2 frames of audio
 	go func() {
 		for f := 0; f < 2; f++ {
-			frame := make([]byte, FrameSizeBytes)
-			for i := 0; i < SamplesPerFrame; i++ {
+			frame := make([]byte, fsz)
+			for i := 0; i < spf; i++ {
 				binary.LittleEndian.PutUint16(frame[i*2:], uint16(int16(500)))
 			}
 			playbackWriter.Write(frame)
@@ -254,7 +262,7 @@ func TestMixer_TapRecording(t *testing.T) {
 	if len(tapData) == 0 {
 		t.Fatal("tap received no data")
 	}
-	t.Logf("tap received %d bytes (%d frames)", len(tapData), len(tapData)/FrameSizeBytes)
+	t.Logf("tap received %d bytes (%d frames)", len(tapData), len(tapData)/fsz)
 
 	// Verify tap contains the playback audio (not just silence)
 	hasNonZero := false
@@ -390,6 +398,52 @@ func TestUpsample_Downsample_RoundTrip(t *testing.T) {
 		if got != want {
 			t.Errorf("sample[%d] = %d, want %d", i, got, want)
 			break
+		}
+	}
+}
+
+func TestMixer_SampleRateConfigurations(t *testing.T) {
+	tests := []struct {
+		rate    int
+		wantSPF int
+		wantFSZ int
+	}{
+		{8000, 160, 320},
+		{16000, 320, 640},
+		{48000, 960, 1920},
+		{0, 320, 640}, // default
+	}
+	for _, tt := range tests {
+		m := New(slog.Default(), tt.rate)
+		if m.SamplesPerFrame() != tt.wantSPF {
+			t.Errorf("rate=%d: SamplesPerFrame()=%d, want %d", tt.rate, m.SamplesPerFrame(), tt.wantSPF)
+		}
+		if m.FrameSizeBytes() != tt.wantFSZ {
+			t.Errorf("rate=%d: FrameSizeBytes()=%d, want %d", tt.rate, m.FrameSizeBytes(), tt.wantFSZ)
+		}
+		if tt.rate == 0 {
+			if m.SampleRate() != DefaultSampleRate {
+				t.Errorf("rate=0: SampleRate()=%d, want %d", m.SampleRate(), DefaultSampleRate)
+			}
+		} else {
+			if m.SampleRate() != tt.rate {
+				t.Errorf("rate=%d: SampleRate()=%d", tt.rate, m.SampleRate())
+			}
+		}
+	}
+}
+
+func TestValidSampleRate(t *testing.T) {
+	valid := []int{8000, 16000, 48000}
+	for _, r := range valid {
+		if !ValidSampleRate(r) {
+			t.Errorf("ValidSampleRate(%d) = false, want true", r)
+		}
+	}
+	invalid := []int{0, 4000, 22050, 44100, 96000}
+	for _, r := range invalid {
+		if ValidSampleRate(r) {
+			t.Errorf("ValidSampleRate(%d) = true, want false", r)
 		}
 	}
 }

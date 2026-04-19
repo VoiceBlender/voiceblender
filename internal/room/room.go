@@ -11,18 +11,23 @@ import (
 type Room struct {
 	ID           string
 	AppID        string
+	SampleRate   int
 	mu           sync.RWMutex
 	participants map[string]leg.Leg
 	mix          *mixer.Mixer
 	log          *slog.Logger
 }
 
-func NewRoom(id, appID string, log *slog.Logger) *Room {
+func NewRoom(id, appID string, sampleRate int, log *slog.Logger) *Room {
+	if sampleRate == 0 {
+		sampleRate = mixer.DefaultSampleRate
+	}
 	return &Room{
 		ID:           id,
 		AppID:        appID,
+		SampleRate:   sampleRate,
 		participants: make(map[string]leg.Leg),
-		mix:          mixer.New(log),
+		mix:          mixer.New(log, sampleRate),
 		log:          log,
 	}
 }
@@ -44,7 +49,7 @@ func (r *Room) AddLeg(l leg.Leg) {
 		// Wrap with rate-aware resamplers to bridge leg↔mixer rate difference.
 		// When rates match (e.g. G.722 at 16kHz = mixer rate), this is a passthrough.
 		legRate := l.SampleRate()
-		mixRate := mixer.SampleRate
+		mixRate := r.SampleRate
 		r.mix.AddParticipant(l.ID(),
 			mixer.NewResampleReader(reader, legRate, mixRate),
 			mixer.NewResampleWriter(writer, mixRate, legRate),

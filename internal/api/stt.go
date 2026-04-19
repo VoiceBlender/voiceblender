@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"sync"
 
@@ -103,7 +104,7 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		}
 		pr, pw := createPipe()
 		rm.Mixer().SetParticipantTap(id, pw)
-		reader = pr
+		reader = mixer.NewResampleReader(pr, rm.Mixer().SampleRate(), mixer.DefaultSampleRate)
 		tapPW = pw
 		_ = tapPW // used in cleanup
 	} else {
@@ -117,7 +118,7 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Resample to 16kHz if needed.
-		reader = mixer.NewResampleReader(ar, l.SampleRate(), mixer.SampleRate)
+		reader = mixer.NewResampleReader(ar, l.SampleRate(), mixer.DefaultSampleRate)
 	}
 
 	bus := s.Bus
@@ -256,6 +257,7 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mixer, state *roomSTTState) {
 	pr, pw := createPipe()
 	mix.SetParticipantTap(legID, pw)
+	sttReader := io.Reader(mixer.NewResampleReader(pr, mix.SampleRate(), mixer.DefaultSampleRate))
 
 	var transcriber stt.Provider
 	switch state.provider {
@@ -284,7 +286,7 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	}
 
 	go func() {
-		_ = transcriber.Start(l.Context(), pr, apiKey, opts, cb)
+		_ = transcriber.Start(l.Context(), sttReader, apiKey, opts, cb)
 		// Cleanup on exit.
 		if rm, ok := s.RoomMgr.Get(roomID); ok {
 			rm.Mixer().ClearParticipantTap(legID)

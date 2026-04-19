@@ -28,7 +28,7 @@ func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager
 	}
 }
 
-func (m *Manager) Create(id, appID string) (*Room, error) {
+func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 	if id == "" {
 		id = uuid.New().String()
 	}
@@ -40,8 +40,9 @@ func (m *Manager) Create(id, appID string) (*Room, error) {
 		return nil, fmt.Errorf("room %s already exists", id)
 	}
 
-	r := NewRoom(id, appID, m.log)
+	r := NewRoom(id, appID, sampleRate, m.log)
 	m.rooms[id] = r
+	m.log.Info("room created", "room_id", id, "sample_rate", r.SampleRate)
 	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id, AppID: appID}})
 	return r, nil
 }
@@ -122,7 +123,7 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	m.mu.Lock()
 	toRoom, ok := m.rooms[toRoomID]
 	if !ok {
-		toRoom = NewRoom(toRoomID, "", m.log)
+		toRoom = NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
 		m.rooms[toRoomID] = toRoom
 		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID, AppID: toRoom.AppID}})
 	}

@@ -37,9 +37,14 @@ type Config struct {
 	SIPJitterBufferMs     int
 	SIPJitterBufferMaxMs  int
 	SIPReferAutoDial      bool
+	DefaultSampleRate     int
 }
 
 func Load() Config {
+	defaultRate := envInt("DEFAULT_SAMPLE_RATE", 16000)
+	if defaultRate != 8000 && defaultRate != 16000 && defaultRate != 48000 {
+		defaultRate = 16000
+	}
 	return Config{
 		InstanceID:            envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:             envOr("SIP_BIND_IP", "127.0.0.1"),
@@ -69,6 +74,7 @@ func Load() Config {
 		SIPJitterBufferMs:     envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:  envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 		SIPReferAutoDial:      os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
+		DefaultSampleRate:     defaultRate,
 	}
 }
 

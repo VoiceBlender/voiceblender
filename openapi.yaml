@@ -2031,6 +2031,9 @@ components:
                 app_id:
                     type: string
                     description: Application identifier for event stream filtering.
+                sample_rate:
+                    type: integer
+                    description: Mixer sample rate in Hz (8000, 16000, or 48000).
                 participants:
                     type: array
                     items:
@@ -2038,6 +2041,7 @@ components:
                     description: Legs currently in this room
             required:
                 - id
+                - sample_rate
                 - participants
         Error:
             type: object
@@ -2171,6 +2175,14 @@ components:
                 app_id:
                     type: string
                     description: Application identifier. Carried through to all events for this room. Use to filter the WebSocket event stream by app.
+                sample_rate:
+                    type: integer
+                    description: 'Mixer sample rate in Hz. Allowed values: 8000, 16000, 48000. Default: 16000.'
+                    enum:
+                        - "8000"
+                        - "16000"
+                        - "48000"
+                    default: 16000
             required:
                 - id
         DTMFRequest:

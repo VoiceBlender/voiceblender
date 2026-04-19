@@ -26,7 +26,8 @@ func newTestServer(t *testing.T) *Server {
 	m := metrics.New(bus)
 
 	cfg := config.Config{
-		InstanceID: "test-instance",
+		InstanceID:        "test-instance",
+		DefaultSampleRate: 16000,
 	}
 
 	s := NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, log)
@@ -207,6 +208,51 @@ func TestCreateRoom_AutoID(t *testing.T) {
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201, body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateRoom_SampleRate(t *testing.T) {
+	s := newTestServer(t)
+
+	// Explicit 48kHz
+	w := doRequest(s, http.MethodPost, "/v1/rooms", `{"id":"r-48k","sample_rate":48000}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", w.Code, w.Body.String())
+	}
+	var resp RoomView
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.SampleRate != 48000 {
+		t.Errorf("SampleRate = %d, want 48000", resp.SampleRate)
+	}
+
+	// Default (omitted) → 16000
+	w2 := doRequest(s, http.MethodPost, "/v1/rooms", `{"id":"r-default"}`)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w2.Code)
+	}
+	var resp2 RoomView
+	json.NewDecoder(w2.Body).Decode(&resp2)
+	if resp2.SampleRate != 16000 {
+		t.Errorf("SampleRate = %d, want 16000", resp2.SampleRate)
+	}
+
+	// 8kHz
+	w3 := doRequest(s, http.MethodPost, "/v1/rooms", `{"id":"r-8k","sample_rate":8000}`)
+	if w3.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w3.Code)
+	}
+	var resp3 RoomView
+	json.NewDecoder(w3.Body).Decode(&resp3)
+	if resp3.SampleRate != 8000 {
+		t.Errorf("SampleRate = %d, want 8000", resp3.SampleRate)
+	}
+}
+
+func TestCreateRoom_InvalidSampleRate(t *testing.T) {
+	s := newTestServer(t)
+	w := doRequest(s, http.MethodPost, "/v1/rooms", `{"id":"r-bad","sample_rate":44100}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -50,6 +50,8 @@ func main() {
 	webhookReg := events.NewWebhookRegistry(bus, log, cfg.WebhookURL, cfg.WebhookSecret)
 	defer webhookReg.Stop()
 
+	log.Info("config loaded", "default_sample_rate", cfg.DefaultSampleRate)
+
 	// Leg and room managers
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)

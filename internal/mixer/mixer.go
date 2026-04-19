@@ -36,11 +36,13 @@ func (g *guardedWriter) Close() {
 }
 
 const (
-	SampleRate      = 16000
-	Ptime           = 20                        // ms
-	SamplesPerFrame = SampleRate * Ptime / 1000 // 320
-	FrameSizeBytes  = SamplesPerFrame * 2       // 640 bytes (16-bit PCM)
+	Ptime             = 20    // ms
+	DefaultSampleRate = 16000 // Hz
 )
+
+func ValidSampleRate(rate int) bool {
+	return rate == 8000 || rate == 16000 || rate == 48000
+}
 
 // Participant represents a single audio participant in the mixer.
 type Participant struct {
@@ -92,6 +94,10 @@ type Mixer struct {
 	stopped      bool
 	log          *slog.Logger
 
+	sampleRate      int
+	samplesPerFrame int
+	frameSizeBytes  int
+
 	// Optional tap for room recording — receives the full mix.
 	tapMu  sync.Mutex
 	tapOut io.Writer
@@ -99,14 +105,25 @@ type Mixer struct {
 	comfortNoise *comfortnoise.Generator
 }
 
-func New(log *slog.Logger) *Mixer {
+func New(log *slog.Logger, sampleRate int) *Mixer {
+	if sampleRate == 0 {
+		sampleRate = DefaultSampleRate
+	}
+	spf := sampleRate * Ptime / 1000
 	return &Mixer{
-		participants: make(map[string]*Participant),
-		stopCh:       make(chan struct{}),
-		log:          log,
-		comfortNoise: comfortnoise.NewGenerator(),
+		participants:    make(map[string]*Participant),
+		stopCh:          make(chan struct{}),
+		log:             log,
+		sampleRate:      sampleRate,
+		samplesPerFrame: spf,
+		frameSizeBytes:  spf * 2,
+		comfortNoise:    comfortnoise.NewGenerator(),
 	}
 }
+
+func (m *Mixer) SampleRate() int      { return m.sampleRate }
+func (m *Mixer) SamplesPerFrame() int { return m.samplesPerFrame }
+func (m *Mixer) FrameSizeBytes() int  { return m.frameSizeBytes }
 
 // SetComfortNoise enables or disables comfort noise injection during silence.
 func (m *Mixer) SetComfortNoise(enabled bool) {
@@ -336,7 +353,7 @@ func (m *Mixer) Stop() {
 // readLoop continuously reads PCM frames from a participant's Reader
 // and buffers them for the mix loop. Blocks on IO (RTP receive).
 func (m *Mixer) readLoop(p *Participant) {
-	buf := make([]byte, FrameSizeBytes)
+	buf := make([]byte, m.frameSizeBytes)
 	for {
 		select {
 		case <-m.stopCh:
@@ -438,7 +455,7 @@ func (m *Mixer) mixTick() {
 		select {
 		case raw = <-p.incoming:
 		default:
-			raw = make([]byte, FrameSizeBytes) // silence
+			raw = make([]byte, m.frameSizeBytes) // silence
 		}
 		// Write raw PCM to per-participant tap (for STT) before conversion.
 		// Tap still receives audio even when muted (recording/STT of own audio).
@@ -450,14 +467,14 @@ func (m *Mixer) mixTick() {
 			recordTaps[i].Write(raw)
 		}
 		if muted[i] {
-			frames[i] = make([]int16, SamplesPerFrame) // silence — don't contribute to mix
+			frames[i] = make([]int16, m.samplesPerFrame) // silence — don't contribute to mix
 		} else {
 			frames[i] = bytesToSamples(raw)
 		}
 	}
 
 	// Compute sum of all samples
-	numSamples := SamplesPerFrame
+	numSamples := m.samplesPerFrame
 	sum := make([]int32, numSamples)
 	for _, f := range frames {
 		for j := 0; j < numSamples && j < len(f); j++ {

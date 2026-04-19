@@ -56,7 +56,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | Package | Tests | Description |
 |---------|-------|-------------|
 | `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
-| `internal/mixer` | 9 | Audio mixing, resampling (8kHz/16kHz), playback sources, tap recording |
+| `internal/mixer` | 11 | Audio mixing, configurable sample rate (8/16/48 kHz), resampling, playback sources, tap recording |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
 | `internal/codec` | 9 | G.722 encode/decode, silence/tone round-trips, up/downsample |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |

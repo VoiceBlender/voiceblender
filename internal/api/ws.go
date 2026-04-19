@@ -71,7 +71,7 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 	connMsg, _ := json.Marshal(map[string]interface{}{
 		"type":           "connected",
 		"participant_id": participantID,
-		"sample_rate":    mixer.SampleRate,
+		"sample_rate":    rm.Mixer().SampleRate(),
 		"format":         "pcm_s16le",
 	})
 	if err := lw.writeText(connMsg); err != nil {
@@ -86,7 +86,7 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 
 	// Send loop: read from mixer listen pipe → base64 encode → send JSON.
 	go func() {
-		buf := make([]byte, mixer.FrameSizeBytes)
+		buf := make([]byte, rm.Mixer().FrameSizeBytes())
 		for {
 			n, err := listenPR.Read(buf)
 			if err != nil || closed.Load() {

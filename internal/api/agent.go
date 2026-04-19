@@ -177,8 +177,9 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 		sb := newStreamBuffer()
 		rm.Mixer().AddPlaybackSource(sourceID, sb)
 
-		audioIn = tapPR
-		audioOut = sb
+		roomRate := rm.Mixer().SampleRate()
+		audioIn = mixer.NewResampleReader(tapPR, roomRate, mixer.DefaultSampleRate)
+		audioOut = mixer.NewResampleWriter(sb, mixer.DefaultSampleRate, roomRate)
 		info.sourceID = sourceID
 		info.pipes = []*pipeWriter{tapPW}
 		info.speakBuf = sb
@@ -191,10 +192,10 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 			writeError(w, http.StatusConflict, "leg has no audio reader/writer")
 			return
 		}
-		audioIn = mixer.NewResampleReader(ar, l.SampleRate(), mixer.SampleRate)
+		audioIn = mixer.NewResampleReader(ar, l.SampleRate(), mixer.DefaultSampleRate)
 
 		sb := newStreamBuffer()
-		audioOut = mixer.NewResampleWriter(sb, mixer.SampleRate, l.SampleRate())
+		audioOut = mixer.NewResampleWriter(sb, mixer.DefaultSampleRate, l.SampleRate())
 		info.speakBuf = sb
 
 		frameSize := l.SampleRate() / 50 * 2 // 20ms PCM frame at leg's native rate

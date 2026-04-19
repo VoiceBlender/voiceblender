@@ -11,7 +11,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"HTTP_ADDR", "ICE_SERVERS", "RECORDING_DIR", "LOG_LEVEL", "WEBHOOK_URL",
 		"WEBHOOK_SECRET", "RTP_PORT_MIN", "RTP_PORT_MAX",
 		"TTS_CACHE_ENABLED", "TTS_CACHE_DIR", "TTS_CACHE_INCLUDE_API_KEY",
-		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION",
+		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEFAULT_SAMPLE_RATE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -51,6 +51,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AzureSpeechKey != "" {
 		t.Errorf("AzureSpeechKey = %q, want empty", cfg.AzureSpeechKey)
 	}
+	if cfg.DefaultSampleRate != 16000 {
+		t.Errorf("DefaultSampleRate = %d, want 16000", cfg.DefaultSampleRate)
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
@@ -67,6 +70,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("RTP_PORT_MAX", "40000")
 	t.Setenv("AZURE_SPEECH_KEY", "az-key-123")
 	t.Setenv("AZURE_SPEECH_REGION", "westeurope")
+	t.Setenv("DEFAULT_SAMPLE_RATE", "48000")
 
 	cfg := Load()
 
@@ -108,6 +112,17 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.AzureSpeechRegion != "westeurope" {
 		t.Errorf("AzureSpeechRegion = %q, want westeurope", cfg.AzureSpeechRegion)
+	}
+	if cfg.DefaultSampleRate != 48000 {
+		t.Errorf("DefaultSampleRate = %d, want 48000", cfg.DefaultSampleRate)
+	}
+}
+
+func TestLoad_DefaultSampleRate_Invalid(t *testing.T) {
+	t.Setenv("DEFAULT_SAMPLE_RATE", "44100")
+	cfg := Load()
+	if cfg.DefaultSampleRate != 16000 {
+		t.Errorf("DefaultSampleRate = %d, want 16000 (fallback for invalid value)", cfg.DefaultSampleRate)
 	}
 }
 
