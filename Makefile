@@ -1,7 +1,9 @@
-.PHONY: build run openapi clean test test-integration test-all download-greetings gen-human-greetings
+.PHONY: build run openapi clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
+IMAGE    = voiceblender
+TAG      = $(shell git describe --tags --always)
 
 build:
 	go build -o $(BINARY) ./cmd/voiceblender
@@ -43,6 +45,13 @@ download-greetings:
 gen-human-greetings:
 	@test -n "$$ELEVENLABS_API_KEY" || (echo "Error: ELEVENLABS_API_KEY is required" && exit 1)
 	go run ./cmd/gen-greetings -out $(GREETINGS_DIR)/human
+
+docker:
+	docker build -t vpbx/$(IMAGE):$(TAG) -t vpbx/$(IMAGE):latest .
+
+docker-push: docker
+	docker push vpbx/$(IMAGE):$(TAG)
+	docker push vpbx/$(IMAGE):latest
 
 clean:
 	rm -f $(BINARY) openapi-gen

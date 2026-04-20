@@ -1,0 +1,19 @@
+services:
+  voiceblender:
+    build: .
+    env_file: voiceblender.env
+    environment:
+      SIP_BIND_IP: "0.0.0.0"
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+      - "5060:5060/udp"
+      - "10000-20000:10000-20000/udp"
+    volumes:
+      - recordings:/tmp/recordings
+      - tts_cache:/tmp/tts_cache
+    restart: unless-stopped
+
+volumes:
+  recordings:
+  tts_cache:

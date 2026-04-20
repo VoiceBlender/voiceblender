@@ -27,6 +27,7 @@ func containsToken(headerValue, token string) bool {
 type EngineConfig struct {
 	BindIP        string // IP advertised in SDP/Contact/Via headers
 	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
+	ExternalIP    string // Public IP override for NAT/Docker (used in Contact/SDP/Via when set)
 	BindPort      int
 	SIPHost       string
 	Codecs        []codec.CodecType
@@ -107,6 +108,11 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 	if listenIP == "" {
 		listenIP = advertiseIP
+	}
+
+	// Explicit external IP overrides advertised IP (NAT/Docker).
+	if cfg.ExternalIP != "" {
+		advertiseIP = cfg.ExternalIP
 	}
 
 	ua, err := sipgo.NewUA(

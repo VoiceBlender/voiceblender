@@ -12,6 +12,7 @@ type Config struct {
 	InstanceID            string
 	SIPBindIP             string
 	SIPListenIP           string
+	SIPExternalIP         string
 	SIPPort               string
 	SIPHost               string
 	HTTPAddr              string
@@ -48,7 +49,8 @@ func Load() Config {
 	return Config{
 		InstanceID:            envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:             envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPListenIP:           os.Getenv("SIP_LISTEN_IP"), // empty = same as SIP_BIND_IP
+		SIPListenIP:           os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
+		SIPExternalIP:         os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:               envOr("SIP_PORT", "5060"),
 		SIPHost:               envOr("SIP_HOST", "voiceblender"),
 		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),

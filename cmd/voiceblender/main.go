@@ -77,6 +77,7 @@ func main() {
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:        cfg.SIPBindIP,
 		ListenIP:      cfg.SIPListenIP,
+		ExternalIP:    cfg.SIPExternalIP,
 		BindPort:      sipPort,
 		SIPHost:       cfg.SIPHost,
 		Codecs:        []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
