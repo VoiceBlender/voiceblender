@@ -523,7 +523,7 @@ func buildOperation(r *api.RouteMeta) *omap {
 		// Some endpoints have optional bodies (recording, STT).
 		if r.OperationID != "recordLeg" && r.OperationID != "recordRoom" &&
 			r.OperationID != "sttLeg" && r.OperationID != "sttRoom" &&
-			r.OperationID != "createRoom" {
+			r.OperationID != "createRoom" && r.OperationID != "answerLeg" {
 			reqBody.set("required", true)
 		}
 		reqBody.set("content", newMap().set("application/json",

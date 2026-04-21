@@ -226,11 +226,12 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/answer", OperationID: "answerLeg",
-			Summary: "Answer a ringing or early-media inbound SIP leg",
-			Tags:    []string{"Legs"},
+			Summary:     "Answer a ringing or early-media inbound SIP leg",
+			Tags:        []string{"Legs"},
+			RequestType: AnswerLegRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Answer initiated"},
-				400: {Description: "Not a SIP inbound leg"},
+				400: {Description: "Not a SIP inbound leg or invalid body"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing or early_media state"},
 			},

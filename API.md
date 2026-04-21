@@ -90,6 +90,7 @@ Originate an outbound SIP call.
 | `webhook_url` | string | no | Per-leg webhook URL. Events for this leg are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
+| `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -150,7 +151,17 @@ Get a single leg.
 
 Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. If the leg is in `early_media` state, the existing media pipeline and SDP are reused; if in `ringing` state, a new RTP session and codec negotiation are performed.
 
-**Request:** Empty body
+**Request:** Optional body
+
+```json
+{
+  "speech_detection": true
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 
 **Response:** `200 OK`
 
@@ -159,7 +170,7 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 ```
 
 **Errors:**
-- `400` — Not a SIP inbound leg
+- `400` — Not a SIP inbound leg, or invalid request body
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` or `early_media` state
 
@@ -1917,6 +1928,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `speaking.stopped` | Participant stopped speaking | `leg_id`, `room_id` (if in a room) |
 
 > **Note:** `speaking.started` and `speaking.stopped` events fire for any connected leg, whether standalone or in a room. When the leg is in a room, the event includes `room_id`; standalone legs omit it.
+>
+> **Opt-in:** Speech detection is **disabled by default**. Enable it globally by setting `SPEECH_DETECTION_ENABLED=true`, or per call by setting `"speech_detection": true` on `POST /v1/legs` (outbound) or `POST /v1/legs/{id}/answer` (inbound). Per-call values override the global default.
 
 | `playback.started` | Playback began | `leg_id` or `room_id`, `playback_id` |
 | `playback.finished` | Playback ended | `leg_id` or `room_id`, `playback_id` |

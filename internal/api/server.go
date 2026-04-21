@@ -38,6 +38,9 @@ type Server struct {
 	speakMu   sync.Mutex
 	speakDets map[string]*speaking.Detector
 
+	speechOverrideMu sync.Mutex
+	speechOverride   map[string]*bool
+
 	transfers *transferStore
 }
 
@@ -56,20 +59,21 @@ func NewServer(
 ) *Server {
 	instanceID = cfg.InstanceID
 	s := &Server{
-		Router:    chi.NewRouter(),
-		LegMgr:    legMgr,
-		RoomMgr:   roomMgr,
-		SIPEngine: engine,
-		Bus:       bus,
-		Webhooks:  webhooks,
-		TTS:       ttsProvider,
-		TTSCache:  ttsCache,
-		S3:        s3Backend,
-		Metrics:   metricsCollector,
-		Config:    cfg,
-		Log:       log,
-		speakDets: make(map[string]*speaking.Detector),
-		transfers: newTransferStore(),
+		Router:         chi.NewRouter(),
+		LegMgr:         legMgr,
+		RoomMgr:        roomMgr,
+		SIPEngine:      engine,
+		Bus:            bus,
+		Webhooks:       webhooks,
+		TTS:            ttsProvider,
+		TTSCache:       ttsCache,
+		S3:             s3Backend,
+		Metrics:        metricsCollector,
+		Config:         cfg,
+		Log:            log,
+		speakDets:      make(map[string]*speaking.Detector),
+		speechOverride: make(map[string]*bool),
+		transfers:      newTransferStore(),
 	}
 	s.routes()
 	return s

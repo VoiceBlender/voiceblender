@@ -2,15 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"io"
 
 	"github.com/VoiceBlender/voiceblender/internal/amd"
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -143,7 +143,7 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
@@ -158,13 +158,25 @@ func (s *Server) doAnswerLeg(id string) error {
 		return newAPIError(http.StatusConflict, "leg is %s, expected ringing or early_media", l.State())
 	}
 
+	if speechDetection != nil {
+		s.setSpeechOverride(id, speechDetection)
+	}
 	sipLeg.SignalAnswer()
 	return nil
 }
 
 func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doAnswerLeg(id); err != nil {
+
+	var req AnswerLegRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+	}
+
+	if err := s.doAnswerLeg(id, req.SpeechDetection); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -629,7 +641,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
-		s.startSpeakingDetector(l)
+		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
 		startAMD()
 		addToRoom()
 
@@ -752,7 +764,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
-		s.startSpeakingDetector(l)
+		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 
 		// Block until call ends (BYE received or context cancelled)
 		<-call.Dialog.Context().Done()
@@ -925,6 +937,40 @@ func (b *amdBuffer) Close() {
 	}
 }
 
+// resolveSpeechDetection returns the effective speech-detection enable state
+// for a leg, given an optional per-call override and the server-wide default.
+func resolveSpeechDetection(override *bool, defaultEnabled bool) bool {
+	if override != nil {
+		return *override
+	}
+	return defaultEnabled
+}
+
+func (s *Server) setSpeechOverride(legID string, override *bool) {
+	s.speechOverrideMu.Lock()
+	s.speechOverride[legID] = override
+	s.speechOverrideMu.Unlock()
+}
+
+func (s *Server) takeSpeechOverride(legID string) *bool {
+	s.speechOverrideMu.Lock()
+	defer s.speechOverrideMu.Unlock()
+	ov, ok := s.speechOverride[legID]
+	if ok {
+		delete(s.speechOverride, legID)
+	}
+	return ov
+}
+
+// maybeStartSpeakingDetector attaches the speaking detector only if the
+// effective enable state (per-call override or server default) is true.
+func (s *Server) maybeStartSpeakingDetector(l leg.Leg, override *bool) {
+	if !resolveSpeechDetection(override, s.Config.SpeechDetectionEnabled) {
+		return
+	}
+	s.startSpeakingDetector(l)
+}
+
 // startSpeakingDetector creates and starts a speaking detector for a connected leg.
 func (s *Server) startSpeakingDetector(l leg.Leg) {
 	det := speaking.New(l.ID(), l.SampleRate(), l.IsMuted, func(e speaking.Event) {
@@ -942,6 +988,15 @@ func (s *Server) startSpeakingDetector(l leg.Leg) {
 	s.speakMu.Lock()
 	s.speakDets[l.ID()] = det
 	s.speakMu.Unlock()
+}
+
+// HasSpeakingDetector reports whether a speaking detector is currently
+// attached to the given leg. Primarily for tests.
+func (s *Server) HasSpeakingDetector(legID string) bool {
+	s.speakMu.Lock()
+	defer s.speakMu.Unlock()
+	_, ok := s.speakDets[legID]
+	return ok
 }
 
 // stopSpeakingDetector stops and removes a speaking detector for a leg.

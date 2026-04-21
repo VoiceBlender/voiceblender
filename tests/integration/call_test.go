@@ -1159,8 +1159,8 @@ func TestAddLegToRoom_JoinMutedAndDeaf(t *testing.T) {
 }
 
 func TestMute_SpeakingEventsSuppressed(t *testing.T) {
-	instA := newTestInstance(t, "instance-a")
-	instB := newTestInstance(t, "instance-b")
+	instA := newTestInstanceWithOpts(t, "instance-a", func(c *config.Config) { c.SpeechDetectionEnabled = true })
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) { c.SpeechDetectionEnabled = true })
 	outboundID, _ := establishCall(t, instA, instB)
 
 	// Create room and add leg.
@@ -1193,8 +1193,8 @@ func TestMute_SpeakingEventsSuppressed(t *testing.T) {
 }
 
 func TestMute_BeforeRoomJoin(t *testing.T) {
-	instA := newTestInstance(t, "instance-a")
-	instB := newTestInstance(t, "instance-b")
+	instA := newTestInstanceWithOpts(t, "instance-a", func(c *config.Config) { c.SpeechDetectionEnabled = true })
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) { c.SpeechDetectionEnabled = true })
 	outboundID, _ := establishCall(t, instA, instB)
 
 	// Mute before joining room.

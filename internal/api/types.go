@@ -22,39 +22,50 @@ var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus"}
 
 // CreateLegRequest is the request body for POST /v1/legs.
 type CreateLegRequest struct {
-	Type          string            `json:"type"`                     // "sip" or "webrtc"
-	URI           string            `json:"uri"`                      // SIP URI for outbound
-	From          string            `json:"from,omitempty"`           // caller ID (user part of the SIP From header, e.g. "+15551234567")
-	Privacy       string            `json:"privacy,omitempty"`        // SIP Privacy header value (e.g. "id", "none")
-	RingTimeout   int               `json:"ring_timeout,omitempty"`   // seconds; 0 = no timeout
-	MaxDuration   int               `json:"max_duration,omitempty"`   // seconds; 0 = no limit
-	Codecs        []string          `json:"codecs,omitempty"`         // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
-	Headers       map[string]string `json:"headers,omitempty"`        // custom SIP headers for outbound INVITE
-	RoomID        string            `json:"room_id,omitempty"`        // add leg to this room once media is ready (early_media or connected)
-	Auth          *SIPAuth          `json:"auth,omitempty"`           // SIP digest auth credentials (optional)
-	WebhookURL    string            `json:"webhook_url,omitempty"`    // route events for this leg to this URL
-	WebhookSecret string            `json:"webhook_secret,omitempty"` // HMAC secret for webhook signature
-	AMD           *AMDParams        `json:"amd,omitempty"`            // enable answering machine detection on outbound calls
-	AcceptDTMF    *bool             `json:"accept_dtmf,omitempty"`    // if false, leg will not receive DTMF broadcast from other legs in the same room
-	AppID         string            `json:"app_id,omitempty"`         // application identifier for event stream filtering
+	Type            string            `json:"type"`                       // "sip" or "webrtc"
+	URI             string            `json:"uri"`                        // SIP URI for outbound
+	From            string            `json:"from,omitempty"`             // caller ID (user part of the SIP From header, e.g. "+15551234567")
+	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
+	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
+	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
+	Codecs          []string          `json:"codecs,omitempty"`           // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
+	Headers         map[string]string `json:"headers,omitempty"`          // custom SIP headers for outbound INVITE
+	RoomID          string            `json:"room_id,omitempty"`          // add leg to this room once media is ready (early_media or connected)
+	Auth            *SIPAuth          `json:"auth,omitempty"`             // SIP digest auth credentials (optional)
+	WebhookURL      string            `json:"webhook_url,omitempty"`      // route events for this leg to this URL
+	WebhookSecret   string            `json:"webhook_secret,omitempty"`   // HMAC secret for webhook signature
+	AMD             *AMDParams        `json:"amd,omitempty"`              // enable answering machine detection on outbound calls
+	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
+	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
+	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":           {Description: "Leg type", Enum: []string{"sip"}},
-	"uri":            {Description: "SIP URI to dial"},
-	"from":           {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
-	"privacy":        {Description: `SIP Privacy header value (e.g. "id", "none")`},
-	"ring_timeout":   {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
-	"max_duration":   {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
-	"codecs":         {Description: "Codec preference order"},
-	"headers":        {Description: "Custom SIP headers to include in the outbound INVITE (e.g. X-Correlation-ID)"},
-	"room_id":        {Description: "Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created."},
-	"auth":           {Description: "SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials."},
-	"webhook_url":    {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
-	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
-	"amd":            {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
-	"accept_dtmf":    {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
-	"app_id":         {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
+	"type":             {Description: "Leg type", Enum: []string{"sip"}},
+	"uri":              {Description: "SIP URI to dial"},
+	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
+	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
+	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
+	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
+	"codecs":           {Description: "Codec preference order"},
+	"headers":          {Description: "Custom SIP headers to include in the outbound INVITE (e.g. X-Correlation-ID)"},
+	"room_id":          {Description: "Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created."},
+	"auth":             {Description: "SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials."},
+	"webhook_url":      {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
+	"webhook_secret":   {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
+	"amd":              {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
+	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
+	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
+	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+}
+
+// AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
+type AnswerLegRequest struct {
+	SpeechDetection *bool `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+}
+
+var answerLegRequestFields = map[string]FieldEnrichment{
+	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
 }
 
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.
@@ -361,6 +372,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("LegView", legViewFields)
 	collect("RoomView", roomViewFields)
 	collect("CreateLegRequest", createLegRequestFields)
+	collect("AnswerLegRequest", answerLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)
 	collect("TransferRequest", transferRequestFields)

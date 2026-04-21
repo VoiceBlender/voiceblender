@@ -175,6 +175,11 @@ paths:
             summary: Answer a ringing or early-media inbound SIP leg
             tags:
                 - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AnswerLegRequest'
             responses:
                 '200':
                     description: Answer initiated
@@ -183,7 +188,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/StatusResponse'
                 '400':
-                    description: Not a SIP inbound leg
+                    description: Not a SIP inbound leg or invalid body
                     content:
                         application/json:
                             schema:
@@ -2089,6 +2094,12 @@ components:
                     description: Context or instruction to inject into the running agent session
             required:
                 - message
+        AnswerLegRequest:
+            type: object
+            properties:
+                speech_detection:
+                    type: boolean
+                    description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
         CreateLegRequest:
             type: object
             properties:
@@ -2156,6 +2167,9 @@ components:
                 app_id:
                     type: string
                     description: Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app.
+                speech_detection:
+                    type: boolean
+                    description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
             required:
                 - type
                 - uri

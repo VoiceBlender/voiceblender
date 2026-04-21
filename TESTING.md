@@ -116,9 +116,13 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop |
 | `TestRecording_PauseResume_Room` | Room-level pause/resume with events |
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
-| `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs |
+| `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs (with speech detection explicitly enabled) |
 | `TestMute_BeforeRoomJoin` | Mute before joining room, verify it persists |
 | `TestAddLegToRoom_JoinMutedAndDeaf` | Join a room already muted + deaf via `mute`/`deaf` on `POST /v1/rooms/{id}/legs` (race-free) |
+| `TestSpeechDetection_DisabledByDefault` | No speaking detector attached when `SPEECH_DETECTION_ENABLED` is unset |
+| `TestSpeechDetection_EnabledGlobally` | `SPEECH_DETECTION_ENABLED=true` attaches the detector on every leg |
+| `TestSpeechDetection_PerCallOutboundOverride` | `speech_detection: true` on `POST /v1/legs` overrides a disabled default |
+| `TestSpeechDetection_PerCallAnswerOverride` | `speech_detection: false` on `POST /v1/legs/{id}/answer` overrides an enabled default |
 | `TestAMD_Human` | AMD classifies short tone burst as `human` |
 | `TestAMD_Machine` | AMD classifies continuous tone as `machine` |
 | `TestAMD_NoSpeech` | AMD returns `no_speech` when no audio is played |

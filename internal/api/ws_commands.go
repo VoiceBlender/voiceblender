@@ -64,11 +64,14 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsCreateLeg(lw, msg, req)
 
 	case "answer_leg":
-		var p idPayload
+		var p struct {
+			ID              string `json:"id"`
+			SpeechDetection *bool  `json:"speech_detection,omitempty"`
+		}
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}

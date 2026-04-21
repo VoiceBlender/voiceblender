@@ -9,36 +9,37 @@ import (
 )
 
 type Config struct {
-	InstanceID            string
-	SIPBindIP             string
-	SIPListenIP           string
-	SIPExternalIP         string
-	SIPPort               string
-	SIPHost               string
-	HTTPAddr              string
-	ICEServers            []string
-	RecordingDir          string
-	LogLevel              string
-	WebhookURL            string
-	WebhookSecret         string
-	ElevenLabsAPIKey      string
-	VAPIAPIKey            string
-	DeepgramAPIKey        string
-	AzureSpeechKey        string
-	AzureSpeechRegion     string
-	S3Bucket              string
-	S3Region              string
-	S3Endpoint            string
-	S3Prefix              string
-	TTSCacheEnabled       bool
-	TTSCacheDir           string
-	TTSCacheIncludeAPIKey bool
-	RTPPortMin            int
-	RTPPortMax            int
-	SIPJitterBufferMs     int
-	SIPJitterBufferMaxMs  int
-	SIPReferAutoDial      bool
-	DefaultSampleRate     int
+	InstanceID             string
+	SIPBindIP              string
+	SIPListenIP            string
+	SIPExternalIP          string
+	SIPPort                string
+	SIPHost                string
+	HTTPAddr               string
+	ICEServers             []string
+	RecordingDir           string
+	LogLevel               string
+	WebhookURL             string
+	WebhookSecret          string
+	ElevenLabsAPIKey       string
+	VAPIAPIKey             string
+	DeepgramAPIKey         string
+	AzureSpeechKey         string
+	AzureSpeechRegion      string
+	S3Bucket               string
+	S3Region               string
+	S3Endpoint             string
+	S3Prefix               string
+	TTSCacheEnabled        bool
+	TTSCacheDir            string
+	TTSCacheIncludeAPIKey  bool
+	RTPPortMin             int
+	RTPPortMax             int
+	SIPJitterBufferMs      int
+	SIPJitterBufferMaxMs   int
+	SIPReferAutoDial       bool
+	DefaultSampleRate      int
+	SpeechDetectionEnabled bool
 }
 
 func Load() Config {
@@ -47,36 +48,37 @@ func Load() Config {
 		defaultRate = 16000
 	}
 	return Config{
-		InstanceID:            envOr("INSTANCE_ID", uuid.New().String()),
-		SIPBindIP:             envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPListenIP:           os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
-		SIPExternalIP:         os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
-		SIPPort:               envOr("SIP_PORT", "5060"),
-		SIPHost:               envOr("SIP_HOST", "voiceblender"),
-		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),
-		ICEServers:            strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
-		RecordingDir:          envOr("RECORDING_DIR", "/tmp/recordings"),
-		LogLevel:              envOr("LOG_LEVEL", "info"),
-		WebhookURL:            os.Getenv("WEBHOOK_URL"),
-		WebhookSecret:         os.Getenv("WEBHOOK_SECRET"),
-		ElevenLabsAPIKey:      os.Getenv("ELEVENLABS_API_KEY"),
-		VAPIAPIKey:            os.Getenv("VAPI_API_KEY"),
-		DeepgramAPIKey:        os.Getenv("DEEPGRAM_API_KEY"),
-		AzureSpeechKey:        os.Getenv("AZURE_SPEECH_KEY"),
-		AzureSpeechRegion:     envOr("AZURE_SPEECH_REGION", "eastus"),
-		S3Bucket:              os.Getenv("S3_BUCKET"),
-		S3Region:              envOr("S3_REGION", "us-east-1"),
-		S3Endpoint:            os.Getenv("S3_ENDPOINT"),
-		S3Prefix:              os.Getenv("S3_PREFIX"),
-		TTSCacheEnabled:       os.Getenv("TTS_CACHE_ENABLED") == "true",
-		TTSCacheDir:           envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
-		TTSCacheIncludeAPIKey: os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
-		RTPPortMin:            envInt("RTP_PORT_MIN", 10000),
-		RTPPortMax:            envInt("RTP_PORT_MAX", 20000),
-		SIPJitterBufferMs:     envInt("SIP_JITTER_BUFFER_MS", 0),
-		SIPJitterBufferMaxMs:  envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
-		SIPReferAutoDial:      os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
-		DefaultSampleRate:     defaultRate,
+		InstanceID:             envOr("INSTANCE_ID", uuid.New().String()),
+		SIPBindIP:              envOr("SIP_BIND_IP", "127.0.0.1"),
+		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
+		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
+		SIPPort:                envOr("SIP_PORT", "5060"),
+		SIPHost:                envOr("SIP_HOST", "voiceblender"),
+		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
+		ICEServers:             strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
+		RecordingDir:           envOr("RECORDING_DIR", "/tmp/recordings"),
+		LogLevel:               envOr("LOG_LEVEL", "info"),
+		WebhookURL:             os.Getenv("WEBHOOK_URL"),
+		WebhookSecret:          os.Getenv("WEBHOOK_SECRET"),
+		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
+		VAPIAPIKey:             os.Getenv("VAPI_API_KEY"),
+		DeepgramAPIKey:         os.Getenv("DEEPGRAM_API_KEY"),
+		AzureSpeechKey:         os.Getenv("AZURE_SPEECH_KEY"),
+		AzureSpeechRegion:      envOr("AZURE_SPEECH_REGION", "eastus"),
+		S3Bucket:               os.Getenv("S3_BUCKET"),
+		S3Region:               envOr("S3_REGION", "us-east-1"),
+		S3Endpoint:             os.Getenv("S3_ENDPOINT"),
+		S3Prefix:               os.Getenv("S3_PREFIX"),
+		TTSCacheEnabled:        os.Getenv("TTS_CACHE_ENABLED") == "true",
+		TTSCacheDir:            envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
+		TTSCacheIncludeAPIKey:  os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
+		RTPPortMin:             envInt("RTP_PORT_MIN", 10000),
+		RTPPortMax:             envInt("RTP_PORT_MAX", 20000),
+		SIPJitterBufferMs:      envInt("SIP_JITTER_BUFFER_MS", 0),
+		SIPJitterBufferMaxMs:   envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPReferAutoDial:       os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
+		DefaultSampleRate:      defaultRate,
+		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 	}
 }
 
