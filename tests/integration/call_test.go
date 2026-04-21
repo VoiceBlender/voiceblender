@@ -101,12 +101,13 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	roomMgr := room.NewManager(legMgr, bus, log)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:   "127.0.0.1",
-		ListenIP: "127.0.0.1",
-		BindPort: sipPort,
-		SIPHost:  name,
-		Codecs:   codecs,
-		Log:      log,
+		BindIP:     "127.0.0.1",
+		ListenIP:   "127.0.0.1",
+		ExternalIP: cfg.SIPExternalIP,
+		BindPort:   sipPort,
+		SIPHost:    name,
+		Codecs:     codecs,
+		Log:        log,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)

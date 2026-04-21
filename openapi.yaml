@@ -2491,6 +2491,8 @@ components:
                 - leg.left_room
                 - leg.muted
                 - leg.unmuted
+                - leg.deaf
+                - leg.undeaf
                 - leg.hold
                 - leg.unhold
                 - dtmf.received
@@ -2518,6 +2520,8 @@ components:
                 - agent.disconnected
                 - agent.user_transcript
                 - agent.agent_response
+                - amd.result
+                - amd.beep
         ICECandidateInit:
             type: object
             properties:
@@ -2739,6 +2743,34 @@ x-webhooks:
                                     leg_id:
                                         type: string
                                         description: Leg identifier
+                                    app_id:
+                                        type: string
+    leg.deaf:
+        post:
+            summary: Leg deafened (stops receiving room audio)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+    leg.undeaf:
+        post:
+            summary: Leg undeafened (resumes receiving room audio)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
                                     app_id:
                                         type: string
     leg.hold:
@@ -3305,3 +3337,48 @@ x-webhooks:
                                     text:
                                         type: string
                                         description: Agent response text
+    amd.result:
+        post:
+            summary: Answering machine detection completed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    app_id:
+                                        type: string
+                                    result:
+                                        type: string
+                                        description: 'Detection result: human, machine, no_speech, or not_sure'
+                                    initial_silence_ms:
+                                        type: integer
+                                        description: Milliseconds of silence before first speech
+                                    greeting_duration_ms:
+                                        type: integer
+                                        description: Milliseconds of speech in the greeting
+                                    total_analysis_ms:
+                                        type: integer
+                                        description: Total milliseconds of analysis before determination
+    amd.beep:
+        post:
+            summary: Voicemail beep tone detected after machine classification
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    app_id:
+                                        type: string
+                                    beep_ms:
+                                        type: integer
+                                        description: Milliseconds from machine detection to beep tone detection

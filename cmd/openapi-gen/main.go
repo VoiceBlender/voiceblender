@@ -606,6 +606,8 @@ func allWebhookEvents() []webhookEventMeta {
 		{events.LegLeftRoom, "Leg removed from a room", reflect.TypeOf(events.LegLeftRoomData{})},
 		{events.LegMuted, "Leg muted", reflect.TypeOf(events.LegMutedData{})},
 		{events.LegUnmuted, "Leg unmuted", reflect.TypeOf(events.LegUnmutedData{})},
+		{events.LegDeaf, "Leg deafened (stops receiving room audio)", reflect.TypeOf(events.LegDeafData{})},
+		{events.LegUndeaf, "Leg undeafened (resumes receiving room audio)", reflect.TypeOf(events.LegUndeafData{})},
 		{events.LegHold, "Leg put on hold (local or remote)", reflect.TypeOf(events.LegHoldData{})},
 		{events.LegUnhold, "Leg taken off hold (local or remote)", reflect.TypeOf(events.LegUnholdData{})},
 		{events.DTMFReceived, "DTMF digit received", reflect.TypeOf(events.DTMFReceivedData{})},
@@ -633,6 +635,8 @@ func allWebhookEvents() []webhookEventMeta {
 		{events.AgentDisconnected, "Agent session ended", reflect.TypeOf(events.AgentDisconnectedData{})},
 		{events.AgentUserTranscript, "User speech transcribed by agent", reflect.TypeOf(events.AgentTranscriptData{})},
 		{events.AgentAgentResponse, "Agent generated a response", reflect.TypeOf(events.AgentResponseData{})},
+		{events.AMDResult, "Answering machine detection completed", reflect.TypeOf(events.AMDResultData{})},
+		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
 	}
 }
 
