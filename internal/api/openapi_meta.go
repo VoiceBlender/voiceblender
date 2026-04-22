@@ -2,14 +2,15 @@ package api
 
 // RouteMeta describes a single API endpoint for OpenAPI generation.
 type RouteMeta struct {
-	Method      string
-	Path        string
-	OperationID string
-	Summary     string
-	Description string
-	Tags        []string
-	RequestType interface{} // nil or Go type instance (e.g. CreateLegRequest{})
-	Responses   map[int]ResponseMeta
+	Method       string
+	Path         string
+	OperationID  string
+	Summary      string
+	Description  string
+	Tags         []string
+	RequestType  interface{} // nil or Go type instance (e.g. CreateLegRequest{})
+	OptionalBody bool        // when true, requestBody is not marked required
+	Responses    map[int]ResponseMeta
 }
 
 // ResponseMeta describes a single HTTP response for an endpoint.
@@ -226,9 +227,10 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/answer", OperationID: "answerLeg",
-			Summary:     "Answer a ringing or early-media inbound SIP leg",
-			Tags:        []string{"Legs"},
-			RequestType: AnswerLegRequest{},
+			Summary:      "Answer a ringing or early-media inbound SIP leg",
+			Tags:         []string{"Legs"},
+			RequestType:  AnswerLegRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Answer initiated"},
 				400: {Description: "Not a SIP inbound leg or invalid body"},
@@ -400,8 +402,9 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Start recording a leg to a WAV file",
 			Description: "For SIP legs, recording is stereo (left=incoming, right=outgoing). " +
 				"For legs in a room, stereo at 16kHz (left=participant audio, right=mixed-minus-self).",
-			Tags:        []string{"Legs"},
-			RequestType: RecordRequest{},
+			Tags:         []string{"Legs"},
+			RequestType:  RecordRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording started"},
 				400: {Description: "Invalid storage type, S3 not configured, or invalid S3 credentials"},
@@ -445,9 +448,10 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/stt", OperationID: "sttLeg",
-			Summary:     "Start real-time speech-to-text on a leg",
-			Tags:        []string{"Legs"},
-			RequestType: STTRequest{},
+			Summary:      "Start real-time speech-to-text on a leg",
+			Tags:         []string{"Legs"},
+			RequestType:  STTRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Leg not found"},
@@ -579,9 +583,10 @@ func RoutesMetadata() []RouteMeta {
 		// ── Rooms ───────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/rooms", OperationID: "createRoom",
-			Summary:     "Create a room",
-			Tags:        []string{"Rooms"},
-			RequestType: CreateRoomRequest{},
+			Summary:      "Create a room",
+			Tags:         []string{"Rooms"},
+			RequestType:  CreateRoomRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Room created", Type: RoomView{}},
 				409: {Description: "Room ID already exists"},
@@ -685,10 +690,11 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/rooms/{id}/record", OperationID: "recordRoom",
-			Summary:     "Start recording the room mix to a WAV file",
-			Description: "Records the full room mix at 16kHz, 16-bit, mono.",
-			Tags:        []string{"Rooms"},
-			RequestType: RecordRequest{},
+			Summary:      "Start recording the room mix to a WAV file",
+			Description:  "Records the full room mix at 16kHz, 16-bit, mono.",
+			Tags:         []string{"Rooms"},
+			RequestType:  RecordRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording started"},
 				400: {Description: "Invalid storage type, S3 not configured, or invalid S3 credentials"},
@@ -732,9 +738,10 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/rooms/{id}/stt", OperationID: "sttRoom",
-			Summary:     "Start speech-to-text on all room participants",
-			Tags:        []string{"Rooms"},
-			RequestType: STTRequest{},
+			Summary:      "Start speech-to-text on all room participants",
+			Tags:         []string{"Rooms"},
+			RequestType:  STTRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Room not found"},
