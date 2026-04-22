@@ -594,6 +594,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	}
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:    string(l.Type()),
 		URI:        req.URI,
 		From:       req.From,
 		SIPHeaders: req.Headers,
@@ -716,6 +717,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:    string(l.Type()),
 		From:       call.From,
 		To:         call.To,
 		SIPHeaders: l.SIPHeaders(),

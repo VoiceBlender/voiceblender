@@ -1893,6 +1893,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
   "timestamp": "2026-03-01T11:05:00.123Z",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "leg_type": "sip_inbound",
   "from": "sip:alice@example.com",
   "to": "sip:bob@example.com"
 }
@@ -1906,7 +1907,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | SIP call ringing | `leg_id`, `from`, `to` (inbound); `leg_id`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
+| `leg.ringing` | SIP call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |
@@ -2127,7 +2128,7 @@ All errors return:
 ```
 1. Configure global webhook via WEBHOOK_URL env var, or per-leg via request/SIP headers
 
-2. Receive inbound call -> webhook: leg.ringing {leg_id, from, to}
+2. Receive inbound call -> webhook: leg.ringing {leg_id, leg_type: "sip_inbound", from, to}
 
 3. Answer the call
    POST /v1/legs/{leg_id}/answer
