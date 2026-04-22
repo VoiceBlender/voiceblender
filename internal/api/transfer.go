@@ -289,6 +289,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	s.LegMgr.Add(newLeg)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
+		LegType:  string(newLeg.Type()),
 		URI:      target,
 	})
 

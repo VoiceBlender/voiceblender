@@ -53,5 +53,12 @@ docker-push: docker
 	docker push vpbx/$(IMAGE):$(TAG)
 	docker push vpbx/$(IMAGE):latest
 
+docker-master:
+	docker build -t vpbx/$(IMAGE):master -t vpbx/$(IMAGE):master .
+
+docker-push-master: docker
+	docker push vpbx/$(IMAGE):master
+
+
 clean:
 	rm -f $(BINARY) openapi-gen

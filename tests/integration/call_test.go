@@ -465,10 +465,17 @@ func TestOutboundInbound_Connect(t *testing.T) {
 	waitForLegState(t, instA.baseURL(), outboundLeg.ID, "connected", 5*time.Second)
 	waitForLegState(t, instB.baseURL(), inboundLeg.ID, "connected", 5*time.Second)
 
-	// Verify events on both sides.
-	instA.collector.waitForMatch(t, events.LegRinging, nil, 1*time.Second)
+	// Verify events on both sides, including leg_type on ringing so the
+	// outbound/inbound split is distinguishable from the payload alone.
+	aRing := instA.collector.waitForMatch(t, events.LegRinging, nil, 1*time.Second)
+	if d := aRing.Data.(*events.LegRingingData); d.LegType != "sip_outbound" {
+		t.Errorf("A leg.ringing leg_type = %q, want sip_outbound", d.LegType)
+	}
 	instA.collector.waitForMatch(t, events.LegConnected, nil, 1*time.Second)
-	instB.collector.waitForMatch(t, events.LegRinging, nil, 1*time.Second)
+	bRing := instB.collector.waitForMatch(t, events.LegRinging, nil, 1*time.Second)
+	if d := bRing.Data.(*events.LegRingingData); d.LegType != "sip_inbound" {
+		t.Errorf("B leg.ringing leg_type = %q, want sip_inbound", d.LegType)
+	}
 	instB.collector.waitForMatch(t, events.LegConnected, nil, 1*time.Second)
 
 	// A hangs up.
