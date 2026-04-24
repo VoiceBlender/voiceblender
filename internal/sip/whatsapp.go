@@ -83,6 +83,8 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 		req.AppendHeader(h)
 	}
 
+	e.logSIPMessage("outbound", req)
+
 	ds, err := e.dcCache.WriteInvite(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("write invite: %w", err)
@@ -91,8 +93,15 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	if err := ds.WaitAnswer(ctx, sipgo.AnswerOptions{
 		Username: opts.FromUser,
 		Password: opts.Password,
+		OnResponse: func(res *sip.Response) error {
+			e.logSIPMessage("inbound", res)
+			return nil
+		},
 	}); err != nil {
 		return nil, fmt.Errorf("wait answer: %w", err)
+	}
+	if ds.InviteResponse != nil {
+		e.logSIPMessage("inbound", ds.InviteResponse)
 	}
 
 	if err := ds.Ack(ctx); err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -34,6 +35,7 @@ type EngineConfig struct {
 	TLSBindPort   int    // 0 = TLS disabled
 	TLSCertPath   string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
 	TLSKeyPath    string // private key (privkey.pem) — required when TLSBindPort > 0
+	SIPDebug      bool   // dump full SIP request/response bodies on the debug channel
 	SIPHost       string
 	Codecs        []codec.CodecType
 	Log           *slog.Logger
@@ -62,6 +64,17 @@ type Engine struct {
 	sipHost    string
 	portAlloc  *PortAllocator
 	log        *slog.Logger
+	sipDebug   bool
+}
+
+// logSIPMessage prints the full RFC 3261 wire form of a SIP request or
+// response when SIP_DEBUG is on. Called from inbound handler wrappers and
+// outbound ClientRequestOptions.
+func (e *Engine) logSIPMessage(direction string, m sip.Message) {
+	if !e.sipDebug || m == nil {
+		return
+	}
+	e.log.Info("SIP "+direction, "message", "\n"+m.String())
 }
 
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
@@ -123,9 +136,25 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		advertiseIP = cfg.ExternalIP
 	}
 
+	// Route sipgo's own internal debug logs (transport/transaction layer) to
+	// our logger when SIP_DEBUG is on. These cover messages sipgo sends or
+	// receives automatically (100 Trying, 487 Request Terminated after CANCEL,
+	// retransmits) that our handler-level wrappers can't observe.
+	sipgoLog := cfg.Log
+	if cfg.SIPDebug {
+		sipgoLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		sip.SetDefaultLogger(sipgoLog)
+	}
+
 	uaOpts := []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(cfg.SIPHost),
 		sipgo.WithUserAgentHostname(advertiseIP),
+	}
+	if cfg.SIPDebug {
+		uaOpts = append(uaOpts,
+			sipgo.WithUserAgentTransportLayerOptions(sip.WithTransportLayerLogger(sipgoLog)),
+			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)),
+		)
 	}
 	if cfg.TLSBindPort != 0 {
 		// Needed for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's
@@ -137,17 +166,25 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("create UA: %w", err)
 	}
 
-	server, err := sipgo.NewServer(ua)
+	serverOpts := []sipgo.ServerOption{}
+	if cfg.SIPDebug {
+		serverOpts = append(serverOpts, sipgo.WithServerLogger(sipgoLog))
+	}
+	server, err := sipgo.NewServer(ua, serverOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create server: %w", err)
 	}
 
 	// Pin Via sent-by to advertiseIP — wildcard binds make the response
 	// path unroutable, so peers black-hole our REFER/BYE/re-INVITE 200s.
-	client, err := sipgo.NewClient(ua,
+	clientOpts := []sipgo.ClientOption{
 		sipgo.WithClientHostname(advertiseIP),
 		sipgo.WithClientPort(cfg.BindPort),
-	)
+	}
+	if cfg.SIPDebug {
+		clientOpts = append(clientOpts, sipgo.WithClientLogger(sipgoLog))
+	}
+	client, err := sipgo.NewClient(ua, clientOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create client: %w", err)
 	}
@@ -185,6 +222,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		sipHost:   cfg.SIPHost,
 		portAlloc: cfg.PortAllocator,
 		log:       cfg.Log,
+		sipDebug:  cfg.SIPDebug,
 	}
 
 	e.registerHandlers()
@@ -338,7 +376,19 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 }
 
 func (e *Engine) registerHandlers() {
-	e.server.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
+	// wrap prepends SIP_DEBUG message dumping to a handler. Identity
+	// wrapper when SIP_DEBUG is off.
+	wrap := func(h sipgo.RequestHandler) sipgo.RequestHandler {
+		if !e.sipDebug {
+			return h
+		}
+		return func(req *sip.Request, tx sip.ServerTransaction) {
+			e.logSIPMessage("inbound", req)
+			h(req, tx)
+		}
+	}
+
+	e.server.OnInvite(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		// Check if this is a re-INVITE (in-dialog request with To tag).
 		if to := req.To(); to != nil {
 			if tag, ok := to.Params.Get("tag"); ok && tag != "" {
@@ -422,15 +472,15 @@ func (e *Engine) registerHandlers() {
 			// response is sent.  HandleInboundCall blocks until the call ends.
 			e.onInvite(call)
 		}
-	})
+	}))
 
-	e.server.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnAck(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		if err := e.dsCache.ReadAck(req, tx); err != nil {
 			e.log.Debug("read ack failed", "error", err)
 		}
-	})
+	}))
 
-	e.server.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnBye(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		if err := e.dsCache.ReadBye(req, tx); err != nil {
 			if err := e.dcCache.ReadBye(req, tx); err != nil {
 				// RFC 3261 §8.2.2.1
@@ -440,20 +490,25 @@ func (e *Engine) registerHandlers() {
 				}
 			}
 		}
-	})
+	}))
 
-	e.server.OnCancel(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnCancel(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		// This handler fires only for CANCELs that didn't match an active
 		// INVITE transaction.  For matched CANCELs, sipgo's transaction
 		// layer handles both 487 (for INVITE) and 200 OK (for CANCEL)
 		// automatically.  Respond 481 per RFC 3261 §9.2.
+		callID := ""
+		if c := req.CallID(); c != nil {
+			callID = c.Value()
+		}
+		e.log.Info("CANCEL received (unmatched)", "call_id", callID, "source", req.Source())
 		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
 		res.AppendHeader(e.ServerHeader())
 		tx.Respond(res)
-	})
+	}))
 
-	e.server.OnRefer(e.handleRefer)
-	e.server.OnNotify(e.handleNotify)
+	e.server.OnRefer(wrap(e.handleRefer))
+	e.server.OnNotify(wrap(e.handleNotify))
 }
 
 // RespondFromSource pins the response destination to the request's UDP
@@ -620,6 +675,8 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		req.AppendHeader(h)
 	}
 
+	e.logSIPMessage("outbound", req)
+
 	// Send INVITE via dialog client cache
 	ds, err := e.dcCache.WriteInvite(ctx, req)
 	if err != nil {
@@ -633,40 +690,45 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		Username: opts.AuthUsername,
 		Password: opts.AuthPassword,
 	}
-	if opts.OnEarlyMedia != nil {
-		answerOpts.OnResponse = func(res *sip.Response) error {
-			if earlyMediaSent {
-				return nil
-			}
-			if res.StatusCode != sip.StatusSessionInProgress {
-				return nil
-			}
-			body := res.Body()
-			if len(body) == 0 {
-				return nil
-			}
-			remoteSDP, err := ParseSDP(body)
-			if err != nil {
-				e.log.Warn("early media: parse 183 SDP failed", "error", err)
-				return nil // non-fatal, keep waiting for 200
-			}
-			if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
-				e.log.Warn("early media: set remote failed", "error", err)
-				return nil
-			}
-			earlyMediaSent = true
-			// Send a burst of silence RTP for NAT port-latching before
-			// the leg's media pipeline starts its own writeLoop.
-			if len(remoteSDP.Codecs) > 0 {
-				rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
-			}
-			opts.OnEarlyMedia(remoteSDP, rtpSess)
+	answerOpts.OnResponse = func(res *sip.Response) error {
+		e.logSIPMessage("inbound", res)
+		if opts.OnEarlyMedia == nil {
 			return nil
 		}
+		if earlyMediaSent {
+			return nil
+		}
+		if res.StatusCode != sip.StatusSessionInProgress {
+			return nil
+		}
+		body := res.Body()
+		if len(body) == 0 {
+			return nil
+		}
+		remoteSDP, err := ParseSDP(body)
+		if err != nil {
+			e.log.Warn("early media: parse 183 SDP failed", "error", err)
+			return nil // non-fatal, keep waiting for 200
+		}
+		if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
+			e.log.Warn("early media: set remote failed", "error", err)
+			return nil
+		}
+		earlyMediaSent = true
+		// Send a burst of silence RTP for NAT port-latching before
+		// the leg's media pipeline starts its own writeLoop.
+		if len(remoteSDP.Codecs) > 0 {
+			rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
+		}
+		opts.OnEarlyMedia(remoteSDP, rtpSess)
+		return nil
 	}
 	if err := ds.WaitAnswer(ctx, answerOpts); err != nil {
 		rtpSess.Close()
 		return nil, fmt.Errorf("wait answer: %w", err)
+	}
+	if ds.InviteResponse != nil {
+		e.logSIPMessage("inbound", ds.InviteResponse)
 	}
 
 	// Send ACK

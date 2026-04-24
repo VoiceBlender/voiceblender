@@ -50,6 +50,7 @@ All configuration is via environment variables:
 | `SIP_TLS_PORT` | *(disabled)* | SIP-over-TLS listen port (typically `5061`). When set, `SIP_TLS_CERT` and `SIP_TLS_KEY` must also be provided. Required for WhatsApp Business Calling integration. |
 | `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
 | `SIP_TLS_KEY` | | Path to PEM-encoded TLS private key (e.g. `privkey.pem`). |
+| `SIP_DEBUG` | `false` | When `true`, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |

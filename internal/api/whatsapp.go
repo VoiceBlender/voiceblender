@@ -22,6 +22,18 @@ const whatsAppInviteTimeout = 30 * time.Second
 // state and block until REST issues POST /v1/legs/{id}/answer.
 func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	ctx := call.Dialog.Context()
+	t0 := time.Now()
+	callID := ""
+	if c := call.Request.CallID(); c != nil {
+		callID = c.Value()
+	}
+	s.Log.Info("whatsapp inbound: INVITE received", "call_id", callID, "from", call.From, "to", call.To)
+
+	// 100 Trying → tell Meta we have the INVITE so their Timer B stops
+	// retransmitting while we set up media.
+	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
+		s.Log.Warn("whatsapp inbound: respond 100 failed", "call_id", callID, "error", err)
+	}
 
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:      codec.CodecOpus,
@@ -31,7 +43,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		Log:        s.Log,
 	})
 	if err != nil {
-		s.Log.Error("whatsapp inbound: create PCMedia", "error", err)
+		s.Log.Error("whatsapp inbound: create PCMedia", "call_id", callID, "error", err)
 		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Media Setup Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
@@ -39,40 +51,48 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	pc := media.PC()
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(call.Request.Body())}
 	if err := pc.SetRemoteDescription(offer); err != nil {
-		s.Log.Error("whatsapp inbound: SetRemoteDescription", "error", err)
+		s.Log.Error("whatsapp inbound: SetRemoteDescription", "call_id", callID, "error", err)
 		media.Close()
 		_ = call.Dialog.Respond(sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
-		s.Log.Error("whatsapp inbound: CreateAnswer", "error", err)
+		s.Log.Error("whatsapp inbound: CreateAnswer", "call_id", callID, "error", err)
 		media.Close()
 		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 	gatherDone := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(answer); err != nil {
-		s.Log.Error("whatsapp inbound: SetLocalDescription", "error", err)
+		s.Log.Error("whatsapp inbound: SetLocalDescription", "call_id", callID, "error", err)
 		media.Close()
 		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
+
+	// Send 180 Ringing immediately — ICE gathering can take several seconds
+	// on hosts with multiple interfaces, and Meta must see a provisional
+	// response well before Timer B expires.
+	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
+		s.Log.Error("whatsapp inbound: respond 180", "call_id", callID, "error", err)
+		media.Close()
+		return
+	}
+	s.Log.Info("whatsapp inbound: 180 Ringing sent", "call_id", callID, "elapsed", time.Since(t0))
+
 	// Block until ICE gathering finishes so the 200 OK carries a complete SDP
 	// (Meta does not support re-INVITE / trickle ICE over SIP).
+	gatherStart := time.Now()
 	select {
 	case <-gatherDone:
+		s.Log.Info("whatsapp inbound: ICE gathering complete", "call_id", callID, "took", time.Since(gatherStart))
 	case <-ctx.Done():
+		s.Log.Warn("whatsapp inbound: ctx cancelled during ICE gathering", "call_id", callID, "took", time.Since(gatherStart))
 		media.Close()
 		return
 	}
 	finalSDP := []byte(pc.LocalDescription().SDP)
-
-	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
-		s.Log.Error("whatsapp inbound: respond 180", "error", err)
-		media.Close()
-		return
-	}
 
 	headers := sipHeadersFromRequest(call.Request)
 	l := leg.NewWhatsAppInboundLeg(call.Dialog, media, call.From, call.To, headers, finalSDP, s.Log)
@@ -106,11 +126,17 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 
 	select {
 	case <-l.AnswerCh():
+		elapsed := time.Since(t0)
+		s.Log.Info("whatsapp inbound: sending 200 OK", "call_id", callID, "leg_id", l.ID(), "elapsed_since_invite", elapsed, "sdp_bytes", len(finalSDP))
+		if elapsed > 30*time.Second {
+			s.Log.Warn("whatsapp inbound: answer is past Meta Timer B (~32s) — likely transaction-terminated", "call_id", callID, "leg_id", l.ID(), "elapsed", elapsed)
+		}
 		if err := l.Answer(context.Background()); err != nil {
-			s.Log.Error("whatsapp inbound: answer failed", "leg_id", l.ID(), "error", err)
+			s.Log.Error("whatsapp inbound: answer failed", "leg_id", l.ID(), "call_id", callID, "elapsed", elapsed, "error", err)
 			s.cleanupLeg(l)
 			return
 		}
+		s.Log.Info("whatsapp inbound: 200 OK sent", "call_id", callID, "leg_id", l.ID())
 		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
@@ -121,6 +147,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 			s.publishDisconnect(l, "remote_bye")
 		}
 	case <-ctx.Done():
+		s.Log.Warn("whatsapp inbound: dialog ended before answer (caller cancelled or Timer B)", "call_id", callID, "leg_id", l.ID(), "elapsed", time.Since(t0))
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, "caller_cancel")
 	}

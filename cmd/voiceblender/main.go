@@ -92,6 +92,7 @@ func main() {
 		TLSBindPort:   sipTLSPort,
 		TLSCertPath:   cfg.SIPTLSCert,
 		TLSKeyPath:    cfg.SIPTLSKey,
+		SIPDebug:      cfg.SIPDebug,
 		SIPHost:       cfg.SIPHost,
 		Codecs:        []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
 		Log:           log,
