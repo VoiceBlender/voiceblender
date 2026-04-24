@@ -101,6 +101,50 @@ func (e *Engine) LogSyntheticResponse(req *sip.Request, statusCode int, reason s
 	e.logSIPMessage("outbound (synthetic)", res)
 }
 
+// inviteIsTLS reports whether an inbound INVITE arrived over TLS (based on
+// the topmost Via sent-by transport). Used to pick sip: vs sips: Contact.
+func inviteIsTLS(req *sip.Request) bool {
+	if req == nil {
+		return false
+	}
+	via := req.Via()
+	if via == nil {
+		return false
+	}
+	return strings.EqualFold(via.Transport, "TLS") || strings.EqualFold(via.Transport, "WSS")
+}
+
+// contactForInvite returns a Contact that matches the transport on which
+// the INVITE arrived — sips:<ip>:<tlsPort> for TLS, sip:<ip>:<udpPort>
+// otherwise. When no TLS port is configured it always returns the sip:
+// form so classic SIP behaviour is unchanged.
+func (e *Engine) contactForInvite(req *sip.Request) *sip.ContactHeader {
+	if inviteIsTLS(req) && e.tlsPort != 0 {
+		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: e.bindIP, Port: e.tlsPort}}
+	}
+	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: e.bindIP, Port: e.bindPort}}
+}
+
+// RespondInviteSDP sends a 2xx response to an inbound INVITE with a
+// transport-appropriate Contact header. This is required for WhatsApp
+// inbound calls, which arrive over TLS and need a sips: Contact pointing
+// at our TLS port — otherwise the remote's ACK is routed to the wrong
+// scheme/port, the dialog stays in Early state, and retransmits eventually
+// kill the transaction.
+func (e *Engine) RespondInviteSDP(dialog *sipgo.DialogServerSession, sdp []byte) error {
+	if dialog == nil || dialog.InviteRequest == nil {
+		return fmt.Errorf("RespondInviteSDP: dialog or InviteRequest is nil")
+	}
+	res := sip.NewResponseFromRequest(dialog.InviteRequest, sip.StatusOK, "OK", sdp)
+	res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.contactForInvite(dialog.InviteRequest))
+	res.SetBody(sdp)
+
+	e.logSIPMessage("outbound", res)
+	return dialog.WriteResponse(res)
+}
+
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
 type InboundCall struct {
 	Dialog    *sipgo.DialogServerSession

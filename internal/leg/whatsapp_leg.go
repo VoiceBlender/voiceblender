@@ -14,12 +14,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// SIPResponseLogger is satisfied by *sip.Engine and lets a WhatsApp leg dump
-// the 200 OK (and other outbound responses) when SIP_DEBUG is on without
-// importing internal/sip (which would invert the dependency).
-type SIPResponseLogger interface {
+// WhatsAppSIPController is satisfied by *sip.Engine and lets a WhatsApp leg
+// (a) dump outbound responses when SIP_DEBUG is on and (b) send the 2xx
+// answer with a transport-appropriate Contact header. The interface lives
+// here so the leg package doesn't import internal/sip (which would invert
+// the dependency).
+type WhatsAppSIPController interface {
 	LogSyntheticResponse(req *sipproto.Request, statusCode int, reason string, body []byte, headers ...sipproto.Header)
+	RespondInviteSDP(dialog *sipgo.DialogServerSession, sdp []byte) error
 }
+
+// SIPResponseLogger is kept as an alias for WhatsAppSIPController so existing
+// callers that only need logging still compile.
+type SIPResponseLogger = WhatsAppSIPController
 
 // WhatsAppLeg is a call leg terminated to WhatsApp Business Calling. Signalling
 // is SIP over TLS with digest auth; media is Opus over ICE + DTLS-SRTP,
@@ -55,17 +62,21 @@ type WhatsAppLeg struct {
 	answerCh  chan struct{}
 	answerSDP []byte
 
-	// Optional SIP debug hook; when set, the 200 OK sent in Answer() is
-	// reconstructed and printed at Info level.
-	sipLogger SIPResponseLogger
+	// SIP controller: handles outbound-response logging and the 2xx send
+	// with a transport-appropriate Contact. Required for inbound legs.
+	sipCtrl WhatsAppSIPController
 
 	onDTMF func(digit rune)
 	log    *slog.Logger
 }
 
-// SetSIPResponseLogger enables SIP_DEBUG dumping of responses we ask
-// sipgo to send (200 OK). Caller must pass *sip.Engine from the API layer.
-func (l *WhatsAppLeg) SetSIPResponseLogger(r SIPResponseLogger) { l.sipLogger = r }
+// SetSIPController wires the engine-backed helper that knows how to send
+// the 200 OK with a sips: Contact on TLS (mandatory for WhatsApp inbound).
+// Also enables SIP_DEBUG dumping for outbound responses.
+func (l *WhatsAppLeg) SetSIPController(c WhatsAppSIPController) { l.sipCtrl = c }
+
+// SetSIPResponseLogger is an alias retained for call-site compatibility.
+func (l *WhatsAppLeg) SetSIPResponseLogger(c SIPResponseLogger) { l.sipCtrl = c }
 
 // NewWhatsAppInboundLeg wraps an already-accepted inbound UAS dialog and the
 // PCMedia that has negotiated the SDP answer. The answer is NOT sent here;
@@ -223,15 +234,17 @@ func (l *WhatsAppLeg) Answer(_ context.Context) error {
 	l.mu.Unlock()
 
 	if dialog != nil {
-		if l.sipLogger != nil && dialog.InviteRequest != nil {
-			l.sipLogger.LogSyntheticResponse(
-				dialog.InviteRequest,
-				200, "OK", sdp,
-				sipproto.NewHeader("Content-Type", "application/sdp"),
-			)
-		}
-		if err := dialog.RespondSDP(sdp); err != nil {
-			return fmt.Errorf("respond 200 OK: %w", err)
+		// Use the engine-backed sender when wired (inbound legs from the
+		// API layer always have this set). It attaches a transport-aware
+		// sips: Contact so Meta can route the ACK back over TLS.
+		if l.sipCtrl != nil {
+			if err := l.sipCtrl.RespondInviteSDP(dialog, sdp); err != nil {
+				return fmt.Errorf("respond 200 OK: %w", err)
+			}
+		} else {
+			if err := dialog.RespondSDP(sdp); err != nil {
+				return fmt.Errorf("respond 200 OK: %w", err)
+			}
 		}
 	}
 
