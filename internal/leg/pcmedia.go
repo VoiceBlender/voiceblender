@@ -463,26 +463,55 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 
 		audioPT := uint8(track.PayloadType())
 
-		// Interleaved DTMF: if Meta is delivering telephone-event on the
-		// same TrackRemote as Opus (same SSRC, different PT), decode it
-		// as RFC 4733 here. Standard DTMF payloads are exactly 4 bytes;
-		// anything larger is a redundancy-coded event we don't need yet.
+		// Interleaved DTMF: telephone-event on the same TrackRemote as
+		// Opus. RFC 4733 payload is 4 bytes; if it's longer, the first 4
+		// bytes are still the primary event (RFC 2198 redundancy appends
+		// past events). We dedupe on RTP timestamp — every packet of a
+		// single digit shares the same timestamp, so the first one wins
+		// and retransmits with the same ts are ignored.
 		if pkt.PayloadType != audioPT {
-			if len(pkt.Payload) == 4 {
-				if ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload); derr == nil {
-					if ev.EndOfEvent && pkt.Timestamp != m.lastDTMFTS {
+			if len(pkt.Payload) >= 4 {
+				ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload[:4])
+				if derr == nil {
+					digit, ok := sipmod.DTMFEventToDigit(ev.Event)
+					newEvent := pkt.Timestamp != m.lastDTMFTS
+					// Always log the parsed packet so we can see what
+					// Meta sends and verify dedup behaviour.
+					m.log.Info("pcmedia: DTMF packet",
+						"pt", pkt.PayloadType,
+						"event", ev.Event,
+						"digit_ok", ok,
+						"digit", string(digit),
+						"end_of_event", ev.EndOfEvent,
+						"volume", ev.Volume,
+						"duration", ev.Duration,
+						"rtp_ts", pkt.Timestamp,
+						"new_event", newEvent,
+						"payload_len", len(pkt.Payload),
+					)
+					if newEvent && ok {
 						m.lastDTMFTS = pkt.Timestamp
-						if digit, ok := sipmod.DTMFEventToDigit(ev.Event); ok {
-							m.log.Info("pcmedia: DTMF digit received", "digit", string(digit), "pt", pkt.PayloadType)
-							m.tapMu.RLock()
-							cb := m.onDTMF
-							m.tapMu.RUnlock()
-							if cb != nil {
-								cb(digit)
-							}
+						m.tapMu.RLock()
+						cb := m.onDTMF
+						m.tapMu.RUnlock()
+						if cb != nil {
+							cb(digit)
 						}
 					}
+				} else {
+					m.log.Info("pcmedia: non-audio RTP (decode failed)",
+						"pt", pkt.PayloadType,
+						"error", derr,
+						"payload_len", len(pkt.Payload),
+						"payload_hex", fmt.Sprintf("%x", pkt.Payload),
+					)
 				}
+			} else {
+				m.log.Info("pcmedia: non-audio RTP (too short)",
+					"pt", pkt.PayloadType,
+					"payload_len", len(pkt.Payload),
+					"payload_hex", fmt.Sprintf("%x", pkt.Payload),
+				)
 			}
 			continue
 		}
