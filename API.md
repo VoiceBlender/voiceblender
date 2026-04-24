@@ -166,7 +166,7 @@ Originate a call to a WhatsApp user.
 
 The INVITE is sent to `sips:{to}@wa.meta.vc:5061` with an SDP offer that advertises ICE + DTLS-SRTP + Opus/48000. The request blocks until ICE gathering finishes (Meta does not support trickle over SIP) and sipgo has completed the digest challenge round-trip, so expect 200–500 ms of latency on a healthy network.
 
-**Response:** `201 Created` — Leg object in `connected` state (no `ringing` phase is exposed for outbound; the call is either connected or the request fails).
+**Response:** `201 Created` — Leg object in `connected` state with `type: "whatsapp_out"` (no `ringing` phase is exposed for outbound; the call is either connected or the request fails).
 
 **Errors:**
 - `400` — missing `to` / `from` / `password`.
@@ -176,7 +176,7 @@ The INVITE is sent to `sips:{to}@wa.meta.vc:5061` with an SDP offer that adverti
 
 #### Inbound
 
-INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) are routed to the WhatsApp handler automatically. The leg is created in `ringing` state, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
+INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) are routed to the WhatsApp handler automatically. The leg is created in `ringing` state with `type: "whatsapp_in"`, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
 
 The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `/tts`, and `/agent/*` endpoints all apply. The following explicitly return **409 Conflict**:
 
@@ -1964,7 +1964,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | SIP call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
+| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |

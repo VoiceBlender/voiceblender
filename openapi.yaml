@@ -1984,6 +1984,8 @@ components:
                         - sip_inbound
                         - sip_outbound
                         - webrtc
+                        - whatsapp_in
+                        - whatsapp_out
                 state:
                     type: string
                     description: Leg state

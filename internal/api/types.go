@@ -132,7 +132,7 @@ type LegView struct {
 
 var legViewFields = map[string]FieldEnrichment{
 	"id":          {Description: "Unique leg identifier (UUID)"},
-	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc"}},
+	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out"}},
 	"state":       {Description: "Leg state", Enum: []string{"ringing", "early_media", "connected", "held", "hung_up"}},
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},

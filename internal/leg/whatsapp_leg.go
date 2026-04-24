@@ -33,9 +33,10 @@ type SIPResponseLogger = WhatsAppSIPController
 // delegated to PCMedia. Hold, unhold and blind/attended transfer are
 // explicitly unsupported because Meta's SIP implementation rejects re-INVITEs.
 type WhatsAppLeg struct {
-	id    string
-	state LegState
-	mu    sync.RWMutex
+	id      string
+	legType LegType
+	state   LegState
+	mu      sync.RWMutex
 
 	media *PCMedia
 
@@ -84,6 +85,7 @@ func (l *WhatsAppLeg) SetSIPResponseLogger(c SIPResponseLogger) { l.sipCtrl = c 
 func NewWhatsAppInboundLeg(dialog *sipgo.DialogServerSession, media *PCMedia, from, to string, headers map[string]string, answerSDP []byte, log *slog.Logger) *WhatsAppLeg {
 	l := &WhatsAppLeg{
 		id:           uuid.New().String(),
+		legType:      TypeWhatsAppInbound,
 		state:        StateRinging,
 		media:        media,
 		serverDialog: dialog,
@@ -106,6 +108,7 @@ func NewWhatsAppOutboundLeg(dialog *sipgo.DialogClientSession, media *PCMedia, f
 	now := time.Now()
 	l := &WhatsAppLeg{
 		id:           uuid.New().String(),
+		legType:      TypeWhatsAppOutbound,
 		state:        StateConnected,
 		media:        media,
 		clientDialog: dialog,
@@ -133,7 +136,7 @@ func (l *WhatsAppLeg) ServerDialog() *sipgo.DialogServerSession { return l.serve
 func (l *WhatsAppLeg) ClientDialog() *sipgo.DialogClientSession { return l.clientDialog }
 
 func (l *WhatsAppLeg) ID() string      { return l.id }
-func (l *WhatsAppLeg) Type() LegType   { return TypeWhatsApp }
+func (l *WhatsAppLeg) Type() LegType   { return l.legType }
 func (l *WhatsAppLeg) SampleRate() int { return l.media.SampleRate() }
 
 func (l *WhatsAppLeg) State() LegState {

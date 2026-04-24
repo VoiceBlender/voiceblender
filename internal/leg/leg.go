@@ -11,10 +11,11 @@ import (
 type LegType string
 
 const (
-	TypeSIPInbound  LegType = "sip_inbound"
-	TypeSIPOutbound LegType = "sip_outbound"
-	TypeWebRTC      LegType = "webrtc"
-	TypeWhatsApp    LegType = "whatsapp"
+	TypeSIPInbound       LegType = "sip_inbound"
+	TypeSIPOutbound      LegType = "sip_outbound"
+	TypeWebRTC           LegType = "webrtc"
+	TypeWhatsAppInbound  LegType = "whatsapp_in"
+	TypeWhatsAppOutbound LegType = "whatsapp_out"
 )
 
 type LegState string

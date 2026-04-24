@@ -21,8 +21,8 @@ func TestWhatsAppLeg_OutboundStartsConnected(t *testing.T) {
 	l := NewWhatsAppOutboundLeg(nil, m, "15551234567", "15557654321", slog.Default())
 	defer l.Hangup(t.Context())
 
-	if l.Type() != TypeWhatsApp {
-		t.Errorf("Type = %v, want whatsapp", l.Type())
+	if l.Type() != TypeWhatsAppOutbound {
+		t.Errorf("Type = %v, want whatsapp_out", l.Type())
 	}
 	if l.State() != StateConnected {
 		t.Errorf("State = %v, want connected", l.State())
@@ -43,6 +43,9 @@ func TestWhatsAppLeg_InboundStartsRinging(t *testing.T) {
 	l := NewWhatsAppInboundLeg(nil, m, "15557654321", "15551234567", map[string]string{"X-App-ID": "myapp"}, []byte("v=0\r\n"), slog.Default())
 	defer l.Hangup(t.Context())
 
+	if l.Type() != TypeWhatsAppInbound {
+		t.Errorf("Type = %v, want whatsapp_in", l.Type())
+	}
 	if l.State() != StateRinging {
 		t.Errorf("State = %v, want ringing", l.State())
 	}
