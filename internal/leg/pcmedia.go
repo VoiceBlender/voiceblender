@@ -289,20 +289,35 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		return
 	}
 	buf := make([]byte, 1500)
-	var firstPacketLogged bool
+	var (
+		firstPacketLogged bool
+		pktCount          uint64
+		pktBytes          uint64
+		droppedFull       uint64
+		lastReport        = time.Now()
+	)
 	for {
 		if m.ctx.Err() != nil {
-			m.log.Info("pcmedia: handleTrack exiting (ctx done)")
+			m.log.Info("pcmedia: handleTrack exiting (ctx done)", "total_pkts", pktCount, "total_bytes", pktBytes)
 			return
 		}
 		n, _, err := track.Read(buf)
 		if err != nil {
-			m.log.Info("pcmedia: handleTrack exiting (track read error)", "error", err)
+			m.log.Info("pcmedia: handleTrack exiting (track read error)", "error", err, "total_pkts", pktCount, "total_bytes", pktBytes)
 			return
 		}
+		pktCount++
+		pktBytes += uint64(n)
 		if !firstPacketLogged {
 			firstPacketLogged = true
 			m.log.Info("pcmedia: first inbound RTP packet received", "bytes", n)
+		}
+		// Heartbeat: every 2 s summarise inbound traffic + drops. Silent
+		// when no packets arrived — the gap itself is the signal.
+		if now := time.Now(); now.Sub(lastReport) >= 2*time.Second {
+			m.log.Info("pcmedia: inbound RTP stats (last 2s)",
+				"pkts", pktCount, "bytes", pktBytes, "dropped_channel_full", droppedFull)
+			lastReport = now
 		}
 		pkt := &rtp.Packet{}
 		if err := pkt.Unmarshal(buf[:n]); err != nil {
@@ -316,7 +331,10 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		select {
 		case m.inFrames <- pcm:
 		default:
-			// Drop oldest to avoid blocking.
+			droppedFull++
+			// Drop oldest to avoid blocking. Happens when nothing reads the
+			// leg's AudioReader (no room join / no tap); Meta's audio is
+			// being discarded into the void.
 			select {
 			case <-m.inFrames:
 			default:
