@@ -97,8 +97,18 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 
 	mime := mimeTypeFor(cfg.Codec)
+	// Channel count here is SDP metadata only — it must match pion's default
+	// MediaEngine registration, otherwise SetLocalDescription fails with
+	// "codec is not supported by remote". Pion registers Opus as /48000/2
+	// and the G.711 family as /8000/1. The actual RTP payload is format-
+	// agnostic (Opus carries its own stereo/mono flag), so sending a
+	// mono-encoded stream under Channels=2 is fine.
+	channels := uint16(1)
+	if cfg.Codec == codec.CodecOpus {
+		channels = 2
+	}
 	localTrack, err := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{MimeType: mime, ClockRate: uint32(rate), Channels: 1},
+		webrtc.RTPCodecCapability{MimeType: mime, ClockRate: uint32(rate), Channels: channels},
 		"audio", "voiceblender",
 	)
 	if err != nil {
