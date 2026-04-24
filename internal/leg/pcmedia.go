@@ -150,25 +150,41 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		}
 	}
 
-	// Build the API. When telephone-event support is requested we have to
-	// supply our own MediaEngine + InterceptorRegistry — pion's codec
-	// registry is frozen once NewPeerConnection runs, so adding RFC 4733
-	// after the fact is impossible. Follow pion's canonical pattern
-	// exactly (register default interceptors against our MediaEngine)
-	// otherwise codec matching for Opus breaks at SetLocalDescription.
+	// Build the API. When telephone-event support is requested we need a
+	// custom MediaEngine — pion's registry is frozen once NewPeerConnection
+	// runs, so RFC 4733 can't be added after the fact. Crucially we do NOT
+	// call RegisterDefaultCodecs here: its Opus entry carries
+	// SDPFmtpLine="minptime=10;useinbandfec=1", which conflicts with
+	// Meta's "minptime=20;...". pion's matcher classifies that as a
+	// partial-only match for Opus while telephone-event matches exactly
+	// (empty-params fuzzy), and then mediaengine.updateFromRemoteDescription
+	// drops the partial set — so the generated answer ends up with PT 126
+	// only and our Opus track fails to Bind. Registering Opus with an
+	// empty SDPFmtpLine sidesteps the fmtp comparison so Opus is an exact
+	// match too; pion echoes the remote's fmtp in the answer regardless.
 	var api *webrtc.API
 	if cfg.EnableTelephoneEvent {
 		me := &webrtc.MediaEngine{}
-		if err := me.RegisterDefaultCodecs(); err != nil {
-			return nil, fmt.Errorf("register default codecs: %w", err)
+		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:    webrtc.MimeTypeOpus,
+				ClockRate:   48000,
+				Channels:    2,
+				SDPFmtpLine: "", // empty → match any remote Opus fmtp
+				RTCPFeedback: []webrtc.RTCPFeedback{
+					{Type: "transport-cc"},
+				},
+			},
+			PayloadType: 111,
+		}, webrtc.RTPCodecTypeAudio); err != nil {
+			return nil, fmt.Errorf("register opus: %w", err)
 		}
 		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
 			RTPCodecCapability: webrtc.RTPCodecCapability{
-				MimeType:  "audio/telephone-event",
-				ClockRate: 8000,
-				Channels:  0,
-				// Events 0-16 per RFC 4733 §3.10 (digits 0-9 + * # A-D + flash).
-				SDPFmtpLine: "0-16",
+				MimeType:    "audio/telephone-event",
+				ClockRate:   8000,
+				Channels:    0,
+				SDPFmtpLine: "",
 			},
 			PayloadType: 126,
 		}, webrtc.RTPCodecTypeAudio); err != nil {
