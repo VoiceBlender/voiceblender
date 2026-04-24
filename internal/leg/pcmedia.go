@@ -396,6 +396,13 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		m.log.Error("pcmedia: new decoder", "error", err, "codec", m.codec)
 		return
 	}
+	// CAPTURE ONCE: pion v4's TrackRemote.PayloadType() mutates on every
+	// incoming packet (checkAndUpdateTrack). Reading it inside the loop
+	// makes audioPT track the last-seen PT, so PT 126 DTMF packets would
+	// be classified as "audio" and fed to the Opus decoder. Pin the
+	// negotiated audio PT at track-establishment time so DTMF packets
+	// can be correctly routed to the RFC 4733 parser.
+	audioPT := uint8(track.PayloadType())
 	buf := make([]byte, 1500)
 	var (
 		firstPacketLogged bool
@@ -460,8 +467,6 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		if pktCount%500 == 0 && pktCount > 0 {
 			m.log.Info("pcmedia: PT distribution", "counts", fmt.Sprintf("%v", ptCounts))
 		}
-
-		audioPT := uint8(track.PayloadType())
 
 		// Interleaved DTMF: telephone-event on the same TrackRemote as
 		// Opus. RFC 4733 payload is 4 bytes; if it's longer, the first 4
