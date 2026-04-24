@@ -142,21 +142,33 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	pc.OnTrack(m.handleTrack)
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
+			m.log.Debug("pcmedia: ICE gathering complete")
 			m.mu.Lock()
 			m.iceDone = true
 			m.mu.Unlock()
 			return
 		}
 		init := c.ToJSON()
+		m.log.Debug("pcmedia: local ICE candidate", "candidate", init.Candidate)
 		m.mu.Lock()
 		m.iceCandidates = append(m.iceCandidates, init)
 		m.mu.Unlock()
 	})
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		m.log.Info("pcmedia: ICE connection state", "state", state.String())
 		if cfg.OnDisconnect != nil &&
 			(state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected) {
 			cfg.OnDisconnect(state.String())
 		}
+	})
+	pc.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
+		m.log.Info("pcmedia: ICE gathering state", "state", state.String())
+	})
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		m.log.Info("pcmedia: peer connection state", "state", state.String())
+	})
+	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
+		m.log.Debug("pcmedia: signaling state", "state", state.String())
 	})
 
 	return m, nil
@@ -259,12 +271,16 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 func (m *PCMedia) writeLoop() {
 	var seq uint16
 	var ts uint32
+	var firstWriteLogged bool
+	var writeErrCount int
 	silencePCM := make([]byte, m.frameSz*2)
 	ticker := time.NewTicker(time.Duration(m.ptimeMs) * time.Millisecond)
 	defer ticker.Stop()
 
 	pending := make([]byte, 0, m.frameSz*2*2)
 	frameBytes := m.frameSz * 2
+
+	m.log.Info("pcmedia: writeLoop started", "codec", m.codec, "ptime_ms", m.ptimeMs, "samples_per_frame", m.frameSz)
 
 	for {
 		select {
@@ -318,7 +334,21 @@ func (m *PCMedia) writeLoop() {
 			continue
 		}
 		if _, err := m.localTrack.Write(raw); err != nil {
-			return
+			writeErrCount++
+			if writeErrCount == 1 || writeErrCount%250 == 0 {
+				m.log.Warn("pcmedia: localTrack.Write failed", "error", err, "count", writeErrCount, "seq", seq)
+			}
+			// pion returns io.ErrClosedPipe once the track is done;
+			// stop if we're getting persistent errors.
+			if writeErrCount > 50 {
+				m.log.Error("pcmedia: writeLoop exiting after persistent write errors", "count", writeErrCount)
+				return
+			}
+			continue
+		}
+		if !firstWriteLogged {
+			firstWriteLogged = true
+			m.log.Info("pcmedia: first RTP packet written to localTrack", "seq", seq, "payload_bytes", len(encoded))
 		}
 		seq++
 		ts += uint32(m.frameSz)

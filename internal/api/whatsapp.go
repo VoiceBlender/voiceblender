@@ -36,12 +36,24 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		s.Log.Warn("whatsapp inbound: respond 100 failed", "call_id", callID, "error", err)
 	}
 
+	// Dump the inbound INVITE's SDP so we can see Meta's offer (codec PTs,
+	// ICE credentials, DTLS fingerprint, setup role, candidates).
+	s.Log.Info("whatsapp inbound: remote SDP offer", "call_id", callID, "sdp", "\n"+string(call.Request.Body()))
+
+	var legPtr *leg.WhatsAppLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:      codec.CodecOpus,
 		ICEServers: s.Config.ICEServers,
 		RTPPortMin: uint16(s.Config.RTPPortMin),
 		RTPPortMax: uint16(s.Config.RTPPortMax),
 		Log:        s.Log,
+		OnDisconnect: func(reason string) {
+			s.Log.Warn("whatsapp inbound: ICE disconnect", "call_id", callID, "reason", reason)
+			if legPtr != nil && legPtr.State() != leg.StateHungUp {
+				s.cleanupLeg(legPtr)
+				s.publishDisconnect(legPtr, "ice_"+reason)
+			}
+		},
 	})
 	if err != nil {
 		s.Log.Error("whatsapp inbound: create PCMedia", "call_id", callID, "error", err)
@@ -102,6 +114,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 
 	headers := sipHeadersFromRequest(call.Request)
 	l := leg.NewWhatsAppInboundLeg(call.Dialog, media, call.From, call.To, headers, finalSDP, s.Log)
+	legPtr = l
 	l.SetSIPResponseLogger(s.SIPEngine)
 	if appID, ok := headers["X-App-ID"]; ok {
 		l.SetAppID(appID)
