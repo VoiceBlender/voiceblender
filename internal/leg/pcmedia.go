@@ -382,10 +382,10 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		"channels", track.Codec().Channels,
 	)
 
-	// Pion v4 creates a separate TrackRemote per negotiated PT on the same
-	// m-line, so DTMF arrives on its own track, never interleaved with
-	// Opus. Branch at entry so we don't waste cycles in the Opus decoder
-	// or the speaking tap on DTMF packets.
+	// Pion sometimes fires OnTrack separately for telephone-event even
+	// though in practice with WhatsApp's single-SSRC offer it doesn't.
+	// Keep the dedicated handler as a defensive fallback for the case
+	// where a future pion version (or another ice-lite peer) splits them.
 	if strings.EqualFold(mime, "audio/telephone-event") {
 		m.handleDTMFTrack(track)
 		return
@@ -403,7 +403,14 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		pktBytes          uint64
 		droppedFull       uint64
 		lastReport        = time.Now()
+		// Debug: log first N packets per unique PT, and the running PT
+		// distribution. Decisive for DTMF debugging — we can prove
+		// whether PT 126 packets arrive at all, and see their payload
+		// bytes to verify RFC 4733 parsing.
+		ptFirstLogs = map[uint8]int{}
+		ptCounts    = map[uint8]uint64{}
 	)
+	const ptLogFirstN = 3
 	for {
 		if m.ctx.Err() != nil {
 			m.log.Info("pcmedia: handleTrack exiting (ctx done)", "total_pkts", pktCount, "total_bytes", pktBytes)
@@ -432,10 +439,51 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			continue
 		}
 
-		// Skip packets whose PT doesn't match the negotiated audio codec
-		// (e.g. comfort noise, unrecognised PTs). DTMF is handled on its
-		// own TrackRemote via handleDTMFTrack.
-		if pkt.PayloadType != uint8(track.PayloadType()) {
+		// Per-PT packet logging for debugging. Emits a hex dump of the
+		// first N packets seen for each unique PT, and the running
+		// distribution every 500 packets. Tight bound so it can't flood.
+		ptCounts[pkt.PayloadType]++
+		if ptFirstLogs[pkt.PayloadType] < ptLogFirstN {
+			ptFirstLogs[pkt.PayloadType]++
+			head := pkt.Payload
+			if len(head) > 32 {
+				head = head[:32]
+			}
+			m.log.Info("pcmedia: RTP packet (sample)",
+				"pt", pkt.PayloadType,
+				"seq", pkt.SequenceNumber,
+				"ts", pkt.Timestamp,
+				"payload_len", len(pkt.Payload),
+				"payload_hex", fmt.Sprintf("%x", head),
+			)
+		}
+		if pktCount%500 == 0 && pktCount > 0 {
+			m.log.Info("pcmedia: PT distribution", "counts", fmt.Sprintf("%v", ptCounts))
+		}
+
+		audioPT := uint8(track.PayloadType())
+
+		// Interleaved DTMF: if Meta is delivering telephone-event on the
+		// same TrackRemote as Opus (same SSRC, different PT), decode it
+		// as RFC 4733 here. Standard DTMF payloads are exactly 4 bytes;
+		// anything larger is a redundancy-coded event we don't need yet.
+		if pkt.PayloadType != audioPT {
+			if len(pkt.Payload) == 4 {
+				if ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload); derr == nil {
+					if ev.EndOfEvent && pkt.Timestamp != m.lastDTMFTS {
+						m.lastDTMFTS = pkt.Timestamp
+						if digit, ok := sipmod.DTMFEventToDigit(ev.Event); ok {
+							m.log.Info("pcmedia: DTMF digit received", "digit", string(digit), "pt", pkt.PayloadType)
+							m.tapMu.RLock()
+							cb := m.onDTMF
+							m.tapMu.RUnlock()
+							if cb != nil {
+								cb(digit)
+							}
+						}
+					}
+				}
+			}
 			continue
 		}
 
@@ -602,18 +650,39 @@ func (m *PCMedia) writeLoop() {
 }
 
 // pionLogAdapter bridges pion's LeveledLogger to slog so we see pion's
-// internal transport-layer traces (ICE, DTLS, SRTP decrypt errors).
+// internal transport-layer traces (DTLS, SRTP decrypt errors).
+// pion's ICE scope spams ping/keepalive/response traces at Debug/Trace;
+// we drop those entirely to keep the log readable. Warn and above still
+// pass through so failures are visible.
 type pionLogAdapter struct {
 	log   *slog.Logger
 	scope string
 }
 
-func (a *pionLogAdapter) Trace(msg string) { a.log.Debug("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) quiet() bool { return a.scope == "ice" }
+
+func (a *pionLogAdapter) Trace(msg string) {
+	if a.quiet() {
+		return
+	}
+	a.log.Debug("pion: "+a.scope, "msg", msg)
+}
 func (a *pionLogAdapter) Tracef(f string, args ...interface{}) {
+	if a.quiet() {
+		return
+	}
 	a.log.Debug("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
 }
-func (a *pionLogAdapter) Debug(msg string) { a.log.Debug("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Debug(msg string) {
+	if a.quiet() {
+		return
+	}
+	a.log.Debug("pion: "+a.scope, "msg", msg)
+}
 func (a *pionLogAdapter) Debugf(f string, args ...interface{}) {
+	if a.quiet() {
+		return
+	}
 	a.log.Debug("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
 }
 func (a *pionLogAdapter) Info(msg string) { a.log.Info("pion: "+a.scope, "msg", msg) }
