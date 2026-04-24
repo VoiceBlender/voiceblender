@@ -14,6 +14,7 @@ const (
 	TypeSIPInbound  LegType = "sip_inbound"
 	TypeSIPOutbound LegType = "sip_outbound"
 	TypeWebRTC      LegType = "webrtc"
+	TypeWhatsApp    LegType = "whatsapp"
 )
 
 type LegState string

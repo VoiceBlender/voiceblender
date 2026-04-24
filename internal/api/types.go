@@ -38,11 +38,17 @@ type CreateLegRequest struct {
 	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+
+	// WhatsApp-only fields. Ignored for other leg types.
+	To       string `json:"to,omitempty"`       // destination phone number (E.164, with or without '+')
+	Password string `json:"password,omitempty"` // Meta-issued digest auth password for the business number in From
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":             {Description: "Leg type", Enum: []string{"sip"}},
-	"uri":              {Description: "SIP URI to dial"},
+	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp"}},
+	"uri":              {Description: "SIP URI to dial (sip legs only)"},
+	"to":               {Description: "Destination phone number for WhatsApp legs (E.164, with or without '+')"},
+	"password":         {Description: "Meta-issued digest auth password for WhatsApp legs. 'from' is the business phone number (E.164 without '+')."},
 	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},

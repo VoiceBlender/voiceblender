@@ -77,8 +77,8 @@ Originate an outbound SIP call.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | string | yes | `"sip"` |
-| `uri` | string | yes | SIP URI to dial |
+| `type` | string | yes | `"sip"` or `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below) |
+| `uri` | string | yes (sip) | SIP URI to dial |
 | `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
@@ -126,6 +126,63 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
 **Errors:**
 - `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
+
+---
+
+### WhatsApp Business Calling
+
+VoiceBlender terminates calls to and from WhatsApp's SIP calling service. The signalling layer is SIP over TLS with HTTP Digest auth; the media layer is Opus over ICE + DTLS-SRTP (pion). Meta mandates both and does **not** support `re-INVITE`, so these operations return **409** for WhatsApp legs: `hold`, `unhold`, `transfer`.
+
+**Server prerequisites** (see README env var table):
+- `SIP_TLS_PORT=5061`
+- `SIP_TLS_CERT` / `SIP_TLS_KEY` pointing at a **CA-signed** certificate (Meta rejects self-signed) whose SAN matches the public FQDN you registered with Meta.
+- Operator-side: the SIP endpoint must be registered via Meta's Graph API (`POST /{phone-number-id}/settings`). VoiceBlender does not perform this registration itself.
+
+#### Outbound: POST /v1/legs (type=whatsapp)
+
+Originate a call to a WhatsApp user.
+
+**Request:**
+
+```json
+{
+  "type": "whatsapp",
+  "to": "+15557654321",
+  "from": "15551234567",
+  "password": "meta-issued-digest-password",
+  "room_id": "room-123",
+  "app_id": "myapp"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | yes | `"whatsapp"` |
+| `to` | string | yes | Destination phone number (E.164, with or without `+`). |
+| `from` | string | yes | Business phone number used as both the caller ID and the digest auth username. E.164 without `+`. |
+| `password` | string | yes | Meta-issued digest password for the business number. |
+| `room_id` | string | no | Room ID to auto-add the leg to once connected. Created on the fly if it doesn't exist. |
+| `app_id` | string | no | Application identifier for event stream filtering. |
+
+The INVITE is sent to `sips:{to}@wa.meta.vc:5061` with an SDP offer that advertises ICE + DTLS-SRTP + Opus/48000. The request blocks until ICE gathering finishes (Meta does not support trickle over SIP) and sipgo has completed the digest challenge round-trip, so expect 200–500 ms of latency on a healthy network.
+
+**Response:** `201 Created` — Leg object in `connected` state (no `ringing` phase is exposed for outbound; the call is either connected or the request fails).
+
+**Errors:**
+- `400` — missing `to` / `from` / `password`.
+- `503` — `SIP_TLS_PORT` not configured on this instance.
+- `502` — Meta rejected the INVITE or returned an SDP answer that could not be applied.
+- `504` — client disconnected while ICE was gathering.
+
+#### Inbound
+
+INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) are routed to the WhatsApp handler automatically. The leg is created in `ringing` state, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
+
+The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `/tts`, and `/agent/*` endpoints all apply. The following explicitly return **409 Conflict**:
+
+- `POST /v1/legs/{id}/hold`
+- `DELETE /v1/legs/{id}/hold`
+- `POST /v1/legs/{id}/transfer`
 
 ---
 

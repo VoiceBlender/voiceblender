@@ -63,6 +63,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse optional SIP TLS port
+	var sipTLSPort int
+	if cfg.SIPTLSPort != "" {
+		sipTLSPort, err = strconv.Atoi(cfg.SIPTLSPort)
+		if err != nil {
+			log.Error("invalid SIP_TLS_PORT", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	// RTP port allocator (nil when range not configured)
 	portAlloc, err := sipmod.NewPortAllocator(cfg.RTPPortMin, cfg.RTPPortMax)
 	if err != nil {
@@ -79,6 +89,9 @@ func main() {
 		ListenIP:      cfg.SIPListenIP,
 		ExternalIP:    cfg.SIPExternalIP,
 		BindPort:      sipPort,
+		TLSBindPort:   sipTLSPort,
+		TLSCertPath:   cfg.SIPTLSCert,
+		TLSKeyPath:    cfg.SIPTLSKey,
 		SIPHost:       cfg.SIPHost,
 		Codecs:        []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
 		Log:           log,
@@ -153,7 +166,11 @@ func main() {
 
 	// SIP server
 	g.Go(func() error {
-		log.Info("starting SIP server", "bind", cfg.SIPBindIP, "port", sipPort)
+		if sipTLSPort > 0 {
+			log.Info("starting SIP server", "bind", cfg.SIPBindIP, "udp_port", sipPort, "tls_port", sipTLSPort)
+		} else {
+			log.Info("starting SIP server", "bind", cfg.SIPBindIP, "port", sipPort)
+		}
 		return engine.Serve(gCtx)
 	})
 

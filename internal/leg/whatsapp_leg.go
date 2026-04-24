@@ -1,0 +1,255 @@
+package leg
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/emiago/sipgo"
+	"github.com/google/uuid"
+)
+
+// WhatsAppLeg is a call leg terminated to WhatsApp Business Calling. Signalling
+// is SIP over TLS with digest auth; media is Opus over ICE + DTLS-SRTP,
+// delegated to PCMedia. Hold, unhold and blind/attended transfer are
+// explicitly unsupported because Meta's SIP implementation rejects re-INVITEs.
+type WhatsAppLeg struct {
+	id    string
+	state LegState
+	mu    sync.RWMutex
+
+	media *PCMedia
+
+	// Exactly one of serverDialog / clientDialog is set: inbound calls hold a
+	// UAS dialog (we answer the INVITE); outbound calls hold a UAC dialog.
+	serverDialog *sipgo.DialogServerSession
+	clientDialog *sipgo.DialogClientSession
+
+	from       string
+	to         string
+	sipHeaders map[string]string
+
+	roomID     string
+	appID      string
+	muted      atomic.Bool
+	deaf       atomic.Bool
+	acceptDTMF atomic.Bool
+
+	createdAt  time.Time
+	answeredAt time.Time
+
+	// Inbound only: AnswerCh unblocks HandleInboundCall once the caller issues
+	// POST /v1/legs/{id}/answer. AnswerSDP is the SDP answer to send in the 200 OK.
+	answerCh  chan struct{}
+	answerSDP []byte
+
+	onDTMF func(digit rune)
+	log    *slog.Logger
+}
+
+// NewWhatsAppInboundLeg wraps an already-accepted inbound UAS dialog and the
+// PCMedia that has negotiated the SDP answer. The answer is NOT sent here;
+// the 200 OK is sent by Answer() so REST callers control when to pick up.
+func NewWhatsAppInboundLeg(dialog *sipgo.DialogServerSession, media *PCMedia, from, to string, headers map[string]string, answerSDP []byte, log *slog.Logger) *WhatsAppLeg {
+	l := &WhatsAppLeg{
+		id:           uuid.New().String(),
+		state:        StateRinging,
+		media:        media,
+		serverDialog: dialog,
+		from:         from,
+		to:           to,
+		sipHeaders:   headers,
+		createdAt:    time.Now(),
+		answerCh:     make(chan struct{}),
+		answerSDP:    answerSDP,
+		log:          log,
+	}
+	l.acceptDTMF.Store(true)
+	return l
+}
+
+// NewWhatsAppOutboundLeg wraps a completed outbound UAC dialog (200 OK + ACK
+// already sent) and the PCMedia whose remote description has been applied.
+// The leg is created in StateConnected.
+func NewWhatsAppOutboundLeg(dialog *sipgo.DialogClientSession, media *PCMedia, from, to string, log *slog.Logger) *WhatsAppLeg {
+	now := time.Now()
+	l := &WhatsAppLeg{
+		id:           uuid.New().String(),
+		state:        StateConnected,
+		media:        media,
+		clientDialog: dialog,
+		from:         from,
+		to:           to,
+		createdAt:    now,
+		answeredAt:   now,
+		log:          log,
+	}
+	l.acceptDTMF.Store(true)
+	media.Start()
+	return l
+}
+
+// Media returns the underlying PCMedia for ICE trickle / diagnostics.
+func (l *WhatsAppLeg) Media() *PCMedia { return l.media }
+
+// AnswerCh signals that a REST Answer call has arrived (inbound only).
+func (l *WhatsAppLeg) AnswerCh() <-chan struct{} { return l.answerCh }
+
+// ServerDialog returns the UAS dialog for inbound calls (nil for outbound).
+func (l *WhatsAppLeg) ServerDialog() *sipgo.DialogServerSession { return l.serverDialog }
+
+// ClientDialog returns the UAC dialog for outbound calls (nil for inbound).
+func (l *WhatsAppLeg) ClientDialog() *sipgo.DialogClientSession { return l.clientDialog }
+
+func (l *WhatsAppLeg) ID() string      { return l.id }
+func (l *WhatsAppLeg) Type() LegType   { return TypeWhatsApp }
+func (l *WhatsAppLeg) SampleRate() int { return l.media.SampleRate() }
+
+func (l *WhatsAppLeg) State() LegState {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.state
+}
+
+func (l *WhatsAppLeg) Context() context.Context { return l.media.Context() }
+
+func (l *WhatsAppLeg) RoomID() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.roomID
+}
+
+func (l *WhatsAppLeg) SetRoomID(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.roomID = id
+}
+
+func (l *WhatsAppLeg) AppID() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.appID
+}
+
+func (l *WhatsAppLeg) SetAppID(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.appID = id
+}
+
+func (l *WhatsAppLeg) IsMuted() bool              { return l.muted.Load() }
+func (l *WhatsAppLeg) SetMuted(m bool)            { l.muted.Store(m) }
+func (l *WhatsAppLeg) IsDeaf() bool               { return l.deaf.Load() }
+func (l *WhatsAppLeg) SetDeaf(d bool)             { l.deaf.Store(d) }
+func (l *WhatsAppLeg) AcceptDTMF() bool           { return l.acceptDTMF.Load() }
+func (l *WhatsAppLeg) SetAcceptDTMF(a bool)       { l.acceptDTMF.Store(a) }
+func (l *WhatsAppLeg) SetSpeakingTap(_ io.Writer) {}
+func (l *WhatsAppLeg) ClearSpeakingTap()          {}
+func (l *WhatsAppLeg) IsHeld() bool               { return false }
+
+func (l *WhatsAppLeg) CreatedAt() time.Time  { return l.createdAt }
+func (l *WhatsAppLeg) AnsweredAt() time.Time { return l.answeredAt }
+func (l *WhatsAppLeg) SIPHeaders() map[string]string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make(map[string]string, len(l.sipHeaders))
+	for k, v := range l.sipHeaders {
+		out[k] = v
+	}
+	return out
+}
+func (l *WhatsAppLeg) RTPStats() RTPStats { return RTPStats{} }
+
+// From returns the caller identity (remote for inbound, business number for outbound).
+func (l *WhatsAppLeg) From() string { return l.from }
+
+// To returns the callee identity.
+func (l *WhatsAppLeg) To() string { return l.to }
+
+// RequestAnswer signals from the REST layer that the caller should be answered
+// (inbound only). Second calls are no-ops.
+func (l *WhatsAppLeg) RequestAnswer() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.answerCh == nil {
+		return fmt.Errorf("outbound leg: nothing to answer")
+	}
+	if l.state != StateRinging && l.state != StateEarlyMedia {
+		return fmt.Errorf("leg is %s, expected ringing", l.state)
+	}
+	select {
+	case <-l.answerCh:
+		return fmt.Errorf("already answering")
+	default:
+		close(l.answerCh)
+	}
+	return nil
+}
+
+// Answer finalises an inbound call by sending the 200 OK with the SDP answer
+// that was prepared during INVITE processing.
+func (l *WhatsAppLeg) Answer(_ context.Context) error {
+	l.mu.Lock()
+	if l.answerCh == nil {
+		l.mu.Unlock()
+		return fmt.Errorf("outbound leg: Answer not applicable")
+	}
+	if l.state == StateConnected {
+		l.mu.Unlock()
+		return nil
+	}
+	dialog := l.serverDialog
+	sdp := l.answerSDP
+	l.mu.Unlock()
+
+	if dialog != nil {
+		if err := dialog.RespondSDP(sdp); err != nil {
+			return fmt.Errorf("respond 200 OK: %w", err)
+		}
+	}
+
+	l.mu.Lock()
+	l.state = StateConnected
+	l.answeredAt = time.Now()
+	l.mu.Unlock()
+
+	l.media.Start()
+	return nil
+}
+
+func (l *WhatsAppLeg) Hangup(ctx context.Context) error {
+	l.mu.Lock()
+	if l.state == StateHungUp {
+		l.mu.Unlock()
+		return nil
+	}
+	l.state = StateHungUp
+	server := l.serverDialog
+	client := l.clientDialog
+	l.mu.Unlock()
+
+	if server != nil {
+		_ = server.Bye(ctx)
+	}
+	if client != nil {
+		_ = client.Bye(ctx)
+	}
+	return l.media.Close()
+}
+
+func (l *WhatsAppLeg) OnDTMF(f func(digit rune)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onDTMF = f
+}
+
+func (l *WhatsAppLeg) SendDTMF(_ context.Context, _ string) error {
+	return fmt.Errorf("DTMF send over WhatsApp not yet implemented")
+}
+
+func (l *WhatsAppLeg) AudioReader() io.Reader { return l.media.AudioReader() }
+func (l *WhatsAppLeg) AudioWriter() io.Writer { return l.media.AudioWriter() }

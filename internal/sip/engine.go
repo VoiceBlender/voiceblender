@@ -2,6 +2,7 @@ package sip
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"golang.org/x/sync/errgroup"
 )
 
 // containsToken checks if a comma-separated header value contains a token
@@ -29,6 +31,9 @@ type EngineConfig struct {
 	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
 	ExternalIP    string // Public IP override for NAT/Docker (used in Contact/SDP/Via when set)
 	BindPort      int
+	TLSBindPort   int    // 0 = TLS disabled
+	TLSCertPath   string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
+	TLSKeyPath    string // private key (privkey.pem) — required when TLSBindPort > 0
 	SIPHost       string
 	Codecs        []codec.CodecType
 	Log           *slog.Logger
@@ -51,6 +56,9 @@ type Engine struct {
 	bindIP     string // externally-reachable IP (for SDP/Contact)
 	listenIP   string // original bind address (for ListenAndServe)
 	bindPort   int
+	tlsPort    int // 0 = TLS disabled
+	tlsCert    string
+	tlsKey     string
 	sipHost    string
 	portAlloc  *PortAllocator
 	log        *slog.Logger
@@ -115,10 +123,16 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		advertiseIP = cfg.ExternalIP
 	}
 
-	ua, err := sipgo.NewUA(
+	uaOpts := []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(cfg.SIPHost),
 		sipgo.WithUserAgentHostname(advertiseIP),
-	)
+	}
+	if cfg.TLSBindPort != 0 {
+		// Needed for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's
+		// own cert is still supplied separately via ListenAndServeTLS.
+		uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	}
+	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create UA: %w", err)
 	}
@@ -146,6 +160,15 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		},
 	}
 
+	if cfg.TLSBindPort != 0 {
+		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
+			return nil, fmt.Errorf("TLS enabled (port %d) but TLSCertPath/TLSKeyPath not set", cfg.TLSBindPort)
+		}
+		if _, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+			return nil, fmt.Errorf("load TLS cert: %w", err)
+		}
+	}
+
 	e := &Engine{
 		ua:        ua,
 		server:    server,
@@ -156,6 +179,9 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		bindIP:    advertiseIP,
 		listenIP:  listenIP,
 		bindPort:  cfg.BindPort,
+		tlsPort:   cfg.TLSBindPort,
+		tlsCert:   cfg.TLSCertPath,
+		tlsKey:    cfg.TLSKeyPath,
 		sipHost:   cfg.SIPHost,
 		portAlloc: cfg.PortAllocator,
 		log:       cfg.Log,
@@ -500,11 +526,44 @@ func (e *Engine) handleNotify(req *sip.Request, tx sip.ServerTransaction) {
 	e.onNotify(callID, code, reason, terminated)
 }
 
-// Serve starts the SIP server and blocks until ctx is cancelled.
+// Serve starts the SIP server and blocks until ctx is cancelled. When
+// TLSBindPort is configured it runs UDP and TLS listeners concurrently; if
+// either fails the other is torn down via ctx cancellation.
 func (e *Engine) Serve(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", e.listenIP, e.bindPort)
-	return e.server.ListenAndServe(ctx, "udp", addr)
+	udpAddr := fmt.Sprintf("%s:%d", e.listenIP, e.bindPort)
+
+	if e.tlsPort == 0 {
+		return e.server.ListenAndServe(ctx, "udp", udpAddr)
+	}
+
+	cert, err := tls.LoadX509KeyPair(e.tlsCert, e.tlsKey)
+	if err != nil {
+		return fmt.Errorf("load TLS cert: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	tlsAddr := fmt.Sprintf("%s:%d", e.listenIP, e.tlsPort)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		if err := e.server.ListenAndServe(gCtx, "udp", udpAddr); err != nil && gCtx.Err() == nil {
+			return fmt.Errorf("UDP listener: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if err := e.server.ListenAndServeTLS(gCtx, "tls", tlsAddr, tlsCfg); err != nil && gCtx.Err() == nil {
+			return fmt.Errorf("TLS listener: %w", err)
+		}
+		return nil
+	})
+	return g.Wait()
 }
+
+// TLSPort returns the configured SIP TLS port (0 = disabled).
+func (e *Engine) TLSPort() int { return e.tlsPort }
 
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
