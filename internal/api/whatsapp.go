@@ -92,6 +92,23 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		return
 	}
 
+	// Inventory pion's view of the PC: one entry per transceiver with its
+	// direction, mid and the receiver's codec/ssrc. If the inbound Opus
+	// track isn't wired here, OnTrack will never fire and we won't receive
+	// audio no matter what the network does.
+	for i, tr := range pc.GetTransceivers() {
+		dir := tr.Direction().String()
+		mid := tr.Mid()
+		var recvCodec, recvSSRC string
+		if r := tr.Receiver(); r != nil {
+			if t := r.Track(); t != nil {
+				recvCodec = t.Codec().MimeType
+				recvSSRC = fmt.Sprintf("%d", t.SSRC())
+			}
+		}
+		s.Log.Info("whatsapp inbound: transceiver", "call_id", callID, "idx", i, "direction", dir, "mid", mid, "recv_codec", recvCodec, "recv_ssrc", recvSSRC)
+	}
+
 	// Send 180 Ringing immediately — ICE gathering can take several seconds
 	// on hosts with multiple interfaces, and Meta must see a provisional
 	// response well before Timer B expires.

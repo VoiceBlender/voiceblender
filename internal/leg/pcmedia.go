@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/pion/logging"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
@@ -92,26 +93,20 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 	pcCfg := webrtc.Configuration{ICEServers: iceServers}
 
-	// Build a SettingEngine only when we need non-default behaviour (port
-	// range or forced DTLS role). Otherwise use the package-level default
-	// API so WebRTC browser peers keep the zero-config path.
-	needCustomSE := (cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0) || cfg.AnsweringDTLSRole != 0
-	var pc *webrtc.PeerConnection
-	if needCustomSE {
-		se := webrtc.SettingEngine{}
-		if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
-			se.SetEphemeralUDPPortRange(cfg.RTPPortMin, cfg.RTPPortMax)
-		}
-		if cfg.AnsweringDTLSRole != 0 {
-			if err := se.SetAnsweringDTLSRole(cfg.AnsweringDTLSRole); err != nil {
-				return nil, fmt.Errorf("set DTLS role: %w", err)
-			}
-		}
-		api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
-		pc, err = api.NewPeerConnection(pcCfg)
-	} else {
-		pc, err = webrtc.NewPeerConnection(pcCfg)
+	// Always build a custom SettingEngine so pion's internal transport
+	// traces (ICE, DTLS, SRTP decrypt errors) flow into our slog handler.
+	se := webrtc.SettingEngine{}
+	se.LoggerFactory = &pionLogFactory{log: cfg.Log}
+	if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
+		se.SetEphemeralUDPPortRange(cfg.RTPPortMin, cfg.RTPPortMax)
 	}
+	if cfg.AnsweringDTLSRole != 0 {
+		if err := se.SetAnsweringDTLSRole(cfg.AnsweringDTLSRole); err != nil {
+			return nil, fmt.Errorf("set DTLS role: %w", err)
+		}
+	}
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	pc, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
 		return nil, fmt.Errorf("new peer connection: %w", err)
 	}
@@ -416,6 +411,40 @@ func (m *PCMedia) writeLoop() {
 		seq++
 		ts += uint32(m.frameSz)
 	}
+}
+
+// pionLogAdapter bridges pion's LeveledLogger to slog so we see pion's
+// internal transport-layer traces (ICE, DTLS, SRTP decrypt errors).
+type pionLogAdapter struct {
+	log   *slog.Logger
+	scope string
+}
+
+func (a *pionLogAdapter) Trace(msg string) { a.log.Debug("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Tracef(f string, args ...interface{}) {
+	a.log.Debug("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
+}
+func (a *pionLogAdapter) Debug(msg string) { a.log.Debug("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Debugf(f string, args ...interface{}) {
+	a.log.Debug("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
+}
+func (a *pionLogAdapter) Info(msg string) { a.log.Info("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Infof(f string, args ...interface{}) {
+	a.log.Info("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
+}
+func (a *pionLogAdapter) Warn(msg string) { a.log.Warn("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Warnf(f string, args ...interface{}) {
+	a.log.Warn("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
+}
+func (a *pionLogAdapter) Error(msg string) { a.log.Error("pion: "+a.scope, "msg", msg) }
+func (a *pionLogAdapter) Errorf(f string, args ...interface{}) {
+	a.log.Error("pion: "+a.scope, "msg", fmt.Sprintf(f, args...))
+}
+
+type pionLogFactory struct{ log *slog.Logger }
+
+func (f *pionLogFactory) NewLogger(scope string) logging.LeveledLogger {
+	return &pionLogAdapter{log: f.log, scope: scope}
 }
 
 func mimeTypeFor(c codec.CodecType) string {
