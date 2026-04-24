@@ -284,8 +284,11 @@ func (l *WhatsAppLeg) Hangup(ctx context.Context) error {
 
 func (l *WhatsAppLeg) OnDTMF(f func(digit rune)) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.onDTMF = f
+	l.mu.Unlock()
+	// Forward to PCMedia so the callback fires when Meta sends
+	// RFC 4733 telephone-event packets.
+	l.media.SetOnDTMF(f)
 }
 
 func (l *WhatsAppLeg) SendDTMF(_ context.Context, _ string) error {

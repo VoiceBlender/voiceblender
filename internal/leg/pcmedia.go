@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -37,6 +38,12 @@ type PCMediaConfig struct {
 	// Business Calling — otherwise both sides wait for a ClientHello that
 	// never arrives and DTLS stalls.
 	AnsweringDTLSRole webrtc.DTLSRole
+
+	// EnableTelephoneEvent registers audio/telephone-event (PT 126,
+	// clock 8000, events 0-16) in the MediaEngine so the SDP answer
+	// advertises RFC 4733 DTMF. Inbound telephone-event packets are
+	// decoded in handleTrack and forwarded via the OnDTMF callback.
+	EnableTelephoneEvent bool
 }
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
@@ -70,6 +77,11 @@ type PCMedia struct {
 	tapMu       sync.RWMutex
 	speakingTap io.Writer
 
+	// DTMF callback invoked on end-of-event for inbound telephone-event
+	// packets. Guarded by tapMu for the same reason.
+	onDTMF     func(digit rune)
+	lastDTMFTS uint32
+
 	started bool
 	log     *slog.Logger
 }
@@ -87,6 +99,15 @@ func (m *PCMedia) SetSpeakingTap(w io.Writer) {
 func (m *PCMedia) ClearSpeakingTap() {
 	m.tapMu.Lock()
 	m.speakingTap = nil
+	m.tapMu.Unlock()
+}
+
+// SetOnDTMF installs a callback invoked once per inbound DTMF digit
+// (end-of-event, deduplicated against RFC 4733 retransmits). Only
+// effective when PCMediaConfig.EnableTelephoneEvent was set.
+func (m *PCMedia) SetOnDTMF(fn func(digit rune)) {
+	m.tapMu.Lock()
+	m.onDTMF = fn
 	m.tapMu.Unlock()
 }
 
@@ -127,7 +148,27 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 			return nil, fmt.Errorf("set DTLS role: %w", err)
 		}
 	}
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+
+	me := &webrtc.MediaEngine{}
+	if err := me.RegisterDefaultCodecs(); err != nil {
+		return nil, fmt.Errorf("register default codecs: %w", err)
+	}
+	if cfg.EnableTelephoneEvent {
+		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:  "audio/telephone-event",
+				ClockRate: 8000,
+				Channels:  0,
+				// Events 0-16 per RFC 4733 §3.10 (digits + * # A-D + flash).
+				SDPFmtpLine: "0-16",
+			},
+			PayloadType: 126,
+		}, webrtc.RTPCodecTypeAudio); err != nil {
+			return nil, fmt.Errorf("register telephone-event: %w", err)
+		}
+	}
+
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(se), webrtc.WithMediaEngine(me))
 	pc, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
 		return nil, fmt.Errorf("new peer connection: %w", err)
@@ -345,6 +386,38 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		if err := pkt.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
+
+		audioPT := uint8(track.PayloadType())
+
+		// RFC 4733 telephone-event: treat as DTMF, not audio. Meta uses
+		// PT 126 in its WhatsApp offer; other ice-lite peers may pick a
+		// different dynamic PT — sniff the 4-byte payload shape instead
+		// of hard-coding. Audio frames for Opus are ~60–300 bytes; a
+		// 4-byte payload with the upper event bits cleared is DTMF.
+		if pkt.PayloadType != audioPT && len(pkt.Payload) == 4 {
+			ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload)
+			if derr == nil {
+				if ev.EndOfEvent && pkt.Timestamp != m.lastDTMFTS {
+					m.lastDTMFTS = pkt.Timestamp
+					if digit, ok := sipmod.DTMFEventToDigit(ev.Event); ok {
+						m.tapMu.RLock()
+						cb := m.onDTMF
+						m.tapMu.RUnlock()
+						if cb != nil {
+							cb(digit)
+						}
+					}
+				}
+				continue
+			}
+		}
+		// Skip packets whose PT doesn't match the negotiated audio codec
+		// (e.g. comfort noise, unrecognised PTs). Without this check we
+		// would feed them to the Opus decoder and spam decode errors.
+		if pkt.PayloadType != audioPT {
+			continue
+		}
+
 		samples, err := dec.Decode(pkt.Payload)
 		if err != nil || len(samples) == 0 {
 			continue
