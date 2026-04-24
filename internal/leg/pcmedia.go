@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -138,8 +137,6 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 	pcCfg := webrtc.Configuration{ICEServers: iceServers}
 
-	// Always build a custom SettingEngine so pion's internal transport
-	// traces (ICE, DTLS, SRTP decrypt errors) flow into our slog handler.
 	se := webrtc.SettingEngine{}
 	se.LoggerFactory = &pionLogFactory{log: cfg.Log}
 	if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
@@ -151,30 +148,21 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		}
 	}
 
-	// Build the API. When telephone-event support is requested we need a
-	// custom MediaEngine — pion's registry is frozen once NewPeerConnection
-	// runs, so RFC 4733 can't be added after the fact. Crucially we do NOT
-	// call RegisterDefaultCodecs here: its Opus entry carries
-	// SDPFmtpLine="minptime=10;useinbandfec=1", which conflicts with
-	// Meta's "minptime=20;...". pion's matcher classifies that as a
-	// partial-only match for Opus while telephone-event matches exactly
-	// (empty-params fuzzy), and then mediaengine.updateFromRemoteDescription
-	// drops the partial set — so the generated answer ends up with PT 126
-	// only and our Opus track fails to Bind. Registering Opus with an
-	// empty SDPFmtpLine sidesteps the fmtp comparison so Opus is an exact
-	// match too; pion echoes the remote's fmtp in the answer regardless.
+	// Opus is registered with an empty SDPFmtpLine so any remote fmtp
+	// fuzzy-matches exactly. pion's default Opus entry ("minptime=10;
+	// useinbandfec=1") otherwise conflicts with Meta's "minptime=20;..."
+	// and pion drops Opus from the negotiated set when telephone-event
+	// is also present.
 	var api *webrtc.API
 	if cfg.EnableTelephoneEvent {
 		me := &webrtc.MediaEngine{}
 		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
 			RTPCodecCapability: webrtc.RTPCodecCapability{
-				MimeType:    webrtc.MimeTypeOpus,
-				ClockRate:   48000,
-				Channels:    2,
-				SDPFmtpLine: "", // empty → match any remote Opus fmtp
-				RTCPFeedback: []webrtc.RTCPFeedback{
-					{Type: "transport-cc"},
-				},
+				MimeType:     webrtc.MimeTypeOpus,
+				ClockRate:    48000,
+				Channels:     2,
+				SDPFmtpLine:  "",
+				RTCPFeedback: []webrtc.RTCPFeedback{{Type: "transport-cc"}},
 			},
 			PayloadType: 111,
 		}, webrtc.RTPCodecTypeAudio); err != nil {
@@ -255,14 +243,12 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	pc.OnTrack(m.handleTrack)
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
-			m.log.Debug("pcmedia: ICE gathering complete")
 			m.mu.Lock()
 			m.iceDone = true
 			m.mu.Unlock()
 			return
 		}
 		init := c.ToJSON()
-		m.log.Debug("pcmedia: local ICE candidate", "candidate", init.Candidate)
 		m.mu.Lock()
 		m.iceCandidates = append(m.iceCandidates, init)
 		m.mu.Unlock()
@@ -274,36 +260,14 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 			cfg.OnDisconnect(state.String())
 		}
 	})
-	pc.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
-		m.log.Info("pcmedia: ICE gathering state", "state", state.String())
-	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		m.log.Info("pcmedia: peer connection state", "state", state.String())
 	})
-	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
-		m.log.Debug("pcmedia: signaling state", "state", state.String())
-	})
 
-	// DTLS state — catches DTLS handshake failures that don't cascade to
-	// PeerConnectionStateFailed (pion sometimes holds the PC in Connecting
-	// when the DTLS ClientHello times out).
 	if dtls := sender.Transport(); dtls != nil {
 		dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
 			m.log.Info("pcmedia: DTLS state", "state", state.String())
 		})
-		if ice := dtls.ICETransport(); ice != nil {
-			ice.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
-				if pair == nil {
-					return
-				}
-				l := pair.Local
-				r := pair.Remote
-				m.log.Info("pcmedia: ICE pair selected",
-					"local", fmt.Sprintf("%s:%d typ=%s", l.Address, l.Port, l.Typ.String()),
-					"remote", fmt.Sprintf("%s:%d typ=%s", r.Address, r.Port, r.Typ.String()),
-				)
-			})
-		}
 	}
 
 	return m, nil
@@ -333,12 +297,6 @@ func (m *PCMedia) Start() {
 
 // Close cancels the media context and closes the peer connection.
 func (m *PCMedia) Close() error {
-	// Log a short stack trace so we can identify which caller (Hangup,
-	// cleanupLeg, an error path) triggered a premature close. This runs
-	// once per leg; the allocation is irrelevant.
-	buf := make([]byte, 2048)
-	n := runtime.Stack(buf, false)
-	m.log.Info("pcmedia: Close() called", "caller_stack", string(buf[:n]))
 	m.cancel()
 	return m.pc.Close()
 }
@@ -374,18 +332,8 @@ func (m *PCMedia) AudioWriter() io.Writer {
 
 func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 	mime := track.Codec().MimeType
-	m.log.Info("pcmedia: remote track established",
-		"ssrc", track.SSRC(),
-		"payload_type", track.PayloadType(),
-		"mime", mime,
-		"clock_rate", track.Codec().ClockRate,
-		"channels", track.Codec().Channels,
-	)
-
-	// Pion sometimes fires OnTrack separately for telephone-event even
-	// though in practice with WhatsApp's single-SSRC offer it doesn't.
-	// Keep the dedicated handler as a defensive fallback for the case
-	// where a future pion version (or another ice-lite peer) splits them.
+	// Fallback if pion splits telephone-event onto its own TrackRemote;
+	// WhatsApp's single-SSRC offer keeps both PTs on one track today.
 	if strings.EqualFold(mime, "audio/telephone-event") {
 		m.handleDTMFTrack(track)
 		return
@@ -396,127 +344,42 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		m.log.Error("pcmedia: new decoder", "error", err, "codec", m.codec)
 		return
 	}
-	// CAPTURE ONCE: pion v4's TrackRemote.PayloadType() mutates on every
-	// incoming packet (checkAndUpdateTrack). Reading it inside the loop
-	// makes audioPT track the last-seen PT, so PT 126 DTMF packets would
-	// be classified as "audio" and fed to the Opus decoder. Pin the
-	// negotiated audio PT at track-establishment time so DTMF packets
-	// can be correctly routed to the RFC 4733 parser.
+	// pion v4 mutates TrackRemote.PayloadType() per packet, so capture
+	// the negotiated audio PT once to distinguish DTMF.
 	audioPT := uint8(track.PayloadType())
 	buf := make([]byte, 1500)
-	var (
-		firstPacketLogged bool
-		pktCount          uint64
-		pktBytes          uint64
-		droppedFull       uint64
-		lastReport        = time.Now()
-		// Debug: log first N packets per unique PT, and the running PT
-		// distribution. Decisive for DTMF debugging — we can prove
-		// whether PT 126 packets arrive at all, and see their payload
-		// bytes to verify RFC 4733 parsing.
-		ptFirstLogs = map[uint8]int{}
-		ptCounts    = map[uint8]uint64{}
-	)
-	const ptLogFirstN = 3
 	for {
 		if m.ctx.Err() != nil {
-			m.log.Info("pcmedia: handleTrack exiting (ctx done)", "total_pkts", pktCount, "total_bytes", pktBytes)
 			return
 		}
 		n, _, err := track.Read(buf)
 		if err != nil {
-			m.log.Info("pcmedia: handleTrack exiting (track read error)", "error", err, "total_pkts", pktCount, "total_bytes", pktBytes)
 			return
-		}
-		pktCount++
-		pktBytes += uint64(n)
-		if !firstPacketLogged {
-			firstPacketLogged = true
-			m.log.Info("pcmedia: first inbound RTP packet received", "bytes", n)
-		}
-		// Heartbeat: every 2 s summarise inbound traffic + drops. Silent
-		// when no packets arrived — the gap itself is the signal.
-		if now := time.Now(); now.Sub(lastReport) >= 2*time.Second {
-			m.log.Info("pcmedia: inbound RTP stats (last 2s)",
-				"pkts", pktCount, "bytes", pktBytes, "dropped_channel_full", droppedFull)
-			lastReport = now
 		}
 		pkt := &rtp.Packet{}
 		if err := pkt.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
 
-		// Per-PT packet logging for debugging. Emits a hex dump of the
-		// first N packets seen for each unique PT, and the running
-		// distribution every 500 packets. Tight bound so it can't flood.
-		ptCounts[pkt.PayloadType]++
-		if ptFirstLogs[pkt.PayloadType] < ptLogFirstN {
-			ptFirstLogs[pkt.PayloadType]++
-			head := pkt.Payload
-			if len(head) > 32 {
-				head = head[:32]
-			}
-			m.log.Info("pcmedia: RTP packet (sample)",
-				"pt", pkt.PayloadType,
-				"seq", pkt.SequenceNumber,
-				"ts", pkt.Timestamp,
-				"payload_len", len(pkt.Payload),
-				"payload_hex", fmt.Sprintf("%x", head),
-			)
-		}
-		if pktCount%500 == 0 && pktCount > 0 {
-			m.log.Info("pcmedia: PT distribution", "counts", fmt.Sprintf("%v", ptCounts))
-		}
-
-		// Interleaved DTMF: telephone-event on the same TrackRemote as
-		// Opus. RFC 4733 payload is 4 bytes; if it's longer, the first 4
-		// bytes are still the primary event (RFC 2198 redundancy appends
-		// past events). We dedupe on RTP timestamp — every packet of a
-		// single digit shares the same timestamp, so the first one wins
-		// and retransmits with the same ts are ignored.
 		if pkt.PayloadType != audioPT {
-			if len(pkt.Payload) >= 4 {
-				ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload[:4])
-				if derr == nil {
-					digit, ok := sipmod.DTMFEventToDigit(ev.Event)
-					newEvent := pkt.Timestamp != m.lastDTMFTS
-					// Always log the parsed packet so we can see what
-					// Meta sends and verify dedup behaviour.
-					m.log.Info("pcmedia: DTMF packet",
-						"pt", pkt.PayloadType,
-						"event", ev.Event,
-						"digit_ok", ok,
-						"digit", string(digit),
-						"end_of_event", ev.EndOfEvent,
-						"volume", ev.Volume,
-						"duration", ev.Duration,
-						"rtp_ts", pkt.Timestamp,
-						"new_event", newEvent,
-						"payload_len", len(pkt.Payload),
-					)
-					if newEvent && ok {
-						m.lastDTMFTS = pkt.Timestamp
-						m.tapMu.RLock()
-						cb := m.onDTMF
-						m.tapMu.RUnlock()
-						if cb != nil {
-							cb(digit)
-						}
-					}
-				} else {
-					m.log.Info("pcmedia: non-audio RTP (decode failed)",
-						"pt", pkt.PayloadType,
-						"error", derr,
-						"payload_len", len(pkt.Payload),
-						"payload_hex", fmt.Sprintf("%x", pkt.Payload),
-					)
-				}
-			} else {
-				m.log.Info("pcmedia: non-audio RTP (too short)",
-					"pt", pkt.PayloadType,
-					"payload_len", len(pkt.Payload),
-					"payload_hex", fmt.Sprintf("%x", pkt.Payload),
-				)
+			if len(pkt.Payload) < 4 {
+				continue
+			}
+			ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload[:4])
+			if derr != nil || pkt.Timestamp == m.lastDTMFTS {
+				continue
+			}
+			m.lastDTMFTS = pkt.Timestamp
+			digit, ok := sipmod.DTMFEventToDigit(ev.Event)
+			if !ok {
+				continue
+			}
+			m.log.Info("pcmedia: DTMF digit received", "digit", string(digit))
+			m.tapMu.RLock()
+			cb := m.onDTMF
+			m.tapMu.RUnlock()
+			if cb != nil {
+				cb(digit)
 			}
 			continue
 		}
@@ -526,8 +389,8 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			continue
 		}
 		pcm := int16ToBytes(samples)
-		// Write to the speaking tap before the channel push so VAD runs
-		// whether or not an AudioReader consumer exists.
+		// Tap fires regardless of whether AudioReader has a consumer —
+		// speech detection must run on every frame.
 		m.tapMu.RLock()
 		tap := m.speakingTap
 		m.tapMu.RUnlock()
@@ -537,10 +400,6 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 		select {
 		case m.inFrames <- pcm:
 		default:
-			droppedFull++
-			// Drop oldest to avoid blocking. Happens when nothing reads the
-			// leg's AudioReader (no room join / no tap); Meta's audio is
-			// being discarded into the void.
 			select {
 			case <-m.inFrames:
 			default:
@@ -550,21 +409,17 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 	}
 }
 
-// handleDTMFTrack reads a dedicated telephone-event TrackRemote and fires
-// the onDTMF callback once per digit (end-of-event, deduplicated against
-// RFC 4733 retransmits). Separate from the Opus path because pion v4
-// delivers each negotiated PT on its own TrackRemote.
+// handleDTMFTrack is used when pion delivers telephone-event on its own
+// TrackRemote instead of interleaving with Opus. Fallback path; main
+// WhatsApp flow uses the interleaved branch in handleTrack.
 func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 	buf := make([]byte, 1500)
-	var digitCount uint64
 	for {
 		if m.ctx.Err() != nil {
-			m.log.Info("pcmedia: DTMF track exiting (ctx done)", "digits", digitCount)
 			return
 		}
 		n, _, err := track.Read(buf)
 		if err != nil {
-			m.log.Info("pcmedia: DTMF track exiting (read error)", "error", err, "digits", digitCount)
 			return
 		}
 		pkt := &rtp.Packet{}
@@ -575,13 +430,7 @@ func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 			continue
 		}
 		ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload[:4])
-		if derr != nil {
-			continue
-		}
-		// Every packet of one DTMF event shares the same RTP timestamp;
-		// fire on the first with a new ts. Works whether the sender
-		// transmits an end-of-event marker or not (Meta does not).
-		if pkt.Timestamp == m.lastDTMFTS {
+		if derr != nil || pkt.Timestamp == m.lastDTMFTS {
 			continue
 		}
 		m.lastDTMFTS = pkt.Timestamp
@@ -589,8 +438,7 @@ func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 		if !ok {
 			continue
 		}
-		digitCount++
-		m.log.Info("pcmedia: DTMF digit received", "digit", string(digit), "ssrc", track.SSRC())
+		m.log.Info("pcmedia: DTMF digit received", "digit", string(digit))
 		m.tapMu.RLock()
 		cb := m.onDTMF
 		m.tapMu.RUnlock()
@@ -603,7 +451,6 @@ func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 func (m *PCMedia) writeLoop() {
 	var seq uint16
 	var ts uint32
-	var firstWriteLogged bool
 	var writeErrCount int
 	silencePCM := make([]byte, m.frameSz*2)
 	ticker := time.NewTicker(time.Duration(m.ptimeMs) * time.Millisecond)
@@ -611,8 +458,6 @@ func (m *PCMedia) writeLoop() {
 
 	pending := make([]byte, 0, m.frameSz*2*2)
 	frameBytes := m.frameSz * 2
-
-	m.log.Info("pcmedia: writeLoop started", "codec", m.codec, "ptime_ms", m.ptimeMs, "samples_per_frame", m.frameSz)
 
 	for {
 		select {
@@ -667,20 +512,10 @@ func (m *PCMedia) writeLoop() {
 		}
 		if _, err := m.localTrack.Write(raw); err != nil {
 			writeErrCount++
-			if writeErrCount == 1 || writeErrCount%250 == 0 {
-				m.log.Warn("pcmedia: localTrack.Write failed", "error", err, "count", writeErrCount, "seq", seq)
-			}
-			// pion returns io.ErrClosedPipe once the track is done;
-			// stop if we're getting persistent errors.
 			if writeErrCount > 50 {
-				m.log.Error("pcmedia: writeLoop exiting after persistent write errors", "count", writeErrCount)
 				return
 			}
 			continue
-		}
-		if !firstWriteLogged {
-			firstWriteLogged = true
-			m.log.Info("pcmedia: first RTP packet written to localTrack", "seq", seq, "payload_bytes", len(encoded))
 		}
 		seq++
 		ts += uint32(m.frameSz)

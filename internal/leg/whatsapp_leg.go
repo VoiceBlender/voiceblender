@@ -263,15 +263,10 @@ func (l *WhatsAppLeg) Hangup(ctx context.Context) error {
 		l.mu.Unlock()
 		return nil
 	}
-	prevState := l.state
 	l.state = StateHungUp
 	server := l.serverDialog
 	client := l.clientDialog
 	l.mu.Unlock()
-
-	if l.log != nil {
-		l.log.Info("whatsapp leg: Hangup", "leg_id", l.id, "prev_state", prevState)
-	}
 
 	if server != nil {
 		_ = server.Bye(ctx)
@@ -286,8 +281,6 @@ func (l *WhatsAppLeg) OnDTMF(f func(digit rune)) {
 	l.mu.Lock()
 	l.onDTMF = f
 	l.mu.Unlock()
-	// Forward to PCMedia so the callback fires when Meta sends
-	// RFC 4733 telephone-event packets.
 	l.media.SetOnDTMF(f)
 }
 
