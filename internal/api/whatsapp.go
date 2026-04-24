@@ -52,6 +52,10 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		// Meta's SDP is ice-lite + setup:actpass. ice-lite peers don't
 		// initiate DTLS, so we must be the DTLS client (a=setup:active).
 		AnsweringDTLSRole: webrtc.DTLSRoleClient,
+		// Meta's offer advertises telephone-event/8000 at PT 126 for
+		// DTMF. Register it in pion's MediaEngine so the answer
+		// advertises it and inbound PT 126 packets reach handleTrack.
+		EnableTelephoneEvent: true,
 		OnDisconnect: func(reason string) {
 			s.Log.Warn("whatsapp inbound: ICE disconnect", "call_id", callID, "reason", reason)
 			if legPtr != nil && legPtr.State() != leg.StateHungUp {
@@ -84,6 +88,10 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
+	// Dump pion's generated answer SDP before we apply it — lets us see
+	// exactly which codecs pion selected, which is decisive when
+	// SetLocalDescription fails with "codec is not supported by remote".
+	s.Log.Info("whatsapp inbound: generated answer SDP", "call_id", callID, "sdp", "\n"+answer.SDP)
 	gatherDone := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(answer); err != nil {
 		s.Log.Error("whatsapp inbound: SetLocalDescription", "call_id", callID, "error", err)

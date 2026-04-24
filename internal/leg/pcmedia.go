@@ -13,6 +13,7 @@ import (
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+	"github.com/pion/interceptor"
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -38,6 +39,12 @@ type PCMediaConfig struct {
 	// Business Calling — otherwise both sides wait for a ClientHello that
 	// never arrives and DTLS stalls.
 	AnsweringDTLSRole webrtc.DTLSRole
+
+	// EnableTelephoneEvent registers audio/telephone-event (PT 126,
+	// clock 8000, events 0-16) in the MediaEngine so the SDP answer
+	// advertises RFC 4733 DTMF. Inbound telephone-event packets are
+	// decoded in handleTrack and forwarded via the OnDTMF callback.
+	EnableTelephoneEvent bool
 }
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
@@ -143,16 +150,42 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		}
 	}
 
-	// NOTE: we rely on pion's auto-registered default MediaEngine (happens
-	// when WithMediaEngine is omitted). Supplying our own MediaEngine +
-	// RegisterDefaultCodecs + RegisterCodec(telephone-event) broke pion's
-	// codec matching for Opus at SetLocalDescription ("unable to start
-	// track, codec is not supported by remote") — cause not yet
-	// identified. DTMF packets from Meta will therefore not reach
-	// handleTrack until we land a proper telephone-event negotiation
-	// path. The DTMF decode + OnDTMF plumbing below remains in place so
-	// the feature lights up the moment negotiation is wired correctly.
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	// Build the API. When telephone-event support is requested we have to
+	// supply our own MediaEngine + InterceptorRegistry — pion's codec
+	// registry is frozen once NewPeerConnection runs, so adding RFC 4733
+	// after the fact is impossible. Follow pion's canonical pattern
+	// exactly (register default interceptors against our MediaEngine)
+	// otherwise codec matching for Opus breaks at SetLocalDescription.
+	var api *webrtc.API
+	if cfg.EnableTelephoneEvent {
+		me := &webrtc.MediaEngine{}
+		if err := me.RegisterDefaultCodecs(); err != nil {
+			return nil, fmt.Errorf("register default codecs: %w", err)
+		}
+		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:  "audio/telephone-event",
+				ClockRate: 8000,
+				Channels:  0,
+				// Events 0-16 per RFC 4733 §3.10 (digits 0-9 + * # A-D + flash).
+				SDPFmtpLine: "0-16",
+			},
+			PayloadType: 126,
+		}, webrtc.RTPCodecTypeAudio); err != nil {
+			return nil, fmt.Errorf("register telephone-event: %w", err)
+		}
+		ir := &interceptor.Registry{}
+		if err := webrtc.RegisterDefaultInterceptors(me, ir); err != nil {
+			return nil, fmt.Errorf("register default interceptors: %w", err)
+		}
+		api = webrtc.NewAPI(
+			webrtc.WithSettingEngine(se),
+			webrtc.WithMediaEngine(me),
+			webrtc.WithInterceptorRegistry(ir),
+		)
+	} else {
+		api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	}
 	pc, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
 		return nil, fmt.Errorf("new peer connection: %w", err)
