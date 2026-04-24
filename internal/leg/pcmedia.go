@@ -28,6 +28,14 @@ type PCMediaConfig struct {
 
 	// OnDisconnect fires when ICE enters Failed or Disconnected. May be nil.
 	OnDisconnect func(reason string)
+
+	// AnsweringDTLSRole forces the DTLS role when answering a remote offer
+	// whose a=setup is "actpass". Defaults to the pion default (Server /
+	// passive), which works for browser peers. Set to DTLSRoleClient
+	// (a=setup:active) when answering an ice-lite peer such as WhatsApp
+	// Business Calling — otherwise both sides wait for a ClientHello that
+	// never arrives and DTLS stalls.
+	AnsweringDTLSRole webrtc.DTLSRole
 }
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
@@ -84,10 +92,21 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 	pcCfg := webrtc.Configuration{ICEServers: iceServers}
 
+	// Build a SettingEngine only when we need non-default behaviour (port
+	// range or forced DTLS role). Otherwise use the package-level default
+	// API so WebRTC browser peers keep the zero-config path.
+	needCustomSE := (cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0) || cfg.AnsweringDTLSRole != 0
 	var pc *webrtc.PeerConnection
-	if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
+	if needCustomSE {
 		se := webrtc.SettingEngine{}
-		se.SetEphemeralUDPPortRange(cfg.RTPPortMin, cfg.RTPPortMax)
+		if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
+			se.SetEphemeralUDPPortRange(cfg.RTPPortMin, cfg.RTPPortMax)
+		}
+		if cfg.AnsweringDTLSRole != 0 {
+			if err := se.SetAnsweringDTLSRole(cfg.AnsweringDTLSRole); err != nil {
+				return nil, fmt.Errorf("set DTLS role: %w", err)
+			}
+		}
 		api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 		pc, err = api.NewPeerConnection(pcCfg)
 	} else {

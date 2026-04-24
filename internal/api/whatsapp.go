@@ -48,6 +48,9 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		RTPPortMin: uint16(s.Config.RTPPortMin),
 		RTPPortMax: uint16(s.Config.RTPPortMax),
 		Log:        s.Log,
+		// Meta's SDP is ice-lite + setup:actpass. ice-lite peers don't
+		// initiate DTLS, so we must be the DTLS client (a=setup:active).
+		AnsweringDTLSRole: webrtc.DTLSRoleClient,
 		OnDisconnect: func(reason string) {
 			s.Log.Warn("whatsapp inbound: ICE disconnect", "call_id", callID, "reason", reason)
 			if legPtr != nil && legPtr.State() != leg.StateHungUp {
