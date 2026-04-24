@@ -77,6 +77,30 @@ func (e *Engine) logSIPMessage(direction string, m sip.Message) {
 	e.log.Info("SIP "+direction, "message", "\n"+m.String())
 }
 
+// SIPDebug reports whether SIP_DEBUG is enabled. Consumers that send
+// responses via sipgo (dialog.Respond / RespondSDP) use this to gate
+// LogSyntheticResponse calls.
+func (e *Engine) SIPDebug() bool { return e.sipDebug }
+
+// LogSyntheticResponse constructs a response from a request (mirroring
+// what sipgo would build internally) purely for SIP_DEBUG logging. The
+// actual response still goes out through dialog.Respond / dialog.RespondSDP;
+// this is a best-effort wire-form dump so the body and headers we ask sipgo
+// to include are visible on the debug channel.
+func (e *Engine) LogSyntheticResponse(req *sip.Request, statusCode int, reason string, body []byte, headers ...sip.Header) {
+	if !e.sipDebug || req == nil {
+		return
+	}
+	res := sip.NewResponseFromRequest(req, statusCode, reason, body)
+	for _, h := range headers {
+		res.AppendHeader(h)
+	}
+	if len(body) > 0 && res.ContentType() == nil {
+		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
+	e.logSIPMessage("outbound (synthetic)", res)
+}
+
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
 type InboundCall struct {
 	Dialog    *sipgo.DialogServerSession

@@ -10,8 +10,16 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo"
+	sipproto "github.com/emiago/sipgo/sip"
 	"github.com/google/uuid"
 )
+
+// SIPResponseLogger is satisfied by *sip.Engine and lets a WhatsApp leg dump
+// the 200 OK (and other outbound responses) when SIP_DEBUG is on without
+// importing internal/sip (which would invert the dependency).
+type SIPResponseLogger interface {
+	LogSyntheticResponse(req *sipproto.Request, statusCode int, reason string, body []byte, headers ...sipproto.Header)
+}
 
 // WhatsAppLeg is a call leg terminated to WhatsApp Business Calling. Signalling
 // is SIP over TLS with digest auth; media is Opus over ICE + DTLS-SRTP,
@@ -47,9 +55,17 @@ type WhatsAppLeg struct {
 	answerCh  chan struct{}
 	answerSDP []byte
 
+	// Optional SIP debug hook; when set, the 200 OK sent in Answer() is
+	// reconstructed and printed at Info level.
+	sipLogger SIPResponseLogger
+
 	onDTMF func(digit rune)
 	log    *slog.Logger
 }
+
+// SetSIPResponseLogger enables SIP_DEBUG dumping of responses we ask
+// sipgo to send (200 OK). Caller must pass *sip.Engine from the API layer.
+func (l *WhatsAppLeg) SetSIPResponseLogger(r SIPResponseLogger) { l.sipLogger = r }
 
 // NewWhatsAppInboundLeg wraps an already-accepted inbound UAS dialog and the
 // PCMedia that has negotiated the SDP answer. The answer is NOT sent here;
@@ -207,6 +223,13 @@ func (l *WhatsAppLeg) Answer(_ context.Context) error {
 	l.mu.Unlock()
 
 	if dialog != nil {
+		if l.sipLogger != nil && dialog.InviteRequest != nil {
+			l.sipLogger.LogSyntheticResponse(
+				dialog.InviteRequest,
+				200, "OK", sdp,
+				sipproto.NewHeader("Content-Type", "application/sdp"),
+			)
+		}
 		if err := dialog.RespondSDP(sdp); err != nil {
 			return fmt.Errorf("respond 200 OK: %w", err)
 		}
