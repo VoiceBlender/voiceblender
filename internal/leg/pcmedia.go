@@ -116,7 +116,8 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		pc.Close()
 		return nil, fmt.Errorf("new track: %w", err)
 	}
-	if _, err := pc.AddTrack(localTrack); err != nil {
+	sender, err := pc.AddTrack(localTrack)
+	if err != nil {
 		pc.Close()
 		return nil, fmt.Errorf("add track: %w", err)
 	}
@@ -171,6 +172,28 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
 		m.log.Debug("pcmedia: signaling state", "state", state.String())
 	})
+
+	// DTLS state — catches DTLS handshake failures that don't cascade to
+	// PeerConnectionStateFailed (pion sometimes holds the PC in Connecting
+	// when the DTLS ClientHello times out).
+	if dtls := sender.Transport(); dtls != nil {
+		dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
+			m.log.Info("pcmedia: DTLS state", "state", state.String())
+		})
+		if ice := dtls.ICETransport(); ice != nil {
+			ice.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+				if pair == nil {
+					return
+				}
+				l := pair.Local
+				r := pair.Remote
+				m.log.Info("pcmedia: ICE pair selected",
+					"local", fmt.Sprintf("%s:%d typ=%s", l.Address, l.Port, l.Typ.String()),
+					"remote", fmt.Sprintf("%s:%d typ=%s", r.Address, r.Port, r.Typ.String()),
+				)
+			})
+		}
+	}
 
 	return m, nil
 }
@@ -239,19 +262,33 @@ func (m *PCMedia) AudioWriter() io.Writer {
 }
 
 func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	m.log.Info("pcmedia: remote track established",
+		"ssrc", track.SSRC(),
+		"payload_type", track.PayloadType(),
+		"mime", track.Codec().MimeType,
+		"clock_rate", track.Codec().ClockRate,
+		"channels", track.Codec().Channels,
+	)
 	dec, err := codec.NewDecoder(m.codec)
 	if err != nil {
 		m.log.Error("pcmedia: new decoder", "error", err, "codec", m.codec)
 		return
 	}
 	buf := make([]byte, 1500)
+	var firstPacketLogged bool
 	for {
 		if m.ctx.Err() != nil {
+			m.log.Info("pcmedia: handleTrack exiting (ctx done)")
 			return
 		}
 		n, _, err := track.Read(buf)
 		if err != nil {
+			m.log.Info("pcmedia: handleTrack exiting (track read error)", "error", err)
 			return
+		}
+		if !firstPacketLogged {
+			firstPacketLogged = true
+			m.log.Info("pcmedia: first inbound RTP packet received", "bytes", n)
 		}
 		pkt := &rtp.Packet{}
 		if err := pkt.Unmarshal(buf[:n]); err != nil {
