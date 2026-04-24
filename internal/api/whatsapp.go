@@ -52,10 +52,6 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		// Meta's SDP is ice-lite + setup:actpass. ice-lite peers don't
 		// initiate DTLS, so we must be the DTLS client (a=setup:active).
 		AnsweringDTLSRole: webrtc.DTLSRoleClient,
-		// Meta's offer advertises telephone-event/8000 at PT 126 for
-		// DTMF. Advertise it in the answer so they actually send the
-		// packets, and decode them in handleTrack.
-		EnableTelephoneEvent: true,
 		OnDisconnect: func(reason string) {
 			s.Log.Warn("whatsapp inbound: ICE disconnect", "call_id", callID, "reason", reason)
 			if legPtr != nil && legPtr.State() != leg.StateHungUp {
