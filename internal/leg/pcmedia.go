@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -372,13 +373,24 @@ func (m *PCMedia) AudioWriter() io.Writer {
 }
 
 func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	mime := track.Codec().MimeType
 	m.log.Info("pcmedia: remote track established",
 		"ssrc", track.SSRC(),
 		"payload_type", track.PayloadType(),
-		"mime", track.Codec().MimeType,
+		"mime", mime,
 		"clock_rate", track.Codec().ClockRate,
 		"channels", track.Codec().Channels,
 	)
+
+	// Pion v4 creates a separate TrackRemote per negotiated PT on the same
+	// m-line, so DTMF arrives on its own track, never interleaved with
+	// Opus. Branch at entry so we don't waste cycles in the Opus decoder
+	// or the speaking tap on DTMF packets.
+	if strings.EqualFold(mime, "audio/telephone-event") {
+		m.handleDTMFTrack(track)
+		return
+	}
+
 	dec, err := codec.NewDecoder(m.codec)
 	if err != nil {
 		m.log.Error("pcmedia: new decoder", "error", err, "codec", m.codec)
@@ -420,34 +432,10 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			continue
 		}
 
-		audioPT := uint8(track.PayloadType())
-
-		// RFC 4733 telephone-event: treat as DTMF, not audio. Meta uses
-		// PT 126 in its WhatsApp offer; other ice-lite peers may pick a
-		// different dynamic PT — sniff the 4-byte payload shape instead
-		// of hard-coding. Audio frames for Opus are ~60–300 bytes; a
-		// 4-byte payload with the upper event bits cleared is DTMF.
-		if pkt.PayloadType != audioPT && len(pkt.Payload) == 4 {
-			ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload)
-			if derr == nil {
-				if ev.EndOfEvent && pkt.Timestamp != m.lastDTMFTS {
-					m.lastDTMFTS = pkt.Timestamp
-					if digit, ok := sipmod.DTMFEventToDigit(ev.Event); ok {
-						m.tapMu.RLock()
-						cb := m.onDTMF
-						m.tapMu.RUnlock()
-						if cb != nil {
-							cb(digit)
-						}
-					}
-				}
-				continue
-			}
-		}
 		// Skip packets whose PT doesn't match the negotiated audio codec
-		// (e.g. comfort noise, unrecognised PTs). Without this check we
-		// would feed them to the Opus decoder and spam decode errors.
-		if pkt.PayloadType != audioPT {
+		// (e.g. comfort noise, unrecognised PTs). DTMF is handled on its
+		// own TrackRemote via handleDTMFTrack.
+		if pkt.PayloadType != uint8(track.PayloadType()) {
 			continue
 		}
 
@@ -476,6 +464,52 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			default:
 			}
 			m.inFrames <- pcm
+		}
+	}
+}
+
+// handleDTMFTrack reads a dedicated telephone-event TrackRemote and fires
+// the onDTMF callback once per digit (end-of-event, deduplicated against
+// RFC 4733 retransmits). Separate from the Opus path because pion v4
+// delivers each negotiated PT on its own TrackRemote.
+func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
+	buf := make([]byte, 1500)
+	var digitCount uint64
+	for {
+		if m.ctx.Err() != nil {
+			m.log.Info("pcmedia: DTMF track exiting (ctx done)", "digits", digitCount)
+			return
+		}
+		n, _, err := track.Read(buf)
+		if err != nil {
+			m.log.Info("pcmedia: DTMF track exiting (read error)", "error", err, "digits", digitCount)
+			return
+		}
+		pkt := &rtp.Packet{}
+		if err := pkt.Unmarshal(buf[:n]); err != nil {
+			continue
+		}
+		ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload)
+		if derr != nil {
+			continue
+		}
+		// RFC 4733 senders retransmit end-of-event 3× with the same
+		// timestamp; deduplicate against that.
+		if !ev.EndOfEvent || pkt.Timestamp == m.lastDTMFTS {
+			continue
+		}
+		m.lastDTMFTS = pkt.Timestamp
+		digit, ok := sipmod.DTMFEventToDigit(ev.Event)
+		if !ok {
+			continue
+		}
+		digitCount++
+		m.log.Info("pcmedia: DTMF digit received", "digit", string(digit), "ssrc", track.SSRC())
+		m.tapMu.RLock()
+		cb := m.onDTMF
+		m.tapMu.RUnlock()
+		if cb != nil {
+			cb(digit)
 		}
 	}
 }
