@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -162,12 +163,15 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 			LegType:  string(l.Type()),
 		})
 		<-ctx.Done()
+		cause := context.Cause(ctx)
+		s.Log.Info("whatsapp inbound: dialog ctx done (post-answer)", "call_id", callID, "leg_id", l.ID(), "cause", fmt.Sprintf("%v", cause), "elapsed_since_invite", time.Since(t0))
 		if l.State() != leg.StateHungUp {
 			s.cleanupLeg(l)
 			s.publishDisconnect(l, "remote_bye")
 		}
 	case <-ctx.Done():
-		s.Log.Warn("whatsapp inbound: dialog ended before answer (caller cancelled or Timer B)", "call_id", callID, "leg_id", l.ID(), "elapsed", time.Since(t0))
+		cause := context.Cause(ctx)
+		s.Log.Warn("whatsapp inbound: dialog ended before answer (caller cancelled or Timer B)", "call_id", callID, "leg_id", l.ID(), "cause", fmt.Sprintf("%v", cause), "elapsed", time.Since(t0))
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, "caller_cancel")
 	}

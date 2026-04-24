@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"runtime"
 	"sync"
 	"time"
 
@@ -198,6 +199,12 @@ func (m *PCMedia) Start() {
 
 // Close cancels the media context and closes the peer connection.
 func (m *PCMedia) Close() error {
+	// Log a short stack trace so we can identify which caller (Hangup,
+	// cleanupLeg, an error path) triggered a premature close. This runs
+	// once per leg; the allocation is irrelevant.
+	buf := make([]byte, 2048)
+	n := runtime.Stack(buf, false)
+	m.log.Info("pcmedia: Close() called", "caller_stack", string(buf[:n]))
 	m.cancel()
 	return m.pc.Close()
 }

@@ -263,10 +263,15 @@ func (l *WhatsAppLeg) Hangup(ctx context.Context) error {
 		l.mu.Unlock()
 		return nil
 	}
+	prevState := l.state
 	l.state = StateHungUp
 	server := l.serverDialog
 	client := l.clientDialog
 	l.mu.Unlock()
+
+	if l.log != nil {
+		l.log.Info("whatsapp leg: Hangup", "leg_id", l.id, "prev_state", prevState)
+	}
 
 	if server != nil {
 		_ = server.Bye(ctx)
