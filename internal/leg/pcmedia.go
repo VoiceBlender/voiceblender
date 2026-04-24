@@ -566,13 +566,17 @@ func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 		if err := pkt.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
-		ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload)
+		if len(pkt.Payload) < 4 {
+			continue
+		}
+		ev, derr := sipmod.DecodeDTMFEvent(pkt.Payload[:4])
 		if derr != nil {
 			continue
 		}
-		// RFC 4733 senders retransmit end-of-event 3× with the same
-		// timestamp; deduplicate against that.
-		if !ev.EndOfEvent || pkt.Timestamp == m.lastDTMFTS {
+		// Every packet of one DTMF event shares the same RTP timestamp;
+		// fire on the first with a new ts. Works whether the sender
+		// transmits an end-of-event marker or not (Meta does not).
+		if pkt.Timestamp == m.lastDTMFTS {
 			continue
 		}
 		m.lastDTMFTS = pkt.Timestamp
