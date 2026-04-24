@@ -64,8 +64,30 @@ type PCMedia struct {
 	iceCandidates []webrtc.ICECandidateInit
 	iceDone       bool
 
+	// Taps receive a copy of decoded inbound PCM (16-bit LE, codec native
+	// rate). Guarded by tapMu to allow concurrent set/clear from the API
+	// layer while handleTrack is running.
+	tapMu       sync.RWMutex
+	speakingTap io.Writer
+
 	started bool
 	log     *slog.Logger
+}
+
+// SetSpeakingTap installs a writer that receives decoded inbound PCM on
+// every packet. Used by the speaking detector. Pass nil via
+// ClearSpeakingTap to remove.
+func (m *PCMedia) SetSpeakingTap(w io.Writer) {
+	m.tapMu.Lock()
+	m.speakingTap = w
+	m.tapMu.Unlock()
+}
+
+// ClearSpeakingTap removes the installed tap.
+func (m *PCMedia) ClearSpeakingTap() {
+	m.tapMu.Lock()
+	m.speakingTap = nil
+	m.tapMu.Unlock()
 }
 
 // NewPCMedia creates a PeerConnection configured for cfg.Codec, wires
@@ -328,6 +350,14 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			continue
 		}
 		pcm := int16ToBytes(samples)
+		// Write to the speaking tap before the channel push so VAD runs
+		// whether or not an AudioReader consumer exists.
+		m.tapMu.RLock()
+		tap := m.speakingTap
+		m.tapMu.RUnlock()
+		if tap != nil {
+			tap.Write(pcm)
+		}
 		select {
 		case m.inFrames <- pcm:
 		default:

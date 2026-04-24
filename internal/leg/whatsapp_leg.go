@@ -174,8 +174,8 @@ func (l *WhatsAppLeg) IsDeaf() bool               { return l.deaf.Load() }
 func (l *WhatsAppLeg) SetDeaf(d bool)             { l.deaf.Store(d) }
 func (l *WhatsAppLeg) AcceptDTMF() bool           { return l.acceptDTMF.Load() }
 func (l *WhatsAppLeg) SetAcceptDTMF(a bool)       { l.acceptDTMF.Store(a) }
-func (l *WhatsAppLeg) SetSpeakingTap(_ io.Writer) {}
-func (l *WhatsAppLeg) ClearSpeakingTap()          {}
+func (l *WhatsAppLeg) SetSpeakingTap(w io.Writer) { l.media.SetSpeakingTap(w) }
+func (l *WhatsAppLeg) ClearSpeakingTap()          { l.media.ClearSpeakingTap() }
 func (l *WhatsAppLeg) IsHeld() bool               { return false }
 
 func (l *WhatsAppLeg) CreatedAt() time.Time  { return l.createdAt }

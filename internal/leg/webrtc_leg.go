@@ -91,8 +91,8 @@ func (l *WebRTCLeg) IsDeaf() bool               { return l.deaf.Load() }
 func (l *WebRTCLeg) SetDeaf(d bool)             { l.deaf.Store(d) }
 func (l *WebRTCLeg) AcceptDTMF() bool           { return l.acceptDTMF.Load() }
 func (l *WebRTCLeg) SetAcceptDTMF(a bool)       { l.acceptDTMF.Store(a) }
-func (l *WebRTCLeg) SetSpeakingTap(_ io.Writer) {}
-func (l *WebRTCLeg) ClearSpeakingTap()          {}
+func (l *WebRTCLeg) SetSpeakingTap(w io.Writer) { l.media.SetSpeakingTap(w) }
+func (l *WebRTCLeg) ClearSpeakingTap()          { l.media.ClearSpeakingTap() }
 func (l *WebRTCLeg) IsHeld() bool               { return false }
 
 func (l *WebRTCLeg) CreatedAt() time.Time          { return l.createdAt }

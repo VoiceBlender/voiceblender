@@ -182,6 +182,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
+		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 		<-ctx.Done()
 		cause := context.Cause(ctx)
 		s.Log.Info("whatsapp inbound: dialog ctx done (post-answer)", "call_id", callID, "leg_id", l.ID(), "cause", fmt.Sprintf("%v", cause), "elapsed_since_invite", time.Since(t0))
