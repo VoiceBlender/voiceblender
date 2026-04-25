@@ -29,10 +29,13 @@ func IsWhatsAppInvite(call *InboundCall) bool {
 
 // WhatsAppInviteOptions holds parameters for an outbound INVITE to WhatsApp.
 type WhatsAppInviteOptions struct {
-	FromUser string // digest auth username = business phone number without '+'
-	Password string // Meta-generated password
-	SDPOffer []byte // complete SDP offer from PCMedia (post ICE gathering)
-	Headers  []sip.Header
+	// FromNumber is the business phone number in E.164 form. Used both as
+	// the user-part of the From URI (with leading '+') and as the digest
+	// auth username (with the '+' stripped) per Meta's docs.
+	FromNumber string
+	Password   string // Meta-generated password
+	SDPOffer   []byte // complete SDP offer from PCMedia (post ICE gathering)
+	Headers    []sip.Header
 }
 
 // WhatsAppOutboundCall wraps the UAC dialog and the remote SDP answer.
@@ -52,37 +55,40 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	if len(opts.SDPOffer) == 0 {
 		return nil, fmt.Errorf("SDPOffer required")
 	}
-	if opts.FromUser == "" || opts.Password == "" {
-		return nil, fmt.Errorf("FromUser and Password required (digest auth)")
+	if opts.FromNumber == "" || opts.Password == "" {
+		return nil, fmt.Errorf("FromNumber and Password required (digest auth)")
 	}
+	// Meta requires the URI user-part in E.164 with leading '+', and the
+	// digest auth username in E.164 without '+'.
+	fromURIUser := "+" + strings.TrimPrefix(opts.FromNumber, "+")
+	digestUser := strings.TrimPrefix(opts.FromNumber, "+")
 
 	req := sip.NewRequest(sip.INVITE, recipient)
-	// sipgo's Request.Transport() defaults to UDP unless the URI carries
-	// transport=tls or SetTransport is called. SIPS URI scheme alone only
-	// upgrades TCP→TLS, not UDP→TLS. Force TLS so the transport layer
-	// picks the TLS connection rather than choking on UDP MTU limits.
+	// sipgo picks UDP unless transport is forced; "sips:" scheme alone
+	// only upgrades TCP→TLS.
 	req.SetTransport("TLS")
 	req.SetBody(opts.SDPOffer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 
 	fromURI := sip.Uri{
-		Scheme: "sips",
-		User:   opts.FromUser,
+		Scheme: "sip",
+		User:   fromURIUser,
 		Host:   e.bindIP,
 	}
 	from := &sip.FromHeader{Address: fromURI}
 	from.Params.Add("tag", sip.GenerateTagN(16))
 	req.AppendHeader(from)
 
-	// Override default sip: Contact with sips: pointing to our TLS port so
-	// Meta routes subsequent in-dialog requests back over TLS.
-	contact := &sip.ContactHeader{Address: sip.Uri{
-		Scheme: "sips",
-		User:   opts.FromUser,
+	// Contact must route subsequent in-dialog requests back over TLS.
+	contactURI := sip.Uri{
+		Scheme: "sip",
+		User:   fromURIUser,
 		Host:   e.bindIP,
 		Port:   e.tlsPort,
-	}}
-	req.AppendHeader(contact)
+	}
+	contactURI.UriParams = sip.NewParams()
+	contactURI.UriParams.Add("transport", "tls")
+	req.AppendHeader(&sip.ContactHeader{Address: contactURI})
 
 	for _, h := range opts.Headers {
 		req.AppendHeader(h)
@@ -96,7 +102,7 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	}
 
 	if err := ds.WaitAnswer(ctx, sipgo.AnswerOptions{
-		Username: opts.FromUser,
+		Username: digestUser,
 		Password: opts.Password,
 		OnResponse: func(res *sip.Response) error {
 			e.logSIPMessage("inbound", res)
@@ -126,11 +132,14 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 }
 
 // WhatsAppRecipientURI builds the standard WhatsApp Request-URI for an
-// outbound call to the given destination number (with or without leading '+').
+// outbound call to the given destination number. Meta's docs use a
+// "sip:+E164@wa.meta.vc;transport=tls" form rather than sips:; the latter
+// causes 404s because Meta's internal routing is not strict-TLS end-to-end.
 func WhatsAppRecipientURI(toUser string) sip.Uri {
+	user := "+" + strings.TrimPrefix(toUser, "+")
 	uri := sip.Uri{
-		Scheme: "sips",
-		User:   strings.TrimPrefix(toUser, "+"),
+		Scheme: "sip",
+		User:   user,
 		Host:   WhatsAppMetaHost,
 		Port:   5061,
 	}

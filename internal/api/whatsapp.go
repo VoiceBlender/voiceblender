@@ -228,16 +228,15 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 	}
 	sdpOffer := []byte(pc.LocalDescription().SDP)
 
-	fromUser := strings.TrimPrefix(req.From, "+")
 	recipient := sipmod.WhatsAppRecipientURI(req.To)
 
 	inviteCtx, cancel := context.WithTimeout(context.Background(), whatsAppInviteTimeout)
 	defer cancel()
 
 	call, err := s.SIPEngine.InviteWhatsApp(inviteCtx, recipient, sipmod.WhatsAppInviteOptions{
-		FromUser: fromUser,
-		Password: req.Password,
-		SDPOffer: sdpOffer,
+		FromNumber: req.From,
+		Password:   req.Password,
+		SDPOffer:   sdpOffer,
 	})
 	if err != nil {
 		media.Close()

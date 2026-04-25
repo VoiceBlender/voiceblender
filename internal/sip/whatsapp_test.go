@@ -52,9 +52,9 @@ func TestWhatsAppRecipientURI(t *testing.T) {
 		in       string
 		wantUser string
 	}{
-		{"+15551234567", "15551234567"},
-		{"15551234567", "15551234567"},
-		{"+442071234567", "442071234567"},
+		{"+15551234567", "+15551234567"},
+		{"15551234567", "+15551234567"},
+		{"+442071234567", "+442071234567"},
 	}
 	for _, tc := range cases {
 		uri := WhatsAppRecipientURI(tc.in)
@@ -67,8 +67,11 @@ func TestWhatsAppRecipientURI(t *testing.T) {
 		if uri.Port != 5061 {
 			t.Errorf("port = %d, want 5061", uri.Port)
 		}
-		if uri.Scheme != "sips" {
-			t.Errorf("scheme = %q, want sips", uri.Scheme)
+		if uri.Scheme != "sip" {
+			t.Errorf("scheme = %q, want sip", uri.Scheme)
+		}
+		if v, ok := uri.UriParams.Get("transport"); !ok || v != "tls" {
+			t.Errorf("transport param = %q ok=%v, want tls", v, ok)
 		}
 	}
 }
@@ -86,9 +89,9 @@ func TestInviteWhatsApp_RejectsWithoutTLS(t *testing.T) {
 	}
 
 	_, err = engine.InviteWhatsApp(t.Context(), WhatsAppRecipientURI("+15551234567"), WhatsAppInviteOptions{
-		FromUser: "15551234567",
-		Password: "x",
-		SDPOffer: []byte("v=0\r\n"),
+		FromNumber: "15551234567",
+		Password:   "x",
+		SDPOffer:   []byte("v=0\r\n"),
 	})
 	if err == nil {
 		t.Fatal("expected error when TLS not configured")
@@ -114,9 +117,9 @@ func TestInviteWhatsApp_RejectsMissingFields(t *testing.T) {
 		name string
 		opts WhatsAppInviteOptions
 	}{
-		{"no SDPOffer", WhatsAppInviteOptions{FromUser: "u", Password: "p"}},
-		{"no FromUser", WhatsAppInviteOptions{SDPOffer: []byte("v=0\r\n"), Password: "p"}},
-		{"no Password", WhatsAppInviteOptions{SDPOffer: []byte("v=0\r\n"), FromUser: "u"}},
+		{"no SDPOffer", WhatsAppInviteOptions{FromNumber: "u", Password: "p"}},
+		{"no FromNumber", WhatsAppInviteOptions{SDPOffer: []byte("v=0\r\n"), Password: "p"}},
+		{"no Password", WhatsAppInviteOptions{SDPOffer: []byte("v=0\r\n"), FromNumber: "u"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
