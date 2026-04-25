@@ -57,6 +57,11 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	}
 
 	req := sip.NewRequest(sip.INVITE, recipient)
+	// sipgo's Request.Transport() defaults to UDP unless the URI carries
+	// transport=tls or SetTransport is called. SIPS URI scheme alone only
+	// upgrades TCP→TLS, not UDP→TLS. Force TLS so the transport layer
+	// picks the TLS connection rather than choking on UDP MTU limits.
+	req.SetTransport("TLS")
 	req.SetBody(opts.SDPOffer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 
@@ -123,10 +128,13 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 // WhatsAppRecipientURI builds the standard WhatsApp Request-URI for an
 // outbound call to the given destination number (with or without leading '+').
 func WhatsAppRecipientURI(toUser string) sip.Uri {
-	return sip.Uri{
+	uri := sip.Uri{
 		Scheme: "sips",
 		User:   strings.TrimPrefix(toUser, "+"),
 		Host:   WhatsAppMetaHost,
 		Port:   5061,
 	}
+	uri.UriParams = sip.NewParams()
+	uri.UriParams.Add("transport", "tls")
+	return uri
 }
