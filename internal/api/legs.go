@@ -149,20 +149,24 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool) error {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
-	sipLeg, ok := l.(*leg.SIPLeg)
-	if !ok {
-		return newAPIError(http.StatusBadRequest, "only SIP inbound legs can be answered")
+	switch tl := l.(type) {
+	case *leg.SIPLeg:
+		if l.State() != leg.StateRinging && l.State() != leg.StateEarlyMedia {
+			return newAPIError(http.StatusConflict, "leg is %s, expected ringing or early_media", l.State())
+		}
+		if speechDetection != nil {
+			s.setSpeechOverride(id, speechDetection)
+		}
+		tl.SignalAnswer()
+		return nil
+	case *leg.WhatsAppLeg:
+		if err := tl.RequestAnswer(); err != nil {
+			return newAPIError(http.StatusConflict, "%s", err.Error())
+		}
+		return nil
+	default:
+		return newAPIError(http.StatusBadRequest, "only SIP and WhatsApp inbound legs can be answered")
 	}
-
-	if l.State() != leg.StateRinging && l.State() != leg.StateEarlyMedia {
-		return newAPIError(http.StatusConflict, "leg is %s, expected ringing or early_media", l.State())
-	}
-
-	if speechDetection != nil {
-		s.setSpeechOverride(id, speechDetection)
-	}
-	sipLeg.SignalAnswer()
-	return nil
 }
 
 func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +328,9 @@ func (s *Server) doHoldLeg(ctx context.Context, id string) error {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
+	if _, ok := l.(*leg.WhatsAppLeg); ok {
+		return newAPIError(http.StatusConflict, "hold is not supported for WhatsApp legs (Meta disallows re-INVITE)")
+	}
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
 		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
@@ -388,6 +395,9 @@ func (s *Server) doUnholdLeg(ctx context.Context, id string) error {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
+	if _, ok := l.(*leg.WhatsAppLeg); ok {
+		return newAPIError(http.StatusConflict, "unhold is not supported for WhatsApp legs (Meta disallows re-INVITE)")
+	}
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
 		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
@@ -465,6 +475,8 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 	switch req.Type {
 	case "sip":
 		s.createSIPOutboundLeg(w, r, req)
+	case "whatsapp":
+		s.createWhatsAppOutboundLeg(w, r, req)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported leg type: %s", req.Type))
 	}
@@ -677,6 +689,13 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.
 func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
+	// WhatsApp INVITEs have a meta.vc From URI host; dispatch them to the
+	// WebRTC-over-SIP media path instead of the classic RTP pipeline.
+	if sipmod.IsWhatsAppInvite(call) {
+		s.handleWhatsAppInbound(call)
+		return
+	}
+
 	// Send provisional responses
 	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("failed to send 100 Trying", "error", err)

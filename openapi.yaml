@@ -1984,6 +1984,8 @@ components:
                         - sip_inbound
                         - sip_outbound
                         - webrtc
+                        - whatsapp_in
+                        - whatsapp_out
                 state:
                     type: string
                     description: Leg state
@@ -2108,9 +2110,10 @@ components:
                     description: Leg type
                     enum:
                         - sip
+                        - whatsapp
                 uri:
                     type: string
-                    description: SIP URI to dial
+                    description: SIP URI to dial (sip legs only)
                 from:
                     type: string
                     description: Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")
@@ -2170,6 +2173,12 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                to:
+                    type: string
+                    description: Destination phone number for WhatsApp legs (E.164, with or without '+')
+                password:
+                    type: string
+                    description: Meta-issued digest auth password for WhatsApp legs. 'from' is the business phone number (E.164 without '+').
             required:
                 - type
                 - uri

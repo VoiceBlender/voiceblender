@@ -5,9 +5,11 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 ## Features
 
 - **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus), digest auth, session timers (RFC 4028)
+- **SIP over TLS** -- optional TLS transport on a second port alongside UDP, reusable by classic SIP trunks and required by WhatsApp
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
+- **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus via [wa.meta.vc:5061](https://developers.facebook.com/docs/whatsapp/cloud-api/calling/sip/) with HTTP Digest auth; hold/transfer are 409 (Meta disallows re-INVITE)
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events; digits received on a leg are auto-broadcast to other legs in the same room (per-leg `accept_dtmf` opt-out)
@@ -44,7 +46,11 @@ All configuration is via environment variables:
 | `HTTP_ADDR` | `:8080` | REST API listen address |
 | `SIP_BIND_IP` | `127.0.0.1` | IP for SDP/Contact/Via headers |
 | `SIP_LISTEN_IP` | *(same as SIP_BIND_IP)* | UDP socket bind IP |
-| `SIP_PORT` | `5060` | SIP listen port |
+| `SIP_PORT` | `5060` | SIP listen port (UDP) |
+| `SIP_TLS_PORT` | *(disabled)* | SIP-over-TLS listen port (typically `5061`). When set, `SIP_TLS_CERT` and `SIP_TLS_KEY` must also be provided. Required for WhatsApp Business Calling integration. |
+| `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
+| `SIP_TLS_KEY` | | Path to PEM-encoded TLS private key (e.g. `privkey.pem`). |
+| `SIP_DEBUG` | `false` | When `true`, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |

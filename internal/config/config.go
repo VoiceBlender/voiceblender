@@ -14,6 +14,10 @@ type Config struct {
 	SIPListenIP            string
 	SIPExternalIP          string
 	SIPPort                string
+	SIPTLSPort             string // "" = TLS disabled
+	SIPTLSCert             string // path to CA-signed cert (fullchain.pem)
+	SIPTLSKey              string // path to private key (privkey.pem)
+	SIPDebug               bool   // dump full SIP message content for every request and response
 	SIPHost                string
 	HTTPAddr               string
 	ICEServers             []string
@@ -53,6 +57,10 @@ func Load() Config {
 		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
 		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:                envOr("SIP_PORT", "5060"),
+		SIPTLSPort:             os.Getenv("SIP_TLS_PORT"),
+		SIPTLSCert:             os.Getenv("SIP_TLS_CERT"),
+		SIPTLSKey:              os.Getenv("SIP_TLS_KEY"),
+		SIPDebug:               os.Getenv("SIP_DEBUG") == "true",
 		SIPHost:                envOr("SIP_HOST", "voiceblender"),
 		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
 		ICEServers:             strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
