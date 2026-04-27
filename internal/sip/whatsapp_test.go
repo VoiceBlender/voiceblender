@@ -61,8 +61,8 @@ func TestWhatsAppRecipientURI(t *testing.T) {
 		if uri.User != tc.wantUser {
 			t.Errorf("user = %q, want %q", uri.User, tc.wantUser)
 		}
-		if uri.Host != WhatsAppMetaHost {
-			t.Errorf("host = %q, want %q", uri.Host, WhatsAppMetaHost)
+		if uri.Host != WhatsAppOutboundHost {
+			t.Errorf("host = %q, want %q", uri.Host, WhatsAppOutboundHost)
 		}
 		if uri.Port != 5061 {
 			t.Errorf("port = %d, want 5061", uri.Port)

@@ -9,12 +9,17 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// WhatsAppMetaHost is the fully qualified host WhatsApp calls originate from
-// and terminate to for business SIP integration.
-const WhatsAppMetaHost = "meta.vc"
+const (
+	// WhatsAppOutboundHost is the SIP target for outbound calls to WhatsApp
+	// users, per Meta's docs: sip:+E164@wa.meta.vc;transport=tls.
+	WhatsAppOutboundHost = "wa.meta.vc"
+	// whatsAppInboundDomain matches inbound From URIs from any Meta SIP
+	// gateway: meta.vc or any subdomain (wa.meta.vc, etc.).
+	whatsAppInboundDomain = "meta.vc"
+)
 
 // IsWhatsAppInvite reports whether an inbound INVITE's From URI host matches
-// Meta's WhatsApp calling domain (meta.vc or any subdomain).
+// any Meta WhatsApp calling host (meta.vc or any subdomain).
 func IsWhatsAppInvite(call *InboundCall) bool {
 	if call == nil || call.Request == nil {
 		return false
@@ -24,7 +29,7 @@ func IsWhatsAppInvite(call *InboundCall) bool {
 		return false
 	}
 	host := strings.ToLower(from.Address.Host)
-	return host == WhatsAppMetaHost || strings.HasSuffix(host, "."+WhatsAppMetaHost)
+	return host == whatsAppInboundDomain || strings.HasSuffix(host, "."+whatsAppInboundDomain)
 }
 
 // WhatsAppInviteOptions holds parameters for an outbound INVITE to WhatsApp.
@@ -140,7 +145,7 @@ func WhatsAppRecipientURI(toUser string) sip.Uri {
 	uri := sip.Uri{
 		Scheme: "sip",
 		User:   user,
-		Host:   WhatsAppMetaHost,
+		Host:   WhatsAppOutboundHost,
 		Port:   5061,
 	}
 	uri.UriParams = sip.NewParams()
