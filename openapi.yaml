@@ -2111,9 +2111,12 @@ components:
                     enum:
                         - sip
                         - whatsapp
+                to:
+                    type: string
+                    description: Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"). For whatsapp legs, an E.164 phone number (with or without '+').
                 uri:
                     type: string
-                    description: SIP URI to dial (sip legs only)
+                    description: Deprecated alias for `to` (sip legs only). Prefer `to`.
                 from:
                     type: string
                     description: Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")
@@ -2147,7 +2150,7 @@ components:
                     type: string
                     description: Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created.
                 auth:
-                    description: SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials.
+                    description: Digest auth credentials. Required for whatsapp legs (Meta-issued password; username defaults to `from` with '+' stripped). Optional for sip legs (sipgo retries on 401/407 challenge).
                     nullable: true
                     allOf:
                         - $ref: '#/components/schemas/SIPAuth'
@@ -2173,15 +2176,8 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
-                to:
-                    type: string
-                    description: Destination phone number for WhatsApp legs (E.164, with or without '+')
-                password:
-                    type: string
-                    description: Meta-issued digest auth password for WhatsApp legs. 'from' is the business phone number (E.164 without '+').
             required:
                 - type
-                - uri
         RoomCreateRequest:
             type: object
             properties:
@@ -2481,12 +2477,11 @@ components:
             properties:
                 username:
                     type: string
-                    description: SIP auth username
+                    description: Digest auth username. Optional for whatsapp legs (defaults to `from` with '+' stripped, per Meta's spec).
                 password:
                     type: string
-                    description: SIP auth password
+                    description: Digest auth password.
             required:
-                - username
                 - password
         WebhookEvent:
             type: object

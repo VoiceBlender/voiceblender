@@ -49,7 +49,7 @@ Originate an outbound SIP call.
 ```json
 {
   "type": "sip",
-  "uri": "sip:alice@192.168.1.100:5060",
+  "to": "sip:alice@192.168.1.100:5060",
   "from": "+15551234567",
   "privacy": "id",
   "ring_timeout": 30,
@@ -78,14 +78,15 @@ Originate an outbound SIP call.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | `"sip"` or `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below) |
-| `uri` | string | yes (sip) | SIP URI to dial |
+| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
+| `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
 | `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
-| `auth` | object | no | SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials. Contains `username` (string) and `password` (string). |
+| `auth` | object | no for sip, **yes for whatsapp** | Digest auth credentials. Contains `username` (string, optional for whatsapp — defaults to `from` with `+` stripped) and `password` (string). For sip legs, retried on 401/407 challenge. |
 | `room_id` | string | no | Room ID to auto-add the leg to once media is ready. The leg joins the room on `early_media` (183+SDP) or `connected` (200 OK), whichever comes first. If the room does not exist, it is automatically created. |
 | `webhook_url` | string | no | Per-leg webhook URL. Events for this leg are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
@@ -148,8 +149,10 @@ Originate a call to a WhatsApp user.
 {
   "type": "whatsapp",
   "to": "+15557654321",
-  "from": "15551234567",
-  "password": "meta-issued-digest-password",
+  "from": "+15551234567",
+  "auth": {
+    "password": "meta-issued-digest-password"
+  },
   "room_id": "room-123",
   "app_id": "myapp"
 }
@@ -159,8 +162,9 @@ Originate a call to a WhatsApp user.
 |-------|------|----------|-------------|
 | `type` | string | yes | `"whatsapp"` |
 | `to` | string | yes | Destination phone number (E.164, with or without `+`). |
-| `from` | string | yes | Business phone number used as both the caller ID and the digest auth username. E.164 without `+`. |
-| `password` | string | yes | Meta-issued digest password for the business number. |
+| `from` | string | yes | Business phone number, E.164 (with or without `+`). Used as the From URI user-part and, by default, as the digest auth username. |
+| `auth.password` | string | yes | Meta-issued digest password for the business number. |
+| `auth.username` | string | no | Override the digest auth username. Defaults to `from` with `+` stripped, per Meta's spec. |
 | `room_id` | string | no | Room ID to auto-add the leg to once connected. Created on the fly if it doesn't exist. |
 | `app_id` | string | no | Application identifier for event stream filtering. |
 

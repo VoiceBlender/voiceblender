@@ -166,11 +166,11 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if req.From == "" {
-		writeError(w, http.StatusBadRequest, "'from' is required (business phone number, E.164 without '+')")
+		writeError(w, http.StatusBadRequest, "'from' is required (business phone number, E.164)")
 		return
 	}
-	if req.Password == "" {
-		writeError(w, http.StatusBadRequest, "'password' is required (Meta-issued digest password)")
+	if req.Auth == nil || req.Auth.Password == "" {
+		writeError(w, http.StatusBadRequest, "'auth.password' is required (Meta-issued digest password)")
 		return
 	}
 	if s.SIPEngine.TLSPort() == 0 {
@@ -244,9 +244,10 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 	defer cancel()
 
 	call, err := s.SIPEngine.InviteWhatsApp(inviteCtx, recipient, sipmod.WhatsAppInviteOptions{
-		FromNumber: req.From,
-		Password:   req.Password,
-		SDPOffer:   sdpOffer,
+		FromNumber:     req.From,
+		DigestUsername: req.Auth.Username,
+		Password:       req.Auth.Password,
+		SDPOffer:       sdpOffer,
 	})
 	if err != nil {
 		s.Log.Info("whatsapp outbound: invite failed", "leg_id", l.ID(), "error", err)

@@ -483,8 +483,12 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
+	target := req.To
+	if target == "" {
+		target = req.URI
+	}
 	recipient := sip.Uri{}
-	if err := sip.ParseUri(req.URI, &recipient); err != nil {
+	if err := sip.ParseUri(target, &recipient); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid SIP URI: %v", err))
 		return
 	}
@@ -607,7 +611,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		LegType:    string(l.Type()),
-		URI:        req.URI,
+		URI:        target,
 		From:       req.From,
 		SIPHeaders: req.Headers,
 	})

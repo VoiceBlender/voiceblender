@@ -30,11 +30,13 @@ func IsWhatsAppInvite(call *InboundCall) bool {
 
 type WhatsAppInviteOptions struct {
 	// FromNumber is the business phone number in E.164. Used as the From
-	// URI user (with leading '+') and the digest auth username (without).
-	FromNumber string
-	Password   string
-	SDPOffer   []byte
-	Headers    []sip.Header
+	// URI user (with leading '+'). When DigestUsername is empty it also
+	// serves as the digest auth username (with the '+' stripped, per Meta).
+	FromNumber     string
+	DigestUsername string // optional override; defaults to FromNumber without '+'
+	Password       string
+	SDPOffer       []byte
+	Headers        []sip.Header
 }
 
 type WhatsAppOutboundCall struct {
@@ -55,7 +57,10 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 		return nil, fmt.Errorf("FromNumber and Password required (digest auth)")
 	}
 	fromURIUser := "+" + strings.TrimPrefix(opts.FromNumber, "+")
-	digestUser := strings.TrimPrefix(opts.FromNumber, "+")
+	digestUser := opts.DigestUsername
+	if digestUser == "" {
+		digestUser = strings.TrimPrefix(opts.FromNumber, "+")
+	}
 	fromHost := e.publicHost
 
 	req := sip.NewRequest(sip.INVITE, recipient)
