@@ -164,15 +164,23 @@ Originate a call to a WhatsApp user.
 | `room_id` | string | no | Room ID to auto-add the leg to once connected. Created on the fly if it doesn't exist. |
 | `app_id` | string | no | Application identifier for event stream filtering. |
 
-The INVITE is sent to `sips:{to}@wa.meta.vc:5061` with an SDP offer that advertises ICE + DTLS-SRTP + Opus/48000. The request blocks until ICE gathering finishes (Meta does not support trickle over SIP) and sipgo has completed the digest challenge round-trip, so expect 200–500 ms of latency on a healthy network.
+The handler is **asynchronous**: it returns the leg view as soon as PCMedia setup succeeds and the leg is registered. ICE gathering, the INVITE round-trip (including the digest 401/407 retry), and the SDP answer apply happen in the background. Progress is signalled via webhook events:
 
-**Response:** `201 Created` — Leg object in `connected` state with `type: "whatsapp_out"` (no `ringing` phase is exposed for outbound; the call is either connected or the request fails).
+- `leg.ringing` (`type: "whatsapp_out"`) — fires immediately after the leg is created. The HTTP response is sent at this moment.
+- `leg.connected` — fires once Meta returns 200 OK and the SDP answer has been applied.
+- `leg.disconnected` — fires if the INVITE fails (`reason: "invite_failed"`), the answer is rejected (`bad_answer`), or the dialog ends (`remote_bye`).
 
-**Errors:**
+**Response:** `201 Created` — Leg object in `ringing` state with `type: "whatsapp_out"`. Subscribe to `leg.connected` / `leg.disconnected` (webhook or `/v1/vsi`) to track progress.
+
+**Errors (synchronous, before the leg is created):**
 - `400` — missing `to` / `from` / `password`.
 - `503` — `SIP_TLS_PORT` not configured on this instance.
-- `502` — Meta rejected the INVITE or returned an SDP answer that could not be applied.
-- `504` — client disconnected while ICE was gathering.
+- `500` — local PCMedia or SDP setup failed.
+
+**Async errors (delivered via `leg.disconnected` event after `201`):**
+- `invite_failed` — Meta rejected the INVITE (e.g. 403 / 404 / digest auth failed) or the request timed out.
+- `bad_answer` — Meta's 200 OK contained an SDP answer that pion couldn't apply.
+- `remote_bye` — call ended normally or Meta hung up.
 
 #### Inbound
 

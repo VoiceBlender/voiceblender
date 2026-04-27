@@ -219,18 +219,39 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	l := leg.NewWhatsAppOutboundPendingLeg(media, req.From, req.To, s.Log)
+	if req.AppID != "" {
+		l.SetAppID(req.AppID)
+	}
+	s.LegMgr.Add(l)
+
+	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:  string(l.Type()),
+		URI:      req.To,
+		From:     req.From,
+	})
+
+	writeJSON(w, http.StatusCreated, legViewFrom(l))
+
+	go s.driveWhatsAppOutbound(l, media, gatherDone, req)
+}
+
+// driveWhatsAppOutbound runs the asynchronous outbound flow: wait for ICE,
+// send INVITE (with digest auth retry), apply SDP answer, transition the
+// leg to connected, and watch for hangup. Errors are surfaced via
+// leg.disconnected webhook events; the HTTP request has already returned.
+func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, gatherDone <-chan struct{}, req CreateLegRequest) {
 	select {
 	case <-gatherDone:
-	case <-r.Context().Done():
-		media.Close()
-		writeError(w, http.StatusGatewayTimeout, "client disconnected during ICE gathering")
+	case <-l.Context().Done():
+		// Leg already hung up via DELETE.
 		return
 	}
-	sdpOffer := []byte(pc.LocalDescription().SDP)
+	sdpOffer := []byte(media.PC().LocalDescription().SDP)
 
 	recipient := sipmod.WhatsAppRecipientURI(req.To)
-
-	inviteCtx, cancel := context.WithTimeout(context.Background(), whatsAppInviteTimeout)
+	inviteCtx, cancel := context.WithTimeout(l.Context(), whatsAppInviteTimeout)
 	defer cancel()
 
 	call, err := s.SIPEngine.InviteWhatsApp(inviteCtx, recipient, sipmod.WhatsAppInviteOptions{
@@ -240,24 +261,34 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		FromHost:   s.Config.WhatsAppSIPHost,
 	})
 	if err != nil {
-		media.Close()
-		writeError(w, http.StatusBadGateway, "invite failed: "+err.Error())
+		s.Log.Info("whatsapp outbound: invite failed", "leg_id", l.ID(), "error", err)
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.publishDisconnect(l, "invite_failed")
+		}
 		return
 	}
 
 	answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: string(call.AnswerSDP)}
-	if err := pc.SetRemoteDescription(answer); err != nil {
+	if err := media.PC().SetRemoteDescription(answer); err != nil {
+		s.Log.Error("whatsapp outbound: SetRemoteDescription", "leg_id", l.ID(), "error", err)
 		_ = call.Dialog.Bye(context.Background())
-		media.Close()
-		writeError(w, http.StatusBadGateway, "invalid SDP answer from WhatsApp")
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.publishDisconnect(l, "bad_answer")
+		}
 		return
 	}
 
-	l := leg.NewWhatsAppOutboundLeg(call.Dialog, media, req.From, req.To, s.Log)
-	if req.AppID != "" {
-		l.SetAppID(req.AppID)
+	if err := l.ConnectOutbound(call.Dialog); err != nil {
+		s.Log.Error("whatsapp outbound: ConnectOutbound", "leg_id", l.ID(), "error", err)
+		_ = call.Dialog.Bye(context.Background())
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.publishDisconnect(l, "connect_failed")
+		}
+		return
 	}
-	s.LegMgr.Add(l)
 
 	if req.RoomID != "" {
 		if err := s.RoomMgr.AddLeg(req.RoomID, l.ID()); err != nil {
@@ -270,15 +301,11 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		LegType:  string(l.Type()),
 	})
 
-	go func() {
-		<-call.Dialog.Context().Done()
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "remote_bye")
-		}
-	}()
-
-	writeJSON(w, http.StatusCreated, legViewFrom(l))
+	<-call.Dialog.Context().Done()
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "remote_bye")
+	}
 }
 
 func legViewFrom(l leg.Leg) LegView {

@@ -101,26 +101,43 @@ func NewWhatsAppInboundLeg(dialog *sipgo.DialogServerSession, media *PCMedia, fr
 	return l
 }
 
-// NewWhatsAppOutboundLeg wraps a completed outbound UAC dialog (200 OK + ACK
-// already sent) and the PCMedia whose remote description has been applied.
-// The leg is created in StateConnected.
-func NewWhatsAppOutboundLeg(dialog *sipgo.DialogClientSession, media *PCMedia, from, to string, log *slog.Logger) *WhatsAppLeg {
-	now := time.Now()
+// NewWhatsAppOutboundPendingLeg creates an outbound leg in StateRinging
+// without a SIP dialog. Caller drives the INVITE asynchronously and
+// upgrades the leg via ConnectOutbound once a 200 OK is received.
+func NewWhatsAppOutboundPendingLeg(media *PCMedia, from, to string, log *slog.Logger) *WhatsAppLeg {
 	l := &WhatsAppLeg{
-		id:           uuid.New().String(),
-		legType:      TypeWhatsAppOutbound,
-		state:        StateConnected,
-		media:        media,
-		clientDialog: dialog,
-		from:         from,
-		to:           to,
-		createdAt:    now,
-		answeredAt:   now,
-		log:          log,
+		id:        uuid.New().String(),
+		legType:   TypeWhatsAppOutbound,
+		state:     StateRinging,
+		media:     media,
+		from:      from,
+		to:        to,
+		createdAt: time.Now(),
+		log:       log,
 	}
 	l.acceptDTMF.Store(true)
-	media.Start()
 	return l
+}
+
+// ConnectOutbound transitions a pending outbound leg to StateConnected
+// once the UAC INVITE has been answered. media.Start() is called here so
+// no RTP egresses while the leg is still ringing.
+func (l *WhatsAppLeg) ConnectOutbound(dialog *sipgo.DialogClientSession) error {
+	l.mu.Lock()
+	if l.state == StateHungUp {
+		l.mu.Unlock()
+		return fmt.Errorf("leg already hung up")
+	}
+	if l.state == StateConnected {
+		l.mu.Unlock()
+		return nil
+	}
+	l.clientDialog = dialog
+	l.state = StateConnected
+	l.answeredAt = time.Now()
+	l.mu.Unlock()
+	l.media.Start()
+	return nil
 }
 
 // Media returns the underlying PCMedia for ICE trickle / diagnostics.

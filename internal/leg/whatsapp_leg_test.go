@@ -16,16 +16,16 @@ func newTestMedia(t *testing.T) *PCMedia {
 	return m
 }
 
-func TestWhatsAppLeg_OutboundStartsConnected(t *testing.T) {
+func TestWhatsAppLeg_OutboundStartsRinging(t *testing.T) {
 	m := newTestMedia(t)
-	l := NewWhatsAppOutboundLeg(nil, m, "15551234567", "15557654321", slog.Default())
+	l := NewWhatsAppOutboundPendingLeg(m, "15551234567", "15557654321", slog.Default())
 	defer l.Hangup(t.Context())
 
 	if l.Type() != TypeWhatsAppOutbound {
 		t.Errorf("Type = %v, want whatsapp_out", l.Type())
 	}
-	if l.State() != StateConnected {
-		t.Errorf("State = %v, want connected", l.State())
+	if l.State() != StateRinging {
+		t.Errorf("State = %v, want ringing", l.State())
 	}
 	if l.SampleRate() != 48000 {
 		t.Errorf("SampleRate = %d, want 48000", l.SampleRate())
@@ -35,6 +35,14 @@ func TestWhatsAppLeg_OutboundStartsConnected(t *testing.T) {
 	}
 	if l.IsHeld() {
 		t.Error("WhatsApp legs must not report IsHeld=true")
+	}
+
+	// ConnectOutbound transitions ringing → connected.
+	if err := l.ConnectOutbound(nil); err != nil {
+		t.Fatalf("ConnectOutbound: %v", err)
+	}
+	if l.State() != StateConnected {
+		t.Errorf("State after ConnectOutbound = %v, want connected", l.State())
 	}
 }
 
@@ -56,7 +64,7 @@ func TestWhatsAppLeg_InboundStartsRinging(t *testing.T) {
 
 func TestWhatsAppLeg_RequestAnswerRejectsOutbound(t *testing.T) {
 	m := newTestMedia(t)
-	l := NewWhatsAppOutboundLeg(nil, m, "from", "to", slog.Default())
+	l := NewWhatsAppOutboundPendingLeg(m, "from", "to", slog.Default())
 	defer l.Hangup(t.Context())
 
 	if err := l.RequestAnswer(); err == nil {
@@ -85,7 +93,7 @@ func TestWhatsAppLeg_RequestAnswerIdempotency(t *testing.T) {
 
 func TestWhatsAppLeg_HangupIsIdempotent(t *testing.T) {
 	m := newTestMedia(t)
-	l := NewWhatsAppOutboundLeg(nil, m, "from", "to", slog.Default())
+	l := NewWhatsAppOutboundPendingLeg(m, "from", "to", slog.Default())
 
 	if err := l.Hangup(t.Context()); err != nil {
 		// media.Close can return the pion PeerConnection close error on
