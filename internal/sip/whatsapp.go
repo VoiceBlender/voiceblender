@@ -106,25 +106,26 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 		return nil, fmt.Errorf("write invite: %w", err)
 	}
 
-	if err := ds.WaitAnswer(ctx, sipgo.AnswerOptions{
+	waitErr := ds.WaitAnswer(ctx, sipgo.AnswerOptions{
 		Username: digestUser,
 		Password: opts.Password,
 		OnResponse: func(res *sip.Response) error {
 			e.logSIPMessage("inbound", res)
 			return nil
 		},
-	}); err != nil {
-		return nil, fmt.Errorf("wait answer: %w", err)
-	}
+	})
 	// sipgo mutates ds.InviteRequest in place when answering a 401/407
 	// challenge (adds Authorization / Proxy-Authorization, replaces Via).
-	// The retry transmission goes out without any caller-visible hook, so
-	// dump the final shape of the request here — this is the message that
-	// actually reached Meta after the digest round-trip.
+	// Log the final shape regardless of whether WaitAnswer succeeded —
+	// the most useful diagnostic for non-2xx finals (403 etc.) is the
+	// retry that actually reached Meta.
 	if ds.InviteRequest != nil &&
 		(ds.InviteRequest.GetHeader("Authorization") != nil ||
 			ds.InviteRequest.GetHeader("Proxy-Authorization") != nil) {
 		e.logSIPMessage("outbound (post-auth)", ds.InviteRequest)
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("wait answer: %w", waitErr)
 	}
 	if ds.InviteResponse != nil {
 		e.logSIPMessage("inbound", ds.InviteResponse)
