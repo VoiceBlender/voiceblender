@@ -18,6 +18,7 @@ type Config struct {
 	SIPTLSCert             string // path to CA-signed cert (fullchain.pem)
 	SIPTLSKey              string // path to private key (privkey.pem)
 	SIPDebug               bool   // dump full SIP message content for every request and response
+	WhatsAppSIPHost        string // FQDN to use as From/Contact host for outbound WhatsApp INVITEs (must match the SIP server you registered with Meta and the SAN on SIP_TLS_CERT)
 	SIPHost                string
 	HTTPAddr               string
 	ICEServers             []string
@@ -61,6 +62,7 @@ func Load() Config {
 		SIPTLSCert:             os.Getenv("SIP_TLS_CERT"),
 		SIPTLSKey:              os.Getenv("SIP_TLS_KEY"),
 		SIPDebug:               os.Getenv("SIP_DEBUG") == "true",
+		WhatsAppSIPHost:        os.Getenv("WHATSAPP_SIP_HOST"),
 		SIPHost:                envOr("SIP_HOST", "voiceblender"),
 		HTTPAddr:               envOr("HTTP_ADDR", ":8080"),
 		ICEServers:             strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),

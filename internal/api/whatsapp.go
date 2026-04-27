@@ -237,6 +237,7 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		FromNumber: req.From,
 		Password:   req.Password,
 		SDPOffer:   sdpOffer,
+		FromHost:   s.Config.WhatsAppSIPHost,
 	})
 	if err != nil {
 		media.Close()
