@@ -28,9 +28,10 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP        string // IP advertised in SDP/Contact/Via headers
+	BindIP        string // IP for SDP c= line and listen socket
 	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
-	ExternalIP    string // Public IP override for NAT/Docker (used in Contact/SDP/Via when set)
+	ExternalIP    string // Public IP override for NAT/Docker (used in SDP when set)
+	PublicHost    string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
 	BindPort      int
 	TLSBindPort   int    // 0 = TLS disabled
 	TLSCertPath   string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
@@ -55,7 +56,8 @@ type Engine struct {
 	onRefer    func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify   func(callID string, statusCode int, reason string, terminated bool)
 	codecs     []codec.CodecType
-	bindIP     string // externally-reachable IP (for SDP/Contact)
+	bindIP     string // IP for SDP c= line
+	publicHost string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
 	listenIP   string // original bind address (for ListenAndServe)
 	bindPort   int
 	tlsPort    int // 0 = TLS disabled
@@ -120,9 +122,9 @@ func inviteIsTLS(req *sip.Request) bool {
 // form so classic SIP behaviour is unchanged.
 func (e *Engine) contactForInvite(req *sip.Request) *sip.ContactHeader {
 	if inviteIsTLS(req) && e.tlsPort != 0 {
-		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: e.bindIP, Port: e.tlsPort}}
+		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: e.publicHost, Port: e.tlsPort}}
 	}
-	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: e.bindIP, Port: e.bindPort}}
+	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: e.publicHost, Port: e.bindPort}}
 }
 
 // RespondInviteSDP sends a 2xx response to an inbound INVITE with a
@@ -204,6 +206,14 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		advertiseIP = cfg.ExternalIP
 	}
 
+	// publicHost is the canonical signalling identity used in
+	// From/Contact/Via. SIP_DOMAIN takes precedence; otherwise we keep
+	// using the advertised IP for backward compatibility.
+	publicHost := cfg.PublicHost
+	if publicHost == "" {
+		publicHost = advertiseIP
+	}
+
 	// Route sipgo's own internal debug logs (transport/transaction layer) to
 	// our logger when SIP_DEBUG is on. These cover messages sipgo sends or
 	// receives automatically (100 Trying, 487 Request Terminated after CANCEL,
@@ -216,7 +226,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 	uaOpts := []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(cfg.SIPHost),
-		sipgo.WithUserAgentHostname(advertiseIP),
+		sipgo.WithUserAgentHostname(publicHost),
 	}
 	if cfg.SIPDebug {
 		uaOpts = append(uaOpts,
@@ -243,10 +253,10 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("create server: %w", err)
 	}
 
-	// Pin Via sent-by to advertiseIP — wildcard binds make the response
+	// Pin Via sent-by to publicHost — wildcard binds make the response
 	// path unroutable, so peers black-hole our REFER/BYE/re-INVITE 200s.
 	clientOpts := []sipgo.ClientOption{
-		sipgo.WithClientHostname(advertiseIP),
+		sipgo.WithClientHostname(publicHost),
 		sipgo.WithClientPort(cfg.BindPort),
 	}
 	if cfg.SIPDebug {
@@ -260,7 +270,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	contactHdr := sip.ContactHeader{
 		Address: sip.Uri{
 			Scheme: "sip",
-			Host:   advertiseIP,
+			Host:   publicHost,
 			Port:   cfg.BindPort,
 		},
 	}
@@ -275,22 +285,23 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		ua:        ua,
-		server:    server,
-		client:    client,
-		dsCache:   sipgo.NewDialogServerCache(client, contactHdr),
-		dcCache:   sipgo.NewDialogClientCache(client, contactHdr),
-		codecs:    cfg.Codecs,
-		bindIP:    advertiseIP,
-		listenIP:  listenIP,
-		bindPort:  cfg.BindPort,
-		tlsPort:   cfg.TLSBindPort,
-		tlsCert:   cfg.TLSCertPath,
-		tlsKey:    cfg.TLSKeyPath,
-		sipHost:   cfg.SIPHost,
-		portAlloc: cfg.PortAllocator,
-		log:       cfg.Log,
-		sipDebug:  cfg.SIPDebug,
+		ua:         ua,
+		server:     server,
+		client:     client,
+		dsCache:    sipgo.NewDialogServerCache(client, contactHdr),
+		dcCache:    sipgo.NewDialogClientCache(client, contactHdr),
+		codecs:     cfg.Codecs,
+		bindIP:     advertiseIP,
+		publicHost: publicHost,
+		listenIP:   listenIP,
+		bindPort:   cfg.BindPort,
+		tlsPort:    cfg.TLSBindPort,
+		tlsCert:    cfg.TLSCertPath,
+		tlsKey:     cfg.TLSKeyPath,
+		sipHost:    cfg.SIPHost,
+		portAlloc:  cfg.PortAllocator,
+		log:        cfg.Log,
+		sipDebug:   cfg.SIPDebug,
 	}
 
 	e.registerHandlers()
@@ -731,7 +742,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		fromURI := sip.Uri{
 			Scheme: "sip",
 			User:   opts.FromUser,
-			Host:   e.bindIP,
+			Host:   e.publicHost,
 		}
 		from := &sip.FromHeader{Address: fromURI}
 		from.Params.Add("tag", sip.GenerateTagN(16))
@@ -858,6 +869,12 @@ func (e *Engine) Codecs() []codec.CodecType {
 // BindIP returns the engine's bind IP address.
 func (e *Engine) BindIP() string {
 	return e.bindIP
+}
+
+// PublicHost returns the canonical signalling hostname (SIP_DOMAIN when
+// set, otherwise the advertised IP).
+func (e *Engine) PublicHost() string {
+	return e.publicHost
 }
 
 func (e *Engine) SIPHost() string {

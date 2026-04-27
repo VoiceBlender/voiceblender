@@ -258,7 +258,6 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 		FromNumber: req.From,
 		Password:   req.Password,
 		SDPOffer:   sdpOffer,
-		FromHost:   s.Config.WhatsAppSIPHost,
 	})
 	if err != nil {
 		s.Log.Info("whatsapp outbound: invite failed", "leg_id", l.ID(), "error", err)

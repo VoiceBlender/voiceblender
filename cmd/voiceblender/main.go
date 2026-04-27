@@ -88,6 +88,7 @@ func main() {
 		BindIP:        cfg.SIPBindIP,
 		ListenIP:      cfg.SIPListenIP,
 		ExternalIP:    cfg.SIPExternalIP,
+		PublicHost:    cfg.SIPDomain,
 		BindPort:      sipPort,
 		TLSBindPort:   sipTLSPort,
 		TLSCertPath:   cfg.SIPTLSCert,

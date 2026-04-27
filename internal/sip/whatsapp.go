@@ -41,11 +41,6 @@ type WhatsAppInviteOptions struct {
 	Password   string // Meta-generated password
 	SDPOffer   []byte // complete SDP offer from PCMedia (post ICE gathering)
 	Headers    []sip.Header
-	// FromHost overrides the host portion of the From + Contact URIs.
-	// Must match the SIP server hostname registered with Meta for this
-	// phone number; otherwise Meta returns 403. Falls back to the
-	// engine's advertised IP when empty.
-	FromHost string
 }
 
 // WhatsAppOutboundCall wraps the UAC dialog and the remote SDP answer.
@@ -72,10 +67,7 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	// digest auth username in E.164 without '+'.
 	fromURIUser := "+" + strings.TrimPrefix(opts.FromNumber, "+")
 	digestUser := strings.TrimPrefix(opts.FromNumber, "+")
-	fromHost := opts.FromHost
-	if fromHost == "" {
-		fromHost = e.bindIP
-	}
+	fromHost := e.publicHost
 
 	req := sip.NewRequest(sip.INVITE, recipient)
 	// sipgo picks UDP unless transport is forced; "sips:" scheme alone
