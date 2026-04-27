@@ -17,16 +17,12 @@ import (
 
 const whatsAppInviteTimeout = 30 * time.Second
 
-// handleWhatsAppInbound answers an inbound WhatsApp Business Calling INVITE.
-// Media is ICE + DTLS-SRTP + Opus via PCMedia. ICE gathering blocks before
-// 180 because Meta does not support re-INVITE / trickle.
 func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	ctx := call.Dialog.Context()
 	callID := ""
 	if c := call.Request.CallID(); c != nil {
 		callID = c.Value()
 	}
-	s.Log.Info("whatsapp inbound: INVITE received", "call_id", callID, "from", call.From, "to", call.To)
 
 	s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader())
 	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
@@ -40,12 +36,10 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		RTPPortMin: uint16(s.Config.RTPPortMin),
 		RTPPortMax: uint16(s.Config.RTPPortMax),
 		Log:        s.Log,
-		// Meta is ice-lite + setup:actpass; ice-lite peers don't initiate
-		// DTLS, so we must be the DTLS client.
+		// Meta is ice-lite + setup:actpass; we must drive DTLS.
 		AnsweringDTLSRole:    webrtc.DTLSRoleClient,
 		EnableTelephoneEvent: true,
 		OnDisconnect: func(reason string) {
-			s.Log.Warn("whatsapp inbound: ICE disconnect", "call_id", callID, "reason", reason)
 			if legPtr != nil && legPtr.State() != leg.StateHungUp {
 				s.cleanupLeg(legPtr)
 				s.publishDisconnect(legPtr, "ice_"+reason)
@@ -92,6 +86,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		return
 	}
 
+	// Meta does not support trickle; the 200 OK must carry a complete SDP.
 	select {
 	case <-gatherDone:
 	case <-ctx.Done():
@@ -165,7 +160,6 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	}
 }
 
-// createWhatsAppOutboundLeg places an outbound call to a WhatsApp user.
 func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
 	if req.To == "" {
 		writeError(w, http.StatusBadRequest, "'to' is required")
@@ -237,15 +231,10 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 	go s.driveWhatsAppOutbound(l, media, gatherDone, req)
 }
 
-// driveWhatsAppOutbound runs the asynchronous outbound flow: wait for ICE,
-// send INVITE (with digest auth retry), apply SDP answer, transition the
-// leg to connected, and watch for hangup. Errors are surfaced via
-// leg.disconnected webhook events; the HTTP request has already returned.
 func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, gatherDone <-chan struct{}, req CreateLegRequest) {
 	select {
 	case <-gatherDone:
 	case <-l.Context().Done():
-		// Leg already hung up via DELETE.
 		return
 	}
 	sdpOffer := []byte(media.PC().LocalDescription().SDP)

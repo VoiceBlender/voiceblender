@@ -25,25 +25,18 @@ import (
 type PCMediaConfig struct {
 	Codec      codec.CodecType
 	ICEServers []string
-	RTPPortMin uint16 // 0 = OS-assigned
+	RTPPortMin uint16
 	RTPPortMax uint16
 	Log        *slog.Logger
 
-	// OnDisconnect fires when ICE enters Failed or Disconnected. May be nil.
 	OnDisconnect func(reason string)
 
-	// AnsweringDTLSRole forces the DTLS role when answering a remote offer
-	// whose a=setup is "actpass". Defaults to the pion default (Server /
-	// passive), which works for browser peers. Set to DTLSRoleClient
-	// (a=setup:active) when answering an ice-lite peer such as WhatsApp
-	// Business Calling — otherwise both sides wait for a ClientHello that
-	// never arrives and DTLS stalls.
+	// AnsweringDTLSRole forces the DTLS role on actpass offers. Use
+	// DTLSRoleClient against ice-lite peers (e.g. WhatsApp).
 	AnsweringDTLSRole webrtc.DTLSRole
 
-	// EnableTelephoneEvent registers audio/telephone-event (PT 126,
-	// clock 8000, events 0-16) in the MediaEngine so the SDP answer
-	// advertises RFC 4733 DTMF. Inbound telephone-event packets are
-	// decoded in handleTrack and forwarded via the OnDTMF callback.
+	// EnableTelephoneEvent advertises RFC 4733 DTMF (PT 126) in the
+	// answer and routes inbound telephone-event packets to OnDTMF.
 	EnableTelephoneEvent bool
 }
 
@@ -54,7 +47,7 @@ type PCMediaConfig struct {
 type PCMedia struct {
 	codec   codec.CodecType
 	ptimeMs int
-	frameSz int // PCM samples per frame (e.g. 160 @ 8kHz/20ms, 960 @ 48kHz/20ms)
+	frameSz int // PCM samples per 20ms frame
 
 	pc         *webrtc.PeerConnection
 	localTrack *webrtc.TrackLocalStaticRTP
@@ -65,31 +58,22 @@ type PCMedia struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	inFrames  chan []byte // decoded PCM (byte-framed, 2 bytes per sample)
-	outFrames chan []byte // outbound PCM chunks from mixer
+	inFrames  chan []byte
+	outFrames chan []byte
 
 	mu            sync.Mutex
 	iceCandidates []webrtc.ICECandidateInit
 	iceDone       bool
 
-	// Taps receive a copy of decoded inbound PCM (16-bit LE, codec native
-	// rate). Guarded by tapMu to allow concurrent set/clear from the API
-	// layer while handleTrack is running.
 	tapMu       sync.RWMutex
 	speakingTap io.Writer
-
-	// DTMF callback invoked on end-of-event for inbound telephone-event
-	// packets. Guarded by tapMu for the same reason.
-	onDTMF     func(digit rune)
-	lastDTMFTS uint32
+	onDTMF      func(digit rune)
+	lastDTMFTS  uint32
 
 	started bool
 	log     *slog.Logger
 }
 
-// SetSpeakingTap installs a writer that receives decoded inbound PCM on
-// every packet. Used by the speaking detector. Pass nil via
-// ClearSpeakingTap to remove.
 func (m *PCMedia) SetSpeakingTap(w io.Writer) {
 	m.tapMu.Lock()
 	m.speakingTap = w
@@ -103,18 +87,12 @@ func (m *PCMedia) ClearSpeakingTap() {
 	m.tapMu.Unlock()
 }
 
-// SetOnDTMF installs a callback invoked once per inbound DTMF digit
-// (end-of-event, deduplicated against RFC 4733 retransmits). Only
-// effective when PCMediaConfig.EnableTelephoneEvent was set.
 func (m *PCMedia) SetOnDTMF(fn func(digit rune)) {
 	m.tapMu.Lock()
 	m.onDTMF = fn
 	m.tapMu.Unlock()
 }
 
-// NewPCMedia creates a PeerConnection configured for cfg.Codec, wires
-// OnTrack/OnICECandidate/OnICEConnectionStateChange, and returns the media
-// object. The caller is responsible for SDP negotiation via PC().
 func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -148,11 +126,10 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		}
 	}
 
-	// Opus is registered with an empty SDPFmtpLine so any remote fmtp
-	// fuzzy-matches exactly. pion's default Opus entry ("minptime=10;
-	// useinbandfec=1") otherwise conflicts with Meta's "minptime=20;..."
-	// and pion drops Opus from the negotiated set when telephone-event
-	// is also present.
+	// Custom MediaEngine when telephone-event is needed. Opus is
+	// registered with an empty SDPFmtpLine so pion's fuzzy matcher treats
+	// any remote Opus fmtp as exact — otherwise it drops Opus when
+	// telephone-event is present alongside.
 	var api *webrtc.API
 	if cfg.EnableTelephoneEvent {
 		me := &webrtc.MediaEngine{}
@@ -161,7 +138,6 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 				MimeType:     webrtc.MimeTypeOpus,
 				ClockRate:    48000,
 				Channels:     2,
-				SDPFmtpLine:  "",
 				RTCPFeedback: []webrtc.RTCPFeedback{{Type: "transport-cc"}},
 			},
 			PayloadType: 111,
@@ -170,10 +146,8 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		}
 		if err := me.RegisterCodec(webrtc.RTPCodecParameters{
 			RTPCodecCapability: webrtc.RTPCodecCapability{
-				MimeType:    "audio/telephone-event",
-				ClockRate:   8000,
-				Channels:    0,
-				SDPFmtpLine: "",
+				MimeType:  "audio/telephone-event",
+				ClockRate: 8000,
 			},
 			PayloadType: 126,
 		}, webrtc.RTPCodecTypeAudio); err != nil {
@@ -197,12 +171,8 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 
 	mime := mimeTypeFor(cfg.Codec)
-	// Channel count here is SDP metadata only — it must match pion's default
-	// MediaEngine registration, otherwise SetLocalDescription fails with
-	// "codec is not supported by remote". Pion registers Opus as /48000/2
-	// and the G.711 family as /8000/1. The actual RTP payload is format-
-	// agnostic (Opus carries its own stereo/mono flag), so sending a
-	// mono-encoded stream under Channels=2 is fine.
+	// Channels must match pion's MediaEngine entry (Opus=2, G.711=1) or
+	// SetLocalDescription fails. The on-wire RTP is unaffected.
 	channels := uint16(1)
 	if cfg.Codec == codec.CodecOpus {
 		channels = 2
@@ -254,36 +224,30 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		m.mu.Unlock()
 	})
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		m.log.Info("pcmedia: ICE connection state", "state", state.String())
+		m.log.Debug("pcmedia: ICE connection state", "state", state.String())
 		if cfg.OnDisconnect != nil &&
 			(state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected) {
 			cfg.OnDisconnect(state.String())
 		}
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		m.log.Info("pcmedia: peer connection state", "state", state.String())
+		m.log.Debug("pcmedia: peer connection state", "state", state.String())
 	})
 
 	if dtls := sender.Transport(); dtls != nil {
 		dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
-			m.log.Info("pcmedia: DTLS state", "state", state.String())
+			m.log.Debug("pcmedia: DTLS state", "state", state.String())
 		})
 	}
 
 	return m, nil
 }
 
-// PC exposes the underlying peer connection for SDP negotiation.
 func (m *PCMedia) PC() *webrtc.PeerConnection { return m.pc }
+func (m *PCMedia) Codec() codec.CodecType     { return m.codec }
+func (m *PCMedia) SampleRate() int            { return m.codec.ClockRate() }
 
-// Codec returns the negotiated audio codec.
-func (m *PCMedia) Codec() codec.CodecType { return m.codec }
-
-// SampleRate returns the codec's native sample rate.
-func (m *PCMedia) SampleRate() int { return m.codec.ClockRate() }
-
-// Start begins the outbound write loop. Safe to call once after
-// SetLocalDescription; subsequent calls are no-ops.
+// Start begins the outbound write loop. Idempotent.
 func (m *PCMedia) Start() {
 	m.mu.Lock()
 	if m.started {
@@ -295,22 +259,19 @@ func (m *PCMedia) Start() {
 	go m.writeLoop()
 }
 
-// Close cancels the media context and closes the peer connection.
 func (m *PCMedia) Close() error {
 	m.cancel()
 	return m.pc.Close()
 }
 
-// Context returns the media's lifecycle context; cancelled on Close.
 func (m *PCMedia) Context() context.Context { return m.ctx }
 
-// AddICECandidate applies a remote trickle ICE candidate.
 func (m *PCMedia) AddICECandidate(c webrtc.ICECandidateInit) error {
 	return m.pc.AddICECandidate(c)
 }
 
-// DrainLocalCandidates returns and clears buffered local ICE candidates along
-// with a flag indicating whether gathering is complete.
+// DrainLocalCandidates returns buffered local ICE candidates and the
+// gathering-complete flag, clearing the buffer.
 func (m *PCMedia) DrainLocalCandidates() ([]webrtc.ICECandidateInit, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -319,13 +280,12 @@ func (m *PCMedia) DrainLocalCandidates() ([]webrtc.ICECandidateInit, bool) {
 	return cs, m.iceDone
 }
 
-// AudioReader yields decoded PCM (16-bit LE, codec native sample rate).
+// AudioReader yields decoded PCM (16-bit LE) at the codec's native rate.
 func (m *PCMedia) AudioReader() io.Reader {
 	return &pcmReader{frames: m.inFrames, ctx: m.ctx}
 }
 
-// AudioWriter accepts PCM (16-bit LE, codec native sample rate). Chunks are
-// re-framed internally into codec ptime-sized packets.
+// AudioWriter accepts PCM (16-bit LE) at the codec's native rate.
 func (m *PCMedia) AudioWriter() io.Writer {
 	return &pcmWriter{frames: m.outFrames, ctx: m.ctx}
 }
@@ -374,7 +334,6 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			if !ok {
 				continue
 			}
-			m.log.Info("pcmedia: DTMF digit received", "digit", string(digit))
 			m.tapMu.RLock()
 			cb := m.onDTMF
 			m.tapMu.RUnlock()
@@ -389,8 +348,7 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 			continue
 		}
 		pcm := int16ToBytes(samples)
-		// Tap fires regardless of whether AudioReader has a consumer —
-		// speech detection must run on every frame.
+		// Tap runs on every frame so VAD works without any AudioReader.
 		m.tapMu.RLock()
 		tap := m.speakingTap
 		m.tapMu.RUnlock()
@@ -409,9 +367,8 @@ func (m *PCMedia) handleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) 
 	}
 }
 
-// handleDTMFTrack is used when pion delivers telephone-event on its own
-// TrackRemote instead of interleaving with Opus. Fallback path; main
-// WhatsApp flow uses the interleaved branch in handleTrack.
+// handleDTMFTrack handles the case where pion delivers telephone-event on
+// a separate TrackRemote (rare; WhatsApp interleaves on the audio track).
 func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 	buf := make([]byte, 1500)
 	for {
@@ -438,7 +395,6 @@ func (m *PCMedia) handleDTMFTrack(track *webrtc.TrackRemote) {
 		if !ok {
 			continue
 		}
-		m.log.Info("pcmedia: DTMF digit received", "digit", string(digit))
 		m.tapMu.RLock()
 		cb := m.onDTMF
 		m.tapMu.RUnlock()
@@ -522,11 +478,8 @@ func (m *PCMedia) writeLoop() {
 	}
 }
 
-// pionLogAdapter bridges pion's LeveledLogger to slog so we see pion's
-// internal transport-layer traces (DTLS, SRTP decrypt errors).
-// pion's ICE scope spams ping/keepalive/response traces at Debug/Trace;
-// we drop those entirely to keep the log readable. Warn and above still
-// pass through so failures are visible.
+// pionLogAdapter forwards pion's LeveledLogger to slog. ICE scope is
+// silenced below Info — its ping/keepalive trace is far too noisy.
 type pionLogAdapter struct {
 	log   *slog.Logger
 	scope string
