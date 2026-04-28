@@ -165,6 +165,109 @@ GET    /v1/webhooks                # List webhooks
 DELETE /v1/webhooks/{id}           # Unregister webhook
 ```
 
+## WhatsApp Business Calling
+
+VoiceBlender bridges WhatsApp consumer voice calls to and from your stack via Meta's [Business Calling API](https://developers.facebook.com/docs/whatsapp/cloud-api/calling/sip/). Signalling is SIP over TLS to `wa.meta.vc:5061` with HTTP Digest auth; media is Opus over ICE + DTLS-SRTP (pion-driven). Once connected, a WhatsApp leg looks identical to any other leg — same `/v1/legs/{id}/...` operations, same event payloads, same room mechanics.
+
+### Capabilities
+
+- **Inbound** — Meta-originated INVITEs are auto-routed to a WhatsApp handler when the From URI host ends in `meta.vc`. The leg comes up in `ringing`, fires `leg.ringing` (`leg_type: "whatsapp_in"`), and waits for `POST /v1/legs/{id}/answer`. The 200 OK then carries the pre-gathered ICE/DTLS-SRTP answer.
+- **Outbound** — `POST /v1/legs {"type":"whatsapp", ...}` returns `201` immediately with the leg in `ringing`. ICE gathering, the digest 401/407 round-trip, and the SDP-answer apply happen asynchronously; outcome is signalled via `leg.connected` or `leg.disconnected`.
+- **Audio** — full-duplex Opus at 48 kHz with mixed-minus-self room participation, recording, TTS, STT, agent attachment, speaking detection, playback. The mixer auto-resamples between WhatsApp's 48 kHz and your room's configured rate.
+- **DTMF** — inbound RFC 4733 telephone-events are decoded and emitted as `dtmf.received` plus the standard cross-leg broadcast.
+- **Webhooks + WebSocket events** — `leg.ringing` / `leg.connected` / `leg.disconnected` / `dtmf.received` / `speaking.started` / `speaking.stopped` all carry `leg_type` set to `whatsapp_in` or `whatsapp_out` so multi-tenant filtering works as it does for SIP and WebRTC legs.
+
+### Limitations
+
+- **No re-INVITE.** Meta's SIP gateway rejects re-INVITE entirely, so `hold` / `unhold` / `transfer` return `409 Conflict` on WhatsApp legs. There is no workaround at the protocol level.
+- **No outbound DTMF.** `POST /v1/legs/{id}/dtmf` on a WhatsApp leg currently returns an error. Inbound (caller pressing keys) works.
+- **No early media.** Meta does not send `183 Session Progress` with SDP — outbound calls go straight from `ringing` to `connected`. Pre-answer audio (custom ringback) is not available.
+- **No session timers** (RFC 4028) and no AMD support — Meta's consumer call flow doesn't apply.
+- **TLS cert must be CA-signed.** Meta rejects self-signed certs. The cert's SAN must match the public FQDN you register with Meta and the value of `SIP_DOMAIN`.
+- **Public reachability required.** Meta's gateway needs to reach your `SIP_TLS_PORT` (default 5061) over TCP/TLS and your ICE candidates over UDP. NAT/firewalls must forward both.
+- **One business number per leg.** The `from` field carries the business phone, and Meta validates it server-side against the registered SIP server for that exact number.
+- **Codec is fixed to Opus 48 kHz mono.** No PCMU/PCMA fallback path.
+
+### Provisioning a number on Meta
+
+Before any call works, the business phone number must be onboarded to WhatsApp Business Calling and your VoiceBlender host must be registered as its SIP server. VoiceBlender does not manage this — it is a one-time operator step performed via Meta's [Graph API](https://developers.facebook.com/docs/graph-api/).
+
+Prerequisites:
+
+1. A WhatsApp Business Account with the phone number already added and verified. The number must be enabled for Business Calling (currently a closed beta; enrolment via your Meta business representative).
+2. A long-lived Graph API access token with `whatsapp_business_management` permission.
+3. The phone number's **Phone Number ID** (visible in the Meta Business Manager UI or via `GET /me/phone_numbers`).
+4. A public FQDN that resolves to your VoiceBlender host and a CA-signed TLS certificate whose SAN matches it.
+
+Register VoiceBlender as the SIP server for the number:
+
+```sh
+curl -X POST "https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/settings" \
+  -H "Authorization: Bearer $META_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "calling": {
+      "status": "ENABLED",
+      "call_routing": {
+        "default": "SIP",
+        "fallback": "VOICEMAIL"
+      },
+      "sip": {
+        "status": "ENABLED",
+        "servers": [
+          { "hostname": "voiceblender.your-domain.example" }
+        ]
+      }
+    }
+  }'
+```
+
+Meta returns a **digest password** in the response; this is the secret you pass as `auth.password` on `POST /v1/legs`. Each phone number gets its own password — the digest username is the E.164 number with the leading `+` stripped.
+
+Verify the configuration was accepted:
+
+```sh
+curl -s "https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/settings?fields=calling" \
+  -H "Authorization: Bearer $META_TOKEN" | jq .
+```
+
+The response should show your hostname under `calling.sip.servers[]` and `calling.status: "ENABLED"`.
+
+### VoiceBlender configuration
+
+Set these env vars before starting `voiceblender`:
+
+| Variable | Value |
+|---|---|
+| `SIP_TLS_PORT` | `5061` |
+| `SIP_TLS_CERT` | path to `fullchain.pem` for your FQDN |
+| `SIP_TLS_KEY` | path to `privkey.pem` |
+| `SIP_DOMAIN` | the FQDN you registered with Meta (must match the cert SAN) |
+
+Make a test outbound call:
+
+```sh
+curl -X POST http://localhost:8080/v1/legs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "whatsapp",
+    "to": "+447960290155",
+    "from": "+441304796732",
+    "auth": { "password": "<meta-issued-digest-password>" },
+    "room_id": "wa-test"
+  }'
+```
+
+The HTTP response returns immediately with the leg in `ringing`; subscribe to the webhook or `/v1/vsi` event stream to see `leg.connected` (or `leg.disconnected` with a reason if Meta rejects the INVITE).
+
+### Troubleshooting
+
+- `403 SIP server X.X.X.X from INVITE does not match any SIP server configured for phone number ...` — `SIP_DOMAIN` doesn't match what's registered with Meta. Set it to the FQDN, not the IP, and confirm via the `GET /settings` query above.
+- `404 Not Found` on outbound — usually means the recipient phone number isn't a valid WhatsApp user, or the destination URI is malformed. Confirm the digits in `to` are the actual user's E.164 number.
+- Call connects but Meta sends BYE after 20 s with `Reason: ... not receiving any media for a long time` — your audio path (RTP/UDP egress) is being dropped before reaching Meta. Check firewall rules for outbound UDP from the `RTP_PORT_MIN`–`RTP_PORT_MAX` range and that ICE-srflx candidates are correct.
+- DTLS handshake stalls — Meta's offer is `setup:actpass` + `ice-lite`, and they don't initiate DTLS. VoiceBlender forces `setup:active` automatically; if you see `pcmedia: DTLS state state=connecting` for >5 s, run with `LOG_LEVEL=debug` and inspect pion's DTLS scope for the actual error.
+- Set `SIP_DEBUG=true` to log the full RFC 3261 wire form of every SIP message, including the auth-bearing retry after the 401/407 challenge — that's the most useful diagnostic for any signalling-layer issue.
+
 ## Typical Workflow
 
 ```
