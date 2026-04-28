@@ -202,7 +202,7 @@ Prerequisites:
 Register VoiceBlender as the SIP server for the number:
 
 ```sh
-curl -X POST "https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/settings" \
+curl -X POST "https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/settings" \
   -H "Authorization: Bearer $META_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -227,7 +227,7 @@ Meta returns a **digest password** in the response; this is the secret you pass 
 Verify the configuration was accepted:
 
 ```sh
-curl -s "https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/settings?fields=calling" \
+curl -s "https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/settings?fields=calling" \
   -H "Authorization: Bearer $META_TOKEN" | jq .
 ```
 
@@ -251,8 +251,8 @@ curl -X POST http://localhost:8080/v1/legs \
   -H 'Content-Type: application/json' \
   -d '{
     "type": "whatsapp",
-    "to": "+447960290155",
-    "from": "+441304796732",
+    "to": "+447900000000",
+    "from": "+441300000000",
     "auth": { "password": "<meta-issued-digest-password>" },
     "room_id": "wa-test"
   }'
