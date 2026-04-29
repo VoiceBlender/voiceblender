@@ -15,7 +15,6 @@ type Config struct {
 	SIPListenIP            string
 	SIPListenIPV6          string // IPv6 socket bind; falls back to SIPBindIPV6
 	SIPExternalIP          string
-	SIPExternalIPV6        string // IPv6 public IP override for NAT/dual-stack
 	SIPPort                string
 	SIPTLSPort             string // "" = TLS disabled
 	SIPTLSCert             string // path to CA-signed cert (fullchain.pem)
@@ -61,8 +60,7 @@ func Load() Config {
 		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),     // empty = no IPv6 advertised
 		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
 		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"),   // empty = same as SIP_BIND_IPV6
-		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"),   // public IP for NAT/Docker
-		SIPExternalIPV6:        os.Getenv("SIP_EXTERNAL_IPV6"), // IPv6 public IP override
+		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:                envOr("SIP_PORT", "5060"),
 		SIPTLSPort:             os.Getenv("SIP_TLS_PORT"),
 		SIPTLSCert:             os.Getenv("SIP_TLS_CERT"),

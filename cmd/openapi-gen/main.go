@@ -398,7 +398,6 @@ func configVars() *seq {
 		{Name: "SIP_LISTEN_IP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address"},
 		{Name: "SIP_BIND_IPV6", Default: "(empty = v4-only)", Description: "IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments"},
 		{Name: "SIP_LISTEN_IPV6", Default: "(same as SIP_BIND_IPV6)", Description: "Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)"},
-		{Name: "SIP_EXTERNAL_IPV6", Default: "(empty)", Description: "Public IPv6 address override for dual-stack deployments where v4 is NAT'd and v6 is native"},
 		{Name: "SIP_PORT", Default: "5060", Description: "SIP listen port"},
 		{Name: "SIP_HOST", Default: "voiceblender", Description: "SIP User-Agent name"},
 		{Name: "ICE_SERVERS", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},

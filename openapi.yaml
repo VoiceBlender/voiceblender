@@ -22,9 +22,6 @@ info:
         - name: SIP_LISTEN_IPV6
           default: (same as SIP_BIND_IPV6)
           description: Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)
-        - name: SIP_EXTERNAL_IPV6
-          default: (empty)
-          description: Public IPv6 address override for dual-stack deployments where v4 is NAT'd and v6 is native
         - name: SIP_PORT
           default: "5060"
           description: SIP listen port

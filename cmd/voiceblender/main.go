@@ -90,7 +90,6 @@ func main() {
 		ListenIP:      cfg.SIPListenIP,
 		ListenIPV6:    cfg.SIPListenIPV6,
 		ExternalIP:    cfg.SIPExternalIP,
-		ExternalIPV6:  cfg.SIPExternalIPV6,
 		PublicHost:    cfg.SIPDomain,
 		BindPort:      sipPort,
 		TLSBindPort:   sipTLSPort,

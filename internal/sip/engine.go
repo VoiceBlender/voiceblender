@@ -33,8 +33,7 @@ type EngineConfig struct {
 	BindIPV6      string // IPv6 advertised address; empty = v6 not advertised
 	ListenIP      string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
 	ListenIPV6    string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
-	ExternalIP    string // IPv4 public IP override for NAT/Docker
-	ExternalIPV6  string // IPv6 public IP override
+	ExternalIP    string // IPv4 public IP override for NAT/Docker (v6 has no equivalent — set BindIPV6 directly)
 	PublicHost    string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
 	BindPort      int
 	TLSBindPort   int    // 0 = TLS disabled
@@ -250,7 +249,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	// deployment and we should not insist on a v4 probe (which would fail
 	// on v6-only hosts).
 	needV4Probe := advertiseIP == "0.0.0.0" || advertiseIP == "::" ||
-		(advertiseIP == "" && advertiseIPV6 == "" && cfg.ExternalIP == "" && cfg.ExternalIPV6 == "")
+		(advertiseIP == "" && advertiseIPV6 == "" && cfg.ExternalIP == "")
 	needV6Probe := advertiseIPV6 == "::"
 	if needV4Probe || needV6Probe {
 		detectedV4, detectedV6, err := resolveExternalIPs()
@@ -282,19 +281,11 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		listenIPV6 = advertiseIPV6
 	}
 
-	// Explicit external IPs override advertised IPs (NAT/Docker). When the
-	// existing SIP_EXTERNAL_IP is itself an IPv6 literal, treat it as the
-	// v6 advertised IP (only when SIPExternalIPV6 is unset) — preserves the
-	// "single-stack IPv6 via the legacy var" path.
+	// Explicit external IPv4 overrides advertised v4 (NAT/Docker). IPv6 has
+	// no equivalent — set BindIPV6 directly, since IPv6 deployments don't
+	// typically NAT.
 	if cfg.ExternalIP != "" {
-		if AddressFamily(cfg.ExternalIP) == "IP6" && cfg.ExternalIPV6 == "" {
-			advertiseIPV6 = cfg.ExternalIP
-		} else {
-			advertiseIP = cfg.ExternalIP
-		}
-	}
-	if cfg.ExternalIPV6 != "" {
-		advertiseIPV6 = cfg.ExternalIPV6
+		advertiseIP = cfg.ExternalIP
 	}
 
 	// publicHost is the canonical signalling identity used in

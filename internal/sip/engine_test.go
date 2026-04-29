@@ -53,15 +53,14 @@ func TestEngine_NoExternalIP(t *testing.T) {
 	}
 }
 
-func TestEngine_ExternalIPV6(t *testing.T) {
+func TestEngine_BindIPV6(t *testing.T) {
 	engine, err := NewEngine(EngineConfig{
-		BindIP:       "127.0.0.1",
-		BindIPV6:     "::1",
-		ExternalIPV6: "2001:db8::1",
-		BindPort:     15062,
-		SIPHost:      "test",
-		Codecs:       []codec.CodecType{codec.CodecPCMU},
-		Log:          slog.Default(),
+		BindIP:   "127.0.0.1",
+		BindIPV6: "2001:db8::1",
+		BindPort: 15062,
+		SIPHost:  "test",
+		Codecs:   []codec.CodecType{codec.CodecPCMU},
+		Log:      slog.Default(),
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -77,20 +76,19 @@ func TestEngine_ExternalIPV6(t *testing.T) {
 		Codecs:  []codec.CodecType{codec.CodecPCMU},
 	})
 	if !strings.Contains(string(sdp), "c=IN IP6 2001:db8::1") {
-		t.Errorf("SDP missing v6 external IP in c= line:\n%s", sdp)
+		t.Errorf("SDP missing v6 advertised IP in c= line:\n%s", sdp)
 	}
 }
 
 func TestEngine_DualStack(t *testing.T) {
 	engine, err := NewEngine(EngineConfig{
-		BindIP:       "127.0.0.1",
-		BindIPV6:     "::1",
-		ExternalIP:   "203.0.113.50",
-		ExternalIPV6: "2001:db8::1",
-		BindPort:     15063,
-		SIPHost:      "test",
-		Codecs:       []codec.CodecType{codec.CodecPCMU},
-		Log:          slog.Default(),
+		BindIP:     "127.0.0.1",
+		BindIPV6:   "2001:db8::1",
+		ExternalIP: "203.0.113.50",
+		BindPort:   15063,
+		SIPHost:    "test",
+		Codecs:     []codec.CodecType{codec.CodecPCMU},
+		Log:        slog.Default(),
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -124,23 +122,3 @@ func TestEngine_AdvertisedIPForFamily_Fallback(t *testing.T) {
 	}
 }
 
-func TestEngine_LegacyExternalIPv6Literal(t *testing.T) {
-	engine, err := NewEngine(EngineConfig{
-		BindIP:     "127.0.0.1",
-		BindIPV6:   "::1",
-		ExternalIP: "2001:db8::42",
-		BindPort:   15065,
-		SIPHost:    "test",
-		Codecs:     []codec.CodecType{codec.CodecPCMU},
-		Log:        slog.Default(),
-	})
-	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
-	}
-	if got := engine.BindIPV6(); got != "2001:db8::42" {
-		t.Errorf("BindIPV6() = %q, want 2001:db8::42 (from legacy SIP_EXTERNAL_IP)", got)
-	}
-	if got := engine.BindIP(); got != "127.0.0.1" {
-		t.Errorf("BindIP() = %q, want 127.0.0.1 (legacy v6 ExternalIP must not stomp v4 advertised)", got)
-	}
-}
