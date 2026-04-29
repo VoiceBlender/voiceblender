@@ -165,6 +165,10 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		callID = cid.Value()
 	}
 
+	offerFamily := ""
+	if call.RemoteSDP != nil {
+		offerFamily = call.RemoteSDP.AddressFamily
+	}
 	l := &SIPLeg{
 		id:              uuid.New().String(),
 		legType:         TypeSIPInbound,
@@ -178,7 +182,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		connectedCh:     make(chan struct{}),
 		callID:          callID,
 		engine:          engine,
-		localIP:         engine.BindIP(),
+		localIP:         engine.AdvertisedIPForFamily(offerFamily),
 		supportedCodecs: engine.Codecs(),
 		log:             log,
 	}

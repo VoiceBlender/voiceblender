@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -29,8 +30,10 @@ type RTPSession struct {
 }
 
 // NewRTPSession creates a new RTP session listening on a random UDP port.
+// The socket is dual-stack on Linux (accepts both v4 and v6 when
+// /proc/sys/net/ipv6/bindv6only is 0, which is the default).
 func NewRTPSession() (*RTPSession, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified, Port: 0})
 	if err != nil {
 		return nil, fmt.Errorf("listen udp: %w", err)
 	}
@@ -43,8 +46,9 @@ func NewRTPSession() (*RTPSession, error) {
 }
 
 // NewRTPSessionOnPort creates a new RTP session on a specific local port.
+// Same dual-stack semantics as NewRTPSession.
 func NewRTPSessionOnPort(port int) (*RTPSession, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified, Port: port})
 	if err != nil {
 		return nil, fmt.Errorf("listen udp on port %d: %w", port, err)
 	}
@@ -85,9 +89,11 @@ func (s *RTPSession) setRemote(addr *net.UDPAddr) {
 	atomic.StorePointer(&s.remoteAddr, unsafe.Pointer(addr))
 }
 
-// SetRemote sets the remote address for sending RTP packets.
+// SetRemote sets the remote address for sending RTP packets. ip may be
+// either an IPv4 or IPv6 literal (or a hostname); IPv6 literals are
+// bracketed via net.JoinHostPort.
 func (s *RTPSession) SetRemote(ip string, port int) error {
-	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
+	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if err != nil {
 		return fmt.Errorf("resolve remote: %w", err)
 	}

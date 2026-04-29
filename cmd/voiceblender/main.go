@@ -86,8 +86,11 @@ func main() {
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:        cfg.SIPBindIP,
+		BindIPV6:      cfg.SIPBindIPV6,
 		ListenIP:      cfg.SIPListenIP,
+		ListenIPV6:    cfg.SIPListenIPV6,
 		ExternalIP:    cfg.SIPExternalIP,
+		ExternalIPV6:  cfg.SIPExternalIPV6,
 		PublicHost:    cfg.SIPDomain,
 		BindPort:      sipPort,
 		TLSBindPort:   sipTLSPort,
@@ -168,11 +171,14 @@ func main() {
 
 	// SIP server
 	g.Go(func() error {
-		if sipTLSPort > 0 {
-			log.Info("starting SIP server", "bind", cfg.SIPBindIP, "udp_port", sipPort, "tls_port", sipTLSPort)
-		} else {
-			log.Info("starting SIP server", "bind", cfg.SIPBindIP, "port", sipPort)
+		args := []any{"bind", cfg.SIPBindIP, "port", sipPort}
+		if cfg.SIPBindIPV6 != "" {
+			args = append(args, "bind_v6", cfg.SIPBindIPV6)
 		}
+		if sipTLSPort > 0 {
+			args = append(args, "tls_port", sipTLSPort)
+		}
+		log.Info("starting SIP server", args...)
 		return engine.Serve(gCtx)
 	})
 

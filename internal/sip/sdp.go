@@ -19,12 +19,13 @@ type SDPConfig struct {
 
 // SDPMedia holds parsed remote media parameters.
 type SDPMedia struct {
-	RemoteIP   string
-	RemotePort int
-	Codecs     []codec.CodecType         // Codecs from m= line, in offer order
-	CodecPTs   map[codec.CodecType]uint8 // Actual PT for each codec from remote SDP
-	Ptime      int                       // ms, default 20
-	Direction  string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
+	RemoteIP      string
+	RemotePort    int
+	AddressFamily string                    // "IP4" or "IP6" (from c= line); empty if not present
+	Codecs        []codec.CodecType         // Codecs from m= line, in offer order
+	CodecPTs      map[codec.CodecType]uint8 // Actual PT for each codec from remote SDP
+	Ptime         int                       // ms, default 20
+	Direction     string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
 }
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
@@ -43,9 +44,15 @@ func codecFmtp(c codec.CodecType) string {
 	return ""
 }
 
-// buildSessionDescription creates the common session-level SDP fields.
+// buildSessionDescription creates the common session-level SDP fields. The
+// SDP address-type token (IP4/IP6) is derived from localIP — empty or
+// non-literal input falls back to IP4 for backward compatibility.
 func buildSessionDescription(localIP string) *pionsdp.SessionDescription {
 	sessID := uint64(rand.Int64N(1<<31 - 1))
+	addrType := AddressFamily(localIP)
+	if addrType == "" {
+		addrType = "IP4"
+	}
 	return &pionsdp.SessionDescription{
 		Version: 0,
 		Origin: pionsdp.Origin{
@@ -53,13 +60,13 @@ func buildSessionDescription(localIP string) *pionsdp.SessionDescription {
 			SessionID:      sessID,
 			SessionVersion: 0,
 			NetworkType:    "IN",
-			AddressType:    "IP4",
+			AddressType:    addrType,
 			UnicastAddress: localIP,
 		},
 		SessionName: "-",
 		ConnectionInformation: &pionsdp.ConnectionInformation{
 			NetworkType: "IN",
-			AddressType: "IP4",
+			AddressType: addrType,
 			Address:     &pionsdp.Address{Address: localIP},
 		},
 		TimeDescriptions: []pionsdp.TimeDescription{
@@ -189,6 +196,7 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 	// Session-level c= line.
 	if sd.ConnectionInformation != nil && sd.ConnectionInformation.Address != nil {
 		m.RemoteIP = sd.ConnectionInformation.Address.Address
+		m.AddressFamily = sd.ConnectionInformation.AddressType
 	}
 
 	for _, md := range sd.MediaDescriptions {
@@ -200,6 +208,7 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 		// Media-level c= overrides session-level.
 		if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
 			m.RemoteIP = md.ConnectionInformation.Address.Address
+			m.AddressFamily = md.ConnectionInformation.AddressType
 		}
 
 		// Build rtpmap: PT → codec name from attributes.

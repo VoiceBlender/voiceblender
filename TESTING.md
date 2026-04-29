@@ -104,6 +104,8 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | Test | Description |
 |------|-------------|
 | `TestOutboundInbound_Connect` | Basic SIP call: A dials B, B answers, both connect |
+| `TestCall_IPv6Loopback` | Same as above, but both instances are bound to `[::1]` (IPv6 loopback). Skipped when the host has no IPv6 loopback. |
+| `TestCall_DualStackInterop_V4Caller` | A dual-stack callee answers an IPv4-only caller with `IN IP4` SDP — exercises the family-from-offer rule. |
 | `TestDisconnect_DurationFields` | Verify `duration_total` and `duration_answered` in disconnect event |
 | `TestDisconnect_UnansweredDuration` | Unanswered call has `duration_answered=0` |
 | `TestOutboundInbound_CallerCancel` | Caller cancels before answer |

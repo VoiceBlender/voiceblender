@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/emiago/sipgo"
@@ -28,9 +29,12 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP        string // IP for SDP c= line and listen socket
-	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
-	ExternalIP    string // Public IP override for NAT/Docker (used in SDP when set)
+	BindIP        string // IPv4 advertised address for SDP c= line / Contact (when v4 is in use)
+	BindIPV6      string // IPv6 advertised address; empty = v6 not advertised
+	ListenIP      string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
+	ListenIPV6    string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
+	ExternalIP    string // IPv4 public IP override for NAT/Docker
+	ExternalIPV6  string // IPv6 public IP override
 	PublicHost    string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
 	BindPort      int
 	TLSBindPort   int    // 0 = TLS disabled
@@ -56,9 +60,11 @@ type Engine struct {
 	onRefer    func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify   func(callID string, statusCode int, reason string, terminated bool)
 	codecs     []codec.CodecType
-	bindIP     string // IP for SDP c= line
+	bindIP     string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
+	bindIPV6   string // IPv6 advertised address; empty if v4-only
 	publicHost string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
-	listenIP   string // original bind address (for ListenAndServe)
+	listenIP   string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
+	listenIPV6 string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
 	bindPort   int
 	tlsPort    int // 0 = TLS disabled
 	tlsCert    string
@@ -116,15 +122,52 @@ func inviteIsTLS(req *sip.Request) bool {
 	return strings.EqualFold(via.Transport, "TLS") || strings.EqualFold(via.Transport, "WSS")
 }
 
+// ContactForInvite is the public form of contactForInvite, used by callers
+// outside this package that need to attach a transport-appropriate Contact
+// header to a dialog response.
+func (e *Engine) ContactForInvite(req *sip.Request) *sip.ContactHeader {
+	return e.contactForInvite(req)
+}
+
 // contactForInvite returns a Contact that matches the transport on which
 // the INVITE arrived — sips:<ip>:<tlsPort> for TLS, sip:<ip>:<udpPort>
-// otherwise. When no TLS port is configured it always returns the sip:
-// form so classic SIP behaviour is unchanged.
+// otherwise. The host is family-aware: when the INVITE arrived over IPv6
+// and we have an IPv6 advertised address configured, the Contact uses
+// that address so the peer's ACK / BYE routes back to us.
 func (e *Engine) contactForInvite(req *sip.Request) *sip.ContactHeader {
+	host := e.contactHostForRequest(req)
 	if inviteIsTLS(req) && e.tlsPort != 0 {
-		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: e.publicHost, Port: e.tlsPort}}
+		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: host, Port: e.tlsPort}}
 	}
-	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: e.publicHost, Port: e.bindPort}}
+	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: host, Port: e.bindPort}}
+}
+
+// contactHostForRequest picks the Contact host for an inbound request based
+// on the address family of the request's source. Falls back to publicHost
+// when no family-specific advertised IP is configured.
+func (e *Engine) contactHostForRequest(req *sip.Request) string {
+	if req == nil {
+		return e.publicHost
+	}
+	src := req.Source()
+	if src == "" {
+		return e.publicHost
+	}
+	host, _, err := net.SplitHostPort(src)
+	if err != nil {
+		return e.publicHost
+	}
+	switch AddressFamily(host) {
+	case "IP6":
+		if e.bindIPV6 != "" {
+			return e.bindIPV6
+		}
+	case "IP4":
+		if e.bindIP != "" {
+			return e.bindIP
+		}
+	}
+	return e.publicHost
 }
 
 // RespondInviteSDP sends a 2xx response to an inbound INVITE with a
@@ -169,10 +212,21 @@ type OutboundCall struct {
 	SessionTimer *SessionTimerParams // nil when remote didn't include timers
 }
 
-// resolveExternalIP detects the preferred outbound LAN IP.
-// No traffic is sent — UDP connect only sets routing.
-func resolveExternalIP() (string, error) {
-	conn, err := net.Dial("udp4", "8.8.8.8:53")
+// resolveExternalIPs probes the preferred outbound LAN IPs for both address
+// families. No traffic is sent — UDP connect only sets routing. Either return
+// value may be "" if that family has no outbound route. err is non-nil only
+// when both probes fail.
+func resolveExternalIPs() (v4, v6 string, err error) {
+	v4, errV4 := probeOutboundIP("udp4", "8.8.8.8:53")
+	v6, errV6 := probeOutboundIP("udp6", "[2606:4700:4700::1111]:53")
+	if v4 == "" && v6 == "" {
+		return "", "", fmt.Errorf("no outbound route (v4: %v, v6: %v)", errV4, errV6)
+	}
+	return v4, v6, nil
+}
+
+func probeOutboundIP(network, addr string) (string, error) {
+	conn, err := net.Dial(network, addr)
 	if err != nil {
 		return "", err
 	}
@@ -183,35 +237,76 @@ func resolveExternalIP() (string, error) {
 // NewEngine creates a SIP engine with the given configuration.
 func NewEngine(cfg EngineConfig) (*Engine, error) {
 	advertiseIP := cfg.BindIP
+	advertiseIPV6 := cfg.BindIPV6
 	listenIP := cfg.ListenIP
+	listenIPV6 := cfg.ListenIPV6
 
-	// Auto-detect when BindIP is unroutable
-	if advertiseIP == "" || advertiseIP == "0.0.0.0" || advertiseIP == "::" {
-		detected, err := resolveExternalIP()
+	// Auto-detect when BindIP / BindIPV6 is unroutable. The wildcard listen
+	// values are preserved for the socket; the advertised value gets the
+	// detected literal so SDP / Contact have something resolvable.
+	//
+	// "Empty" BindIP is treated as a probe trigger only when no v6 is
+	// configured either — otherwise the user explicitly wants a v6-only
+	// deployment and we should not insist on a v4 probe (which would fail
+	// on v6-only hosts).
+	needV4Probe := advertiseIP == "0.0.0.0" || advertiseIP == "::" ||
+		(advertiseIP == "" && advertiseIPV6 == "" && cfg.ExternalIP == "" && cfg.ExternalIPV6 == "")
+	needV6Probe := advertiseIPV6 == "::"
+	if needV4Probe || needV6Probe {
+		detectedV4, detectedV6, err := resolveExternalIPs()
 		if err != nil {
-			return nil, fmt.Errorf("SIP_BIND_IP is %q; auto-detect failed: %w", cfg.BindIP, err)
+			return nil, fmt.Errorf("SIP_BIND_IP=%q SIP_BIND_IPV6=%q; auto-detect failed: %w", cfg.BindIP, cfg.BindIPV6, err)
 		}
-		if listenIP == "" {
-			listenIP = advertiseIP // keep the wildcard for the socket
+		if needV4Probe {
+			if listenIP == "" {
+				listenIP = advertiseIP // keep the wildcard for the socket
+			}
+			advertiseIP = detectedV4
+			// "::" wildcard with no v6 advertised IP yet — fill in if probe succeeded.
+			if cfg.BindIP == "::" && advertiseIPV6 == "" && detectedV6 != "" {
+				advertiseIPV6 = detectedV6
+			}
 		}
-		advertiseIP = detected
+		if needV6Probe {
+			if listenIPV6 == "" {
+				listenIPV6 = advertiseIPV6
+			}
+			advertiseIPV6 = detectedV6
+		}
 	}
 
 	if listenIP == "" {
 		listenIP = advertiseIP
 	}
+	if listenIPV6 == "" && advertiseIPV6 != "" {
+		listenIPV6 = advertiseIPV6
+	}
 
-	// Explicit external IP overrides advertised IP (NAT/Docker).
+	// Explicit external IPs override advertised IPs (NAT/Docker). When the
+	// existing SIP_EXTERNAL_IP is itself an IPv6 literal, treat it as the
+	// v6 advertised IP (only when SIPExternalIPV6 is unset) — preserves the
+	// "single-stack IPv6 via the legacy var" path.
 	if cfg.ExternalIP != "" {
-		advertiseIP = cfg.ExternalIP
+		if AddressFamily(cfg.ExternalIP) == "IP6" && cfg.ExternalIPV6 == "" {
+			advertiseIPV6 = cfg.ExternalIP
+		} else {
+			advertiseIP = cfg.ExternalIP
+		}
+	}
+	if cfg.ExternalIPV6 != "" {
+		advertiseIPV6 = cfg.ExternalIPV6
 	}
 
 	// publicHost is the canonical signalling identity used in
-	// From/Contact/Via. SIP_DOMAIN takes precedence; otherwise we keep
-	// using the advertised IP for backward compatibility.
+	// From/Contact/Via. SIP_DOMAIN takes precedence; otherwise we use the
+	// advertised IPv4 IP, falling back to IPv6 in v6-only deployments.
 	publicHost := cfg.PublicHost
 	if publicHost == "" {
-		publicHost = advertiseIP
+		if advertiseIP != "" {
+			publicHost = advertiseIP
+		} else {
+			publicHost = advertiseIPV6
+		}
 	}
 
 	// Route sipgo's own internal debug logs (transport/transaction layer) to
@@ -292,8 +387,10 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		dcCache:    sipgo.NewDialogClientCache(client, contactHdr),
 		codecs:     cfg.Codecs,
 		bindIP:     advertiseIP,
+		bindIPV6:   advertiseIPV6,
 		publicHost: publicHost,
 		listenIP:   listenIP,
+		listenIPV6: listenIPV6,
 		bindPort:   cfg.BindPort,
 		tlsPort:    cfg.TLSBindPort,
 		tlsCert:    cfg.TLSCertPath,
@@ -302,6 +399,10 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		portAlloc:  cfg.PortAllocator,
 		log:        cfg.Log,
 		sipDebug:   cfg.SIPDebug,
+	}
+
+	if cfg.Log != nil {
+		warnIfBindV6OnlyConflict(cfg.Log, listenIP, listenIPV6)
 	}
 
 	e.registerHandlers()
@@ -662,37 +763,56 @@ func (e *Engine) handleNotify(req *sip.Request, tx sip.ServerTransaction) {
 
 // Serve starts the SIP server and blocks until ctx is cancelled. When
 // TLSBindPort is configured it runs UDP and TLS listeners concurrently; if
-// either fails the other is torn down via ctx cancellation.
+// either fails the other is torn down via ctx cancellation. A secondary
+// UDP listener is started when listenIPV6 is set to a literal distinct from
+// listenIP (rare dual-bind case for hosts with bindv6only=1).
 func (e *Engine) Serve(ctx context.Context) error {
-	udpAddr := fmt.Sprintf("%s:%d", e.listenIP, e.bindPort)
+	udpNet := UDPNetwork(e.listenIP)
+	udpAddr := JoinHostPort(e.listenIP, e.bindPort)
 
-	if e.tlsPort == 0 {
-		return e.server.ListenAndServe(ctx, "udp", udpAddr)
-	}
+	dualBind := e.listenIPV6 != "" && e.listenIPV6 != e.listenIP && UDPNetwork(e.listenIP) != "udp"
 
-	cert, err := tls.LoadX509KeyPair(e.tlsCert, e.tlsKey)
-	if err != nil {
-		return fmt.Errorf("load TLS cert: %w", err)
+	if e.tlsPort == 0 && !dualBind {
+		return e.server.ListenAndServe(ctx, udpNet, udpAddr)
 	}
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-	tlsAddr := fmt.Sprintf("%s:%d", e.listenIP, e.tlsPort)
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		if err := e.server.ListenAndServe(gCtx, "udp", udpAddr); err != nil && gCtx.Err() == nil {
+		if err := e.server.ListenAndServe(gCtx, udpNet, udpAddr); err != nil && gCtx.Err() == nil {
 			return fmt.Errorf("UDP listener: %w", err)
 		}
 		return nil
 	})
-	g.Go(func() error {
-		if err := e.server.ListenAndServeTLS(gCtx, "tls", tlsAddr, tlsCfg); err != nil && gCtx.Err() == nil {
-			return fmt.Errorf("TLS listener: %w", err)
+
+	if dualBind {
+		v6Net := UDPNetwork(e.listenIPV6)
+		v6Addr := JoinHostPort(e.listenIPV6, e.bindPort)
+		g.Go(func() error {
+			if err := e.server.ListenAndServe(gCtx, v6Net, v6Addr); err != nil && gCtx.Err() == nil {
+				return fmt.Errorf("UDP v6 listener: %w", err)
+			}
+			return nil
+		})
+	}
+
+	if e.tlsPort != 0 {
+		cert, err := tls.LoadX509KeyPair(e.tlsCert, e.tlsKey)
+		if err != nil {
+			return fmt.Errorf("load TLS cert: %w", err)
 		}
-		return nil
-	})
+		tlsCfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		tlsAddr := JoinHostPort(e.listenIP, e.tlsPort)
+		g.Go(func() error {
+			if err := e.server.ListenAndServeTLS(gCtx, "tls", tlsAddr, tlsCfg); err != nil && gCtx.Err() == nil {
+				return fmt.Errorf("TLS listener: %w", err)
+			}
+			return nil
+		})
+	}
+
 	return g.Wait()
 }
 
@@ -724,9 +844,13 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	e.log.Info("outbound INVITE", "recipient", recipient.String(), "codecs", fmt.Sprintf("%v", codecs))
 
+	// Pick advertised IP family based on the resolved recipient host. Literal
+	// hosts decide directly; hostnames go through the OS resolver.
+	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
+
 	// Generate SDP offer
 	sdpOffer := GenerateOffer(SDPConfig{
-		LocalIP: e.bindIP,
+		LocalIP: localIP,
 		RTPPort: rtpSess.LocalPort(),
 		Codecs:  codecs,
 	})
@@ -866,9 +990,70 @@ func (e *Engine) Codecs() []codec.CodecType {
 	return e.codecs
 }
 
-// BindIP returns the engine's bind IP address.
+// BindIP returns the engine's IPv4 advertised address. May be empty in
+// IPv6-only deployments.
 func (e *Engine) BindIP() string {
 	return e.bindIP
+}
+
+// BindIPV6 returns the engine's IPv6 advertised address. Empty when no v6
+// is configured.
+func (e *Engine) BindIPV6() string {
+	return e.bindIPV6
+}
+
+// AdvertisedIPForFamily returns the configured advertised IP for the given
+// SDP address family token ("IP4" or "IP6"). Falls back to the other family
+// when the requested one is unconfigured. Returns empty when neither is
+// configured (caller should reject the call).
+func (e *Engine) AdvertisedIPForFamily(family string) string {
+	switch family {
+	case "IP6":
+		if e.bindIPV6 != "" {
+			return e.bindIPV6
+		}
+		return e.bindIP
+	default:
+		if e.bindIP != "" {
+			return e.bindIP
+		}
+		return e.bindIPV6
+	}
+}
+
+// advertisedIPForRecipient picks the advertised IP for an outbound INVITE
+// based on the resolved family of the target host. Literal hosts decide
+// directly; hostnames are resolved with a short timeout and fall back to
+// the IPv4 advertised IP on failure (preserves prior behavior).
+func (e *Engine) advertisedIPForRecipient(ctx context.Context, host string) string {
+	// SIP URI hosts may carry the IPv6 brackets ("[::1]"); strip for parsing.
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	if family := AddressFamily(host); family != "" {
+		return e.AdvertisedIPForFamily(family)
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(resolveCtx, host)
+	if err != nil || len(addrs) == 0 {
+		return e.AdvertisedIPForFamily("IP4")
+	}
+	for _, a := range addrs {
+		if a.IP.To4() != nil {
+			if e.bindIP != "" {
+				return e.bindIP
+			}
+			break
+		}
+	}
+	for _, a := range addrs {
+		if a.IP.To4() == nil && a.IP.To16() != nil {
+			if e.bindIPV6 != "" {
+				return e.bindIPV6
+			}
+			break
+		}
+	}
+	return e.AdvertisedIPForFamily("IP4")
 }
 
 // PublicHost returns the canonical signalling hostname (SIP_DOMAIN when
