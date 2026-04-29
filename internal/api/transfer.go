@@ -88,6 +88,10 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "leg not found")
 		return
 	}
+	if _, ok := l.(*leg.WhatsAppLeg); ok {
+		writeError(w, http.StatusConflict, "transfer is not supported for WhatsApp legs (Meta disallows REFER)")
+		return
+	}
 	sl, ok := l.(*leg.SIPLeg)
 	if !ok {
 		writeError(w, http.StatusConflict, "transfer is supported only on SIP legs")

@@ -64,6 +64,10 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
 | `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
+| `internal/sip` (whatsapp) | 12 | `IsWhatsAppInvite` host matching (exact/subdomain/lookalike/case-insensitive), `WhatsAppRecipientURI` E.164 normalisation, `InviteWhatsApp` precondition checks (TLS configured, required fields) |
+| `internal/sip` (tls) | 4 | `EngineConfig` TLS validation, concurrent UDP+TLS listener startup, self-signed cert handshake loopback |
+| `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
+| `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
 
 ---
 

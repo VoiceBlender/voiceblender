@@ -49,7 +49,7 @@ Originate an outbound SIP call.
 ```json
 {
   "type": "sip",
-  "uri": "sip:alice@192.168.1.100:5060",
+  "to": "sip:alice@192.168.1.100:5060",
   "from": "+15551234567",
   "privacy": "id",
   "ring_timeout": 30,
@@ -77,15 +77,16 @@ Originate an outbound SIP call.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | string | yes | `"sip"` |
-| `uri` | string | yes | SIP URI to dial |
+| `type` | string | yes | `"sip"` or `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below) |
+| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
+| `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
 | `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
-| `auth` | object | no | SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials. Contains `username` (string) and `password` (string). |
+| `auth` | object | no for sip, **yes for whatsapp** | Digest auth credentials. Contains `username` (string, optional for whatsapp — defaults to `from` with `+` stripped) and `password` (string). For sip legs, retried on 401/407 challenge. |
 | `room_id` | string | no | Room ID to auto-add the leg to once media is ready. The leg joins the room on `early_media` (183+SDP) or `connected` (200 OK), whichever comes first. If the room does not exist, it is automatically created. |
 | `webhook_url` | string | no | Per-leg webhook URL. Events for this leg are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
@@ -126,6 +127,74 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
 **Errors:**
 - `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
+
+---
+
+### WhatsApp Business Calling
+
+VoiceBlender terminates calls to and from WhatsApp's SIP calling service. The signalling layer is SIP over TLS with HTTP Digest auth; the media layer is Opus over ICE + DTLS-SRTP (pion). Meta mandates both and does **not** support `re-INVITE`, so these operations return **409** for WhatsApp legs: `hold`, `unhold`, `transfer`.
+
+**Server prerequisites** (see README env var table):
+- `SIP_TLS_PORT=5061`
+- `SIP_TLS_CERT` / `SIP_TLS_KEY` pointing at a **CA-signed** certificate (Meta rejects self-signed) whose SAN matches the public FQDN you registered with Meta.
+- Operator-side: the SIP endpoint must be registered via Meta's Graph API (`POST /{phone-number-id}/settings`). VoiceBlender does not perform this registration itself.
+
+#### Outbound: POST /v1/legs (type=whatsapp)
+
+Originate a call to a WhatsApp user.
+
+**Request:**
+
+```json
+{
+  "type": "whatsapp",
+  "to": "+15557654321",
+  "from": "+15551234567",
+  "auth": {
+    "password": "meta-issued-digest-password"
+  },
+  "room_id": "room-123",
+  "app_id": "myapp"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | yes | `"whatsapp"` |
+| `to` | string | yes | Destination phone number (E.164, with or without `+`). |
+| `from` | string | yes | Business phone number, E.164 (with or without `+`). Used as the From URI user-part and, by default, as the digest auth username. |
+| `auth.password` | string | yes | Meta-issued digest password for the business number. |
+| `auth.username` | string | no | Override the digest auth username. Defaults to `from` with `+` stripped, per Meta's spec. |
+| `room_id` | string | no | Room ID to auto-add the leg to once connected. Created on the fly if it doesn't exist. |
+| `app_id` | string | no | Application identifier for event stream filtering. |
+
+The handler is **asynchronous**: it returns the leg view as soon as PCMedia setup succeeds and the leg is registered. ICE gathering, the INVITE round-trip (including the digest 401/407 retry), and the SDP answer apply happen in the background. Progress is signalled via webhook events:
+
+- `leg.ringing` (`type: "whatsapp_out"`) — fires immediately after the leg is created. The HTTP response is sent at this moment.
+- `leg.connected` — fires once Meta returns 200 OK and the SDP answer has been applied.
+- `leg.disconnected` — fires if the INVITE fails (`reason: "invite_failed"`), the answer is rejected (`bad_answer`), or the dialog ends (`remote_bye`).
+
+**Response:** `201 Created` — Leg object in `ringing` state with `type: "whatsapp_out"`. Subscribe to `leg.connected` / `leg.disconnected` (webhook or `/v1/vsi`) to track progress.
+
+**Errors (synchronous, before the leg is created):**
+- `400` — missing `to` / `from` / `password`.
+- `503` — `SIP_TLS_PORT` not configured on this instance.
+- `500` — local PCMedia or SDP setup failed.
+
+**Async errors (delivered via `leg.disconnected` event after `201`):**
+- `invite_failed` — Meta rejected the INVITE (e.g. 403 / 404 / digest auth failed) or the request timed out.
+- `bad_answer` — Meta's 200 OK contained an SDP answer that pion couldn't apply.
+- `remote_bye` — call ended normally or Meta hung up.
+
+#### Inbound
+
+INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) are routed to the WhatsApp handler automatically. The leg is created in `ringing` state with `type: "whatsapp_in"`, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
+
+The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `/tts`, and `/agent/*` endpoints all apply. The following explicitly return **409 Conflict**:
+
+- `POST /v1/legs/{id}/hold`
+- `DELETE /v1/legs/{id}/hold`
+- `POST /v1/legs/{id}/transfer`
 
 ---
 
@@ -1907,7 +1976,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | SIP call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
+| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |

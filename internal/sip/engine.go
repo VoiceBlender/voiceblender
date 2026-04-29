@@ -2,14 +2,17 @@ package sip
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"golang.org/x/sync/errgroup"
 )
 
 // containsToken checks if a comma-separated header value contains a token
@@ -25,10 +28,15 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP        string // IP advertised in SDP/Contact/Via headers
+	BindIP        string // IP for SDP c= line and listen socket
 	ListenIP      string // IP to bind the UDP socket on (default: same as BindIP)
-	ExternalIP    string // Public IP override for NAT/Docker (used in Contact/SDP/Via when set)
+	ExternalIP    string // Public IP override for NAT/Docker (used in SDP when set)
+	PublicHost    string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
 	BindPort      int
+	TLSBindPort   int    // 0 = TLS disabled
+	TLSCertPath   string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
+	TLSKeyPath    string // private key (privkey.pem) — required when TLSBindPort > 0
+	SIPDebug      bool   // dump full SIP request/response bodies on the debug channel
 	SIPHost       string
 	Codecs        []codec.CodecType
 	Log           *slog.Logger
@@ -48,12 +56,95 @@ type Engine struct {
 	onRefer    func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify   func(callID string, statusCode int, reason string, terminated bool)
 	codecs     []codec.CodecType
-	bindIP     string // externally-reachable IP (for SDP/Contact)
+	bindIP     string // IP for SDP c= line
+	publicHost string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
 	listenIP   string // original bind address (for ListenAndServe)
 	bindPort   int
+	tlsPort    int // 0 = TLS disabled
+	tlsCert    string
+	tlsKey     string
 	sipHost    string
 	portAlloc  *PortAllocator
 	log        *slog.Logger
+	sipDebug   bool
+}
+
+// logSIPMessage prints the full RFC 3261 wire form of a SIP request or
+// response when SIP_DEBUG is on. Called from inbound handler wrappers and
+// outbound ClientRequestOptions.
+func (e *Engine) logSIPMessage(direction string, m sip.Message) {
+	if !e.sipDebug || m == nil {
+		return
+	}
+	e.log.Info("SIP "+direction, "message", "\n"+m.String())
+}
+
+// SIPDebug reports whether SIP_DEBUG is enabled. Consumers that send
+// responses via sipgo (dialog.Respond / RespondSDP) use this to gate
+// LogSyntheticResponse calls.
+func (e *Engine) SIPDebug() bool { return e.sipDebug }
+
+// LogSyntheticResponse constructs a response from a request (mirroring
+// what sipgo would build internally) purely for SIP_DEBUG logging. The
+// actual response still goes out through dialog.Respond / dialog.RespondSDP;
+// this is a best-effort wire-form dump so the body and headers we ask sipgo
+// to include are visible on the debug channel.
+func (e *Engine) LogSyntheticResponse(req *sip.Request, statusCode int, reason string, body []byte, headers ...sip.Header) {
+	if !e.sipDebug || req == nil {
+		return
+	}
+	res := sip.NewResponseFromRequest(req, statusCode, reason, body)
+	for _, h := range headers {
+		res.AppendHeader(h)
+	}
+	if len(body) > 0 && res.ContentType() == nil {
+		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
+	e.logSIPMessage("outbound (synthetic)", res)
+}
+
+// inviteIsTLS reports whether an inbound INVITE arrived over TLS (based on
+// the topmost Via sent-by transport). Used to pick sip: vs sips: Contact.
+func inviteIsTLS(req *sip.Request) bool {
+	if req == nil {
+		return false
+	}
+	via := req.Via()
+	if via == nil {
+		return false
+	}
+	return strings.EqualFold(via.Transport, "TLS") || strings.EqualFold(via.Transport, "WSS")
+}
+
+// contactForInvite returns a Contact that matches the transport on which
+// the INVITE arrived — sips:<ip>:<tlsPort> for TLS, sip:<ip>:<udpPort>
+// otherwise. When no TLS port is configured it always returns the sip:
+// form so classic SIP behaviour is unchanged.
+func (e *Engine) contactForInvite(req *sip.Request) *sip.ContactHeader {
+	if inviteIsTLS(req) && e.tlsPort != 0 {
+		return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: e.publicHost, Port: e.tlsPort}}
+	}
+	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: e.publicHost, Port: e.bindPort}}
+}
+
+// RespondInviteSDP sends a 2xx response to an inbound INVITE with a
+// transport-appropriate Contact header. This is required for WhatsApp
+// inbound calls, which arrive over TLS and need a sips: Contact pointing
+// at our TLS port — otherwise the remote's ACK is routed to the wrong
+// scheme/port, the dialog stays in Early state, and retransmits eventually
+// kill the transaction.
+func (e *Engine) RespondInviteSDP(dialog *sipgo.DialogServerSession, sdp []byte) error {
+	if dialog == nil || dialog.InviteRequest == nil {
+		return fmt.Errorf("RespondInviteSDP: dialog or InviteRequest is nil")
+	}
+	res := sip.NewResponseFromRequest(dialog.InviteRequest, sip.StatusOK, "OK", sdp)
+	res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.contactForInvite(dialog.InviteRequest))
+	res.SetBody(sdp)
+
+	e.logSIPMessage("outbound", res)
+	return dialog.WriteResponse(res)
 }
 
 // InboundCall wraps a sipgo DialogServerSession with parsed SDP.
@@ -115,25 +206,63 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		advertiseIP = cfg.ExternalIP
 	}
 
-	ua, err := sipgo.NewUA(
+	// publicHost is the canonical signalling identity used in
+	// From/Contact/Via. SIP_DOMAIN takes precedence; otherwise we keep
+	// using the advertised IP for backward compatibility.
+	publicHost := cfg.PublicHost
+	if publicHost == "" {
+		publicHost = advertiseIP
+	}
+
+	// Route sipgo's own internal debug logs (transport/transaction layer) to
+	// our logger when SIP_DEBUG is on. These cover messages sipgo sends or
+	// receives automatically (100 Trying, 487 Request Terminated after CANCEL,
+	// retransmits) that our handler-level wrappers can't observe.
+	sipgoLog := cfg.Log
+	if cfg.SIPDebug {
+		sipgoLog = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		sip.SetDefaultLogger(sipgoLog)
+	}
+
+	uaOpts := []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(cfg.SIPHost),
-		sipgo.WithUserAgentHostname(advertiseIP),
-	)
+		sipgo.WithUserAgentHostname(publicHost),
+	}
+	if cfg.SIPDebug {
+		uaOpts = append(uaOpts,
+			sipgo.WithUserAgentTransportLayerOptions(sip.WithTransportLayerLogger(sipgoLog)),
+			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)),
+		)
+	}
+	if cfg.TLSBindPort != 0 {
+		// Needed for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's
+		// own cert is still supplied separately via ListenAndServeTLS.
+		uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	}
+	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create UA: %w", err)
 	}
 
-	server, err := sipgo.NewServer(ua)
+	serverOpts := []sipgo.ServerOption{}
+	if cfg.SIPDebug {
+		serverOpts = append(serverOpts, sipgo.WithServerLogger(sipgoLog))
+	}
+	server, err := sipgo.NewServer(ua, serverOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create server: %w", err)
 	}
 
-	// Pin Via sent-by to advertiseIP — wildcard binds make the response
+	// Pin Via sent-by to publicHost — wildcard binds make the response
 	// path unroutable, so peers black-hole our REFER/BYE/re-INVITE 200s.
-	client, err := sipgo.NewClient(ua,
-		sipgo.WithClientHostname(advertiseIP),
+	clientOpts := []sipgo.ClientOption{
+		sipgo.WithClientHostname(publicHost),
 		sipgo.WithClientPort(cfg.BindPort),
-	)
+	}
+	if cfg.SIPDebug {
+		clientOpts = append(clientOpts, sipgo.WithClientLogger(sipgoLog))
+	}
+	client, err := sipgo.NewClient(ua, clientOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create client: %w", err)
 	}
@@ -141,24 +270,38 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	contactHdr := sip.ContactHeader{
 		Address: sip.Uri{
 			Scheme: "sip",
-			Host:   advertiseIP,
+			Host:   publicHost,
 			Port:   cfg.BindPort,
 		},
 	}
 
+	if cfg.TLSBindPort != 0 {
+		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
+			return nil, fmt.Errorf("TLS enabled (port %d) but TLSCertPath/TLSKeyPath not set", cfg.TLSBindPort)
+		}
+		if _, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+			return nil, fmt.Errorf("load TLS cert: %w", err)
+		}
+	}
+
 	e := &Engine{
-		ua:        ua,
-		server:    server,
-		client:    client,
-		dsCache:   sipgo.NewDialogServerCache(client, contactHdr),
-		dcCache:   sipgo.NewDialogClientCache(client, contactHdr),
-		codecs:    cfg.Codecs,
-		bindIP:    advertiseIP,
-		listenIP:  listenIP,
-		bindPort:  cfg.BindPort,
-		sipHost:   cfg.SIPHost,
-		portAlloc: cfg.PortAllocator,
-		log:       cfg.Log,
+		ua:         ua,
+		server:     server,
+		client:     client,
+		dsCache:    sipgo.NewDialogServerCache(client, contactHdr),
+		dcCache:    sipgo.NewDialogClientCache(client, contactHdr),
+		codecs:     cfg.Codecs,
+		bindIP:     advertiseIP,
+		publicHost: publicHost,
+		listenIP:   listenIP,
+		bindPort:   cfg.BindPort,
+		tlsPort:    cfg.TLSBindPort,
+		tlsCert:    cfg.TLSCertPath,
+		tlsKey:     cfg.TLSKeyPath,
+		sipHost:    cfg.SIPHost,
+		portAlloc:  cfg.PortAllocator,
+		log:        cfg.Log,
+		sipDebug:   cfg.SIPDebug,
 	}
 
 	e.registerHandlers()
@@ -312,7 +455,19 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 }
 
 func (e *Engine) registerHandlers() {
-	e.server.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
+	// wrap prepends SIP_DEBUG message dumping to a handler. Identity
+	// wrapper when SIP_DEBUG is off.
+	wrap := func(h sipgo.RequestHandler) sipgo.RequestHandler {
+		if !e.sipDebug {
+			return h
+		}
+		return func(req *sip.Request, tx sip.ServerTransaction) {
+			e.logSIPMessage("inbound", req)
+			h(req, tx)
+		}
+	}
+
+	e.server.OnInvite(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		// Check if this is a re-INVITE (in-dialog request with To tag).
 		if to := req.To(); to != nil {
 			if tag, ok := to.Params.Get("tag"); ok && tag != "" {
@@ -396,15 +551,15 @@ func (e *Engine) registerHandlers() {
 			// response is sent.  HandleInboundCall blocks until the call ends.
 			e.onInvite(call)
 		}
-	})
+	}))
 
-	e.server.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnAck(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		if err := e.dsCache.ReadAck(req, tx); err != nil {
 			e.log.Debug("read ack failed", "error", err)
 		}
-	})
+	}))
 
-	e.server.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnBye(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		if err := e.dsCache.ReadBye(req, tx); err != nil {
 			if err := e.dcCache.ReadBye(req, tx); err != nil {
 				// RFC 3261 §8.2.2.1
@@ -414,20 +569,25 @@ func (e *Engine) registerHandlers() {
 				}
 			}
 		}
-	})
+	}))
 
-	e.server.OnCancel(func(req *sip.Request, tx sip.ServerTransaction) {
+	e.server.OnCancel(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
 		// This handler fires only for CANCELs that didn't match an active
 		// INVITE transaction.  For matched CANCELs, sipgo's transaction
 		// layer handles both 487 (for INVITE) and 200 OK (for CANCEL)
 		// automatically.  Respond 481 per RFC 3261 §9.2.
+		callID := ""
+		if c := req.CallID(); c != nil {
+			callID = c.Value()
+		}
+		e.log.Info("CANCEL received (unmatched)", "call_id", callID, "source", req.Source())
 		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
 		res.AppendHeader(e.ServerHeader())
 		tx.Respond(res)
-	})
+	}))
 
-	e.server.OnRefer(e.handleRefer)
-	e.server.OnNotify(e.handleNotify)
+	e.server.OnRefer(wrap(e.handleRefer))
+	e.server.OnNotify(wrap(e.handleNotify))
 }
 
 // RespondFromSource pins the response destination to the request's UDP
@@ -500,11 +660,44 @@ func (e *Engine) handleNotify(req *sip.Request, tx sip.ServerTransaction) {
 	e.onNotify(callID, code, reason, terminated)
 }
 
-// Serve starts the SIP server and blocks until ctx is cancelled.
+// Serve starts the SIP server and blocks until ctx is cancelled. When
+// TLSBindPort is configured it runs UDP and TLS listeners concurrently; if
+// either fails the other is torn down via ctx cancellation.
 func (e *Engine) Serve(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", e.listenIP, e.bindPort)
-	return e.server.ListenAndServe(ctx, "udp", addr)
+	udpAddr := fmt.Sprintf("%s:%d", e.listenIP, e.bindPort)
+
+	if e.tlsPort == 0 {
+		return e.server.ListenAndServe(ctx, "udp", udpAddr)
+	}
+
+	cert, err := tls.LoadX509KeyPair(e.tlsCert, e.tlsKey)
+	if err != nil {
+		return fmt.Errorf("load TLS cert: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	tlsAddr := fmt.Sprintf("%s:%d", e.listenIP, e.tlsPort)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		if err := e.server.ListenAndServe(gCtx, "udp", udpAddr); err != nil && gCtx.Err() == nil {
+			return fmt.Errorf("UDP listener: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if err := e.server.ListenAndServeTLS(gCtx, "tls", tlsAddr, tlsCfg); err != nil && gCtx.Err() == nil {
+			return fmt.Errorf("TLS listener: %w", err)
+		}
+		return nil
+	})
+	return g.Wait()
 }
+
+// TLSPort returns the configured SIP TLS port (0 = disabled).
+func (e *Engine) TLSPort() int { return e.tlsPort }
 
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
@@ -549,7 +742,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		fromURI := sip.Uri{
 			Scheme: "sip",
 			User:   opts.FromUser,
-			Host:   e.bindIP,
+			Host:   e.publicHost,
 		}
 		from := &sip.FromHeader{Address: fromURI}
 		from.Params.Add("tag", sip.GenerateTagN(16))
@@ -560,6 +753,8 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	for _, h := range opts.Headers {
 		req.AppendHeader(h)
 	}
+
+	e.logSIPMessage("outbound", req)
 
 	// Send INVITE via dialog client cache
 	ds, err := e.dcCache.WriteInvite(ctx, req)
@@ -574,40 +769,45 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		Username: opts.AuthUsername,
 		Password: opts.AuthPassword,
 	}
-	if opts.OnEarlyMedia != nil {
-		answerOpts.OnResponse = func(res *sip.Response) error {
-			if earlyMediaSent {
-				return nil
-			}
-			if res.StatusCode != sip.StatusSessionInProgress {
-				return nil
-			}
-			body := res.Body()
-			if len(body) == 0 {
-				return nil
-			}
-			remoteSDP, err := ParseSDP(body)
-			if err != nil {
-				e.log.Warn("early media: parse 183 SDP failed", "error", err)
-				return nil // non-fatal, keep waiting for 200
-			}
-			if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
-				e.log.Warn("early media: set remote failed", "error", err)
-				return nil
-			}
-			earlyMediaSent = true
-			// Send a burst of silence RTP for NAT port-latching before
-			// the leg's media pipeline starts its own writeLoop.
-			if len(remoteSDP.Codecs) > 0 {
-				rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
-			}
-			opts.OnEarlyMedia(remoteSDP, rtpSess)
+	answerOpts.OnResponse = func(res *sip.Response) error {
+		e.logSIPMessage("inbound", res)
+		if opts.OnEarlyMedia == nil {
 			return nil
 		}
+		if earlyMediaSent {
+			return nil
+		}
+		if res.StatusCode != sip.StatusSessionInProgress {
+			return nil
+		}
+		body := res.Body()
+		if len(body) == 0 {
+			return nil
+		}
+		remoteSDP, err := ParseSDP(body)
+		if err != nil {
+			e.log.Warn("early media: parse 183 SDP failed", "error", err)
+			return nil // non-fatal, keep waiting for 200
+		}
+		if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
+			e.log.Warn("early media: set remote failed", "error", err)
+			return nil
+		}
+		earlyMediaSent = true
+		// Send a burst of silence RTP for NAT port-latching before
+		// the leg's media pipeline starts its own writeLoop.
+		if len(remoteSDP.Codecs) > 0 {
+			rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
+		}
+		opts.OnEarlyMedia(remoteSDP, rtpSess)
+		return nil
 	}
 	if err := ds.WaitAnswer(ctx, answerOpts); err != nil {
 		rtpSess.Close()
 		return nil, fmt.Errorf("wait answer: %w", err)
+	}
+	if ds.InviteResponse != nil {
+		e.logSIPMessage("inbound", ds.InviteResponse)
 	}
 
 	// Send ACK
@@ -669,6 +869,12 @@ func (e *Engine) Codecs() []codec.CodecType {
 // BindIP returns the engine's bind IP address.
 func (e *Engine) BindIP() string {
 	return e.bindIP
+}
+
+// PublicHost returns the canonical signalling hostname (SIP_DOMAIN when
+// set, otherwise the advertised IP).
+func (e *Engine) PublicHost() string {
+	return e.publicHost
 }
 
 func (e *Engine) SIPHost() string {

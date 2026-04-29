@@ -22,8 +22,9 @@ var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus"}
 
 // CreateLegRequest is the request body for POST /v1/legs.
 type CreateLegRequest struct {
-	Type            string            `json:"type"`                       // "sip" or "webrtc"
-	URI             string            `json:"uri"`                        // SIP URI for outbound
+	Type            string            `json:"type"`                       // "sip" or "whatsapp"
+	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
+	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID (user part of the SIP From header, e.g. "+15551234567")
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
@@ -31,7 +32,7 @@ type CreateLegRequest struct {
 	Codecs          []string          `json:"codecs,omitempty"`           // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
 	Headers         map[string]string `json:"headers,omitempty"`          // custom SIP headers for outbound INVITE
 	RoomID          string            `json:"room_id,omitempty"`          // add leg to this room once media is ready (early_media or connected)
-	Auth            *SIPAuth          `json:"auth,omitempty"`             // SIP digest auth credentials (optional)
+	Auth            *SIPAuth          `json:"auth,omitempty"`             // digest auth credentials — required for whatsapp, optional for sip
 	WebhookURL      string            `json:"webhook_url,omitempty"`      // route events for this leg to this URL
 	WebhookSecret   string            `json:"webhook_secret,omitempty"`   // HMAC secret for webhook signature
 	AMD             *AMDParams        `json:"amd,omitempty"`              // enable answering machine detection on outbound calls
@@ -41,8 +42,9 @@ type CreateLegRequest struct {
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":             {Description: "Leg type", Enum: []string{"sip"}},
-	"uri":              {Description: "SIP URI to dial"},
+	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp"}},
+	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
+	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
@@ -50,7 +52,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"codecs":           {Description: "Codec preference order"},
 	"headers":          {Description: "Custom SIP headers to include in the outbound INVITE (e.g. X-Correlation-ID)"},
 	"room_id":          {Description: "Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created."},
-	"auth":             {Description: "SIP digest authentication credentials. If the remote challenges with 401/407, sipgo will retry with these credentials."},
+	"auth":             {Description: "Digest auth credentials. Required for whatsapp legs (Meta-issued password; username defaults to `from` with '+' stripped). Optional for sip legs (sipgo retries on 401/407 challenge)."},
 	"webhook_url":      {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
 	"webhook_secret":   {Description: "HMAC-SHA256 signing secret for the per-leg webhook."},
 	"amd":              {Description: "Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable."},
@@ -79,15 +81,15 @@ var transferRequestFields = map[string]FieldEnrichment{
 	"replaces_leg_id": {Description: "ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer."},
 }
 
-// SIPAuth holds SIP digest authentication credentials.
+// SIPAuth holds digest authentication credentials.
 type SIPAuth struct {
-	Username string `json:"username"`
+	Username string `json:"username,omitempty"`
 	Password string `json:"password"`
 }
 
 var sipAuthFields = map[string]FieldEnrichment{
-	"username": {Description: "SIP auth username"},
-	"password": {Description: "SIP auth password"},
+	"username": {Description: "Digest auth username. Optional for whatsapp legs (defaults to `from` with '+' stripped, per Meta's spec)."},
+	"password": {Description: "Digest auth password."},
 }
 
 // AMDParams configures per-call Answering Machine Detection thresholds.
@@ -126,7 +128,7 @@ type LegView struct {
 
 var legViewFields = map[string]FieldEnrichment{
 	"id":          {Description: "Unique leg identifier (UUID)"},
-	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc"}},
+	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out"}},
 	"state":       {Description: "Leg state", Enum: []string{"ringing", "early_media", "connected", "held", "hung_up"}},
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},
