@@ -394,8 +394,10 @@ func configVars() *seq {
 	vars := []configVar{
 		{Name: "INSTANCE_ID", Default: "(auto-generated UUID)", Description: "Instance identifier included in all API responses and webhook events"},
 		{Name: "HTTP_ADDR", Default: ":8080", Description: "REST API listen address"},
-		{Name: "SIP_BIND_IP", Default: "127.0.0.1", Description: "IP used in SDP, Contact, and Via headers"},
-		{Name: "SIP_LISTEN_IP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP"},
+		{Name: "SIP_BIND_IP", Default: "127.0.0.1", Description: "IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)"},
+		{Name: "SIP_LISTEN_IP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address"},
+		{Name: "SIP_BIND_IPV6", Default: "(empty = v4-only)", Description: "IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments"},
+		{Name: "SIP_LISTEN_IPV6", Default: "(same as SIP_BIND_IPV6)", Description: "Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)"},
 		{Name: "SIP_PORT", Default: "5060", Description: "SIP listen port"},
 		{Name: "SIP_HOST", Default: "voiceblender", Description: "SIP User-Agent name"},
 		{Name: "ICE_SERVERS", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},

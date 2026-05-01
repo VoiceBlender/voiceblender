@@ -44,8 +44,10 @@ All configuration is via environment variables:
 |----------|---------|-------------|
 | `INSTANCE_ID` | *(auto-generated UUID)* | Instance identifier, included in API responses and webhooks |
 | `HTTP_ADDR` | `:8080` | REST API listen address |
-| `SIP_BIND_IP` | `127.0.0.1` | IP for SDP/Contact/Via headers |
-| `SIP_LISTEN_IP` | *(same as SIP_BIND_IP)* | UDP socket bind IP |
+| `SIP_BIND_IP` | `127.0.0.1` | IPv4 address advertised in SDP/Contact/Via headers (and used as the listen address when `SIP_LISTEN_IP` is empty). Set to `0.0.0.0` for v4 wildcard, `::` for dual-stack on Linux when `bindv6only=0`. |
+| `SIP_LISTEN_IP` | *(same as SIP_BIND_IP)* | UDP socket bind IP. Accepts `127.0.0.1`, `0.0.0.0`, `::`, or any literal v4/v6 address. |
+| `SIP_BIND_IPV6` | *(empty = v4-only)* | IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments. |
+| `SIP_LISTEN_IPV6` | *(same as SIP_BIND_IPV6)* | Optional separate IPv6 socket bind address (e.g. when running with both `0.0.0.0` and a specific v6 literal). |
 | `SIP_PORT` | `5060` | SIP listen port (UDP) |
 | `SIP_TLS_PORT` | *(disabled)* | SIP-over-TLS listen port (typically `5061`). When set, `SIP_TLS_CERT` and `SIP_TLS_KEY` must also be provided. Required for WhatsApp Business Calling integration. |
 | `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
@@ -73,7 +75,7 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
-| `SIP_EXTERNAL_IP` | *(empty)* | Public IP address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. |
+| `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
 | `SIP_REFER_AUTO_DIAL` | `false` | Accept incoming SIP REFER requests and auto-dial the transferred call. **Default-deny** (toll-fraud risk). Outbound transfers via the REST API are unaffected. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |

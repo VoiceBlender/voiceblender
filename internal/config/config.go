@@ -11,7 +11,9 @@ import (
 type Config struct {
 	InstanceID             string
 	SIPBindIP              string
+	SIPBindIPV6            string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
 	SIPListenIP            string
+	SIPListenIPV6          string // IPv6 socket bind; falls back to SIPBindIPV6
 	SIPExternalIP          string
 	SIPPort                string
 	SIPTLSPort             string // "" = TLS disabled
@@ -55,7 +57,9 @@ func Load() Config {
 	return Config{
 		InstanceID:             envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:              envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
+		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),     // empty = no IPv6 advertised
+		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
+		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"),   // empty = same as SIP_BIND_IPV6
 		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:                envOr("SIP_PORT", "5060"),
 		SIPTLSPort:             os.Getenv("SIP_TLS_PORT"),
