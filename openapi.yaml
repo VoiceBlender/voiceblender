@@ -194,7 +194,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/StatusResponse'
                 '400':
-                    description: Not a SIP inbound leg or invalid body
+                    description: Not a SIP inbound leg, invalid body, or codec not in offer
                     content:
                         application/json:
                             schema:
@@ -220,6 +220,11 @@ paths:
             description: Sends SIP 183 Session Progress with SDP and sets up the media pipeline. The leg transitions to `early_media` state, allowing audio playback and room participation before the call is answered.
             tags:
                 - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/EarlyMediaLegRequest'
             responses:
                 '200':
                     description: Early media enabled
@@ -228,7 +233,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/StatusResponse'
                 '400':
-                    description: Not a SIP inbound leg
+                    description: Not a SIP inbound leg or codec not in offer
                     content:
                         application/json:
                             schema:
@@ -2108,6 +2113,14 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                codec:
+                    type: string
+                    description: Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.
+                    enum:
+                        - PCMU
+                        - PCMA
+                        - G722
+                        - opus
         CreateLegRequest:
             type: object
             properties:
@@ -2235,6 +2248,17 @@ components:
                 api_key:
                     type: string
                     description: API key override (falls back to DEEPGRAM_API_KEY env var)
+        EarlyMediaLegRequest:
+            type: object
+            properties:
+                codec:
+                    type: string
+                    description: Explicit codec for the 183 Session Progress SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.
+                    enum:
+                        - PCMU
+                        - PCMA
+                        - G722
+                        - opus
         ElevenLabsAgentRequest:
             type: object
             properties:
@@ -2593,6 +2617,10 @@ x-webhooks:
                                         additionalProperties:
                                             type: string
                                         description: X-* custom SIP headers, if present
+                                    offered_codecs:
+                                        type: array
+                                        items:
+                                            $ref: '#/components/schemas/OfferedCodec'
     leg.early_media:
         post:
             summary: Outbound leg received 183 Session Progress with SDP; media pipeline active

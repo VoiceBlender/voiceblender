@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/go-chi/chi/v5"
@@ -133,7 +134,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 
 	// Auto-answer ringing inbound SIP legs before adding to the room.
 	if sipLeg, ok := l.(*leg.SIPLeg); ok && l.State() == leg.StateRinging && l.Type() == leg.TypeSIPInbound {
-		sipLeg.SignalAnswer()
+		sipLeg.SignalAnswer(codec.CodecUnknown)
 		if err := sipLeg.WaitConnected(ctx); err != nil {
 			return nil, newAPIError(http.StatusInternalServerError, "auto-answer failed: %v", err)
 		}

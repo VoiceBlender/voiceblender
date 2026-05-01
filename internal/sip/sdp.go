@@ -24,6 +24,7 @@ type SDPMedia struct {
 	AddressFamily string                    // "IP4" or "IP6" (from c= line); empty if not present
 	Codecs        []codec.CodecType         // Codecs from m= line, in offer order
 	CodecPTs      map[codec.CodecType]uint8 // Actual PT for each codec from remote SDP
+	CodecRates    map[codec.CodecType]int   // Clock rate (Hz) for each codec, from a=rtpmap; falls back to codec default
 	Ptime         int                       // ms, default 20
 	Direction     string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
 }
@@ -191,7 +192,11 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 		return nil, fmt.Errorf("unmarshal SDP: %w", err)
 	}
 
-	m := &SDPMedia{Ptime: 20, CodecPTs: make(map[codec.CodecType]uint8)}
+	m := &SDPMedia{
+		Ptime:      20,
+		CodecPTs:   make(map[codec.CodecType]uint8),
+		CodecRates: make(map[codec.CodecType]int),
+	}
 
 	// Session-level c= line.
 	if sd.ConnectionInformation != nil && sd.ConnectionInformation.Address != nil {
@@ -211,8 +216,9 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 			m.AddressFamily = md.ConnectionInformation.AddressType
 		}
 
-		// Build rtpmap: PT → codec name from attributes.
+		// Build rtpmap: PT → codec name + clock rate from attributes.
 		rtpmap := make(map[uint8]string)
+		rtpmapRate := make(map[uint8]int)
 		for _, a := range md.Attributes {
 			if a.Key == "rtpmap" {
 				parts := strings.SplitN(a.Value, " ", 2)
@@ -225,7 +231,15 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 				}
 				name := parts[1]
 				if idx := strings.Index(name, "/"); idx > 0 {
+					rest := name[idx+1:]
 					name = name[:idx]
+					rateStr := rest
+					if i := strings.Index(rest, "/"); i > 0 {
+						rateStr = rest[:i]
+					}
+					if rate, err := strconv.Atoi(rateStr); err == nil {
+						rtpmapRate[uint8(pt)] = rate
+					}
 				}
 				rtpmap[uint8(pt)] = name
 			}
@@ -253,6 +267,11 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 			if ct != codec.CodecUnknown {
 				m.Codecs = append(m.Codecs, ct)
 				m.CodecPTs[ct] = upt
+				if rate, ok := rtpmapRate[upt]; ok {
+					m.CodecRates[ct] = rate
+				} else {
+					m.CodecRates[ct] = ct.ClockRate()
+				}
 				continue
 			}
 
@@ -262,6 +281,11 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 				if ct != codec.CodecUnknown {
 					m.Codecs = append(m.Codecs, ct)
 					m.CodecPTs[ct] = upt
+					if rate, ok := rtpmapRate[upt]; ok {
+						m.CodecRates[ct] = rate
+					} else {
+						m.CodecRates[ct] = ct.ClockRate()
+					}
 				}
 			}
 		}
@@ -320,6 +344,39 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 // NegotiateCodec finds the first codec in the remote SDP that is also in the supported list.
 // Returns the codec type, the payload type from the remote SDP, and whether negotiation succeeded.
 func NegotiateCodec(remote *SDPMedia, supported []codec.CodecType) (codec.CodecType, uint8, bool) {
+	return NegotiateCodecPreferred(remote, supported, codec.CodecUnknown)
+}
+
+// NegotiateCodecPreferred is like NegotiateCodec but biases the choice toward
+// preferred when it is non-zero. The preferred codec must appear in both the
+// remote offer and the supported list; otherwise selection falls back to the
+// regular preference order.
+func NegotiateCodecPreferred(remote *SDPMedia, supported []codec.CodecType, preferred codec.CodecType) (codec.CodecType, uint8, bool) {
+	if preferred != codec.CodecUnknown {
+		offered := false
+		for _, o := range remote.Codecs {
+			if o == preferred {
+				offered = true
+				break
+			}
+		}
+		ours := false
+		for _, s := range supported {
+			if s == preferred {
+				ours = true
+				break
+			}
+		}
+		if offered && ours {
+			pt := preferred.PayloadType()
+			if remote.CodecPTs != nil {
+				if remotePT, ok := remote.CodecPTs[preferred]; ok {
+					pt = remotePT
+				}
+			}
+			return preferred, pt, true
+		}
+	}
 	for _, o := range remote.Codecs {
 		for _, s := range supported {
 			if o == s {

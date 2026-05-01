@@ -63,11 +63,22 @@ var createLegRequestFields = map[string]FieldEnrichment{
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
 type AnswerLegRequest struct {
-	SpeechDetection *bool `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	SpeechDetection *bool  `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	Codec           string `json:"codec,omitempty"`            // explicit codec to use (must be in the remote offer)
 }
 
 var answerLegRequestFields = map[string]FieldEnrichment{
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"codec":            {Description: "Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
+}
+
+// EarlyMediaLegRequest is the optional request body for POST /v1/legs/{id}/early-media.
+type EarlyMediaLegRequest struct {
+	Codec string `json:"codec,omitempty"` // explicit codec to use (must be in the remote offer)
+}
+
+var earlyMediaLegRequestFields = map[string]FieldEnrichment{
+	"codec": {Description: "Explicit codec for the 183 Session Progress SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
 }
 
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.
@@ -375,6 +386,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("RoomView", roomViewFields)
 	collect("CreateLegRequest", createLegRequestFields)
 	collect("AnswerLegRequest", answerLegRequestFields)
+	collect("EarlyMediaLegRequest", earlyMediaLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)
 	collect("TransferRequest", transferRequestFields)

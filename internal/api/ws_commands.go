@@ -67,11 +67,12 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		var p struct {
 			ID              string `json:"id"`
 			SpeechDetection *bool  `json:"speech_detection,omitempty"`
+			Codec           string `json:"codec,omitempty"`
 		}
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}

@@ -44,11 +44,21 @@ func (b LegRoomScope) GetAppID() string  { return b.AppID }
 
 type LegRingingData struct {
 	LegScope
-	LegType    string            `json:"leg_type,omitempty"`
-	URI        string            `json:"uri,omitempty"`
-	From       string            `json:"from,omitempty"`
-	To         string            `json:"to,omitempty"`
-	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
+	LegType       string            `json:"leg_type,omitempty"`
+	URI           string            `json:"uri,omitempty"`
+	From          string            `json:"from,omitempty"`
+	To            string            `json:"to,omitempty"`
+	SIPHeaders    map[string]string `json:"sip_headers,omitempty"`
+	OfferedCodecs []OfferedCodec    `json:"offered_codecs,omitempty"`
+}
+
+// OfferedCodec describes one codec from a remote SIP offer SDP.
+// Priority is 1-based and reflects the order the codec appeared in the m= line.
+type OfferedCodec struct {
+	Name        string `json:"name"`
+	PayloadType uint8  `json:"payload_type"`
+	ClockRate   int    `json:"clock_rate"`
+	Priority    int    `json:"priority"`
 }
 
 type LegConnectedData struct {

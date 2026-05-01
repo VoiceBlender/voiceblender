@@ -143,7 +143,7 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
@@ -154,12 +154,23 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool) error {
 		if l.State() != leg.StateRinging && l.State() != leg.StateEarlyMedia {
 			return newAPIError(http.StatusConflict, "leg is %s, expected ringing or early_media", l.State())
 		}
+		preferred := codec.CodecUnknown
+		if codecName != "" {
+			c, err := resolveOfferedCodec(tl, codecName)
+			if err != nil {
+				return err
+			}
+			preferred = c
+		}
 		if speechDetection != nil {
 			s.setSpeechOverride(id, speechDetection)
 		}
-		tl.SignalAnswer()
+		tl.SignalAnswer(preferred)
 		return nil
 	case *leg.WhatsAppLeg:
+		if codecName != "" {
+			return newAPIError(http.StatusBadRequest, "codec selection is not supported for WhatsApp legs")
+		}
 		if err := tl.RequestAnswer(); err != nil {
 			return newAPIError(http.StatusConflict, "%s", err.Error())
 		}
@@ -167,6 +178,53 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool) error {
 	default:
 		return newAPIError(http.StatusBadRequest, "only SIP and WhatsApp inbound legs can be answered")
 	}
+}
+
+// buildOfferedCodecs converts a parsed remote SDP into the list emitted in
+// the leg.ringing event. Order in remote.Codecs already reflects the offer's
+// m= line preference; we surface that as a 1-based priority field.
+func buildOfferedCodecs(remote *sipmod.SDPMedia) []events.OfferedCodec {
+	if remote == nil || len(remote.Codecs) == 0 {
+		return nil
+	}
+	out := make([]events.OfferedCodec, 0, len(remote.Codecs))
+	for i, c := range remote.Codecs {
+		pt := c.PayloadType()
+		if remote.CodecPTs != nil {
+			if remotePT, ok := remote.CodecPTs[c]; ok {
+				pt = remotePT
+			}
+		}
+		rate := c.ClockRate()
+		if remote.CodecRates != nil {
+			if r, ok := remote.CodecRates[c]; ok {
+				rate = r
+			}
+		}
+		out = append(out, events.OfferedCodec{
+			Name:        c.String(),
+			PayloadType: pt,
+			ClockRate:   rate,
+			Priority:    i + 1,
+		})
+	}
+	return out
+}
+
+// resolveOfferedCodec maps a codec name from a request body to a CodecType,
+// rejecting unknown codecs and codecs not present in the leg's remote offer.
+func resolveOfferedCodec(l *leg.SIPLeg, name string) (codec.CodecType, error) {
+	c := codec.CodecTypeFromName(name)
+	if c == codec.CodecUnknown {
+		return c, newAPIError(http.StatusBadRequest, "unknown codec %q", name)
+	}
+	offer := l.RemoteOfferCodecs()
+	for _, o := range offer {
+		if o == c {
+			return c, nil
+		}
+	}
+	return c, newAPIError(http.StatusBadRequest, "codec %q not in remote offer", name)
 }
 
 func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +238,7 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -206,7 +264,25 @@ func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := sipLeg.EnableEarlyMedia(r.Context()); err != nil {
+	var req EarlyMediaLegRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+	}
+
+	preferred := codec.CodecUnknown
+	if req.Codec != "" {
+		c, err := resolveOfferedCodec(sipLeg, req.Codec)
+		if err != nil {
+			handleAPIError(w, err)
+			return
+		}
+		preferred = c
+	}
+
+	if err := sipLeg.EnableEarlyMedia(r.Context(), preferred); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("early media failed: %v", err))
 		return
 	}
@@ -739,11 +815,12 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	}
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
-		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-		LegType:    string(l.Type()),
-		From:       call.From,
-		To:         call.To,
-		SIPHeaders: l.SIPHeaders(),
+		LegScope:      events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:       string(l.Type()),
+		From:          call.From,
+		To:            call.To,
+		SIPHeaders:    l.SIPHeaders(),
+		OfferedCodecs: buildOfferedCodecs(call.RemoteSDP),
 	})
 
 	// Wait for REST answer or context cancellation (caller hangup / timeout)

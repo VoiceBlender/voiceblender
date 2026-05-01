@@ -224,13 +224,15 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 
 ```json
 {
-  "speech_detection": true
+  "speech_detection": true,
+  "codec": "PCMA"
 }
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
+| `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
 
 **Response:** `200 OK`
 
@@ -239,7 +241,7 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 ```
 
 **Errors:**
-- `400` — Not a SIP inbound leg, or invalid request body
+- `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` or `early_media` state
 
@@ -249,7 +251,17 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 
 Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress with SDP, sets up the RTP session and media pipeline, and transitions the leg to `early_media` state. Once in this state, audio can be played to the caller (e.g., custom ringback tones, announcements) and the leg can be added to a room — all before answering the call.
 
-**Request:** Empty body
+**Request:** Optional body
+
+```json
+{
+  "codec": "opus"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `codec` | string (optional) | Force a specific codec for the 183 Session Progress SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list. The codec chosen here is locked in for the subsequent `/answer`. When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. |
 
 **Response:** `200 OK`
 
@@ -258,7 +270,7 @@ Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress 
 ```
 
 **Errors:**
-- `400` — Not a SIP inbound leg
+- `400` — Not a SIP inbound leg, unknown codec name, or codec not in remote offer
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` state
 - `500` — Media setup failed (codec negotiation, RTP session, or SIP 183 send error)
@@ -1964,9 +1976,16 @@ Event data fields are flattened into the top-level JSON object alongside the env
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_type": "sip_inbound",
   "from": "sip:alice@example.com",
-  "to": "sip:bob@example.com"
+  "to": "sip:bob@example.com",
+  "offered_codecs": [
+    { "name": "opus", "payload_type": 111, "clock_rate": 48000, "priority": 1 },
+    { "name": "PCMU", "payload_type": 0,   "clock_rate": 8000,  "priority": 2 },
+    { "name": "PCMA", "payload_type": 8,   "clock_rate": 8000,  "priority": 3 }
+  ]
 }
 ```
+
+**`offered_codecs`** (inbound SIP only) lists the audio codecs from the remote INVITE's offer SDP, in offer order. `priority` is 1-based and matches the order — lower value = higher priority. Use any `name` from this list as the `codec` field on `POST /v1/legs/{id}/early-media` or `POST /v1/legs/{id}/answer` to force that codec for the answer SDP.
 
 All events include `instance_id` alongside the event-specific fields.
 
@@ -1976,7 +1995,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. |
+| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. `offered_codecs` included on inbound SIP — array of `{name, payload_type, clock_rate, priority}` from the remote SDP offer, in priority order. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |

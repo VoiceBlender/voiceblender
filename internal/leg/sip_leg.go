@@ -84,8 +84,9 @@ type SIPLeg struct {
 	jbMaxMs      int // max queue depth in ms
 	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
 
-	earlyMediaSDP []byte            // SDP sent in 183, reused in 200 OK on Answer
-	sipHeaders    map[string]string // X-* headers from inbound INVITE or outbound request
+	earlyMediaSDP  []byte            // SDP sent in 183, reused in 200 OK on Answer
+	sipHeaders     map[string]string // X-* headers from inbound INVITE or outbound request
+	preferredCodec codec.CodecType   // optional codec hint set via SignalAnswer; CodecUnknown = no preference
 
 	engine          *sipmod.Engine    // for sending re-INVITEs
 	localIP         string            // for SDP answer generation
@@ -408,18 +409,45 @@ func (l *SIPLeg) WaitConnected(ctx context.Context) error {
 	}
 }
 
-// SignalAnswer signals the leg to answer (called from REST API).
-func (l *SIPLeg) SignalAnswer() {
+// SignalAnswer signals the leg to answer (called from REST API). preferred
+// is an optional codec hint passed to Answer; pass CodecUnknown for none.
+func (l *SIPLeg) SignalAnswer(preferred codec.CodecType) {
+	l.mu.Lock()
+	l.preferredCodec = preferred
+	l.mu.Unlock()
 	select {
 	case l.answerCh <- struct{}{}:
 	default:
 	}
 }
 
+// PreferredCodec returns the codec hint last set via SignalAnswer.
+func (l *SIPLeg) PreferredCodec() codec.CodecType {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.preferredCodec
+}
+
+// RemoteOfferCodecs returns the codecs offered by the remote in the inbound
+// INVITE SDP, in offer order. Returns nil for outbound legs or when no offer
+// has been parsed yet.
+func (l *SIPLeg) RemoteOfferCodecs() []codec.CodecType {
+	if l.inbound == nil || l.inbound.RemoteSDP == nil {
+		return nil
+	}
+	out := make([]codec.CodecType, len(l.inbound.RemoteSDP.Codecs))
+	copy(out, l.inbound.RemoteSDP.Codecs)
+	return out
+}
+
 // EnableEarlyMedia sends 183 Session Progress with SDP and sets up the media
 // pipeline so audio can flow before the call is answered. Only valid for
 // inbound legs in StateRinging.
-func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
+//
+// preferred biases codec selection: when non-zero and present in both the
+// remote offer and the supported list, it wins; otherwise selection falls
+// back to the default offer-order preference.
+func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType) error {
 	if l.inbound == nil {
 		return fmt.Errorf("cannot enable early media on outbound leg")
 	}
@@ -432,7 +460,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
 	}
 
 	// Negotiate codec from remote offer
-	negotiated, pt, ok := sipmod.NegotiateCodec(l.inbound.RemoteSDP, l.supportedCodecs)
+	negotiated, pt, ok := sipmod.NegotiateCodecPreferred(l.inbound.RemoteSDP, l.supportedCodecs, preferred)
 	if !ok {
 		return fmt.Errorf("no common codec negotiated")
 	}
@@ -480,6 +508,10 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context) error {
 	return nil
 }
 
+// Answer sends 200 OK to the inbound INVITE. Codec selection respects any
+// hint set via SignalAnswer; a CodecUnknown hint falls back to the default
+// offer-order preference. The hint is ignored when the leg is already in
+// StateEarlyMedia (the codec was locked in at 183).
 func (l *SIPLeg) Answer(ctx context.Context) error {
 	if l.inbound == nil {
 		return fmt.Errorf("cannot answer outbound leg")
@@ -489,6 +521,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	l.mu.RLock()
 	sdp := l.earlyMediaSDP
 	st := l.state
+	preferred := l.preferredCodec
 	l.mu.RUnlock()
 
 	if st == StateEarlyMedia && sdp != nil {
@@ -521,7 +554,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	// Normal answer path from ringing state.
 
 	// Negotiate codec from remote offer
-	negotiated, pt, ok := sipmod.NegotiateCodec(l.inbound.RemoteSDP, l.supportedCodecs)
+	negotiated, pt, ok := sipmod.NegotiateCodecPreferred(l.inbound.RemoteSDP, l.supportedCodecs, preferred)
 	if !ok {
 		return fmt.Errorf("no common codec negotiated")
 	}

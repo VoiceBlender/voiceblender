@@ -233,7 +233,7 @@ func RoutesMetadata() []RouteMeta {
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Answer initiated"},
-				400: {Description: "Not a SIP inbound leg or invalid body"},
+				400: {Description: "Not a SIP inbound leg, invalid body, or codec not in offer"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing or early_media state"},
 			},
@@ -244,10 +244,12 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Sends SIP 183 Session Progress with SDP and sets up the media pipeline. " +
 				"The leg transitions to `early_media` state, allowing audio playback and " +
 				"room participation before the call is answered.",
-			Tags: []string{"Legs"},
+			Tags:         []string{"Legs"},
+			RequestType:  EarlyMediaLegRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Early media enabled"},
-				400: {Description: "Not a SIP inbound leg"},
+				400: {Description: "Not a SIP inbound leg or codec not in offer"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing state"},
 				500: {Description: "Media setup failed"},
