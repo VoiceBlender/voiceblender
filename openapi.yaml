@@ -157,16 +157,31 @@ paths:
                                 $ref: '#/components/schemas/Error'
         delete:
             operationId: deleteLeg
-            summary: Hang up a leg
+            summary: Hang up a leg (asynchronous)
+            description: |-
+                Validates the leg exists and queues a hangup. The HTTP call returns 202 as soon as the leg is found; the SIP work and cleanup run in the background, and the eventual disconnection is observed via the `leg.disconnected` event.
+
+                Without a request body the legacy behavior is preserved: SIP BYE on connected legs (`cdr.reason: "api_hangup"`), or dialog cancel on unanswered inbound legs (`cdr.reason: "caller_cancel"`).
+
+                With `{"reason": "<value>"}` and an unanswered SIP inbound leg (state `ringing` or `early_media`), VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is passed through to `leg.disconnected`'s `cdr.reason`.
+
+                For connected legs the request body is ignored.
             tags:
                 - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DeleteLegRequest'
             responses:
-                '200':
-                    description: Leg hung up
+                '202':
+                    description: Hangup queued
+                '400':
+                    description: Unknown reason value
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                                $ref: '#/components/schemas/Error'
                 '404':
                     description: Leg not found
                     content:
@@ -178,7 +193,8 @@ paths:
             - $ref: '#/components/parameters/LegId'
         post:
             operationId: answerLeg
-            summary: Answer a ringing or early-media inbound SIP leg
+            summary: Answer a ringing or early-media inbound SIP leg (asynchronous)
+            description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously.
             tags:
                 - Legs
             requestBody:
@@ -187,12 +203,8 @@ paths:
                         schema:
                             $ref: '#/components/schemas/AnswerLegRequest'
             responses:
-                '200':
-                    description: Answer initiated
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                '202':
+                    description: Answer queued
                 '400':
                     description: Not a SIP inbound leg, invalid body, or codec not in offer
                     content:
@@ -211,29 +223,20 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-    /legs/{id}/early-media:
+    /legs/{id}/ring:
         parameters:
             - $ref: '#/components/parameters/LegId'
         post:
-            operationId: earlyMediaLeg
-            summary: Enable early media on a ringing inbound SIP leg
-            description: Sends SIP 183 Session Progress with SDP and sets up the media pipeline. The leg transitions to `early_media` state, allowing audio playback and room participation before the call is answered.
+            operationId: ringLeg
+            summary: Send 180 Ringing on a ringing inbound SIP leg (asynchronous)
+            description: 'Queues a SIP 180 Ringing provisional response with no SDP. Use when `SIP_AUTO_RINGING=false` (the default) and you want to indicate alerting before deciding to early-media or answer. Idempotent: each call emits another 180 — receivers tolerate re-sends. The HTTP call returns 202 as soon as the request is validated; SIP-level send failures surface as `leg.command_failed` with `command="ring"`.'
             tags:
                 - Legs
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/EarlyMediaLegRequest'
             responses:
-                '200':
-                    description: Early media enabled
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                '202':
+                    description: 180 Ringing queued
                 '400':
-                    description: Not a SIP inbound leg or codec not in offer
+                    description: Not a SIP inbound leg
                     content:
                         application/json:
                             schema:
@@ -250,8 +253,37 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-                '500':
-                    description: Media setup failed
+    /legs/{id}/early-media:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: earlyMediaLeg
+            summary: Enable early media on a ringing inbound SIP leg (asynchronous)
+            description: Queues a SIP 183 Session Progress with SDP and the RTP/codec setup. The HTTP call returns 202 as soon as the request is validated; the leg transitions to `early_media` state asynchronously, observable via `leg.early_media`. Setup failures surface as `leg.command_failed` with `command="early_media"`.
+            tags:
+                - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/EarlyMediaLegRequest'
+            responses:
+                '202':
+                    description: Early media queued
+                '400':
+                    description: Not a SIP inbound leg or codec not in offer
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg is not in ringing state
                     content:
                         application/json:
                             schema:
@@ -301,17 +333,13 @@ paths:
             - $ref: '#/components/parameters/LegId'
         post:
             operationId: holdLeg
-            summary: Put a SIP call on hold
-            description: Sends a re-INVITE with `sendonly` SDP direction. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts.
+            summary: Put a SIP call on hold (asynchronous)
+            description: Queues a re-INVITE with `sendonly` SDP direction. The HTTP call returns 202 as soon as the leg is validated; the re-INVITE is sent in the background and success surfaces as `leg.hold`. Failures surface as `leg.command_failed` with `command="hold"`. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts.
             tags:
                 - Legs
             responses:
-                '200':
-                    description: Call held
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                '202':
+                    description: Hold queued
                 '400':
                     description: Not a SIP leg
                     content:
@@ -325,24 +353,20 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: Leg is not in connected state, or already held
+                    description: Hold not supported for this leg type (e.g. WhatsApp)
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
         delete:
             operationId: unholdLeg
-            summary: Resume a held SIP call
-            description: Sends a re-INVITE with `sendrecv` SDP direction.
+            summary: Resume a held SIP call (asynchronous)
+            description: Queues a re-INVITE with `sendrecv` SDP direction. The HTTP call returns 202; success surfaces as `leg.unhold`, failures as `leg.command_failed` with `command="unhold"`.
             tags:
                 - Legs
             responses:
-                '200':
-                    description: Call resumed
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
+                '202':
+                    description: Unhold queued
                 '400':
                     description: Not a SIP leg
                     content:
@@ -356,7 +380,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: Leg is not held
+                    description: Hold not supported for this leg type (e.g. WhatsApp)
                     content:
                         application/json:
                             schema:
@@ -1204,7 +1228,7 @@ paths:
         post:
             operationId: addLegToRoom
             summary: Add or move a leg to a room
-            description: Add a leg to a room (auto-creates room if it doesn't exist). If the leg is already in a different room, it is atomically moved to the target room. A ringing inbound SIP leg is automatically answered before being added.
+            description: Add a leg to a room (auto-creates room if it doesn't exist). If the leg is already in a different room, it is atomically moved to the target room. A ringing inbound SIP leg is automatically answered before being added — in this case the response status is `adding` and the actual room join happens asynchronously, observable via `leg.joined_room`. Auto-answer failures surface as `leg.command_failed` with `command="add_to_room"`.
             tags:
                 - Rooms
             requestBody:
@@ -2248,6 +2272,20 @@ components:
                 api_key:
                     type: string
                     description: API key override (falls back to DEEPGRAM_API_KEY env var)
+        DeleteLegRequest:
+            type: object
+            properties:
+                reason:
+                    type: string
+                    description: 'Disconnect reason. Only honored for unanswered SIP inbound legs (state `ringing` or `early_media`); on connected legs the body is ignored and the leg is hung up with the legacy `api_hangup` reason. The value flows through to `leg.disconnected`''s `cdr.reason` and selects the SIP final response: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500.'
+                    enum:
+                        - busy
+                        - declined
+                        - rejected
+                        - unavailable
+                        - not_found
+                        - forbidden
+                        - server_error
         EarlyMediaLegRequest:
             type: object
             properties:

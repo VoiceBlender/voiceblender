@@ -45,6 +45,7 @@ type Config struct {
 	SIPJitterBufferMs      int
 	SIPJitterBufferMaxMs   int
 	SIPReferAutoDial       bool
+	SIPAutoRinging         bool
 	DefaultSampleRate      int
 	SpeechDetectionEnabled bool
 }
@@ -57,9 +58,9 @@ func Load() Config {
 	return Config{
 		InstanceID:             envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:              envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),     // empty = no IPv6 advertised
-		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
-		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"),   // empty = same as SIP_BIND_IPV6
+		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),   // empty = no IPv6 advertised
+		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
+		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"), // empty = same as SIP_BIND_IPV6
 		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:                envOr("SIP_PORT", "5060"),
 		SIPTLSPort:             os.Getenv("SIP_TLS_PORT"),
@@ -91,6 +92,7 @@ func Load() Config {
 		SIPJitterBufferMs:      envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:   envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 		SIPReferAutoDial:       os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
+		SIPAutoRinging:         os.Getenv("SIP_AUTO_RINGING") == "true",
 		DefaultSampleRate:      defaultRate,
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 	}

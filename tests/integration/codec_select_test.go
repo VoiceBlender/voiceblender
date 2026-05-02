@@ -71,7 +71,7 @@ func TestCodecSelect_AnswerWithExplicitCodec(t *testing.T) {
 		fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID),
 		map[string]interface{}{"codec": "PCMA"},
 	)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(answerResp.Body)
 		answerResp.Body.Close()
 		t.Fatalf("answer with codec=PCMA: status %d, body=%s", answerResp.StatusCode, body)

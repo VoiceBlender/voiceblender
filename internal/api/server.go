@@ -109,6 +109,7 @@ func (s *Server) routes() {
 		r.Get("/legs/{id}", s.getLeg)
 		r.Post("/legs/{id}/answer", s.answerLeg)
 		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)
+		r.Post("/legs/{id}/ring", s.ringLeg)
 		r.Post("/legs/{id}/mute", s.muteLeg)
 		r.Delete("/legs/{id}/mute", s.unmuteLeg)
 		r.Post("/legs/{id}/deaf", s.deafLeg)

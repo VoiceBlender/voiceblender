@@ -262,7 +262,7 @@ func TestCall_IPv6Loopback(t *testing.T) {
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer leg: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -271,7 +271,7 @@ func TestCall_IPv6Loopback(t *testing.T) {
 	waitForLegState(t, instB.baseURL(), inboundLeg.ID, "connected", 5*time.Second)
 
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -306,7 +306,7 @@ func TestCall_DualStackInterop_V4Caller(t *testing.T) {
 
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer leg: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -316,7 +316,7 @@ func TestCall_DualStackInterop_V4Caller(t *testing.T) {
 
 	// Hang up.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()

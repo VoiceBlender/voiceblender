@@ -153,6 +153,9 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestCodecSelect_RingingExposesOffer` | `leg.ringing` payload includes `offered_codecs` array with priority order |
 | `TestCodecSelect_AnswerWithExplicitCodec` | `POST /v1/legs/{id}/answer` honors a `codec` field in the request body |
 | `TestCodecSelect_AnswerRejectsCodecNotInOffer` | Answer with a codec not in the remote offer returns 400 |
+| `TestRing_ExplicitRingingThenAnswer` | Default `SIP_AUTO_RINGING=false`; multiple `/ring` calls send 180s, then `/answer` connects |
+| `TestRing_AutoRingingPreservesLegacyFlow` | `SIP_AUTO_RINGING=true` restores auto-180 behavior; no explicit `/ring` needed |
+| `TestRing_RejectsAfterAnswer` | `/ring` on a connected leg returns 409 |
 
 ---
 

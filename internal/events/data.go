@@ -97,6 +97,16 @@ type LegUnholdData struct {
 	LegType string `json:"leg_type"`
 }
 
+// LegCommandFailedData is emitted when an asynchronous leg command (one that
+// runs on a goroutine after the HTTP handler has returned 202) fails. The
+// command field identifies the action that failed, e.g. "hold", "transfer",
+// "ring", "early_media", "hangup".
+type LegCommandFailedData struct {
+	LegScope
+	Command string `json:"command"`
+	Error   string `json:"error"`
+}
+
 // --- Transfer (SIP REFER) ---
 
 // LegTransferInitiatedData fires after we successfully send a REFER request

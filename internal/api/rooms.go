@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -132,12 +134,26 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		}, nil
 	}
 
-	// Auto-answer ringing inbound SIP legs before adding to the room.
+	// Auto-answer ringing inbound SIP legs before adding to the room. Since
+	// the answer must complete before AddLeg accepts the leg, do the wait
+	// on a goroutine so the HTTP handler returns immediately. Failures
+	// surface as leg.command_failed.
 	if sipLeg, ok := l.(*leg.SIPLeg); ok && l.State() == leg.StateRinging && l.Type() == leg.TypeSIPInbound {
 		sipLeg.SignalAnswer(codec.CodecUnknown)
-		if err := sipLeg.WaitConnected(ctx); err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "auto-answer failed: %v", err)
-		}
+		go func() {
+			waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := sipLeg.WaitConnected(waitCtx); err != nil {
+				s.publishCommandFailed(sipLeg, "add_to_room", fmt.Errorf("auto-answer failed: %w", err))
+				return
+			}
+			if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
+				s.publishCommandFailed(sipLeg, "add_to_room", err)
+				return
+			}
+			s.onLegJoinedRoom(roomID, req.LegID)
+		}()
+		return map[string]string{"status": "adding"}, nil
 	}
 
 	if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {

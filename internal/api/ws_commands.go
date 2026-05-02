@@ -79,15 +79,18 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsCommandResult(lw, msg, map[string]string{"status": "answering"})
 
 	case "delete_leg":
-		var p idPayload
+		var p struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason,omitempty"`
+		}
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doDeleteLeg(p.ID); err != nil {
+		if err := s.doDeleteLeg(p.ID, p.Reason); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "deleted"})
+		s.wsCommandResult(lw, msg, map[string]string{"status": "hanging_up"})
 
 	// ── Leg state toggles ───────────────────────────────────────────
 	case "mute_leg":
@@ -103,21 +106,33 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doHoldLeg(context.Background(), p.ID); err != nil {
+		sipLeg, err := s.resolveHoldLeg(p.ID)
+		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "held"})
+		go func() {
+			if err := sipLeg.Hold(context.Background()); err != nil {
+				s.publishCommandFailed(sipLeg, "hold", err)
+			}
+		}()
+		s.wsCommandResult(lw, msg, map[string]string{"status": "holding"})
 	case "unhold_leg":
 		var p idPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doUnholdLeg(context.Background(), p.ID); err != nil {
+		sipLeg, err := s.resolveHoldLeg(p.ID)
+		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "resumed"})
+		go func() {
+			if err := sipLeg.Unhold(context.Background()); err != nil {
+				s.publishCommandFailed(sipLeg, "unhold", err)
+			}
+		}()
+		s.wsCommandResult(lw, msg, map[string]string{"status": "unholding"})
 
 	// ── DTMF ────────────────────────────────────────────────────────
 	case "send_leg_dtmf":

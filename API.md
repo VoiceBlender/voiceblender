@@ -4,6 +4,19 @@ Base URL: `http://localhost:8080/v1`
 
 All responses are `Content-Type: application/json`.
 
+## Asynchronous endpoints
+
+Every endpoint that triggers a SIP request or response (e.g. INVITE, BYE, re-INVITE for hold/unhold, REFER for transfer, 100/180/183/200 for inbound calls) is **asynchronous**. The HTTP handler validates inputs synchronously (returning 4xx if anything fails up front) then queues the SIP work on a goroutine and returns **`202 Accepted`** with a progressive-form status string (e.g. `holding`, `unholding`, `hanging_up`, `early_media`, `ringing`, `answering`).
+
+The actual outcome of the SIP-level work is observed via webhook/WebSocket events:
+
+| Event | When |
+|---|---|
+| `leg.connected`, `leg.early_media`, `leg.hold`, `leg.unhold`, `leg.disconnected`, `leg.transfer_*` | Successful completion |
+| `leg.command_failed` | The SIP-level work failed *after* the HTTP `202` was returned. Payload: `{leg_id, command, error}` where `command` is one of `ring`, `early_media`, `hold`, `unhold`, `add_to_room`, etc. |
+
+GET endpoints, in-memory state-change endpoints (`/mute`, `/deaf`, `/dtmf/accept`, `/dtmf/reject`), audio-pipeline endpoints (`/play`, `/record`, `/tts`, `/stt`, `/agent/*`), `/dtmf` (sends RTP, not SIP), and room CRUD remain synchronous.
+
 ---
 
 ## Legs
@@ -216,9 +229,34 @@ Get a single leg.
 
 ---
 
+### POST /v1/legs/{id}/ring
+
+**Asynchronous.** Queue a SIP **180 Ringing** provisional response (no SDP) on a ringing inbound SIP leg. Use this when `SIP_AUTO_RINGING=false` (the default) and you want to indicate alerting before deciding whether to early-media or answer.
+
+The endpoint is **idempotent in spirit** — each call emits another 180 on the wire. Receivers tolerate re-sends, and SIP retransmission rules already handle reliability of provisionals, so multiple `/ring` calls are fine.
+
+> **Auto-ringing default:** Starting with this version, VoiceBlender does **not** send 180 Ringing automatically on inbound INVITE — only 100 Trying. The API caller drives ringing via `/ring`, `/early-media`, or `/answer`. Set `SIP_AUTO_RINGING=true` to restore the legacy "auto-180-on-INVITE" behavior.
+
+**Request:** Empty body
+
+**Response:** `202 Accepted`
+
+```json
+{ "status": "ringing" }
+```
+
+SIP-level send failures surface as `leg.command_failed` with `command="ring"`.
+
+**Errors:**
+- `400` — Not a SIP inbound leg
+- `404` — Leg not found
+- `409` — Leg is not in `ringing` state (already early-media, connected, or hung up)
+
+---
+
 ### POST /v1/legs/{id}/answer
 
-Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. If the leg is in `early_media` state, the existing media pipeline and SDP are reused; if in `ringing` state, a new RTP session and codec negotiation are performed.
+**Asynchronous.** Queue the SIP 200 OK on a ringing or early-media inbound SIP leg. If the leg is in `early_media` state, the existing media pipeline and SDP are reused; if in `ringing` state, a new RTP session and codec negotiation are performed when the goroutine sends the 200 OK. Successful connection is observed via `leg.connected`.
 
 **Request:** Optional body
 
@@ -234,7 +272,7 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
 
-**Response:** `200 OK`
+**Response:** `202 Accepted`
 
 ```json
 { "status": "answering" }
@@ -249,7 +287,7 @@ Answer a ringing or early-media inbound SIP leg. This triggers the SIP 200 OK. I
 
 ### POST /v1/legs/{id}/early-media
 
-Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress with SDP, sets up the RTP session and media pipeline, and transitions the leg to `early_media` state. Once in this state, audio can be played to the caller (e.g., custom ringback tones, announcements) and the leg can be added to a room — all before answering the call.
+**Asynchronous.** Queue early-media setup on a ringing inbound SIP leg. The goroutine sends SIP 183 Session Progress with SDP, sets up the RTP session and media pipeline, and transitions the leg to `early_media` state. Once in that state, audio can be played to the caller (e.g. custom ringback tones, announcements) and the leg can be added to a room — all before answering the call. Successful transition is observed via `leg.early_media`; setup failures surface as `leg.command_failed` with `command="early_media"`.
 
 **Request:** Optional body
 
@@ -263,7 +301,7 @@ Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress 
 |---|---|---|
 | `codec` | string (optional) | Force a specific codec for the 183 Session Progress SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list. The codec chosen here is locked in for the subsequent `/answer`. When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. |
 
-**Response:** `200 OK`
+**Response:** `202 Accepted`
 
 ```json
 { "status": "early_media" }
@@ -273,7 +311,6 @@ Enable early media on a ringing inbound SIP leg. Sends SIP 183 Session Progress 
 - `400` — Not a SIP inbound leg, unknown codec name, or codec not in remote offer
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` state
-- `500` — Media setup failed (codec negotiation, RTP session, or SIP 183 send error)
 
 ---
 
@@ -339,49 +376,74 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 
 ### POST /v1/legs/{id}/hold
 
-Put a SIP call on hold. Sends a re-INVITE with `sendonly` SDP direction. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts.
+**Asynchronous.** Queue a re-INVITE with `sendonly` SDP direction. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts. Successful hold is observed via `leg.hold`; failures surface as `leg.command_failed` with `command="hold"`.
 
-**Response:** `200 OK`
+**Response:** `202 Accepted`
 
 ```json
-{ "status": "held" }
+{ "status": "holding" }
 ```
 
 **Errors:**
 - `404` — Leg not found
 - `400` — Not a SIP leg
-- `409` — Leg is not in `connected` state, or already held
+- `409` — Hold not supported for this leg type (e.g. WhatsApp), or leg is neither connected nor held
 
 ---
 
 ### DELETE /v1/legs/{id}/hold
 
-Resume a held SIP call. Sends a re-INVITE with `sendrecv` SDP direction.
+**Asynchronous.** Queue a re-INVITE with `sendrecv` SDP direction. Successful resume is observed via `leg.unhold`; failures surface as `leg.command_failed` with `command="unhold"`.
 
-**Response:** `200 OK`
+**Response:** `202 Accepted`
 
 ```json
-{ "status": "resumed" }
+{ "status": "unholding" }
 ```
 
 **Errors:**
 - `404` — Leg not found
 - `400` — Not a SIP leg
-- `409` — Leg is not held
+- `409` — Hold not supported for this leg type (e.g. WhatsApp), or leg is neither connected nor held
 
 ---
 
 ### DELETE /v1/legs/{id}
 
-Hang up a leg. Sends SIP BYE or closes the WebRTC connection.
+**Asynchronous.** Queue a hangup. Sends SIP BYE (or closes the WebRTC connection) on a goroutine and tears down the leg. Final disconnect is observed via `leg.disconnected`.
 
-**Response:** `200 OK`
+**Request:** Optional body
 
 ```json
-{ "status": "hung_up" }
+{ "reason": "busy" }
 ```
 
-**Errors:** `404` — Leg not found
+| Field | Type | Description |
+|---|---|---|
+| `reason` | string (optional) | Disconnect reason. Honored only for **unanswered SIP inbound legs** (state `ringing` or `early_media`); on connected legs the body is ignored and the leg is hung up with the legacy `api_hangup` reason. The reason value flows through to `leg.disconnected`'s `cdr.reason` and selects the SIP final response sent to the caller. |
+
+#### Reason → SIP final response (unanswered inbound only)
+
+| `reason` | SIP response |
+|---|---|
+| `busy` | 486 Busy Here |
+| `declined` / `rejected` | 603 Decline |
+| `unavailable` | 480 Temporarily Unavailable |
+| `not_found` | 404 Not Found |
+| `forbidden` | 403 Forbidden |
+| `server_error` | 500 Server Internal Error |
+
+Without a body, behavior is unchanged: BYE on connected legs (`cdr.reason: "api_hangup"`), or dialog cancel on unanswered inbound legs (`cdr.reason: "caller_cancel"`).
+
+**Response:** `202 Accepted`
+
+```json
+{ "status": "hanging_up" }
+```
+
+**Errors:**
+- `400` — Unknown `reason` value
+- `404` — Leg not found
 
 ---
 
@@ -2007,6 +2069,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.undeaf` | Leg undeafened | `leg_id` |
 | `leg.hold` | Leg put on hold (local or remote) | `leg_id`, `leg_type` |
 | `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `leg_type` |
+| `leg.command_failed` | An asynchronous leg command failed after the HTTP 202 was returned | `leg_id`, `command` (e.g. `ring`, `early_media`, `hold`, `unhold`, `add_to_room`), `error` |
 | `leg.transfer_initiated` | We sent a SIP REFER for this leg | `leg_id`, `kind` (`blind`/`attended`), `target`, `replaces_leg_id` |
 | `leg.transfer_requested` | A peer sent us a SIP REFER targeting this leg | `leg_id`, `kind`, `target`, `replaces_call_id`, `declined` |
 | `leg.transfer_progress` | NOTIFY sipfrag for an in-flight transfer | `leg_id`, `status_code`, `reason` |

@@ -211,6 +211,18 @@ func buildOfferedCodecs(remote *sipmod.SDPMedia) []events.OfferedCodec {
 	return out
 }
 
+// publishCommandFailed emits a leg.command_failed event for an async command
+// that failed after the HTTP handler had already returned 202. command is a
+// short verb identifying the action ("ring", "early_media", "hold", etc.).
+func (s *Server) publishCommandFailed(l leg.Leg, command string, err error) {
+	s.Log.Error("async leg command failed", "leg_id", l.ID(), "command", command, "error", err)
+	s.Bus.Publish(events.LegCommandFailed, &events.LegCommandFailedData{
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		Command:  command,
+		Error:    err.Error(),
+	})
+}
+
 // resolveOfferedCodec maps a codec name from a request body to a CodecType,
 // rejecting unknown codecs and codecs not present in the leg's remote offer.
 func resolveOfferedCodec(l *leg.SIPLeg, name string) (codec.CodecType, error) {
@@ -242,7 +254,35 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		handleAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "answering"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "answering"})
+}
+
+func (s *Server) ringLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "leg not found")
+		return
+	}
+
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "only SIP inbound legs can be rung")
+		return
+	}
+
+	if l.State() != leg.StateRinging {
+		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
+		return
+	}
+
+	go func() {
+		if err := sipLeg.SendRinging(context.Background()); err != nil {
+			s.publishCommandFailed(sipLeg, "ring", err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ringing"})
 }
 
 func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
@@ -282,12 +322,13 @@ func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 		preferred = c
 	}
 
-	if err := sipLeg.EnableEarlyMedia(r.Context(), preferred); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("early media failed: %v", err))
-		return
-	}
+	go func() {
+		if err := sipLeg.EnableEarlyMedia(context.Background(), preferred); err != nil {
+			s.publishCommandFailed(sipLeg, "early_media", err)
+		}
+	}()
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "early_media"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "early_media"})
 }
 
 func (s *Server) doMuteLeg(id string) error {
@@ -398,34 +439,43 @@ func (s *Server) undeafLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undeaf"})
 }
 
-func (s *Server) doHoldLeg(ctx context.Context, id string) error {
+// resolveHoldLeg validates that the leg exists and supports hold/unhold,
+// returning the typed SIPLeg for async dispatch. Used by both hold and
+// unhold handlers. Rejects legs that are not connected or already held —
+// Hold/Unhold themselves are no-ops in those states, but the synchronous
+// 409 keeps the API contract clear for callers.
+func (s *Server) resolveHoldLeg(id string) (*leg.SIPLeg, error) {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		return newAPIError(http.StatusNotFound, "leg not found")
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-
 	if _, ok := l.(*leg.WhatsAppLeg); ok {
-		return newAPIError(http.StatusConflict, "hold is not supported for WhatsApp legs (Meta disallows re-INVITE)")
+		return nil, newAPIError(http.StatusConflict, "hold is not supported for WhatsApp legs (Meta disallows re-INVITE)")
 	}
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
-		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
+		return nil, newAPIError(http.StatusBadRequest, "only SIP legs support hold")
 	}
-
-	if err := sipLeg.Hold(ctx); err != nil {
-		return newAPIError(http.StatusConflict, "%s", err.Error())
+	st := sipLeg.State()
+	if st != leg.StateConnected && st != leg.StateHeld {
+		return nil, newAPIError(http.StatusConflict, "leg is %s, expected connected or held", st)
 	}
-
-	return nil
+	return sipLeg, nil
 }
 
 func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doHoldLeg(r.Context(), id); err != nil {
+	sipLeg, err := s.resolveHoldLeg(id)
+	if err != nil {
 		handleAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "held"})
+	go func() {
+		if err := sipLeg.Hold(context.Background()); err != nil {
+			s.publishCommandFailed(sipLeg, "hold", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "holding"})
 }
 
 // setupHoldCallbacks wires hold/unhold event publishing on a SIPLeg.
@@ -465,34 +515,19 @@ func (s *Server) HandleReInvite(callID string, direction string) []byte {
 	return nil
 }
 
-func (s *Server) doUnholdLeg(ctx context.Context, id string) error {
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		return newAPIError(http.StatusNotFound, "leg not found")
-	}
-
-	if _, ok := l.(*leg.WhatsAppLeg); ok {
-		return newAPIError(http.StatusConflict, "unhold is not supported for WhatsApp legs (Meta disallows re-INVITE)")
-	}
-	sipLeg, ok := l.(*leg.SIPLeg)
-	if !ok {
-		return newAPIError(http.StatusBadRequest, "only SIP legs support hold")
-	}
-
-	if err := sipLeg.Unhold(ctx); err != nil {
-		return newAPIError(http.StatusConflict, "%s", err.Error())
-	}
-
-	return nil
-}
-
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doUnholdLeg(r.Context(), id); err != nil {
+	sipLeg, err := s.resolveHoldLeg(id)
+	if err != nil {
 		handleAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
+	go func() {
+		if err := sipLeg.Unhold(context.Background()); err != nil {
+			s.publishCommandFailed(sipLeg, "unhold", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "unholding"})
 }
 
 // cleanupLeg tears down the leg. Order matters: room removal first so the
@@ -518,27 +553,80 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.LegMgr.Remove(l.ID())
 }
 
-func (s *Server) doDeleteLeg(id string) error {
+// rejectionMapping maps a user-supplied disconnect reason to a SIP final
+// status code + reason phrase, used when the leg is rejected before answer.
+// Unknown reasons return ok=false; the handler then returns 400.
+func rejectionMapping(reason string) (code int, phrase string, ok bool) {
+	switch reason {
+	case "busy":
+		return 486, "Busy Here", true
+	case "declined", "rejected":
+		return 603, "Decline", true
+	case "unavailable":
+		return 480, "Temporarily Unavailable", true
+	case "not_found":
+		return 404, "Not Found", true
+	case "forbidden":
+		return 403, "Forbidden", true
+	case "server_error":
+		return 500, "Server Internal Error", true
+	}
+	return 0, "", false
+}
+
+func (s *Server) doDeleteLeg(id string, reason string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
-	if err := l.Hangup(context.Background()); err != nil {
-		s.Log.Warn("hangup error", "error", err)
+	// reason is honored only for unanswered SIP inbound legs. For any other
+	// state, fall through to the legacy hangup path so behavior is preserved.
+	if reason != "" {
+		if sl, isSIP := l.(*leg.SIPLeg); isSIP {
+			st := sl.State()
+			if st == leg.StateRinging || st == leg.StateEarlyMedia {
+				code, phrase, mapped := rejectionMapping(reason)
+				if !mapped {
+					return newAPIError(http.StatusBadRequest, "unknown reason %q", reason)
+				}
+				sl.SetDisconnectReason(reason)
+				go func() {
+					if err := sl.Reject(context.Background(), code, phrase); err != nil {
+						s.Log.Warn("reject error", "leg_id", sl.ID(), "error", err)
+					}
+					s.cleanupLeg(sl)
+					s.publishDisconnect(sl, reason)
+				}()
+				return nil
+			}
+		}
 	}
-	s.cleanupLeg(l)
-	s.publishDisconnect(l, "api_hangup")
+
+	go func() {
+		if err := l.Hangup(context.Background()); err != nil {
+			s.Log.Warn("hangup error", "leg_id", l.ID(), "error", err)
+		}
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "api_hangup")
+	}()
 	return nil
 }
 
 func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doDeleteLeg(id); err != nil {
+	var req DeleteLegRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+	}
+	if err := s.doDeleteLeg(id, req.Reason); err != nil {
 		handleAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "hung_up"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "hanging_up"})
 }
 
 func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
@@ -776,14 +864,19 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		return
 	}
 
-	// Send provisional responses
+	// 100 Trying is always sent so the UAC can stop INVITE retransmissions.
 	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("failed to send 100 Trying", "error", err)
 		return
 	}
-	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
-		s.Log.Error("failed to send 180 Ringing", "error", err)
-		return
+	// 180 Ringing is opt-in via SIP_AUTO_RINGING; otherwise the API caller
+	// drives ringing explicitly via POST /v1/legs/{id}/ring (or skips straight
+	// to /early-media or /answer).
+	if s.Config.SIPAutoRinging {
+		if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
+			s.Log.Error("failed to send 180 Ringing", "error", err)
+			return
+		}
 	}
 
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
@@ -877,9 +970,15 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		return
 
 	case <-call.Dialog.Context().Done():
-		// Caller hung up before answer
+		// Caller hung up before answer.
 	}
 
+	// Skip publishing if the API already drove the disconnect (its goroutine
+	// owns the disconnect event in that case, including any user-supplied
+	// reason). Mirrors the guard on the post-answer disconnect path below.
+	if l.State() == leg.StateHungUp {
+		return
+	}
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "caller_cancel")
 }

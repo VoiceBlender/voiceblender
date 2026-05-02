@@ -218,41 +218,74 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "DELETE", Path: "/legs/{id}", OperationID: "deleteLeg",
-			Summary: "Hang up a leg",
-			Tags:    []string{"Legs"},
+			Summary: "Hang up a leg (asynchronous)",
+			Description: "Validates the leg exists and queues a hangup. The HTTP call returns 202 as soon as the leg is " +
+				"found; the SIP work and cleanup run in the background, and the eventual disconnection is observed via " +
+				"the `leg.disconnected` event.\n\n" +
+				"Without a request body the legacy behavior is preserved: SIP BYE on connected legs (`cdr.reason: " +
+				"\"api_hangup\"`), or dialog cancel on unanswered inbound legs (`cdr.reason: \"caller_cancel\"`).\n\n" +
+				"With `{\"reason\": \"<value>\"}` and an unanswered SIP inbound leg (state `ringing` or `early_media`), " +
+				"VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→" +
+				"603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is " +
+				"passed through to `leg.disconnected`'s `cdr.reason`.\n\n" +
+				"For connected legs the request body is ignored.",
+			Tags:         []string{"Legs"},
+			RequestType:  DeleteLegRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Leg hung up"},
+				202: {Description: "Hangup queued"},
+				400: {Description: "Unknown reason value"},
 				404: {Description: "Leg not found"},
 			},
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/answer", OperationID: "answerLeg",
-			Summary:      "Answer a ringing or early-media inbound SIP leg",
+			Summary: "Answer a ringing or early-media inbound SIP leg (asynchronous)",
+			Description: "Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; " +
+				"the actual SIP 200 OK is sent in the background, and the leg's transition is observed via " +
+				"`leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously.",
 			Tags:         []string{"Legs"},
 			RequestType:  AnswerLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Answer initiated"},
+				202: {Description: "Answer queued"},
 				400: {Description: "Not a SIP inbound leg, invalid body, or codec not in offer"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing or early_media state"},
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/ring", OperationID: "ringLeg",
+			Summary: "Send 180 Ringing on a ringing inbound SIP leg (asynchronous)",
+			Description: "Queues a SIP 180 Ringing provisional response with no SDP. " +
+				"Use when `SIP_AUTO_RINGING=false` (the default) and you want to indicate " +
+				"alerting before deciding to early-media or answer. Idempotent: each call " +
+				"emits another 180 — receivers tolerate re-sends. The HTTP call returns 202 " +
+				"as soon as the request is validated; SIP-level send failures surface as " +
+				"`leg.command_failed` with `command=\"ring\"`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "180 Ringing queued"},
+				400: {Description: "Not a SIP inbound leg"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg is not in ringing state"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/early-media", OperationID: "earlyMediaLeg",
-			Summary: "Enable early media on a ringing inbound SIP leg",
-			Description: "Sends SIP 183 Session Progress with SDP and sets up the media pipeline. " +
-				"The leg transitions to `early_media` state, allowing audio playback and " +
-				"room participation before the call is answered.",
+			Summary: "Enable early media on a ringing inbound SIP leg (asynchronous)",
+			Description: "Queues a SIP 183 Session Progress with SDP and the RTP/codec setup. The HTTP call returns 202 " +
+				"as soon as the request is validated; the leg transitions to `early_media` state asynchronously, " +
+				"observable via `leg.early_media`. Setup failures surface as `leg.command_failed` with " +
+				"`command=\"early_media\"`.",
 			Tags:         []string{"Legs"},
 			RequestType:  EarlyMediaLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Early media enabled"},
+				202: {Description: "Early media queued"},
 				400: {Description: "Not a SIP inbound leg or codec not in offer"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing state"},
-				500: {Description: "Media setup failed"},
 			},
 		},
 		{
@@ -277,27 +310,30 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/legs/{id}/hold", OperationID: "holdLeg",
-			Summary: "Put a SIP call on hold",
-			Description: "Sends a re-INVITE with `sendonly` SDP direction. The RTP timeout is " +
-				"paused while held, and a 2-hour auto-hangup timer starts.",
+			Summary: "Put a SIP call on hold (asynchronous)",
+			Description: "Queues a re-INVITE with `sendonly` SDP direction. The HTTP call returns 202 as soon as the " +
+				"leg is validated; the re-INVITE is sent in the background and success surfaces as `leg.hold`. " +
+				"Failures surface as `leg.command_failed` with `command=\"hold\"`. The RTP timeout is paused while " +
+				"held, and a 2-hour auto-hangup timer starts.",
 			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Call held"},
+				202: {Description: "Hold queued"},
 				400: {Description: "Not a SIP leg"},
 				404: {Description: "Leg not found"},
-				409: {Description: "Leg is not in connected state, or already held"},
+				409: {Description: "Hold not supported for this leg type (e.g. WhatsApp)"},
 			},
 		},
 		{
 			Method: "DELETE", Path: "/legs/{id}/hold", OperationID: "unholdLeg",
-			Summary:     "Resume a held SIP call",
-			Description: "Sends a re-INVITE with `sendrecv` SDP direction.",
-			Tags:        []string{"Legs"},
+			Summary: "Resume a held SIP call (asynchronous)",
+			Description: "Queues a re-INVITE with `sendrecv` SDP direction. The HTTP call returns 202; success surfaces " +
+				"as `leg.unhold`, failures as `leg.command_failed` with `command=\"unhold\"`.",
+			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Call resumed"},
+				202: {Description: "Unhold queued"},
 				400: {Description: "Not a SIP leg"},
 				404: {Description: "Leg not found"},
-				409: {Description: "Leg is not held"},
+				409: {Description: "Hold not supported for this leg type (e.g. WhatsApp)"},
 			},
 		},
 		{
@@ -626,7 +662,10 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Add a leg to a room (auto-creates room if it doesn't exist). " +
 				"If the leg is already in a different room, it is atomically moved " +
 				"to the target room. A ringing inbound SIP leg is automatically " +
-				"answered before being added.",
+				"answered before being added — in this case the response status is " +
+				"`adding` and the actual room join happens asynchronously, observable " +
+				"via `leg.joined_room`. Auto-answer failures surface as " +
+				"`leg.command_failed` with `command=\"add_to_room\"`.",
 			Tags:        []string{"Rooms"},
 			RequestType: AddLegRequest{},
 			Responses: map[int]ResponseMeta{

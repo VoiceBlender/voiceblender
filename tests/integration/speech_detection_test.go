@@ -67,7 +67,7 @@ func TestSpeechDetection_PerCallOutboundOverride(t *testing.T) {
 	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -103,7 +103,7 @@ func TestSpeechDetection_PerCallAnswerOverride(t *testing.T) {
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), map[string]interface{}{
 		"speech_detection": false,
 	})
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()

@@ -40,7 +40,7 @@ func TestTransfer_Blind_Outbound(t *testing.T) {
 
 	// B should auto-dial C; answer the inbound on C as soon as it arrives.
 	inboundOnC := waitForInboundLeg(t, instC.baseURL(), 5*time.Second)
-	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instC.baseURL(), inboundOnC.ID), nil); r.StatusCode != http.StatusOK {
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instC.baseURL(), inboundOnC.ID), nil); r.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer on C: %d", r.StatusCode)
 	}
 
