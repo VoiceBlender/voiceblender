@@ -1,0 +1,77 @@
+x-voiceblender-build: &vb-build
+  build: .
+  restart: unless-stopped
+  env_file: voiceblender.env
+
+services:
+  dialer:
+    <<: *vb-build
+    container_name: dialer
+    hostname: dialer
+    environment:
+      SIP_BIND_IP: "0.0.0.0"
+      SIP_PORT: "5060"
+      SIP_HOST: "dialer"
+      HTTP_ADDR: ":8080"
+      RTP_PORT_MIN: "10000"
+      RTP_PORT_MAX: "11000"
+      INSTANCE_ID: "dialer"
+    ports:
+      - "8080:8080"
+    volumes:
+      - dialer_recordings:/tmp/recordings
+      - dialer_tts_cache:/tmp/tts_cache
+    networks:
+      - voiceblender
+
+  sbc:
+    <<: *vb-build
+    container_name: sbc
+    hostname: sbc
+    environment:
+      SIP_BIND_IP: "0.0.0.0"
+      SIP_PORT: "5060"
+      SIP_HOST: "sbc"
+      HTTP_ADDR: ":8080"
+      RTP_PORT_MIN: "11001"
+      RTP_PORT_MAX: "12000"
+      INSTANCE_ID: "sbc"
+    ports:
+      - "8081:8080"
+    volumes:
+      - sbc_recordings:/tmp/recordings
+      - sbc_tts_cache:/tmp/tts_cache
+    networks:
+      - voiceblender
+
+  pstn:
+    <<: *vb-build
+    container_name: pstn
+    hostname: pstn
+    environment:
+      SIP_BIND_IP: "0.0.0.0"
+      SIP_PORT: "5060"
+      SIP_HOST: "pstn"
+      HTTP_ADDR: ":8080"
+      RTP_PORT_MIN: "12001"
+      RTP_PORT_MAX: "13000"
+      INSTANCE_ID: "pstn"
+    ports:
+      - "8082:8080"
+    volumes:
+      - pstn_recordings:/tmp/recordings
+      - pstn_tts_cache:/tmp/tts_cache
+    networks:
+      - voiceblender
+
+networks:
+  voiceblender:
+    driver: bridge
+
+volumes:
+  dialer_recordings:
+  dialer_tts_cache:
+  sbc_recordings:
+  sbc_tts_cache:
+  pstn_recordings:
+  pstn_tts_cache:
