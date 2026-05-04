@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	pb "github.com/VoiceBlender/voiceblender/internal/agent/pipecatpb"
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"google.golang.org/protobuf/proto"
@@ -226,12 +227,17 @@ func (p *PipecatSession) recvLoop(ctx context.Context, conn net.Conn, writer io.
 		State:  ws.StateClientSide,
 	}
 
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

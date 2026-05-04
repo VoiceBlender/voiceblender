@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,12 +13,13 @@ import (
 
 // apiMockLeg implements leg.Leg for addLegToRoom tests.
 type apiMockLeg struct {
-	id         string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	roomID     string
-	createdAt  time.Time
+	id             string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	roomID         string
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func (m *apiMockLeg) ID() string                             { return m.id }
@@ -48,6 +50,7 @@ func (m *apiMockLeg) CreatedAt() time.Time                   { return m.createdA
 func (m *apiMockLeg) AnsweredAt() time.Time                  { return time.Time{} }
 func (m *apiMockLeg) SIPHeaders() map[string]string          { return nil }
 func (m *apiMockLeg) RTPStats() leg.RTPStats                 { return leg.RTPStats{} }
+func (m *apiMockLeg) ClaimDisconnect() bool                  { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func TestAddLegToRoom_InitialMuteDeaf(t *testing.T) {
 	s := newTestServer(t)

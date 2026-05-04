@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -285,12 +286,17 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 		},
 	}
 
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

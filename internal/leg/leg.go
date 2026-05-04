@@ -83,6 +83,12 @@ type Leg interface {
 	AnsweredAt() time.Time
 	SIPHeaders() map[string]string
 	RTPStats() RTPStats
+
+	// ClaimDisconnect returns true exactly once per leg. Termination paths
+	// (API hangup, remote BYE, RTP timeout, session expiry, etc.) call this
+	// before publishing leg.disconnected so concurrent paths cannot emit
+	// duplicate events.
+	ClaimDisconnect() bool
 }
 
 type Manager struct {
@@ -109,10 +115,21 @@ func (m *Manager) Get(id string) (Leg, bool) {
 	return l, ok
 }
 
-func (m *Manager) Remove(id string) {
+// Remove deletes the leg from the manager and returns it together with a
+// boolean indicating whether this call performed the removal. The boolean is
+// the single-flight signal: termination paths use it to ensure only one of
+// several racing callers (API DELETE × N, remote BYE, RTP timeout, session
+// expiry) actually drives leg shutdown. Callers that get false should treat
+// the leg as already being torn down by someone else.
+func (m *Manager) Remove(id string) (Leg, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	l, ok := m.legs[id]
+	if !ok {
+		return nil, false
+	}
 	delete(m.legs, id)
+	return l, true
 }
 
 func (m *Manager) List() []Leg {

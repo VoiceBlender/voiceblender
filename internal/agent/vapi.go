@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -313,12 +314,17 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 		State:  ws.StateClientSide,
 	}
 
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

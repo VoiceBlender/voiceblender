@@ -2223,6 +2223,9 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `invite_failed` | INVITE failed for a non-SIP reason (transport error, DNS failure, etc.) |
 | `connect_failed` | Call answered but media/codec negotiation failed |
 | `ice_failure` | WebRTC ICE connection failed |
+| `room_deleted` | Leg was in a room that was deleted via `DELETE /v1/rooms/{id}` |
+| `transfer_completed` | Leg ended because a transfer it initiated reached terminal 2xx |
+| `rejected` | Inbound leg rejected by API via `DELETE /v1/legs/{id}` with `reason` (also see other reason values from the rejection mapping table) |
 
 ---
 

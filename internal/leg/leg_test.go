@@ -3,21 +3,23 @@ package leg
 import (
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // mockLeg implements the Leg interface for testing the Manager.
 type mockLeg struct {
-	id         string
-	legType    LegType
-	state      LegState
-	roomID     string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	held       bool
-	createdAt  time.Time
+	id             string
+	legType        LegType
+	state          LegState
+	roomID         string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	held           bool
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -57,6 +59,7 @@ func (m *mockLeg) CreatedAt() time.Time                         { return m.creat
 func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
 func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
 func (m *mockLeg) RTPStats() RTPStats                           { return RTPStats{} }
+func (m *mockLeg) ClaimDisconnect() bool                        { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func TestNewManager(t *testing.T) {
 	mgr := NewManager()

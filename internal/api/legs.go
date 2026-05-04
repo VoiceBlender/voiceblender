@@ -65,8 +65,14 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 }
 
 // publishDisconnect publishes the leg.disconnected event and then clears the
-// per-leg webhook. The clear MUST happen after publish so the event has a route.
+// per-leg webhook. The clear MUST happen after publish so the event has a
+// route. Gated by leg.ClaimDisconnect so racing termination paths (DELETE,
+// remote BYE, RTP timeout, session expiry, etc.) cannot publish duplicate
+// events for the same leg — only the first caller wins.
 func (s *Server) publishDisconnect(l leg.Leg, reason string) {
+	if !l.ClaimDisconnect() {
+		return
+	}
 	s.Bus.Publish(events.LegDisconnected, disconnectData(l, reason))
 	s.Webhooks.ClearLegWebhook(l.ID())
 }
@@ -575,24 +581,47 @@ func rejectionMapping(reason string) (code int, phrase string, ok bool) {
 }
 
 func (s *Server) doDeleteLeg(id string, reason string) error {
-	l, ok := s.LegMgr.Get(id)
+	// Validate reason early so a malformed request never claims the leg.
+	var (
+		rejectCode   int
+		rejectPhrase string
+		canReject    bool
+	)
+	if reason != "" {
+		c, p, mapped := rejectionMapping(reason)
+		if !mapped {
+			// Only fail-fast on unknown reason if we still have a SIP inbound
+			// leg in a rejectable state — otherwise the reason would be
+			// ignored anyway, and we want to keep DELETE permissive.
+			if l, ok := s.LegMgr.Get(id); ok {
+				if sl, isSIP := l.(*leg.SIPLeg); isSIP {
+					st := sl.State()
+					if st == leg.StateRinging || st == leg.StateEarlyMedia {
+						return newAPIError(http.StatusBadRequest, "unknown reason %q", reason)
+					}
+				}
+			}
+		} else {
+			rejectCode, rejectPhrase, canReject = c, p, true
+		}
+	}
+
+	// Atomically claim the leg. If another DELETE (or any termination path)
+	// already removed it, return 404 — there is no leg left to operate on,
+	// and we must not spawn a second BYE/Reject.
+	l, ok := s.LegMgr.Remove(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 
-	// reason is honored only for unanswered SIP inbound legs. For any other
-	// state, fall through to the legacy hangup path so behavior is preserved.
-	if reason != "" {
+	// Reject path: only honored for unanswered SIP inbound legs.
+	if canReject {
 		if sl, isSIP := l.(*leg.SIPLeg); isSIP {
 			st := sl.State()
 			if st == leg.StateRinging || st == leg.StateEarlyMedia {
-				code, phrase, mapped := rejectionMapping(reason)
-				if !mapped {
-					return newAPIError(http.StatusBadRequest, "unknown reason %q", reason)
-				}
 				sl.SetDisconnectReason(reason)
 				go func() {
-					if err := sl.Reject(context.Background(), code, phrase); err != nil {
+					if err := sl.Reject(context.Background(), rejectCode, rejectPhrase); err != nil {
 						s.Log.Warn("reject error", "leg_id", sl.ID(), "error", err)
 					}
 					s.cleanupLeg(sl)

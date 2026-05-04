@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -255,12 +256,24 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 		},
 	}
 
+	// Cancel-watcher: when ctx fires, push the read deadline to the past so
+	// any in-flight NextFrame returns immediately. Without this, a wedged
+	// upstream WebSocket pins the goroutine until the kernel TCP timer
+	// triggers — minutes to never.
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		// Idle deadline so a silent peer can't pin us beyond the timeout
+		// even when ctx is alive. The watcher above handles ctx cancel; this
+		// handles "no traffic, no cancel either".
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

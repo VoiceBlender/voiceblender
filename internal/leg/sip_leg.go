@@ -89,6 +89,14 @@ type SIPLeg struct {
 	preferredCodec   codec.CodecType   // optional codec hint set via SignalAnswer; CodecUnknown = no preference
 	disconnectReason string            // optional override for leg.disconnected reason; set by Reject() before dialog cancel
 
+	// Idempotency gates. Termination methods (Hangup, Reject) and the
+	// disconnect-event publisher all run from racing goroutines (API DELETE,
+	// remote BYE, RTP timeout, etc.); these flags ensure each side-effect
+	// happens exactly once per leg.
+	byeOnce        sync.Once
+	rejectOnce     sync.Once
+	disconnectDone atomic.Bool
+
 	engine          *sipmod.Engine    // for sending re-INVITEs
 	localIP         string            // for SDP answer generation
 	supportedCodecs []codec.CodecType // from engine config
@@ -461,15 +469,19 @@ func (l *SIPLeg) Reject(ctx context.Context, statusCode int, reasonPhrase string
 	if st != StateRinging && st != StateEarlyMedia {
 		return fmt.Errorf("leg is %s, expected ringing or early_media", st)
 	}
-	l.setState(StateHungUp)
-	if err := l.inbound.Dialog.Respond(
-		statusCode, reasonPhrase, nil,
-		l.engine.ServerHeader(),
-	); err != nil {
-		return fmt.Errorf("respond %d: %w", statusCode, err)
-	}
-	l.cancel()
-	return nil
+	var respErr error
+	l.rejectOnce.Do(func() {
+		l.setState(StateHungUp)
+		if err := l.inbound.Dialog.Respond(
+			statusCode, reasonPhrase, nil,
+			l.engine.ServerHeader(),
+		); err != nil {
+			respErr = fmt.Errorf("respond %d: %w", statusCode, err)
+			return
+		}
+		l.cancel()
+	})
+	return respErr
 }
 
 // SetDisconnectReason stores a reason that will be used in the next
@@ -1081,6 +1093,11 @@ func (l *SIPLeg) writeLoop() {
 	}
 }
 
+// Hangup transitions the leg to StateHungUp and (exactly once) sends a BYE
+// on the underlying SIP dialog. State transition, context cancel, RTP-session
+// close, and timer cleanup happen on every call (idempotent operations); the
+// SIP BYE is gated by sync.Once so concurrent termination paths cannot emit
+// duplicate BYEs.
 func (l *SIPLeg) Hangup(ctx context.Context) error {
 	l.setState(StateHungUp)
 	// Cancel up front so downstream goroutines unblock without waiting on BYE.
@@ -1099,16 +1116,25 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 	}
 
 	// BYE is fire-and-forget so a non-responsive peer can't stall callers.
-	go func(inbound *sipmod.InboundCall, outbound *sipmod.OutboundCall) {
-		byeCtx, byeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer byeCancel()
-		if inbound != nil {
-			inbound.Dialog.Bye(byeCtx)
-		} else if outbound != nil {
-			outbound.Dialog.Bye(byeCtx)
-		}
-	}(l.inbound, l.outbound)
+	l.byeOnce.Do(func() {
+		go func(inbound *sipmod.InboundCall, outbound *sipmod.OutboundCall) {
+			byeCtx, byeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer byeCancel()
+			if inbound != nil {
+				inbound.Dialog.Bye(byeCtx)
+			} else if outbound != nil {
+				outbound.Dialog.Bye(byeCtx)
+			}
+		}(l.inbound, l.outbound)
+	})
 	return nil
+}
+
+// ClaimDisconnect returns true on the first caller and false on every
+// subsequent caller. Termination paths use this gate so only one publishes
+// leg.disconnected, even when DELETE racing with remote BYE or RTP timeout.
+func (l *SIPLeg) ClaimDisconnect() bool {
+	return l.disconnectDone.CompareAndSwap(false, true)
 }
 
 // sipReader reads PCM frames from the inFrames channel.

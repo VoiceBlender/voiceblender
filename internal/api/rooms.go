@@ -74,10 +74,27 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doDeleteRoom(id string) error {
+	// Snapshot participants before tearing the room down so we can publish
+	// leg.disconnected per leg afterwards. RoomMgr.Delete hangs the legs up
+	// (sends BYE) but does not surface them as disconnect events on its own.
+	var participants []leg.Leg
+	if rm, ok := s.RoomMgr.Get(id); ok {
+		participants = rm.Participants()
+	}
+
 	s.cleanupRoomAgent(id)
 	s.Webhooks.ClearRoomWebhook(id)
 	if err := s.RoomMgr.Delete(id); err != nil {
 		return newAPIError(http.StatusNotFound, "%s", err.Error())
+	}
+
+	// RoomMgr.Delete already called Hangup on each leg. Run the standard
+	// cleanup + disconnect-publish for each former participant. The
+	// ClaimDisconnect gate in publishDisconnect deduplicates against any
+	// concurrent termination path (e.g. a racing DELETE /legs/{id}).
+	for _, l := range participants {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "room_deleted")
 	}
 	return nil
 }

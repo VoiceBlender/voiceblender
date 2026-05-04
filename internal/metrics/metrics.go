@@ -85,7 +85,10 @@ func New(bus *events.Bus) *Collector {
 	}
 
 	reg.MustRegister(
-		// Standard Go runtime and process metrics.
+		// Standard Go runtime and process metrics. NewGoCollector exposes
+		// `go_goroutines` (live goroutine count) which is the canonical
+		// signal for goroutine-leak regressions — alert on persistent
+		// growth after sessions end. No need for a separate gauge.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		// VoiceBlender metrics.

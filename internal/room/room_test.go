@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,14 +14,15 @@ import (
 
 // mockLeg implements leg.Leg for testing Room and Manager.
 type mockLeg struct {
-	id         string
-	legType    leg.LegType
-	state      leg.LegState
-	roomID     string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	createdAt  time.Time
+	id             string
+	legType        leg.LegType
+	state          leg.LegState
+	roomID         string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -60,6 +62,7 @@ func (m *mockLeg) CreatedAt() time.Time                         { return m.creat
 func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
 func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
 func (m *mockLeg) RTPStats() leg.RTPStats                       { return leg.RTPStats{} }
+func (m *mockLeg) ClaimDisconnect() bool                        { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func newTestBus() *events.Bus  { return events.NewBus("test") }
 func newTestLog() *slog.Logger { return slog.Default() }

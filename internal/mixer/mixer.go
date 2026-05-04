@@ -318,6 +318,13 @@ func (m *Mixer) RemoveParticipant(id string) {
 		if p.guard != nil {
 			p.guard.Close() // prevent any further writes to the network
 		}
+		// Closing p.done alone does not unblock readLoop when it is parked
+		// inside p.Reader.Read (the select runs only between iterations).
+		// If the reader implements io.Closer, close it so the in-flight
+		// Read returns and readLoop observes p.done on the next iteration.
+		if rc, ok := p.Reader.(io.Closer); ok {
+			_ = rc.Close()
+		}
 		close(p.done) // signal readLoop/writeLoop to stop
 	}
 	m.mu.Unlock()

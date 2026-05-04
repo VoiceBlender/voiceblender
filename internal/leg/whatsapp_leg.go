@@ -59,6 +59,15 @@ type WhatsAppLeg struct {
 
 	onDTMF func(digit rune)
 	log    *slog.Logger
+
+	disconnectDone atomic.Bool
+}
+
+// ClaimDisconnect returns true on the first caller and false on every
+// subsequent caller. Termination paths use this gate so only one publishes
+// leg.disconnected.
+func (l *WhatsAppLeg) ClaimDisconnect() bool {
+	return l.disconnectDone.CompareAndSwap(false, true)
 }
 
 func (l *WhatsAppLeg) SetSIPController(c WhatsAppSIPController) { l.sipCtrl = c }

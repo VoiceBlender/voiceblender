@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/google/uuid"
@@ -190,12 +191,17 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 		},
 	}
 
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

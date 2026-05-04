@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -52,6 +54,8 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	connectedAt := time.Now()
 
 	var dropped atomic.Int64
 	ch := make(chan events.Event, vsiBufSize)
@@ -135,14 +139,25 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Recv loop with typed dispatch.
-	s.vsiRecvLoop(conn, lw, &closed)
+	// Recv loop with typed dispatch. Returns when the client sends a "stop"
+	// command, the WebSocket frame parse fails, or the read deadline
+	// elapses (zombie connection / network partition).
+	reason := s.vsiRecvLoop(conn, lw, &closed)
 
 	close(done)
-	s.Log.Info("vsi client disconnected")
+	s.Log.Info("session closed",
+		"kind", "vsi",
+		"reason", reason,
+		"duration_ms", time.Since(connectedAt).Milliseconds(),
+	)
 }
 
-func (s *Server) vsiRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed *atomic.Bool) {
+// vsiRecvLoop reads frames from the VSI client and dispatches commands.
+// Returns a short string describing why the loop exited, suitable for the
+// "reason" field of the structured shutdown log: "stop" (client sent stop
+// command), "read_timeout" (idle deadline elapsed — zombie connection),
+// "peer_close" (clean WS close), or "error" (other read/parse error).
+func (s *Server) vsiRecvLoop(conn net.Conn, lw *wsLockedWriter, closed *atomic.Bool) string {
 	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
 	rd := &wsutil.Reader{
 		Source: conn,
@@ -153,21 +168,26 @@ func (s *Server) vsiRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed *ato
 	}
 
 	for {
+		// Refresh deadline before each blocking read. Without this, a
+		// half-open client TCP wedges this goroutine and (via the close-on-
+		// return cleanup) every other goroutine pinned to the connection.
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+
 		hdr, err := rd.NextFrame()
 		if err != nil {
-			return
+			return classifyReadError(err)
 		}
 
 		if hdr.OpCode.IsControl() {
 			if err := controlHandler(hdr, rd); err != nil {
-				return
+				return classifyReadError(err)
 			}
 			continue
 		}
 
 		payload, err := io.ReadAll(rd)
 		if err != nil {
-			return
+			return classifyReadError(err)
 		}
 
 		if hdr.OpCode != ws.OpText {
@@ -186,11 +206,35 @@ func (s *Server) vsiRecvLoop(conn io.ReadWriter, lw *wsLockedWriter, closed *ato
 			continue
 		case "stop":
 			closed.Store(true)
-			return
+			return "stop"
 		default:
 			s.wsHandleCommand(lw, msg)
 		}
 	}
+}
+
+// classifyReadError maps a recv-loop read error to a short reason label.
+// Used by structured shutdown logs so operators can distinguish clean
+// disconnects from idle-timeout (zombie connection) closures.
+func classifyReadError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return "read_timeout"
+	}
+	if err == io.EOF || errIsClosedConn(err) {
+		return "peer_close"
+	}
+	return "error"
+}
+
+func errIsClosedConn(err error) bool {
+	// net.ErrClosed exposes via "use of closed network connection"; EOF on
+	// a half-closed conn is similar. Match on substring to avoid an extra
+	// import.
+	return err != nil && (err.Error() == "use of closed network connection" ||
+		err.Error() == "EOF")
 }
 
 func (s *Server) vsiSendResponse(lw *wsLockedWriter, requestID, typ string, data interface{}) {

@@ -4,6 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+#RUN CGO_ENABLED=0 go build -tags pprof -o /voiceblender ./cmd/voiceblender
 RUN CGO_ENABLED=0 go build -o /voiceblender ./cmd/voiceblender
 
 FROM alpine:3.21

@@ -9,13 +9,14 @@ import (
 	"net"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
 const (
-	deepgramWSURL  = "wss://api.deepgram.com/v1/listen"
-	dgFrameBytes   = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	deepgramWSURL = "wss://api.deepgram.com/v1/listen"
+	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
 // DeepgramTranscriber streams audio to Deepgram real-time STT over WebSocket.
@@ -156,7 +157,7 @@ type dgResult struct {
 			Transcript string `json:"transcript"`
 		} `json:"alternatives"`
 	} `json:"channel"`
-	IsFinal   bool `json:"is_final"`
+	IsFinal     bool `json:"is_final"`
 	SpeechFinal bool `json:"speech_final"`
 }
 
@@ -176,12 +177,17 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		},
 	}
 
+	stopWatch := wsutilx.WatchCancel(ctx, conn)
+	defer stopWatch()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

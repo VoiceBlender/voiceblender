@@ -30,6 +30,15 @@ type WebRTCLeg struct {
 
 	onDTMF func(digit rune)
 	log    *slog.Logger
+
+	disconnectDone atomic.Bool
+}
+
+// ClaimDisconnect returns true on the first caller and false on every
+// subsequent caller. Termination paths use this gate so only one publishes
+// leg.disconnected.
+func (l *WebRTCLeg) ClaimDisconnect() bool {
+	return l.disconnectDone.CompareAndSwap(false, true)
 }
 
 // NewWebRTCLeg wraps a PCMedia and starts its outbound write loop.
