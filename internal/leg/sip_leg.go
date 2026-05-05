@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -774,6 +775,16 @@ func (l *SIPLeg) popLoop() {
 // readLoop reads RTP packets from the UDP socket, decodes audio, and pushes
 // native-rate PCM frames into inFrames.
 func (l *SIPLeg) readLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			l.log.Error("readLoop panic, hanging up leg",
+				"leg_id", l.id,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			_ = l.Hangup(context.Background())
+		}
+	}()
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -976,6 +987,21 @@ func (l *SIPLeg) RTPStats() RTPStats {
 
 // writeLoop sends RTP packets on a 20ms ticker.
 func (l *SIPLeg) writeLoop() {
+	// Defense in depth against panics deep in the audio pipeline (third-party
+	// codec libraries, pion, etc.). Without this, one bad frame on one leg
+	// kills the whole instance. Recover, log with stack, and hang up just
+	// this leg cleanly via the normal teardown path.
+	defer func() {
+		if r := recover(); r != nil {
+			l.log.Error("writeLoop panic, hanging up leg",
+				"leg_id", l.id,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			_ = l.Hangup(context.Background())
+		}
+	}()
+
 	const (
 		ptime            = 20 * time.Millisecond
 		telephoneEventPT = uint8(101)

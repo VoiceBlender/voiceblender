@@ -154,8 +154,8 @@ github.com/rogpeppe/go-internal v1.13.1 h1:KvO1DLK/DRN07sQ1LQKScxyZJuNnedQ5/wKSR
 github.com/rogpeppe/go-internal v1.13.1/go.mod h1:uMEvuHeurkdAXX61udpOXGD/AzZDWNMNyH2VO9fmH0o=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/thesyncim/gopus v0.0.0-20260412203938-9030a4886313 h1:Y8ABfrym9aiMmw3n7ZCFCswupWPZO4stcjCCXeM/LwU=
-github.com/thesyncim/gopus v0.0.0-20260412203938-9030a4886313/go.mod h1:1S9YXgyoUhzXcJHIU06SF0cg2HV/z0eCPBxtmyqITBQ=
+github.com/thesyncim/gopus v0.0.0-20260503150644-7eb668a5cc59 h1:lGawMcSidv5v+bb9vNzVtuI05kfb59E7eIJNgt6Xpxc=
+github.com/thesyncim/gopus v0.0.0-20260503150644-7eb668a5cc59/go.mod h1:1S9YXgyoUhzXcJHIU06SF0cg2HV/z0eCPBxtmyqITBQ=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
 github.com/wlynxg/anet v0.0.5/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=
 github.com/zaf/g711 v1.4.0 h1:XZYkjjiAg9QTBnHqEg37m2I9q3IIDv5JRYXs2N8ma7c=

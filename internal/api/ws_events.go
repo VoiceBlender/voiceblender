@@ -73,7 +73,12 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	connectedAt := time.Now()
 
 	var dropped atomic.Int64
+	// Fall back to the documented default when the config value is unset
+	// (zero) — typically only happens in tests that build a Config{} directly.
 	bufSize := s.Config.VSIEventBufferSize
+	if bufSize <= 0 {
+		bufSize = 256
+	}
 	ch := make(chan events.Event, bufSize)
 	unsub := s.Bus.Subscribe(func(e events.Event) {
 		if appFilter != nil && !appFilter.MatchString(e.Data.GetAppID()) {
@@ -105,7 +110,15 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Log.Info("vsi client connected")
+	appFilterStr := ""
+	if appFilter != nil {
+		appFilterStr = appFilter.String()
+	}
+	s.Log.Info("vsi client connected",
+		"remote_addr", r.RemoteAddr,
+		"app_filter", appFilterStr,
+		"buffer_size", bufSize,
+	)
 
 	var closed atomic.Bool
 	done := make(chan struct{})
@@ -171,8 +184,8 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	reason := s.vsiRecvLoop(conn, lw, &closed)
 
 	close(done)
-	s.Log.Info("session closed",
-		"kind", "vsi",
+	s.Log.Info("vsi client disconnected",
+		"remote_addr", r.RemoteAddr,
 		"reason", reason,
 		"duration_ms", time.Since(connectedAt).Milliseconds(),
 	)

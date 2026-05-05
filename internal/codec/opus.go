@@ -3,6 +3,7 @@ package codec
 import (
 	"encoding/binary"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/thesyncim/gopus"
 )
@@ -30,12 +31,25 @@ func NewOpusEncoder() (*OpusEncoder, error) {
 }
 
 // Encode encodes 48kHz int16 PCM samples to an Opus packet.
-func (e *OpusEncoder) Encode(samples []int16) ([]byte, error) {
+//
+// The third-party gopus library has had recurring index-out-of-range panics
+// in CELT's pulse-vector quantizer (cwrs.go / bands_quant.go) for certain
+// (n, k) combinations its fast-path bounds checks miss. We catch those here
+// and convert them to errors so a single bad frame fails the leg cleanly
+// (via writeLoop's existing error handling) rather than crashing the
+// process.
+func (e *OpusEncoder) Encode(samples []int16) (out []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("opus encoder panic: %v\n%s", r, debug.Stack())
+			out = nil
+		}
+	}()
 	n, err := e.enc.EncodeInt16(samples, e.buf)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, n)
+	out = make([]byte, n)
 	copy(out, e.buf[:n])
 	return out, nil
 }
@@ -64,8 +78,18 @@ func NewOpusDecoder() (*OpusDecoder, error) {
 	}, nil
 }
 
-// Decode decodes an Opus packet to 48kHz int16 PCM samples.
-func (d *OpusDecoder) Decode(data []byte) ([]int16, error) {
+// Decode decodes an Opus packet to 48kHz int16 PCM samples. Mirrors Encode's
+// panic-recover policy: a malformed packet that trips a gopus internal panic
+// becomes an error so the calling readLoop can drop the frame instead of
+// taking down the process.
+func (d *OpusDecoder) Decode(data []byte) (out []int16, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("opus decoder panic: %v\n%s", r, debug.Stack())
+			out = nil
+		}
+	}()
+
 	// A 1-byte Opus packet (TOC only, frame code 0, 0 bytes of frame data)
 	// is a valid DTX silence indicator per RFC 6716 §3.2.1. The gopus
 	// decoder doesn't handle 0-byte CELT frames, so output silence directly.
@@ -82,7 +106,7 @@ func (d *OpusDecoder) Decode(data []byte) ([]int16, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]int16, n)
+	out = make([]int16, n)
 	copy(out, d.pcmBuf[:n])
 	return out, nil
 }
