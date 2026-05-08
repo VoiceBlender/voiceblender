@@ -51,19 +51,24 @@ func (e *Encoder) Flush(ts uint32) (payload []byte, useRED bool) {
 	primaryData := e.pending
 	e.pending = nil
 
-	// Plain T.140 mode (no redundancy configured) or first-ever packet
-	// (no history to attach yet) — emit a bare T.140 payload.
-	if e.redundancy == 0 || len(e.history) == 0 {
+	// Plain T.140 mode (no redundancy configured) — emit a bare payload.
+	if e.redundancy == 0 {
 		if len(primaryData) == 0 {
 			return nil, false
 		}
 		out := make([]byte, len(primaryData))
 		copy(out, primaryData)
-		e.pushHistory(chunk{ts: ts, data: primaryData})
 		return out, false
 	}
 
-	// RED-wrapped payload: redundant headers, primary header, then bodies.
+	if len(primaryData) == 0 && len(e.history) == 0 {
+		return nil, false
+	}
+
+	// RFC 4103 §4.3 / RFC 2198: every RED packet is wrapped, even the first
+	// one (which carries no redundant blocks). Strict receivers filter on
+	// the negotiated PT — sending the first packet under the bare t140 PT
+	// causes them to drop it.
 	headerLen := 4*len(e.history) + 1
 	totalDataLen := len(primaryData)
 	for _, c := range e.history {

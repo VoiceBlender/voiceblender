@@ -26,15 +26,22 @@ func TestEncoderEmptyFlushNoRed(t *testing.T) {
 	}
 }
 
-func TestEncoderFirstPacketNoHistory(t *testing.T) {
+func TestEncoderFirstPacketRedWrappedNoRedundancy(t *testing.T) {
 	enc := NewEncoder(2, DefaultT140PT)
 	enc.Push("a")
 	pl, useRED := enc.Flush(1000)
-	if useRED {
-		t.Fatalf("first packet with empty history must be plain T.140")
+	if !useRED {
+		t.Fatalf("first packet with redundancy>0 must be RED-wrapped (RFC 4103 §4.3)")
 	}
-	if !bytes.Equal(pl, []byte("a")) {
-		t.Fatalf("expected 'a', got %q", pl)
+	// Layout: primary header (1B, F=0|PT) followed by primary body.
+	if len(pl) != 2 {
+		t.Fatalf("expected 2-byte payload, got %d", len(pl))
+	}
+	if pl[0] != DefaultT140PT&0x7F {
+		t.Fatalf("primary header: got 0x%02X want 0x%02X", pl[0], DefaultT140PT&0x7F)
+	}
+	if pl[1] != 'a' {
+		t.Fatalf("primary body: got %q want 'a'", pl[1:])
 	}
 }
 
@@ -119,7 +126,7 @@ func TestEncoderLossRecoveredByRED(t *testing.T) {
 
 	enc.Push("A")
 	pl1, _ := enc.Flush(1000)
-	if got, _, _ := dec.DecodePacket(1, 1000, 99, 99, 98, pl1); got != "A" {
+	if got, _, _ := dec.DecodePacket(1, 1000, 98, 99, 98, pl1); got != "A" {
 		t.Fatalf("seq1: got %q want A", got)
 	}
 
@@ -184,7 +191,7 @@ func TestEncoderDedupOutOfOrder(t *testing.T) {
 		t.Fatalf("packet 2: got %q want AB", got)
 	}
 	// Packet 1 arrives late: data should already have been emitted via RED.
-	if got, _, _ := dec.DecodePacket(1, 1000, 99, 99, 98, pl1); got != "" {
+	if got, _, _ := dec.DecodePacket(1, 1000, 98, 99, 98, pl1); got != "" {
 		t.Fatalf("late packet 1: got %q want empty (already emitted)", got)
 	}
 }

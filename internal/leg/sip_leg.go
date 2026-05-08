@@ -1784,10 +1784,14 @@ func (l *SIPLeg) setupTextMedia() {
 	l.mu.RLock()
 	rs := l.textRtpSess
 	t140PT := l.textT140PT
+	redPT := l.textREDPT
 	redundancy := l.rttRedundancy
 	l.mu.RUnlock()
 	if rs == nil {
 		return
+	}
+	if redPT == 0 {
+		redundancy = 0
 	}
 	l.textEncoder = t140.NewEncoder(redundancy, t140PT)
 	l.textDecoder = t140.NewDecoder()
@@ -1921,7 +1925,9 @@ func (l *SIPLeg) textWriteLoop() {
 	t140PT := l.textT140PT
 	redPT := l.textREDPT
 	ssrc := rand.Uint32()
-	var seqNum uint16
+	seqNum := uint16(rand.Uint32()) // RFC 3550: random initial sequence number.
+	tsBase := rand.Uint32()         // RFC 3550: random initial timestamp.
+	firstPacket := true
 	startNs := time.Now().UnixNano()
 
 	ticker := time.NewTicker(time.Duration(bufferMs) * time.Millisecond)
@@ -1941,8 +1947,8 @@ func (l *SIPLeg) textWriteLoop() {
 		if !enc.HasPending() {
 			return
 		}
-		// 1 kHz clock — milliseconds since loop start.
-		ts := uint32((time.Now().UnixNano() - startNs) / int64(time.Millisecond))
+		// 1 kHz clock — milliseconds since loop start, offset by random base.
+		ts := tsBase + uint32((time.Now().UnixNano()-startNs)/int64(time.Millisecond))
 		payload, useRED := enc.Flush(ts)
 		if payload == nil {
 			return
@@ -1958,7 +1964,7 @@ func (l *SIPLeg) textWriteLoop() {
 				SequenceNumber: seqNum,
 				Timestamp:      ts,
 				SSRC:           ssrc,
-				Marker:         seqNum == 0, // RFC 4103 §4.2: marker bit on first packet.
+				Marker:         firstPacket, // RFC 4103 §4.2: marker bit on first packet.
 			},
 			Payload: payload,
 		}
@@ -1967,6 +1973,7 @@ func (l *SIPLeg) textWriteLoop() {
 			return
 		}
 		seqNum++
+		firstPacket = false
 	}
 
 	for {
