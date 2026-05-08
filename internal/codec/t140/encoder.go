@@ -65,18 +65,29 @@ func (e *Encoder) Flush(ts uint32) (payload []byte, useRED bool) {
 		return nil, false
 	}
 
-	// RFC 4103 §4.3 / RFC 2198: every RED packet is wrapped, even the first
-	// one (which carries no redundant blocks). Strict receivers filter on
-	// the negotiated PT — sending the first packet under the bare t140 PT
-	// causes them to drop it.
-	headerLen := 4*len(e.history) + 1
+	// Always emit exactly `e.redundancy` redundant block headers per packet
+	// (RFC 4103 §4.3 / RFC 2198). When history is shallower than the
+	// configured depth, leading slots are filled with length-0 placeholder
+	// blocks. Some peers (notably JMF-based stacks like Omnitor TIPcon1)
+	// fall back to "treat as plain T.140" when the redundancy structure
+	// doesn't match the depth they negotiated, which surfaces our 1-byte
+	// primary header as a literal character at the start of the message.
+	emptySlots := e.redundancy - len(e.history)
+	headerLen := 4*e.redundancy + 1
 	totalDataLen := len(primaryData)
 	for _, c := range e.history {
 		totalDataLen += len(c.data)
 	}
 	out := make([]byte, 0, headerLen+totalDataLen)
 
-	for _, c := range e.history {
+	for i := 0; i < e.redundancy; i++ {
+		if i < emptySlots {
+			// Length-0 placeholder; offset doesn't matter for an empty body.
+			out = append(out, 0x80|(e.t140PT&0x7F))
+			out = append(out, 0x00, 0x00, 0x00)
+			continue
+		}
+		c := e.history[i-emptySlots]
 		offset := ts - c.ts
 		if offset > 0x3FFF {
 			offset = 0x3FFF
@@ -85,19 +96,18 @@ func (e *Encoder) Flush(ts uint32) (payload []byte, useRED bool) {
 		if blen > 0x3FF {
 			blen = 0x3FF
 		}
-		// F=1 + 7-bit PT
 		out = append(out, 0x80|(e.t140PT&0x7F))
-		// 14-bit ts offset followed by 10-bit block length, packed across
-		// the next three bytes.
 		out = append(out, byte(offset>>6))
 		out = append(out, byte((offset&0x3F)<<2)|byte(blen>>8))
 		out = append(out, byte(blen&0xFF))
 	}
-	// F=0 + 7-bit PT (primary header).
 	out = append(out, e.t140PT&0x7F)
 
-	for _, c := range e.history {
-		out = append(out, c.data...)
+	for i := 0; i < e.redundancy; i++ {
+		if i < emptySlots {
+			continue
+		}
+		out = append(out, e.history[i-emptySlots].data...)
 	}
 	out = append(out, primaryData...)
 

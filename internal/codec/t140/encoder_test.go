@@ -33,44 +33,60 @@ func TestEncoderFirstPacketRedWrappedNoRedundancy(t *testing.T) {
 	if !useRED {
 		t.Fatalf("first packet with redundancy>0 must be RED-wrapped (RFC 4103 §4.3)")
 	}
-	// Layout: primary header (1B, F=0|PT) followed by primary body.
-	if len(pl) != 2 {
-		t.Fatalf("expected 2-byte payload, got %d", len(pl))
+	// Layout: 2 length-0 placeholder headers (4B each) + primary header
+	// (1B) + primary body. Strict receivers require exactly redundancy
+	// headers per packet; pad with empty placeholders when history is
+	// shallower than configured.
+	if len(pl) != 2*4+1+1 {
+		t.Fatalf("expected %d-byte payload, got %d", 2*4+1+1, len(pl))
 	}
-	if pl[0] != DefaultT140PT&0x7F {
-		t.Fatalf("primary header: got 0x%02X want 0x%02X", pl[0], DefaultT140PT&0x7F)
+	for i := 0; i < 2; i++ {
+		off := i * 4
+		if pl[off] != 0x80|(DefaultT140PT&0x7F) {
+			t.Fatalf("placeholder %d header byte 0: got 0x%02X want 0x%02X", i, pl[off], 0x80|(DefaultT140PT&0x7F))
+		}
+		if pl[off+1] != 0 || pl[off+2] != 0 || pl[off+3] != 0 {
+			t.Fatalf("placeholder %d offset+length: got %v want zeros", i, pl[off+1:off+4])
+		}
 	}
-	if pl[1] != 'a' {
-		t.Fatalf("primary body: got %q want 'a'", pl[1:])
+	if pl[8] != DefaultT140PT&0x7F {
+		t.Fatalf("primary header: got 0x%02X want 0x%02X", pl[8], DefaultT140PT&0x7F)
+	}
+	if pl[9] != 'a' {
+		t.Fatalf("primary body: got %q want 'a'", pl[9:])
 	}
 }
 
 func TestEncoderRedundancyHeaders(t *testing.T) {
 	enc := NewEncoder(2, 99)
-	// First packet: plain T.140 (no history).
+	// First packet: RED-wrapped with 2 length-0 placeholders.
 	enc.Push("A")
 	enc.Flush(1000)
-	// Second packet: should carry one redundant block (first chunk).
+	// Second packet: 1 length-0 placeholder + 1 actual redundant block.
 	enc.Push("B")
 	pl, useRED := enc.Flush(1300)
 	if !useRED {
 		t.Fatalf("second packet with history must be RED")
 	}
-	// Layout: 1 redundant header (4B) + 1 primary header (1B) + bodies.
-	if len(pl) < 5 {
+	// Layout: 2 redundant headers (8B) + 1 primary header (1B) + bodies.
+	if len(pl) < 9 {
 		t.Fatalf("RED payload too short: %d bytes", len(pl))
 	}
-	// First header: F=1, PT=99 → 0x80 | 0x63 = 0xE3
-	if pl[0] != 0xE3 {
-		t.Fatalf("redundant header byte 0: got 0x%02X, want 0xE3", pl[0])
+	// Placeholder header at offset 0: F=1, PT=99 → 0xE3, then 0,0,0.
+	if pl[0] != 0xE3 || pl[1] != 0 || pl[2] != 0 || pl[3] != 0 {
+		t.Fatalf("placeholder header: got %v, want [0xE3 0 0 0]", pl[:4])
 	}
-	// Primary header at offset 4: F=0, PT=99
-	if pl[4] != 0x63 {
-		t.Fatalf("primary header: got 0x%02X, want 0x63", pl[4])
+	// Real redundant header at offset 4: F=1, PT=99 → 0xE3, non-zero len.
+	if pl[4] != 0xE3 {
+		t.Fatalf("redundant header byte 0: got 0x%02X, want 0xE3", pl[4])
+	}
+	// Primary header at offset 8: F=0, PT=99
+	if pl[8] != 0x63 {
+		t.Fatalf("primary header: got 0x%02X, want 0x63", pl[8])
 	}
 	// Bodies: redundant 'A' then primary 'B'.
-	if !bytes.Equal(pl[5:], []byte("AB")) {
-		t.Fatalf("bodies: got %q, want %q", pl[5:], "AB")
+	if !bytes.Equal(pl[9:], []byte("AB")) {
+		t.Fatalf("bodies: got %q, want %q", pl[9:], "AB")
 	}
 }
 

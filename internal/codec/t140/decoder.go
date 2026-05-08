@@ -61,14 +61,17 @@ func (d *Decoder) DecodePacket(seq uint16, ts uint32, packetPT, t140PT, redPT ui
 	var buf []byte
 	emitted := 0
 	for _, b := range blocks {
+		if len(b.data) == 0 {
+			// Length-0 placeholder block (RFC 2198): skip without
+			// touching the ts dedup set so it can't shadow a real
+			// primary block sharing the same timestamp.
+			continue
+		}
 		if _, ok := d.seenTS[b.ts]; ok {
 			continue
 		}
 		d.markSeen(b.ts)
 		emitted++
-		if len(b.data) == 0 {
-			continue
-		}
 		buf = append(buf, b.data...)
 	}
 
