@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,14 +14,15 @@ import (
 
 // mockLeg implements leg.Leg for testing Room and Manager.
 type mockLeg struct {
-	id         string
-	legType    leg.LegType
-	state      leg.LegState
-	roomID     string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	createdAt  time.Time
+	id             string
+	legType        leg.LegType
+	state          leg.LegState
+	roomID         string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -53,6 +55,11 @@ func (m *mockLeg) IsDeaf() bool                                 { return m.deaf 
 func (m *mockLeg) SetDeaf(v bool)                               { m.deaf = v }
 func (m *mockLeg) AcceptDTMF() bool                             { return m.acceptDTMF }
 func (m *mockLeg) SetAcceptDTMF(v bool)                         { m.acceptDTMF = v }
+func (m *mockLeg) OnTextReceived(func(string, bool))            {}
+func (m *mockLeg) SendText(context.Context, string) error       { return leg.ErrRTTNotNegotiated }
+func (m *mockLeg) AcceptText() bool                             { return false }
+func (m *mockLeg) SetAcceptText(bool)                           {}
+func (m *mockLeg) RTTNegotiated() bool                          { return false }
 func (m *mockLeg) SetSpeakingTap(w io.Writer)                   {}
 func (m *mockLeg) ClearSpeakingTap()                            {}
 func (m *mockLeg) IsHeld() bool                                 { return false }
@@ -60,6 +67,7 @@ func (m *mockLeg) CreatedAt() time.Time                         { return m.creat
 func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
 func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
 func (m *mockLeg) RTPStats() leg.RTPStats                       { return leg.RTPStats{} }
+func (m *mockLeg) ClaimDisconnect() bool                        { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func newTestBus() *events.Bus  { return events.NewBus("test") }
 func newTestLog() *slog.Logger { return slog.Default() }

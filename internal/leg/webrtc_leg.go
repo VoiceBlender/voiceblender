@@ -30,6 +30,15 @@ type WebRTCLeg struct {
 
 	onDTMF func(digit rune)
 	log    *slog.Logger
+
+	disconnectDone atomic.Bool
+}
+
+// ClaimDisconnect returns true on the first caller and false on every
+// subsequent caller. Termination paths use this gate so only one publishes
+// leg.disconnected.
+func (l *WebRTCLeg) ClaimDisconnect() bool {
+	return l.disconnectDone.CompareAndSwap(false, true)
 }
 
 // NewWebRTCLeg wraps a PCMedia and starts its outbound write loop.
@@ -120,6 +129,14 @@ func (l *WebRTCLeg) OnDTMF(f func(digit rune)) {
 func (l *WebRTCLeg) SendDTMF(_ context.Context, _ string) error {
 	return fmt.Errorf("DTMF send over WebRTC not yet implemented")
 }
+
+func (l *WebRTCLeg) OnTextReceived(_ func(text string, lossMarker bool)) {}
+
+func (l *WebRTCLeg) SendText(_ context.Context, _ string) error { return ErrRTTNotNegotiated }
+
+func (l *WebRTCLeg) AcceptText() bool     { return false }
+func (l *WebRTCLeg) SetAcceptText(_ bool) {}
+func (l *WebRTCLeg) RTTNegotiated() bool  { return false }
 
 // AddICECandidate adds a remote ICE candidate.
 func (l *WebRTCLeg) AddICECandidate(c webrtc.ICECandidateInit) error {

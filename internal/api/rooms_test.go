@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,12 +13,13 @@ import (
 
 // apiMockLeg implements leg.Leg for addLegToRoom tests.
 type apiMockLeg struct {
-	id         string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	roomID     string
-	createdAt  time.Time
+	id             string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	roomID         string
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func (m *apiMockLeg) ID() string                             { return m.id }
@@ -41,6 +43,11 @@ func (m *apiMockLeg) IsDeaf() bool                           { return m.deaf }
 func (m *apiMockLeg) SetDeaf(v bool)                         { m.deaf = v }
 func (m *apiMockLeg) AcceptDTMF() bool                       { return m.acceptDTMF }
 func (m *apiMockLeg) SetAcceptDTMF(v bool)                   { m.acceptDTMF = v }
+func (m *apiMockLeg) OnTextReceived(func(string, bool))      {}
+func (m *apiMockLeg) SendText(context.Context, string) error { return leg.ErrRTTNotNegotiated }
+func (m *apiMockLeg) AcceptText() bool                       { return false }
+func (m *apiMockLeg) SetAcceptText(bool)                     {}
+func (m *apiMockLeg) RTTNegotiated() bool                    { return false }
 func (m *apiMockLeg) SetSpeakingTap(io.Writer)               {}
 func (m *apiMockLeg) ClearSpeakingTap()                      {}
 func (m *apiMockLeg) IsHeld() bool                           { return false }
@@ -48,6 +55,7 @@ func (m *apiMockLeg) CreatedAt() time.Time                   { return m.createdA
 func (m *apiMockLeg) AnsweredAt() time.Time                  { return time.Time{} }
 func (m *apiMockLeg) SIPHeaders() map[string]string          { return nil }
 func (m *apiMockLeg) RTPStats() leg.RTPStats                 { return leg.RTPStats{} }
+func (m *apiMockLeg) ClaimDisconnect() bool                  { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func TestAddLegToRoom_InitialMuteDeaf(t *testing.T) {
 	s := newTestServer(t)

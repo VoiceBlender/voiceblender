@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // idPayload is the common payload shape for commands targeting a single resource.
@@ -20,6 +22,19 @@ type roomLegPayload struct {
 type dtmfPayload struct {
 	ID     string `json:"id"`
 	Digits string `json:"digits"`
+}
+
+// rttPayload carries text for send_leg_rtt.
+type rttPayload struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// vsiWebRTCAddCandidatePayload combines a leg id with an ICE candidate for
+// webrtc_add_candidate.
+type vsiWebRTCAddCandidatePayload struct {
+	ID        string                  `json:"id"`
+	Candidate webrtc.ICECandidateInit `json:"candidate"`
 }
 
 // addLegPayload combines room_id with AddLegRequest fields.
@@ -67,26 +82,30 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		var p struct {
 			ID              string `json:"id"`
 			SpeechDetection *bool  `json:"speech_detection,omitempty"`
+			Codec           string `json:"codec,omitempty"`
 		}
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "answering"})
 
 	case "delete_leg":
-		var p idPayload
+		var p struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason,omitempty"`
+		}
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doDeleteLeg(p.ID); err != nil {
+		if err := s.doDeleteLeg(p.ID, p.Reason); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "deleted"})
+		s.wsCommandResult(lw, msg, map[string]string{"status": "hanging_up"})
 
 	// ── Leg state toggles ───────────────────────────────────────────
 	case "mute_leg":
@@ -102,21 +121,33 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doHoldLeg(context.Background(), p.ID); err != nil {
+		sipLeg, err := s.resolveHoldLeg(p.ID)
+		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "held"})
+		go func() {
+			if err := sipLeg.Hold(context.Background()); err != nil {
+				s.publishCommandFailed(sipLeg, "hold", err)
+			}
+		}()
+		s.wsCommandResult(lw, msg, map[string]string{"status": "holding"})
 	case "unhold_leg":
 		var p idPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doUnholdLeg(context.Background(), p.ID); err != nil {
+		sipLeg, err := s.resolveHoldLeg(p.ID)
+		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		s.wsCommandResult(lw, msg, map[string]string{"status": "resumed"})
+		go func() {
+			if err := sipLeg.Unhold(context.Background()); err != nil {
+				s.publishCommandFailed(sipLeg, "unhold", err)
+			}
+		}()
+		s.wsCommandResult(lw, msg, map[string]string{"status": "unholding"})
 
 	// ── DTMF ────────────────────────────────────────────────────────
 	case "send_leg_dtmf":
@@ -133,6 +164,58 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsSimpleLegCommand(lw, msg, s.doAcceptLegDTMF, "dtmf_accepting")
 	case "reject_leg_dtmf":
 		s.wsSimpleLegCommand(lw, msg, s.doRejectLegDTMF, "dtmf_rejecting")
+
+	// ── RTT (Real-Time Text, T.140) ─────────────────────────────────
+	case "send_leg_rtt":
+		var p rttPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doSendLegRTT(context.Background(), "vsi", p.ID, p.Text); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "sent"})
+	case "accept_leg_rtt":
+		s.wsSimpleLegCommand(lw, msg, s.doAcceptLegRTT, "rtt_accepting")
+	case "reject_leg_rtt":
+		s.wsSimpleLegCommand(lw, msg, s.doRejectLegRTT, "rtt_rejecting")
+
+	// ── WebRTC ──────────────────────────────────────────────────────
+	case "webrtc_offer":
+		var req WebRTCOfferRequest
+		if !s.wsParsePayload(lw, msg, &req) {
+			return
+		}
+		result, err := s.doWebRTCOffer(req)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, result)
+
+	case "webrtc_add_candidate":
+		var p vsiWebRTCAddCandidatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doWebRTCAddCandidate(p.ID, p.Candidate); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "added"})
+
+	case "webrtc_get_candidates":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		result, err := s.doWebRTCGetCandidates(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, result)
 
 	// ── Room queries ────────────────────────────────────────────────
 	case "list_rooms":

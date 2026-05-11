@@ -1,4 +1,4 @@
-.PHONY: build run openapi clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -11,7 +11,10 @@ build:
 run: build
 	env $$(cat $(ENV_FILE) | grep -v '^\s*\#' | xargs) ./$(BINARY)
 
-openapi:
+# Regenerates both openapi.yaml and asyncapi.yaml via the go:generate
+# directives in internal/api/server.go. Run after any change to the API
+# routes, request/response types, VSI command registry, or event types.
+openapi asyncapi specs:
 	go generate ./internal/api/
 
 test:

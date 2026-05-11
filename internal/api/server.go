@@ -1,4 +1,5 @@
 //go:generate go run ../../cmd/openapi-gen
+//go:generate go run ../../cmd/asyncapi-gen
 
 package api
 
@@ -109,6 +110,7 @@ func (s *Server) routes() {
 		r.Get("/legs/{id}", s.getLeg)
 		r.Post("/legs/{id}/answer", s.answerLeg)
 		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)
+		r.Post("/legs/{id}/ring", s.ringLeg)
 		r.Post("/legs/{id}/mute", s.muteLeg)
 		r.Delete("/legs/{id}/mute", s.unmuteLeg)
 		r.Post("/legs/{id}/deaf", s.deafLeg)
@@ -120,6 +122,9 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/dtmf", s.sendDTMF)
 		r.Post("/legs/{id}/dtmf/accept", s.acceptDTMFLeg)
 		r.Post("/legs/{id}/dtmf/reject", s.rejectDTMFLeg)
+		r.Post("/legs/{id}/rtt", s.sendRTT)
+		r.Post("/legs/{id}/rtt/accept", s.acceptRTTLeg)
+		r.Post("/legs/{id}/rtt/reject", s.rejectRTTLeg)
 		r.Post("/legs/{id}/play", s.playLeg)
 		r.Delete("/legs/{id}/play/{playbackID}", s.stopPlayLeg)
 		r.Patch("/legs/{id}/play/{playbackID}", s.volumePlayLeg)

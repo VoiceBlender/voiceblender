@@ -3,21 +3,23 @@ package leg
 import (
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // mockLeg implements the Leg interface for testing the Manager.
 type mockLeg struct {
-	id         string
-	legType    LegType
-	state      LegState
-	roomID     string
-	muted      bool
-	deaf       bool
-	acceptDTMF bool
-	held       bool
-	createdAt  time.Time
+	id             string
+	legType        LegType
+	state          LegState
+	roomID         string
+	muted          bool
+	deaf           bool
+	acceptDTMF     bool
+	held           bool
+	createdAt      time.Time
+	disconnectDone atomic.Bool
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -50,6 +52,11 @@ func (m *mockLeg) IsDeaf() bool                                 { return m.deaf 
 func (m *mockLeg) SetDeaf(v bool)                               { m.deaf = v }
 func (m *mockLeg) AcceptDTMF() bool                             { return m.acceptDTMF }
 func (m *mockLeg) SetAcceptDTMF(v bool)                         { m.acceptDTMF = v }
+func (m *mockLeg) OnTextReceived(func(string, bool))            {}
+func (m *mockLeg) SendText(context.Context, string) error       { return ErrRTTNotNegotiated }
+func (m *mockLeg) AcceptText() bool                             { return false }
+func (m *mockLeg) SetAcceptText(bool)                           {}
+func (m *mockLeg) RTTNegotiated() bool                          { return false }
 func (m *mockLeg) SetSpeakingTap(w io.Writer)                   {}
 func (m *mockLeg) ClearSpeakingTap()                            {}
 func (m *mockLeg) IsHeld() bool                                 { return m.held }
@@ -57,6 +64,7 @@ func (m *mockLeg) CreatedAt() time.Time                         { return m.creat
 func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
 func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
 func (m *mockLeg) RTPStats() RTPStats                           { return RTPStats{} }
+func (m *mockLeg) ClaimDisconnect() bool                        { return m.disconnectDone.CompareAndSwap(false, true) }
 
 func TestNewManager(t *testing.T) {
 	mgr := NewManager()

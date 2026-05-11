@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/go-chi/chi/v5"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -81,6 +82,7 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Log.Info("ws participant connected", "room_id", roomID, "participant_id", participantID)
+	connectedAt := time.Now()
 
 	var closed atomic.Bool
 
@@ -124,9 +126,15 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Recv loop: read from WebSocket → decode JSON → base64 decode → write to speakBuf.
-	s.wsRecvLoop(conn, lw, speakBuf, &closed)
+	reason := s.wsRecvLoop(conn, lw, speakBuf, &closed)
 
-	s.Log.Info("ws participant disconnected", "room_id", roomID, "participant_id", participantID)
+	s.Log.Info("session closed",
+		"kind", "ws_room",
+		"room_id", roomID,
+		"participant_id", participantID,
+		"reason", reason,
+		"duration_ms", time.Since(connectedAt).Milliseconds(),
+	)
 	s.wsCleanup(rm, participantID, speakBuf, listenPW)
 }
 
@@ -135,7 +143,7 @@ type wsAudioMsg struct {
 	Type  string `json:"type,omitempty"`
 }
 
-func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamBuffer, closed *atomic.Bool) {
+func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamBuffer, closed *atomic.Bool) string {
 	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
 	rd := &wsutil.Reader{
 		Source: conn,
@@ -146,21 +154,26 @@ func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamB
 	}
 
 	for {
+		// Bound idle reads so a half-open client TCP can't pin this
+		// goroutine — and indirectly the participant's mixer slot, send
+		// loop, and ping loop — indefinitely.
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+
 		hdr, err := rd.NextFrame()
 		if err != nil {
-			return
+			return classifyReadError(err)
 		}
 
 		if hdr.OpCode.IsControl() {
 			if err := controlHandler(hdr, rd); err != nil {
-				return
+				return classifyReadError(err)
 			}
 			continue
 		}
 
 		payload, err := io.ReadAll(rd)
 		if err != nil {
-			return
+			return classifyReadError(err)
 		}
 
 		if hdr.OpCode != ws.OpText {
@@ -173,7 +186,8 @@ func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamB
 		}
 
 		if msg.Type == "stop" {
-			return
+			closed.Store(true)
+			return "stop"
 		}
 
 		if msg.Type == "pong" {

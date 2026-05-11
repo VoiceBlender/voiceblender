@@ -45,6 +45,9 @@ type Config struct {
 	SIPJitterBufferMs      int
 	SIPJitterBufferMaxMs   int
 	SIPReferAutoDial       bool
+	SIPAutoRinging         bool
+	SIPUseSourceSocket     bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
+	VSIEventBufferSize     int
 	DefaultSampleRate      int
 	SpeechDetectionEnabled bool
 }
@@ -57,9 +60,9 @@ func Load() Config {
 	return Config{
 		InstanceID:             envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:              envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),     // empty = no IPv6 advertised
-		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),     // empty = same as SIP_BIND_IP
-		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"),   // empty = same as SIP_BIND_IPV6
+		SIPBindIPV6:            os.Getenv("SIP_BIND_IPV6"),   // empty = no IPv6 advertised
+		SIPListenIP:            os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
+		SIPListenIPV6:          os.Getenv("SIP_LISTEN_IPV6"), // empty = same as SIP_BIND_IPV6
 		SIPExternalIP:          os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
 		SIPPort:                envOr("SIP_PORT", "5060"),
 		SIPTLSPort:             os.Getenv("SIP_TLS_PORT"),
@@ -91,9 +94,31 @@ func Load() Config {
 		SIPJitterBufferMs:      envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:   envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 		SIPReferAutoDial:       os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
+		SIPAutoRinging:         os.Getenv("SIP_AUTO_RINGING") == "true",
+		SIPUseSourceSocket:     os.Getenv("SIP_USE_SOURCE_SOCKET") == "true",
+		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
 		DefaultSampleRate:      defaultRate,
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 	}
+}
+
+// vsiBufferSize clamps the VSI per-client event buffer to a sane range.
+// Below 16 the channel can't absorb even a small burst (one inbound call
+// produces ~10 events). The upper bound exists only to guard against
+// pathological config — at 1M slots the per-client memory footprint reaches
+// roughly 100 MB at typical event sizes.
+func vsiBufferSize(n int) int {
+	const (
+		minSize = 16
+		maxSize = 1_000_000
+	)
+	if n < minSize {
+		return minSize
+	}
+	if n > maxSize {
+		return maxSize
+	}
+	return n
 }
 
 func envInt(key string, def int) int {

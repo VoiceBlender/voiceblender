@@ -101,13 +101,14 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	roomMgr := room.NewManager(legMgr, bus, log)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:     "127.0.0.1",
-		ListenIP:   "127.0.0.1",
-		ExternalIP: cfg.SIPExternalIP,
-		BindPort:   sipPort,
-		SIPHost:    name,
-		Codecs:     codecs,
-		Log:        log,
+		BindIP:          "127.0.0.1",
+		ListenIP:        "127.0.0.1",
+		ExternalIP:      cfg.SIPExternalIP,
+		BindPort:        sipPort,
+		SIPHost:         name,
+		Codecs:          codecs,
+		Log:             log,
+		UseSourceSocket: cfg.SIPUseSourceSocket,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)
@@ -283,6 +284,24 @@ func httpDelete(t *testing.T, url string) *http.Response {
 	return resp
 }
 
+func httpDeleteWithBody(t *testing.T, url string, body interface{}) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new DELETE request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", url, err)
+	}
+	return resp
+}
+
 func decodeJSON(t *testing.T, resp *http.Response, v interface{}) {
 	t.Helper()
 	defer resp.Body.Close()
@@ -418,7 +437,7 @@ func establishCall(t *testing.T, instA, instB *testInstance) (outboundID, inboun
 	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -456,7 +475,7 @@ func TestOutboundInbound_Connect(t *testing.T) {
 
 	// B answers.
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer leg: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -480,7 +499,7 @@ func TestOutboundInbound_Connect(t *testing.T) {
 
 	// A hangs up.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -504,7 +523,7 @@ func TestDisconnect_DurationFields(t *testing.T) {
 
 	// A hangs up.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -608,7 +627,7 @@ func TestOutboundInbound_CallerCancel(t *testing.T) {
 
 	// A cancels (hangs up before B answers).
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -638,7 +657,7 @@ func TestOutboundInbound_RoomBridge(t *testing.T) {
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -1024,7 +1043,7 @@ func TestRecording_StopsOnDisconnect(t *testing.T) {
 
 	// Hangup the leg — recording should auto-stop via cleanupLeg.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -1256,15 +1275,15 @@ func TestHold_LocalHoldUnhold(t *testing.T) {
 	instB := newTestInstance(t, "instance-b")
 	outboundID, _ := establishCall(t, instA, instB)
 
-	// Hold the leg.
+	// Hold the leg (async — 202 Accepted; success surfaces as leg.hold).
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
 	}
 	var holdResult map[string]string
 	decodeJSON(t, holdResp, &holdResult)
-	if holdResult["status"] != "held" {
-		t.Fatalf("expected status 'held', got %q", holdResult["status"])
+	if holdResult["status"] != "holding" {
+		t.Fatalf("expected status 'holding', got %q", holdResult["status"])
 	}
 
 	// Verify leg.hold event.
@@ -1273,25 +1292,23 @@ func TestHold_LocalHoldUnhold(t *testing.T) {
 	}, 3*time.Second)
 
 	// Verify GET shows held=true, state=held.
+	waitForLegState(t, instA.baseURL(), outboundID, "held", 3*time.Second)
 	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 	var gotLeg legView
 	decodeJSON(t, getResp, &gotLeg)
 	if !gotLeg.Held {
 		t.Fatal("expected leg to be held")
 	}
-	if gotLeg.State != "held" {
-		t.Fatalf("expected state 'held', got %q", gotLeg.State)
-	}
 
-	// Unhold the leg.
+	// Unhold the leg (async — 202 Accepted; success surfaces as leg.unhold).
 	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
-	if unholdResp.StatusCode != http.StatusOK {
+	if unholdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
 	}
 	var unholdResult map[string]string
 	decodeJSON(t, unholdResp, &unholdResult)
-	if unholdResult["status"] != "resumed" {
-		t.Fatalf("expected status 'resumed', got %q", unholdResult["status"])
+	if unholdResult["status"] != "unholding" {
+		t.Fatalf("expected status 'unholding', got %q", unholdResult["status"])
 	}
 
 	// Verify leg.unhold event.
@@ -1322,7 +1339,7 @@ func TestHold_DoubleHoldNoop(t *testing.T) {
 
 	// Hold the leg twice.
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
 	}
 	holdResp.Body.Close()
@@ -1330,7 +1347,7 @@ func TestHold_DoubleHoldNoop(t *testing.T) {
 
 	// Second hold should also succeed (no-op).
 	holdResp2 := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
-	if holdResp2.StatusCode != http.StatusOK {
+	if holdResp2.StatusCode != http.StatusAccepted {
 		t.Fatalf("double hold: unexpected status %d", holdResp2.StatusCode)
 	}
 	holdResp2.Body.Close()
@@ -1347,7 +1364,7 @@ func TestHold_UnholdWhenNotHeld(t *testing.T) {
 
 	// Unhold a non-held leg should succeed (no-op).
 	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
-	if unholdResp.StatusCode != http.StatusOK {
+	if unholdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("unhold not-held: unexpected status %d", unholdResp.StatusCode)
 	}
 	unholdResp.Body.Close()
@@ -1408,7 +1425,7 @@ func TestHold_HangupCleansUpHoldTimer(t *testing.T) {
 
 	// Hold the leg.
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
 	}
 	holdResp.Body.Close()
@@ -1416,7 +1433,7 @@ func TestHold_HangupCleansUpHoldTimer(t *testing.T) {
 
 	// Hangup while held.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hangup: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -1437,7 +1454,7 @@ func TestHold_RemoteHoldViaReInvite(t *testing.T) {
 
 	// B holds its inbound leg (simulates remote hold from A's perspective).
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instB.baseURL(), inboundID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("remote hold: unexpected status %d", holdResp.StatusCode)
 	}
 	holdResp.Body.Close()
@@ -1462,7 +1479,7 @@ func TestHold_RemoteHoldViaReInvite(t *testing.T) {
 
 	// B resumes the call.
 	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instB.baseURL(), inboundID))
-	if unholdResp.StatusCode != http.StatusOK {
+	if unholdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("remote unhold: unexpected status %d", unholdResp.StatusCode)
 	}
 	unholdResp.Body.Close()
@@ -1508,7 +1525,7 @@ func TestHold_LegInRoom(t *testing.T) {
 
 	// Hold the leg.
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
 	}
 	holdResp.Body.Close()
@@ -1527,7 +1544,7 @@ func TestHold_LegInRoom(t *testing.T) {
 
 	// Unhold.
 	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
-	if unholdResp.StatusCode != http.StatusOK {
+	if unholdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
 	}
 	unholdResp.Body.Close()
@@ -1567,7 +1584,7 @@ func TestOutboundEarlyMedia_183WithSDP(t *testing.T) {
 
 	// B enables early media → sends 183 Session Progress with SDP.
 	emResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/early-media", instB.baseURL(), inboundLeg.ID), nil)
-	if emResp.StatusCode != http.StatusOK {
+	if emResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("early-media: unexpected status %d", emResp.StatusCode)
 	}
 	emResp.Body.Close()
@@ -1603,7 +1620,7 @@ func TestOutboundEarlyMedia_183WithSDP(t *testing.T) {
 
 	// B answers — A's outbound leg should transition from early_media to connected.
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -1674,7 +1691,7 @@ func TestOutboundEarlyMedia_HangupDuringEarlyMedia(t *testing.T) {
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 
 	emResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/early-media", instB.baseURL(), inboundLeg.ID), nil)
-	if emResp.StatusCode != http.StatusOK {
+	if emResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("early-media: unexpected status %d", emResp.StatusCode)
 	}
 	emResp.Body.Close()
@@ -1684,7 +1701,7 @@ func TestOutboundEarlyMedia_HangupDuringEarlyMedia(t *testing.T) {
 
 	// A hangs up during early media (before answer).
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -1729,7 +1746,7 @@ func TestCreateLeg_RoomID_AutoJoinOnConnect(t *testing.T) {
 	// B answers directly (no early media).
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -1784,7 +1801,7 @@ func TestCreateLeg_RoomID_AutoJoinOnEarlyMedia(t *testing.T) {
 	// B enables early media → leg should auto-join room during early_media.
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	emResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/early-media", instB.baseURL(), inboundLeg.ID), nil)
-	if emResp.StatusCode != http.StatusOK {
+	if emResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("early-media: unexpected status %d", emResp.StatusCode)
 	}
 	emResp.Body.Close()
@@ -1798,7 +1815,7 @@ func TestCreateLeg_RoomID_AutoJoinOnEarlyMedia(t *testing.T) {
 
 	// B answers — leg stays in room, transitions to connected.
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -1857,7 +1874,7 @@ func TestCreateLeg_RoomID_AutoCreateRoom(t *testing.T) {
 	// Answer and verify leg joins the auto-created room.
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -1979,7 +1996,7 @@ func TestSessionTimer_CallConnectsWithHeaders(t *testing.T) {
 	// Wait for inbound on B and answer.
 	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -2035,7 +2052,7 @@ func TestSessionTimer_RefreshReInvite(t *testing.T) {
 
 	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -2045,7 +2062,7 @@ func TestSessionTimer_RefreshReInvite(t *testing.T) {
 
 	// Hold from A → triggers re-INVITE to B, which resets B's session timer.
 	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outbound.ID), nil)
-	if holdResp.StatusCode != http.StatusOK {
+	if holdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("hold: unexpected status %d", holdResp.StatusCode)
 	}
 	holdResp.Body.Close()
@@ -2057,7 +2074,7 @@ func TestSessionTimer_RefreshReInvite(t *testing.T) {
 
 	// Unhold from A.
 	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outbound.ID))
-	if unholdResp.StatusCode != http.StatusOK {
+	if unholdResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("unhold: unexpected status %d", unholdResp.StatusCode)
 	}
 	unholdResp.Body.Close()

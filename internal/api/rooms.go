@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/go-chi/chi/v5"
@@ -71,10 +74,27 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doDeleteRoom(id string) error {
+	// Snapshot participants before tearing the room down so we can publish
+	// leg.disconnected per leg afterwards. RoomMgr.Delete hangs the legs up
+	// (sends BYE) but does not surface them as disconnect events on its own.
+	var participants []leg.Leg
+	if rm, ok := s.RoomMgr.Get(id); ok {
+		participants = rm.Participants()
+	}
+
 	s.cleanupRoomAgent(id)
 	s.Webhooks.ClearRoomWebhook(id)
 	if err := s.RoomMgr.Delete(id); err != nil {
 		return newAPIError(http.StatusNotFound, "%s", err.Error())
+	}
+
+	// RoomMgr.Delete already called Hangup on each leg. Run the standard
+	// cleanup + disconnect-publish for each former participant. The
+	// ClaimDisconnect gate in publishDisconnect deduplicates against any
+	// concurrent termination path (e.g. a racing DELETE /legs/{id}).
+	for _, l := range participants {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "room_deleted")
 	}
 	return nil
 }
@@ -131,12 +151,26 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		}, nil
 	}
 
-	// Auto-answer ringing inbound SIP legs before adding to the room.
+	// Auto-answer ringing inbound SIP legs before adding to the room. Since
+	// the answer must complete before AddLeg accepts the leg, do the wait
+	// on a goroutine so the HTTP handler returns immediately. Failures
+	// surface as leg.command_failed.
 	if sipLeg, ok := l.(*leg.SIPLeg); ok && l.State() == leg.StateRinging && l.Type() == leg.TypeSIPInbound {
-		sipLeg.SignalAnswer()
-		if err := sipLeg.WaitConnected(ctx); err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "auto-answer failed: %v", err)
-		}
+		sipLeg.SignalAnswer(codec.CodecUnknown)
+		go func() {
+			waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := sipLeg.WaitConnected(waitCtx); err != nil {
+				s.publishCommandFailed(sipLeg, "add_to_room", fmt.Errorf("auto-answer failed: %w", err))
+				return
+			}
+			if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
+				s.publishCommandFailed(sipLeg, "add_to_room", err)
+				return
+			}
+			s.onLegJoinedRoom(roomID, req.LegID)
+		}()
+		return map[string]string{"status": "adding"}, nil
 	}
 
 	if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {

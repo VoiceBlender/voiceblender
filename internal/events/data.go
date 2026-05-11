@@ -44,11 +44,21 @@ func (b LegRoomScope) GetAppID() string  { return b.AppID }
 
 type LegRingingData struct {
 	LegScope
-	LegType    string            `json:"leg_type,omitempty"`
-	URI        string            `json:"uri,omitempty"`
-	From       string            `json:"from,omitempty"`
-	To         string            `json:"to,omitempty"`
-	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
+	LegType       string            `json:"leg_type,omitempty"`
+	URI           string            `json:"uri,omitempty"`
+	From          string            `json:"from,omitempty"`
+	To            string            `json:"to,omitempty"`
+	SIPHeaders    map[string]string `json:"sip_headers,omitempty"`
+	OfferedCodecs []OfferedCodec    `json:"offered_codecs,omitempty"`
+}
+
+// OfferedCodec describes one codec from a remote SIP offer SDP.
+// Priority is 1-based and reflects the order the codec appeared in the m= line.
+type OfferedCodec struct {
+	Name        string `json:"name"`
+	PayloadType uint8  `json:"payload_type"`
+	ClockRate   int    `json:"clock_rate"`
+	Priority    int    `json:"priority"`
 }
 
 type LegConnectedData struct {
@@ -85,6 +95,16 @@ type LegHoldData struct {
 type LegUnholdData struct {
 	LegScope
 	LegType string `json:"leg_type"`
+}
+
+// LegCommandFailedData is emitted when an asynchronous leg command (one that
+// runs on a goroutine after the HTTP handler has returned 202) fails. The
+// command field identifies the action that failed, e.g. "hold", "transfer",
+// "ring", "early_media", "hangup".
+type LegCommandFailedData struct {
+	LegScope
+	Command string `json:"command"`
+	Error   string `json:"error"`
 }
 
 // --- Transfer (SIP REFER) ---
@@ -184,6 +204,20 @@ type DTMFReceivedData struct {
 	LegScope
 	Digit string `json:"digit"`
 	Seq   uint64 `json:"seq"`
+}
+
+// --- RTT (Real-Time Text, ITU-T T.140 / RFC 4103) ---
+
+// RTTReceivedData is emitted whenever a SIP leg receives a chunk of T.140
+// text from the remote UA. Text may be an arbitrary UTF-8 string (single
+// character, several characters, or control codes such as backspace).
+// LossMarker is true when a U+FFFD has been prepended to indicate that
+// preceding text was lost beyond what RFC 2198 redundancy could recover.
+type RTTReceivedData struct {
+	LegScope
+	Text       string `json:"text"`
+	Seq        uint64 `json:"seq"`
+	LossMarker bool   `json:"loss_marker,omitempty"`
 }
 
 // --- Playback ---

@@ -40,7 +40,7 @@ func TestAMD_Human(t *testing.T) {
 	// Wait for inbound leg on B and answer.
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -115,7 +115,7 @@ func TestAMD_Machine(t *testing.T) {
 
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -173,7 +173,7 @@ func TestAMD_NoSpeech(t *testing.T) {
 
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()
@@ -253,7 +253,7 @@ func TestAMD_DefaultParams(t *testing.T) {
 
 	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
 	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
-	if answerResp.StatusCode != http.StatusOK {
+	if answerResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
 	}
 	answerResp.Body.Close()

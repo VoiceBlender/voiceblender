@@ -2,6 +2,7 @@ package leg
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"sync"
@@ -65,6 +66,11 @@ type Leg interface {
 	SendDTMF(ctx context.Context, digits string) error
 	AcceptDTMF() bool
 	SetAcceptDTMF(accept bool)
+	OnTextReceived(func(text string, lossMarker bool))
+	SendText(ctx context.Context, text string) error
+	AcceptText() bool
+	SetAcceptText(accept bool)
+	RTTNegotiated() bool
 	Hangup(ctx context.Context) error
 	Answer(ctx context.Context) error
 	Context() context.Context
@@ -83,7 +89,17 @@ type Leg interface {
 	AnsweredAt() time.Time
 	SIPHeaders() map[string]string
 	RTPStats() RTPStats
+
+	// ClaimDisconnect returns true exactly once per leg. Termination paths
+	// (API hangup, remote BYE, RTP timeout, session expiry, etc.) call this
+	// before publishing leg.disconnected so concurrent paths cannot emit
+	// duplicate events.
+	ClaimDisconnect() bool
 }
+
+// ErrRTTNotNegotiated is returned by SendText when RTT was not agreed in the
+// SDP offer/answer exchange (or the leg type does not support RTT).
+var ErrRTTNotNegotiated = errors.New("RTT not negotiated for this leg")
 
 type Manager struct {
 	mu   sync.RWMutex
@@ -109,10 +125,21 @@ func (m *Manager) Get(id string) (Leg, bool) {
 	return l, ok
 }
 
-func (m *Manager) Remove(id string) {
+// Remove deletes the leg from the manager and returns it together with a
+// boolean indicating whether this call performed the removal. The boolean is
+// the single-flight signal: termination paths use it to ensure only one of
+// several racing callers (API DELETE × N, remote BYE, RTP timeout, session
+// expiry) actually drives leg shutdown. Callers that get false should treat
+// the leg as already being torn down by someone else.
+func (m *Manager) Remove(id string) (Leg, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	l, ok := m.legs[id]
+	if !ok {
+		return nil, false
+	}
 	delete(m.legs, id)
+	return l, true
 }
 
 func (m *Manager) List() []Leg {

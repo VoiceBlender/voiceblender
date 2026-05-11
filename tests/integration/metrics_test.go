@@ -249,7 +249,7 @@ func TestMetrics_ActiveLegs(t *testing.T) {
 
 	// Hang up via DELETE on the outbound leg.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()
@@ -292,7 +292,7 @@ func TestMetrics_CallDuration(t *testing.T) {
 
 	// Hang up via DELETE on the outbound leg.
 	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
-	if delResp.StatusCode != http.StatusOK {
+	if delResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
 	}
 	delResp.Body.Close()

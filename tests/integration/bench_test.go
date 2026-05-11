@@ -692,7 +692,7 @@ func doAnswer(baseURL, legID string) error {
 		return err
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("answer status %d", resp.StatusCode)
 	}
 	return nil

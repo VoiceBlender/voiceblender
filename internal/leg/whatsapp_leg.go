@@ -59,6 +59,15 @@ type WhatsAppLeg struct {
 
 	onDTMF func(digit rune)
 	log    *slog.Logger
+
+	disconnectDone atomic.Bool
+}
+
+// ClaimDisconnect returns true on the first caller and false on every
+// subsequent caller. Termination paths use this gate so only one publishes
+// leg.disconnected.
+func (l *WhatsAppLeg) ClaimDisconnect() bool {
+	return l.disconnectDone.CompareAndSwap(false, true)
 }
 
 func (l *WhatsAppLeg) SetSIPController(c WhatsAppSIPController) { l.sipCtrl = c }
@@ -271,6 +280,14 @@ func (l *WhatsAppLeg) OnDTMF(f func(digit rune)) {
 func (l *WhatsAppLeg) SendDTMF(_ context.Context, _ string) error {
 	return fmt.Errorf("DTMF send over WhatsApp not yet implemented")
 }
+
+func (l *WhatsAppLeg) OnTextReceived(_ func(text string, lossMarker bool)) {}
+
+func (l *WhatsAppLeg) SendText(_ context.Context, _ string) error { return ErrRTTNotNegotiated }
+
+func (l *WhatsAppLeg) AcceptText() bool     { return false }
+func (l *WhatsAppLeg) SetAcceptText(_ bool) {}
+func (l *WhatsAppLeg) RTTNegotiated() bool  { return false }
 
 func (l *WhatsAppLeg) AudioReader() io.Reader { return l.media.AudioReader() }
 func (l *WhatsAppLeg) AudioWriter() io.Writer { return l.media.AudioWriter() }
