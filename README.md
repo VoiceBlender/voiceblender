@@ -9,10 +9,11 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
-- **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus via [wa.meta.vc:5061](https://developers.facebook.com/docs/whatsapp/cloud-api/calling/sip/) with HTTP Digest auth; hold/transfer are 409 (Meta disallows re-INVITE)
+- **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus 
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
-- **DTMF** -- send and receive RFC 4733 telephone-events; digits received on a leg are auto-broadcast to other legs in the same room (per-leg `accept_dtmf` opt-out)
+- **DTMF** -- send and receive RFC 4733 telephone-events
+- **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
@@ -117,6 +118,9 @@ POST   /v1/legs/{id}/transfer      # SIP REFER (blind or attended)
 POST   /v1/legs/{id}/dtmf          # Send DTMF digits
 POST   /v1/legs/{id}/dtmf/accept   # Re-enable DTMF reception (default)
 POST   /v1/legs/{id}/dtmf/reject   # Stop receiving DTMF broadcast from peers
+POST   /v1/legs/{id}/rtt           # Send Real-Time Text chunk (T.140 / RFC 4103)
+POST   /v1/legs/{id}/rtt/accept    # Re-enable RTT reception (default)
+POST   /v1/legs/{id}/rtt/reject    # Stop emitting rtt.received events
 POST   /v1/legs/{id}/play          # Play audio or tone
 DELETE /v1/legs/{id}/play/{pbID}   # Stop playback
 POST   /v1/legs/{id}/tts           # Text-to-speech
@@ -168,14 +172,6 @@ GET    /v1/vsi                              # VoiceBlender Streaming Interface (
 POST   /v1/webrtc/offer                    # SDP offer/answer exchange
 POST   /v1/legs/{id}/ice-candidates        # Add trickle ICE candidate
 GET    /v1/legs/{id}/ice-candidates        # Get gathered ICE candidates
-```
-
-### Webhooks
-
-```
-POST   /v1/webhooks                # Register webhook
-GET    /v1/webhooks                # List webhooks
-DELETE /v1/webhooks/{id}           # Unregister webhook
 ```
 
 ## WhatsApp Business Calling
