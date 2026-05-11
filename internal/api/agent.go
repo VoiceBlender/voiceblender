@@ -406,9 +406,9 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 	}
 
 	go func() {
+		defer s.cleanupLegAgent(id)
 		err := session.Start(l.Context(), audioIn, audioOut, apiKey, opts, cb)
 		s.Log.Info("agent session exited", "leg_id", id, "error", err)
-		s.cleanupLegAgent(id)
 	}()
 
 	return &AgentStartLegResult{Status: "agent_started", LegID: id}, nil
@@ -670,6 +670,12 @@ func (s *Server) doStartRoomAgent(roomID, provider, apiKey string, opts agent.Op
 	listenPR, listenPW := createPipe()
 	rm.Mixer().AddParticipant(sourceID, sb, listenPW)
 
+	// Agents negotiate 16 kHz I/O; resample to bridge a non-16 kHz room.
+	// NewResampleReader/Writer are passthroughs when rates match.
+	roomRate := rm.Mixer().SampleRate()
+	listenReader := mixer.NewResampleReader(listenPR, roomRate, mixer.DefaultSampleRate)
+	speakWriter := mixer.NewResampleWriter(sb, mixer.DefaultSampleRate, roomRate)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := newAgentSession(s, provider)
@@ -714,9 +720,9 @@ func (s *Server) doStartRoomAgent(roomID, provider, apiKey string, opts agent.Op
 	}
 
 	go func() {
-		err := session.Start(ctx, listenPR, sb, apiKey, opts, cb)
+		defer s.cleanupRoomAgent(id)
+		err := session.Start(ctx, listenReader, speakWriter, apiKey, opts, cb)
 		s.Log.Info("agent room session exited", "room_id", id, "error", err)
-		s.cleanupRoomAgent(id)
 	}()
 
 	return &AgentStartRoomResult{Status: "agent_started", RoomID: id}, nil
