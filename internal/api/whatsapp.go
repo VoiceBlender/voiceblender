@@ -25,7 +25,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	}
 
 	s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader())
-	if err := call.Dialog.Respond(sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
+	if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Warn("whatsapp inbound: respond 100 failed", "call_id", callID, "error", err)
 	}
 
@@ -49,7 +49,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	if err != nil {
 		s.Log.Error("whatsapp inbound: create PCMedia", "call_id", callID, "error", err)
 		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusInternalServerError, "Media Setup Failed", nil, s.SIPEngine.ServerHeader())
-		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Media Setup Failed", nil, s.SIPEngine.ServerHeader())
+		_ = s.SIPEngine.DialogRespond(call.Dialog, sip.StatusInternalServerError, "Media Setup Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 
@@ -59,7 +59,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		s.Log.Error("whatsapp inbound: SetRemoteDescription", "call_id", callID, "error", err)
 		media.Close()
 		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
-		_ = call.Dialog.Respond(sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
+		_ = s.SIPEngine.DialogRespond(call.Dialog, sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 	answer, err := pc.CreateAnswer(nil)
@@ -67,7 +67,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		s.Log.Error("whatsapp inbound: CreateAnswer", "call_id", callID, "error", err)
 		media.Close()
 		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
-		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
+		_ = s.SIPEngine.DialogRespond(call.Dialog, sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 	gatherDone := webrtc.GatheringCompletePromise(pc)
@@ -75,12 +75,12 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		s.Log.Error("whatsapp inbound: SetLocalDescription", "call_id", callID, "error", err)
 		media.Close()
 		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
-		_ = call.Dialog.Respond(sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
+		_ = s.SIPEngine.DialogRespond(call.Dialog, sip.StatusInternalServerError, "Answer Failed", nil, s.SIPEngine.ServerHeader())
 		return
 	}
 
 	s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader())
-	if err := call.Dialog.Respond(sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
+	if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusRinging, "Ringing", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("whatsapp inbound: respond 180", "call_id", callID, "error", err)
 		media.Close()
 		return

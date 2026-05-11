@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -210,7 +211,7 @@ func (s *Server) vsiRecvLoop(conn net.Conn, lw *wsLockedWriter, closed *atomic.B
 		// Refresh deadline before each blocking read. Without this, a
 		// half-open client TCP wedges this goroutine and (via the close-on-
 		// return cleanup) every other goroutine pinned to the connection.
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {
@@ -259,21 +260,14 @@ func classifyReadError(err error) string {
 	if err == nil {
 		return "unknown"
 	}
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
 		return "read_timeout"
 	}
-	if err == io.EOF || errIsClosedConn(err) {
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 		return "peer_close"
 	}
 	return "error"
-}
-
-func errIsClosedConn(err error) bool {
-	// net.ErrClosed exposes via "use of closed network connection"; EOF on
-	// a half-closed conn is similar. Match on substring to avoid an extra
-	// import.
-	return err != nil && (err.Error() == "use of closed network connection" ||
-		err.Error() == "EOF")
 }
 
 func (s *Server) vsiSendResponse(lw *wsLockedWriter, requestID, typ string, data interface{}) {

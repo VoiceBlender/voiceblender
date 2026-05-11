@@ -57,6 +57,35 @@ func TestAsync_HoldFailureSurfacesAsCommandFailed(t *testing.T) {
 	}
 }
 
+// TestAsync_HoldUnholdRoundTrip exercises the post-202 async path for hold
+// and unhold: HTTP returns 202 immediately, then LegHold / LegUnhold events
+// fire on the bus after the re-INVITE round trip completes.
+func TestAsync_HoldUnholdRoundTrip(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	outboundID, _ := establishCall(t, instA, instB)
+
+	holdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID), nil)
+	if holdResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("hold: status %d, want 202", holdResp.StatusCode)
+	}
+	holdResp.Body.Close()
+
+	instA.collector.waitForMatch(t, events.LegHold, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+
+	unholdResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/hold", instA.baseURL(), outboundID))
+	if unholdResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("unhold: status %d, want 202", unholdResp.StatusCode)
+	}
+	unholdResp.Body.Close()
+
+	instA.collector.waitForMatch(t, events.LegUnhold, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+}
+
 // TestAsync_TransferToBadTargetEmitsCommandFailed_OrTransferFailed verifies
 // that a transfer to a non-routable target surfaces a failure event rather
 // than blocking the HTTP handler.

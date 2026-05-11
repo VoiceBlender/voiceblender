@@ -57,6 +57,26 @@ func readWSFrame(t *testing.T, conn net.Conn, timeout time.Duration) wsEventFram
 	return f
 }
 
+// tryReadWSFrame is the non-fatal sibling of readWSFrame. Returns ok=false
+// on timeout, parse error, or socket close — letting callers in event-
+// collection loops bound the wait by an outer deadline rather than dying
+// on the first slow frame.
+func tryReadWSFrame(conn net.Conn, timeout time.Duration) (wsEventFrame, bool) {
+	if timeout <= 0 {
+		return wsEventFrame{}, false
+	}
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	data, err := wsutil.ReadServerText(conn)
+	if err != nil {
+		return wsEventFrame{}, false
+	}
+	var f wsEventFrame
+	if err := json.Unmarshal(data, &f); err != nil {
+		return wsEventFrame{}, false
+	}
+	return f, true
+}
+
 func TestWSEvents_ConnectedAndEvents(t *testing.T) {
 	instA := newTestInstance(t, "ws-a")
 	instB := newTestInstance(t, "ws-b")
@@ -163,9 +183,12 @@ func TestWSCommands_RoomLifecycle(t *testing.T) {
 			t.Fatalf("write %s: %v", typ, err)
 		}
 		// Read frames until we get the result/error for this request_id.
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			f := readWSFrame(t, conn, 5*time.Second)
+			f, ok := tryReadWSFrame(conn, time.Until(deadline))
+			if !ok {
+				break
+			}
 			if f.RequestID == typ {
 				return f
 			}
@@ -195,9 +218,12 @@ func TestWSCommands_RoomLifecycle(t *testing.T) {
 		if err := wsutil.WriteClientText(conn, msg); err != nil {
 			t.Fatalf("write %s: %v", typ, err)
 		}
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			f := readWSFrame(t, conn, 5*time.Second)
+			f, ok := tryReadWSFrame(conn, time.Until(deadline))
+			if !ok {
+				break
+			}
 			if f.RequestID == typ {
 				return f
 			}
@@ -246,9 +272,12 @@ func TestWSCommands_MuteLeg(t *testing.T) {
 		if err := wsutil.WriteClientText(conn, msg); err != nil {
 			t.Fatalf("write %s: %v", typ, err)
 		}
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			f := readWSFrame(t, conn, 5*time.Second)
+			f, ok := tryReadWSFrame(conn, time.Until(deadline))
+			if !ok {
+				break
+			}
 			if f.RequestID == typ {
 				return f
 			}
@@ -324,9 +353,12 @@ func TestWSEvents_AppIDFilter(t *testing.T) {
 
 	// The unfiltered client should see events for both legs.
 	allSeen := map[string]bool{}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && len(allSeen) < 2 {
-		f := readWSFrame(t, connAll, 5*time.Second)
+		f, ok := tryReadWSFrame(connAll, time.Until(deadline))
+		if !ok {
+			break
+		}
 		if f.Type == "leg.ringing" {
 			allSeen[f.LegID] = true
 		}

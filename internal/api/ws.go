@@ -157,7 +157,7 @@ func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamB
 		// Bound idle reads so a half-open client TCP can't pin this
 		// goroutine — and indirectly the participant's mixer slot, send
 		// loop, and ping loop — indefinitely.
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

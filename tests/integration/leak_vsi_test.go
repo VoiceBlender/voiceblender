@@ -20,9 +20,11 @@ import (
 // indefinitely.
 func TestLeak_VSIZombieConnection(t *testing.T) {
 	// Shrink timeout so the test runs in seconds rather than a minute.
-	prevTimeout := wsutilx.DefaultReadTimeout
-	wsutilx.DefaultReadTimeout = 200 * time.Millisecond
-	defer func() { wsutilx.DefaultReadTimeout = prevTimeout }()
+	// 1s gives setup of N connections enough slack under suite load while
+	// still keeping the test fast.
+	prevTimeout := wsutilx.DefaultReadTimeout.Load()
+	wsutilx.DefaultReadTimeout.Store(1 * time.Second)
+	defer wsutilx.DefaultReadTimeout.Store(prevTimeout)
 
 	inst := newTestInstance(t, "leak-vsi")
 

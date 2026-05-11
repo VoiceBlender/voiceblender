@@ -85,21 +85,22 @@ func main() {
 
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:        cfg.SIPBindIP,
-		BindIPV6:      cfg.SIPBindIPV6,
-		ListenIP:      cfg.SIPListenIP,
-		ListenIPV6:    cfg.SIPListenIPV6,
-		ExternalIP:    cfg.SIPExternalIP,
-		PublicHost:    cfg.SIPDomain,
-		BindPort:      sipPort,
-		TLSBindPort:   sipTLSPort,
-		TLSCertPath:   cfg.SIPTLSCert,
-		TLSKeyPath:    cfg.SIPTLSKey,
-		SIPDebug:      cfg.SIPDebug,
-		SIPHost:       cfg.SIPHost,
-		Codecs:        []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
-		Log:           log,
-		PortAllocator: portAlloc,
+		BindIP:          cfg.SIPBindIP,
+		BindIPV6:        cfg.SIPBindIPV6,
+		ListenIP:        cfg.SIPListenIP,
+		ListenIPV6:      cfg.SIPListenIPV6,
+		ExternalIP:      cfg.SIPExternalIP,
+		PublicHost:      cfg.SIPDomain,
+		BindPort:        sipPort,
+		TLSBindPort:     sipTLSPort,
+		TLSCertPath:     cfg.SIPTLSCert,
+		TLSKeyPath:      cfg.SIPTLSKey,
+		SIPDebug:        cfg.SIPDebug,
+		SIPHost:         cfg.SIPHost,
+		UseSourceSocket: cfg.SIPUseSourceSocket,
+		Codecs:          []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
+		Log:             log,
+		PortAllocator:   portAlloc,
 	})
 	if err != nil {
 		log.Error("failed to create SIP engine", "error", err)

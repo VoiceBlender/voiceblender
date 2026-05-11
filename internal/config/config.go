@@ -46,6 +46,7 @@ type Config struct {
 	SIPJitterBufferMaxMs   int
 	SIPReferAutoDial       bool
 	SIPAutoRinging         bool
+	SIPUseSourceSocket     bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
 	VSIEventBufferSize     int
 	DefaultSampleRate      int
 	SpeechDetectionEnabled bool
@@ -94,6 +95,7 @@ func Load() Config {
 		SIPJitterBufferMaxMs:   envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 		SIPReferAutoDial:       os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPAutoRinging:         os.Getenv("SIP_AUTO_RINGING") == "true",
+		SIPUseSourceSocket:     os.Getenv("SIP_USE_SOURCE_SOCKET") == "true",
 		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
 		DefaultSampleRate:      defaultRate,
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",

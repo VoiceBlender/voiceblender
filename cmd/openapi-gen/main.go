@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
-	"github.com/VoiceBlender/voiceblender/internal/events"
 	"gopkg.in/yaml.v3"
 )
 
@@ -589,61 +588,19 @@ func sortedCodes(m map[int]api.ResponseMeta) []int {
 
 // ── Webhook generation ──────────────────────────────────────────────────
 
-type webhookEventMeta struct {
-	eventType events.EventType
-	summary   string
-	dataType  reflect.Type
-}
-
-func allWebhookEvents() []webhookEventMeta {
-	return []webhookEventMeta{
-		{events.LegRinging, "SIP call ringing (inbound or outbound)", reflect.TypeOf(events.LegRingingData{})},
-		{events.LegEarlyMedia, "Outbound leg received 183 Session Progress with SDP; media pipeline active", reflect.TypeOf(events.LegEarlyMediaData{})},
-		{events.LegConnected, "Leg answered/connected", reflect.TypeOf(events.LegConnectedData{})},
-		{events.LegDisconnected, "Leg hung up (CDR-style nested structure)", reflect.TypeOf(events.LegDisconnectedData{})},
-		{events.LegJoinedRoom, "Leg added to a room", reflect.TypeOf(events.LegJoinedRoomData{})},
-		{events.LegLeftRoom, "Leg removed from a room", reflect.TypeOf(events.LegLeftRoomData{})},
-		{events.LegMuted, "Leg muted", reflect.TypeOf(events.LegMutedData{})},
-		{events.LegUnmuted, "Leg unmuted", reflect.TypeOf(events.LegUnmutedData{})},
-		{events.LegDeaf, "Leg deafened (stops receiving room audio)", reflect.TypeOf(events.LegDeafData{})},
-		{events.LegUndeaf, "Leg undeafened (resumes receiving room audio)", reflect.TypeOf(events.LegUndeafData{})},
-		{events.LegHold, "Leg put on hold (local or remote)", reflect.TypeOf(events.LegHoldData{})},
-		{events.LegUnhold, "Leg taken off hold (local or remote)", reflect.TypeOf(events.LegUnholdData{})},
-		{events.DTMFReceived, "DTMF digit received", reflect.TypeOf(events.DTMFReceivedData{})},
-		{events.SpeakingStarted, "Participant started speaking", reflect.TypeOf(events.SpeakingData{})},
-		{events.SpeakingStopped, "Participant stopped speaking", reflect.TypeOf(events.SpeakingData{})},
-		{events.PlaybackStarted, "Playback began", reflect.TypeOf(events.PlaybackStartedData{})},
-		{events.PlaybackFinished, "Playback ended", reflect.TypeOf(events.PlaybackFinishedData{})},
-		{events.PlaybackError, "Playback failed", reflect.TypeOf(events.PlaybackErrorData{})},
-		{events.TTSStarted, "TTS synthesis began playing", reflect.TypeOf(events.TTSStartedData{})},
-		{events.TTSFinished, "TTS synthesis finished playing", reflect.TypeOf(events.TTSFinishedData{})},
-		{events.TTSError, "TTS synthesis or playback failed", reflect.TypeOf(events.TTSErrorData{})},
-		{events.RecordingStarted, "Recording began", reflect.TypeOf(events.RecordingStartedData{})},
-		{events.RecordingFinished, "Recording ended", reflect.TypeOf(events.RecordingFinishedData{})},
-		{events.RecordingPaused, "Recording paused (audio replaced with silence)", reflect.TypeOf(events.RecordingPausedData{})},
-		{events.RecordingResumed, "Recording resumed from a paused state", reflect.TypeOf(events.RecordingResumedData{})},
-		{events.LegTransferInitiated, "We sent a SIP REFER (transfer initiated by the operator)", reflect.TypeOf(events.LegTransferInitiatedData{})},
-		{events.LegTransferRequested, "We received a SIP REFER from the peer", reflect.TypeOf(events.LegTransferRequestedData{})},
-		{events.LegTransferProgress, "Transfer progress reported via NOTIFY sipfrag", reflect.TypeOf(events.LegTransferProgressData{})},
-		{events.LegTransferCompleted, "Transfer reached terminal 2xx", reflect.TypeOf(events.LegTransferCompletedData{})},
-		{events.LegTransferFailed, "Transfer failed (REFER rejected, sipfrag non-2xx, or local error)", reflect.TypeOf(events.LegTransferFailedData{})},
-		{events.RoomCreated, "Room created", reflect.TypeOf(events.RoomCreatedData{})},
-		{events.RoomDeleted, "Room deleted", reflect.TypeOf(events.RoomDeletedData{})},
-		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},
-		{events.AgentConnected, "Agent connected to provider", reflect.TypeOf(events.AgentConnectedData{})},
-		{events.AgentDisconnected, "Agent session ended", reflect.TypeOf(events.AgentDisconnectedData{})},
-		{events.AgentUserTranscript, "User speech transcribed by agent", reflect.TypeOf(events.AgentTranscriptData{})},
-		{events.AgentAgentResponse, "Agent generated a response", reflect.TypeOf(events.AgentResponseData{})},
-		{events.AMDResult, "Answering machine detection completed", reflect.TypeOf(events.AMDResultData{})},
-		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
-	}
+// allWebhookEvents is a thin alias for api.EventsMetadata() so the rest of
+// this generator can keep its local types. The single source of truth for
+// the event list lives in internal/api/vsi_meta.go and is shared with
+// cmd/asyncapi-gen.
+func allWebhookEvents() []api.EventMeta {
+	return api.EventsMetadata()
 }
 
 func buildWebhookEventType() *omap {
 	s := newMap().set("type", "string")
 	enumSeq := newSeq()
 	for _, wh := range allWebhookEvents() {
-		enumSeq.add(string(wh.eventType))
+		enumSeq.add(string(wh.Type))
 	}
 	s.set("enum", enumSeq)
 	return s
@@ -652,10 +609,10 @@ func buildWebhookEventType() *omap {
 func buildWebhooks() *omap {
 	webhooks := newMap()
 	for _, wh := range allWebhookEvents() {
-		evtType := string(wh.eventType)
+		evtType := string(wh.Type)
 		// Build inline properties from the data struct (flattened, including embedded).
 		inlineProps := newMap()
-		flattenDataFields(wh.dataType, inlineProps, evtType)
+		flattenDataFields(wh.DataType, inlineProps, evtType)
 
 		allOfSeq := newSeq()
 		allOfSeq.add(schemaRef("WebhookEvent"))
@@ -664,7 +621,7 @@ func buildWebhooks() *omap {
 		}
 
 		webhooks.set(evtType, newMap().set("post",
-			newMap().set("summary", wh.summary).
+			newMap().set("summary", wh.Summary).
 				set("requestBody", newMap().set("content",
 					newMap().set("application/json",
 						newMap().set("schema", newMap().set("allOf", allOfSeq)))))))

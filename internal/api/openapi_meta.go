@@ -62,6 +62,12 @@ func WebhookFieldDescriptions() map[string]string {
 		"dtmf.received.leg_id": "Leg identifier",
 		"dtmf.received.digit":  "DTMF digit received",
 
+		// rtt.received
+		"rtt.received.leg_id":      "Leg identifier",
+		"rtt.received.text":        "UTF-8 text chunk received from the remote",
+		"rtt.received.seq":         "Per-leg monotonic sequence (independent of RTP sequence numbers)",
+		"rtt.received.loss_marker": "True when a U+FFFD has been prepended to indicate text was lost beyond what RFC 2198 redundancy could recover",
+
 		// speaking
 		"speaking.started.leg_id":  "Leg identifier",
 		"speaking.started.room_id": "Room identifier (present only when the leg is in a room)",
@@ -389,6 +395,44 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/rtt", OperationID: "sendRTT",
+			Summary: "Send Real-Time Text (T.140) on a SIP leg",
+			Description: "Sends UTF-8 text on the leg's RTT (T.140 / RFC 4103) media stream. " +
+				"Requires that the SDP offer/answer agreed on an m=text section with the remote UA. " +
+				"Enable RTT on the server with RTT_ENABLED=true.",
+			Tags:        []string{"Legs"},
+			RequestType: RTTRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Text sent"},
+				400: {Description: "Invalid JSON or empty text"},
+				404: {Description: "Leg not found"},
+				409: {Description: "RTT was not negotiated for this leg"},
+				500: {Description: "Send failed"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/rtt/accept", OperationID: "acceptRTTLeg",
+			Summary: "Enable RTT reception on a leg",
+			Description: "Allow this leg to receive RTT text broadcast from other legs in the same room and to " +
+				"emit rtt.received events for incoming text. Default state for new legs.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "RTT reception enabled"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/rtt/reject", OperationID: "rejectRTTLeg",
+			Summary: "Disable RTT reception on a leg",
+			Description: "Block this leg from receiving RTT text broadcast from other legs in the same room and " +
+				"suppress rtt.received events for this leg.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "RTT reception disabled"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/play", OperationID: "playLeg",
 			Summary:     "Start audio playback to a leg",
 			Tags:        []string{"Legs"},
@@ -612,7 +656,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Get server-side ICE candidates for a WebRTC leg (trickle ICE)",
 			Tags:    []string{"WebRTC"},
 			Responses: map[int]ResponseMeta{
-				200: {Description: "Buffered ICE candidates"},
+				200: {Description: "Buffered ICE candidates", Type: WebRTCCandidatesResult{}},
 				400: {Description: "Leg is not a WebRTC leg"},
 				404: {Description: "Leg not found"},
 			},
@@ -914,7 +958,7 @@ func RoutesMetadata() []RouteMeta {
 			Tags:        []string{"WebRTC"},
 			RequestType: WebRTCOfferRequest{},
 			Responses: map[int]ResponseMeta{
-				200: {Description: "SDP answer with leg ID"},
+				200: {Description: "SDP answer with leg ID", Type: WebRTCOfferResult{}},
 				400: {Description: "Invalid JSON or invalid SDP offer"},
 				500: {Description: "Peer connection, track creation, or answer generation failed"},
 			},

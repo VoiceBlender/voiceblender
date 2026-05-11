@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -27,6 +28,8 @@ type RTPSession struct {
 	remoteAddr unsafe.Pointer // *net.UDPAddr, accessed atomically
 	localPort  int
 	allocator  *PortAllocator // non-nil when port was allocated from a pool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // NewRTPSession creates a new RTP session listening on a random UDP port.
@@ -111,6 +114,16 @@ func (s *RTPSession) ReadRTP() (*rtp.Packet, error) {
 		return nil, err
 	}
 
+	// RFC 5761 §4: drop RTCP frames muxed on the RTP port (PT byte in
+	// 192..223 with V=2). Otherwise they unmarshal cleanly as RTP and feed
+	// garbage to the payload decoder.
+	if n >= 2 {
+		pt2 := buf[1]
+		if pt2 >= 192 && pt2 <= 223 {
+			return nil, fmt.Errorf("%w: rtcp-on-rtp-port", ErrNotRTP)
+		}
+	}
+
 	pkt := &rtp.Packet{}
 	if err := pkt.Unmarshal(buf[:n]); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotRTP, err)
@@ -187,10 +200,14 @@ func (s *RTPSession) SetReadDeadline(t time.Time) error {
 }
 
 // Close closes the UDP connection and releases the port back to the allocator.
+// Idempotent: subsequent calls are no-ops. Multiple rollback paths in the
+// engine ladder can each call Close on the same session.
 func (s *RTPSession) Close() error {
-	err := s.conn.Close()
-	if s.allocator != nil {
-		s.allocator.Release(s.localPort)
-	}
-	return err
+	s.closeOnce.Do(func() {
+		s.closeErr = s.conn.Close()
+		if s.allocator != nil {
+			s.allocator.Release(s.localPort)
+		}
+	})
+	return s.closeErr
 }

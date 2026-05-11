@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -29,21 +30,26 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP        string // IPv4 advertised address for SDP c= line / Contact (when v4 is in use)
-	BindIPV6      string // IPv6 advertised address; empty = v6 not advertised
-	ListenIP      string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
-	ListenIPV6    string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
-	ExternalIP    string // IPv4 public IP override for NAT/Docker (v6 has no equivalent — set BindIPV6 directly)
-	PublicHost    string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
-	BindPort      int
-	TLSBindPort   int    // 0 = TLS disabled
-	TLSCertPath   string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
-	TLSKeyPath    string // private key (privkey.pem) — required when TLSBindPort > 0
-	SIPDebug      bool   // dump full SIP request/response bodies on the debug channel
-	SIPHost       string
-	Codecs        []codec.CodecType
-	Log           *slog.Logger
-	PortAllocator *PortAllocator // nil = OS-assigned ports
+	BindIP      string // IPv4 advertised address for SDP c= line / Contact (when v4 is in use)
+	BindIPV6    string // IPv6 advertised address; empty = v6 not advertised
+	ListenIP    string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
+	ListenIPV6  string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
+	ExternalIP  string // IPv4 public IP override for NAT/Docker (v6 has no equivalent — set BindIPV6 directly)
+	PublicHost  string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
+	BindPort    int
+	TLSBindPort int    // 0 = TLS disabled
+	TLSCertPath string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
+	TLSKeyPath  string // private key (privkey.pem) — required when TLSBindPort > 0
+	SIPDebug    bool   // dump full SIP request/response bodies on the debug channel
+	SIPHost     string
+	// UseSourceSocket forces SIP responses and in-dialog requests to be
+	// routed back to the request's source socket (req.Source()) instead of
+	// the peer's Contact URI / Via sent-by. Required when peers are behind
+	// NAT and advertise unroutable addresses.
+	UseSourceSocket bool
+	Codecs          []codec.CodecType
+	Log             *slog.Logger
+	PortAllocator   *PortAllocator // nil = OS-assigned ports
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -51,27 +57,29 @@ type Engine struct {
 	ua      *sipgo.UserAgent
 	server  *sipgo.Server
 	client  *sipgo.Client
-	dsCache *sipgo.DialogServerCache
-	dcCache *sipgo.DialogClientCache
+	dsCache *dialogServerCache
+	dcCache *dialogClientCache
 
-	onInvite   func(call *InboundCall)
-	onReInvite func(callID string, direction string) []byte // returns SDP answer for 200 OK
-	onRefer    func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
-	onNotify   func(callID string, statusCode int, reason string, terminated bool)
-	codecs     []codec.CodecType
-	bindIP     string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
-	bindIPV6   string // IPv6 advertised address; empty if v4-only
-	publicHost string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
-	listenIP   string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
-	listenIPV6 string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
-	bindPort   int
-	tlsPort    int // 0 = TLS disabled
-	tlsCert    string
-	tlsKey     string
-	sipHost    string
-	portAlloc  *PortAllocator
-	log        *slog.Logger
-	sipDebug   bool
+	onInvite        func(call *InboundCall)
+	onReInvite      func(callID string, direction string) []byte // returns SDP answer for 200 OK
+	onRefer         func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
+	onNotify        func(callID string, statusCode int, reason string, terminated bool)
+	codecs          []codec.CodecType
+	bindIP          string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
+	bindIPV6        string // IPv6 advertised address; empty if v4-only
+	publicHost      string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
+	listenIP        string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
+	listenIPV6      string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
+	bindPort        int
+	tlsPort         int // 0 = TLS disabled
+	tlsCert         string
+	tlsKey          string
+	sipHost         string
+	portAlloc       *PortAllocator
+	log             *slog.Logger
+	sipDebug        bool
+	useSourceSocket bool
+	destPinned      atomic.Uint64 // count of res.Destination overrides applied
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -184,6 +192,7 @@ func (e *Engine) RespondInviteSDP(dialog *sipgo.DialogServerSession, sdp []byte)
 	res.AppendHeader(e.ServerHeader())
 	res.AppendHeader(e.contactForInvite(dialog.InviteRequest))
 	res.SetBody(sdp)
+	e.pinDestinationToSource(dialog.InviteRequest, res)
 
 	e.logSIPMessage("outbound", res)
 	return dialog.WriteResponse(res)
@@ -206,6 +215,10 @@ type OutboundCall struct {
 	Dialog    *sipgo.DialogClientSession
 	RemoteSDP *SDPMedia
 	RTPSess   *RTPSession
+
+	// Optional RTT (T.140 / RFC 4103) media. Populated when the remote's
+	// answer accepts the offered m=text section. Nil otherwise.
+	TextRTPSess *RTPSession
 
 	// Session timer (RFC 4028) — populated when remote's 200 OK includes timers.
 	SessionTimer *SessionTimerParams // nil when remote didn't include timers
@@ -370,26 +383,38 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		}
 	}
 
+	serverUA := &sipgo.DialogUA{
+		Client:         client,
+		ContactHDR:     contactHdr,
+		RewriteContact: cfg.UseSourceSocket,
+	}
+	clientUA := &sipgo.DialogUA{
+		Client:         client,
+		ContactHDR:     contactHdr,
+		RewriteContact: cfg.UseSourceSocket,
+	}
+
 	e := &Engine{
-		ua:         ua,
-		server:     server,
-		client:     client,
-		dsCache:    sipgo.NewDialogServerCache(client, contactHdr),
-		dcCache:    sipgo.NewDialogClientCache(client, contactHdr),
-		codecs:     cfg.Codecs,
-		bindIP:     advertiseIP,
-		bindIPV6:   advertiseIPV6,
-		publicHost: publicHost,
-		listenIP:   listenIP,
-		listenIPV6: listenIPV6,
-		bindPort:   cfg.BindPort,
-		tlsPort:    cfg.TLSBindPort,
-		tlsCert:    cfg.TLSCertPath,
-		tlsKey:     cfg.TLSKeyPath,
-		sipHost:    cfg.SIPHost,
-		portAlloc:  cfg.PortAllocator,
-		log:        cfg.Log,
-		sipDebug:   cfg.SIPDebug,
+		ua:              ua,
+		server:          server,
+		client:          client,
+		dsCache:         newDialogServerCache(serverUA),
+		dcCache:         newDialogClientCache(clientUA),
+		codecs:          cfg.Codecs,
+		bindIP:          advertiseIP,
+		bindIPV6:        advertiseIPV6,
+		publicHost:      publicHost,
+		listenIP:        listenIP,
+		listenIPV6:      listenIPV6,
+		bindPort:        cfg.BindPort,
+		tlsPort:         cfg.TLSBindPort,
+		tlsCert:         cfg.TLSCertPath,
+		tlsKey:          cfg.TLSKeyPath,
+		sipHost:         cfg.SIPHost,
+		portAlloc:       cfg.PortAllocator,
+		log:             cfg.Log,
+		sipDebug:        cfg.SIPDebug,
+		useSourceSocket: cfg.UseSourceSocket,
 	}
 
 	if cfg.Log != nil {
@@ -434,7 +459,9 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if callID == nil {
 		e.log.Error("re-INVITE missing Call-ID")
 		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing Call-ID", nil)
-		tx.Respond(res)
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("re-INVITE: respond 400 failed", "error", rerr)
+		}
 		return
 	}
 
@@ -486,7 +513,7 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 			res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)))
 		}
 	}
-	if err := tx.Respond(res); err != nil {
+	if err := e.respondMaybeFromSource(tx, req, res); err != nil {
 		e.log.Error("re-INVITE: respond failed", "error", err)
 		return
 	}
@@ -573,7 +600,9 @@ func (e *Engine) registerHandlers() {
 			e.log.Error("read invite failed", "error", err)
 			res := sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "Internal Server Error", nil)
 			res.AppendHeader(e.ServerHeader())
-			tx.Respond(res)
+			if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+				e.log.Error("INVITE: respond 500 failed", "error", rerr)
+			}
 			return
 		}
 
@@ -675,7 +704,9 @@ func (e *Engine) registerHandlers() {
 		e.log.Info("CANCEL received (unmatched)", "call_id", callID, "source", req.Source())
 		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
 		res.AppendHeader(e.ServerHeader())
-		tx.Respond(res)
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("CANCEL: respond 481 failed", "error", rerr)
+		}
 	}))
 
 	e.server.OnRefer(wrap(e.handleRefer))
@@ -695,6 +726,52 @@ func (e *Engine) RespondFromSource(tx sip.ServerTransaction, req *sip.Request, s
 
 func (e *Engine) respondFromSource(tx sip.ServerTransaction, req *sip.Request, statusCode int, reason string) error {
 	return e.RespondFromSource(tx, req, statusCode, reason)
+}
+
+// pinDestinationToSource sets res.Destination to req.Source() when the
+// SIP_USE_SOURCE_SOCKET flag is on. No-op when the flag is off, or when
+// req.Source() doesn't resolve to a real address (sipgo's Request.Source
+// falls back to a Via-derived ":port" form when SetSource has never been
+// called — that's a synthetic request, not something we should route to).
+func (e *Engine) pinDestinationToSource(req *sip.Request, res *sip.Response) {
+	if !e.useSourceSocket {
+		return
+	}
+	src := req.Source()
+	if src == "" || strings.HasPrefix(src, ":") {
+		return
+	}
+	res.SetDestination(src)
+	e.destPinned.Add(1)
+}
+
+// DestinationsPinned returns the cumulative count of responses whose
+// destination has been overridden via SIP_USE_SOURCE_SOCKET. Tests use this
+// to assert the flag actually fired rather than silently no-op'd.
+func (e *Engine) DestinationsPinned() uint64 {
+	return e.destPinned.Load()
+}
+
+// respondMaybeFromSource sends a pre-built response, pinning the destination
+// to req.Source() when SIP_USE_SOURCE_SOCKET is enabled. Use this for
+// response paths that already build their own *sip.Response (to attach
+// Server / Content-Type / Session-Expires headers etc).
+func (e *Engine) respondMaybeFromSource(tx sip.ServerTransaction, req *sip.Request, res *sip.Response) error {
+	e.pinDestinationToSource(req, res)
+	return tx.Respond(res)
+}
+
+// DialogRespond sends a response on a UAS dialog, pinning the destination to
+// the original INVITE source when SIP_USE_SOURCE_SOCKET is enabled. Replaces
+// direct calls to dialog.Respond / dialog.RespondSDP — those reach
+// tx.Respond internally without giving us a hook to override Destination.
+func (e *Engine) DialogRespond(d *sipgo.DialogServerSession, statusCode int, reason string, body []byte, headers ...sip.Header) error {
+	res := sip.NewResponseFromRequest(d.InviteRequest, statusCode, reason, body)
+	for _, h := range headers {
+		res.AppendHeader(h)
+	}
+	e.pinDestinationToSource(d.InviteRequest, res)
+	return d.WriteResponse(res)
 }
 
 // handleRefer dispatches inbound REFER to the onRefer hook (which decides 202 vs decline).
@@ -818,6 +895,12 @@ type InviteOptions struct {
 	OnEarlyMedia func(remoteSDP *SDPMedia, rtpSess *RTPSession) // Called on first 183 with SDP
 	AuthUsername string                                         // SIP digest auth username (optional)
 	AuthPassword string                                         // SIP digest auth password (optional)
+
+	// RTT (T.140 / RFC 4103) parameters. RTTEnabled offers m=text alongside
+	// audio in the INVITE. RTTRedundancy controls the RFC 2198 RED depth
+	// (0 = plain T.140, no RED).
+	RTTEnabled    bool
+	RTTRedundancy int
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
@@ -827,6 +910,25 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	if err != nil {
 		return nil, fmt.Errorf("create RTP session: %w", err)
 	}
+
+	var (
+		textRtpSess *RTPSession
+		ds          *sipgo.DialogClientSession
+		committed   bool
+		byeOnError  bool
+	)
+	defer func() {
+		if committed {
+			return
+		}
+		if byeOnError && ds != nil {
+			ds.Bye(ctx)
+		}
+		rtpSess.Close()
+		if textRtpSess != nil {
+			textRtpSess.Close()
+		}
+	}()
 
 	codecs := e.codecs
 	if len(opts.Codecs) > 0 {
@@ -839,12 +941,26 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// hosts decide directly; hostnames go through the OS resolver.
 	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
 
-	// Generate SDP offer
-	sdpOffer := GenerateOffer(SDPConfig{
+	// Optionally allocate a second RTP session for RTT (m=text).
+	cfg := SDPConfig{
 		LocalIP: localIP,
 		RTPPort: rtpSess.LocalPort(),
 		Codecs:  codecs,
-	})
+	}
+	if opts.RTTEnabled {
+		ts, terr := NewRTPSessionFromAllocator(e.portAlloc)
+		if terr != nil {
+			return nil, fmt.Errorf("create text RTP session: %w", terr)
+		}
+		textRtpSess = ts
+		cfg.TextRTPPort = ts.LocalPort()
+		cfg.TextT140PT = 99
+		cfg.TextREDPT = 98
+		cfg.RTTRedundancy = opts.RTTRedundancy
+	}
+
+	// Generate SDP offer
+	sdpOffer := GenerateOffer(cfg)
 
 	// Build the INVITE request. We construct it manually so we can set
 	// a proper typed FromHeader when FromUser is specified (appending a
@@ -872,9 +988,8 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	e.logSIPMessage("outbound", req)
 
 	// Send INVITE via dialog client cache
-	ds, err := e.dcCache.WriteInvite(ctx, req)
+	ds, err = e.dcCache.WriteInvite(ctx, req)
 	if err != nil {
-		rtpSess.Close()
 		return nil, fmt.Errorf("invite: %w", err)
 	}
 
@@ -918,7 +1033,6 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		return nil
 	}
 	if err := ds.WaitAnswer(ctx, answerOpts); err != nil {
-		rtpSess.Close()
 		return nil, fmt.Errorf("wait answer: %w", err)
 	}
 	if ds.InviteResponse != nil {
@@ -927,22 +1041,19 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	// Send ACK
 	if err := ds.Ack(ctx); err != nil {
-		rtpSess.Close()
 		return nil, fmt.Errorf("ack: %w", err)
 	}
+	// Dialog fully established — any subsequent error must BYE.
+	byeOnError = true
 
 	// Parse answer SDP from 200 OK response
 	remoteSDP, err := ParseSDP(ds.InviteResponse.Body())
 	if err != nil {
-		rtpSess.Close()
-		ds.Bye(ctx)
 		return nil, fmt.Errorf("parse answer SDP: %w", err)
 	}
 
 	// Set remote RTP address
 	if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
-		rtpSess.Close()
-		ds.Bye(ctx)
 		return nil, fmt.Errorf("set remote: %w", err)
 	}
 
@@ -951,6 +1062,23 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// the first packets go out immediately after we learn the remote address.
 	if len(remoteSDP.Codecs) > 0 {
 		rtpSess.SendKeepalive(remoteSDP.Codecs[0].PayloadType(), 3)
+	}
+
+	// Wire the text RTP session to the answer's text section, if accepted.
+	// Mirrors the acceptance test in SIPLeg.adoptOutboundTextSession so the
+	// engine never returns a session the leg will discard.
+	if textRtpSess != nil {
+		if remoteSDP.Text != nil && remoteSDP.Text.RemotePort != 0 && remoteSDP.Text.T140PT != 0 {
+			if err := textRtpSess.SetRemote(remoteSDP.Text.RemoteIP, remoteSDP.Text.RemotePort); err != nil {
+				e.log.Warn("text RTP set remote failed", "error", err)
+				textRtpSess.Close()
+				textRtpSess = nil
+			}
+		} else {
+			// Peer rejected RTT (no m=text, port=0, or no t140/1000 codec).
+			textRtpSess.Close()
+			textRtpSess = nil
+		}
 	}
 
 	// Parse session timer from 200 OK if present.
@@ -968,10 +1096,12 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		}
 	}
 
+	committed = true
 	return &OutboundCall{
 		Dialog:       ds,
 		RemoteSDP:    remoteSDP,
 		RTPSess:      rtpSess,
+		TextRTPSess:  textRtpSess,
 		SessionTimer: sessionTimer,
 	}, nil
 }

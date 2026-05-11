@@ -42,7 +42,7 @@ func TestGenerateAnswer_IPv6(t *testing.T) {
 		LocalIP: "::1",
 		RTPPort: 10002,
 		Codecs:  []codec.CodecType{codec.CodecPCMU},
-	}, codec.CodecPCMU, 0)
+	}, codec.CodecPCMU, 0, false)
 	if !strings.Contains(string(sdp), "c=IN IP6 ::1") {
 		t.Errorf("answer missing IN IP6 connection:\n%s", sdp)
 	}
@@ -128,6 +128,88 @@ func TestParseSDP_CodecRates(t *testing.T) {
 	// Offer order must be preserved.
 	if len(m.Codecs) != 3 || m.Codecs[0] != codec.CodecOpus || m.Codecs[1] != codec.CodecPCMU || m.Codecs[2] != codec.CodecPCMA {
 		t.Errorf("Codecs = %v, want [opus PCMU PCMA]", m.Codecs)
+	}
+}
+
+func TestGenerateOfferWithText(t *testing.T) {
+	sdp := GenerateOffer(SDPConfig{
+		LocalIP:       "127.0.0.1",
+		RTPPort:       10000,
+		Codecs:        []codec.CodecType{codec.CodecPCMU},
+		TextRTPPort:   10010,
+		TextT140PT:    99,
+		TextREDPT:     98,
+		RTTRedundancy: 2,
+	})
+	s := string(sdp)
+	if !strings.Contains(s, "m=text 10010 RTP/AVP 98 99") {
+		t.Errorf("offer missing m=text line:\n%s", s)
+	}
+	if !strings.Contains(s, "a=rtpmap:99 t140/1000") {
+		t.Errorf("offer missing t140 rtpmap:\n%s", s)
+	}
+	if !strings.Contains(s, "a=rtpmap:98 red/1000") {
+		t.Errorf("offer missing red rtpmap:\n%s", s)
+	}
+	if !strings.Contains(s, "a=fmtp:98 99/99/99") {
+		t.Errorf("offer missing red fmtp with 3 generations:\n%s", s)
+	}
+}
+
+func TestParseSDPWithText(t *testing.T) {
+	raw := []byte("v=0\r\n" +
+		"o=- 0 0 IN IP4 192.0.2.1\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 192.0.2.1\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 5000 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n" +
+		"m=text 5004 RTP/AVP 98 99\r\n" +
+		"a=rtpmap:98 red/1000\r\n" +
+		"a=rtpmap:99 t140/1000\r\n" +
+		"a=fmtp:98 99/99/99\r\n")
+	m, err := ParseSDP(raw)
+	if err != nil {
+		t.Fatalf("ParseSDP: %v", err)
+	}
+	if m.Text == nil {
+		t.Fatalf("expected Text section to be parsed")
+	}
+	if m.Text.RemotePort != 5004 || m.Text.RemoteIP != "192.0.2.1" {
+		t.Errorf("text remote: got %s:%d", m.Text.RemoteIP, m.Text.RemotePort)
+	}
+	if m.Text.T140PT != 99 || m.Text.REDPT != 98 {
+		t.Errorf("text PTs: got t140=%d red=%d", m.Text.T140PT, m.Text.REDPT)
+	}
+}
+
+func TestParseSDPRejectedText(t *testing.T) {
+	raw := []byte("v=0\r\n" +
+		"o=- 0 0 IN IP4 192.0.2.1\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 192.0.2.1\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 5000 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n" +
+		"m=text 0 RTP/AVP 0\r\n")
+	m, err := ParseSDP(raw)
+	if err != nil {
+		t.Fatalf("ParseSDP: %v", err)
+	}
+	if m.Text != nil {
+		t.Errorf("rejected text section (port=0) must leave Text nil; got %+v", m.Text)
+	}
+}
+
+func TestGenerateAnswerRejected(t *testing.T) {
+	sdp := GenerateAnswer(SDPConfig{
+		LocalIP: "127.0.0.1",
+		RTPPort: 10002,
+		Codecs:  []codec.CodecType{codec.CodecPCMU},
+	}, codec.CodecPCMU, 0, true)
+	s := string(sdp)
+	if !strings.Contains(s, "m=text 0 ") {
+		t.Errorf("rejected text section missing port=0 m=text line:\n%s", s)
 	}
 }
 

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // idPayload is the common payload shape for commands targeting a single resource.
@@ -20,6 +22,117 @@ type roomLegPayload struct {
 type dtmfPayload struct {
 	ID     string `json:"id"`
 	Digits string `json:"digits"`
+}
+
+// earlyMediaPayload carries codec selection for leg_early_media.
+type earlyMediaPayload struct {
+	ID    string `json:"id"`
+	Codec string `json:"codec,omitempty"`
+}
+
+// playbackTargetPayload identifies a single playback on a leg or room.
+type playbackTargetPayload struct {
+	ID         string `json:"id"`
+	PlaybackID string `json:"playback_id"`
+}
+
+// playbackVolumePayload sets the volume on a playback.
+type playbackVolumePayload struct {
+	ID         string `json:"id"`
+	PlaybackID string `json:"playback_id"`
+	Volume     int    `json:"volume"`
+}
+
+// agentMessagePayload injects a message into a leg or room agent session.
+type agentMessagePayload struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// legAMDStartPayload combines leg id with optional AMD threshold overrides.
+type legAMDStartPayload struct {
+	ID string `json:"id"`
+	AMDParams
+}
+
+// playbackStartPayload combines a leg/room id with the playback request.
+type playbackStartPayload struct {
+	ID string `json:"id"`
+	PlaybackRequest
+}
+
+// ttsStartPayload combines a leg/room id with the TTS request.
+type ttsStartPayload struct {
+	ID string `json:"id"`
+	TTSRequest
+}
+
+// sttStartPayload combines a leg/room id with the STT request.
+type sttStartPayload struct {
+	ID string `json:"id"`
+	STTRequest
+}
+
+// answerLegPayload carries the inputs for answer_leg.
+type answerLegPayload struct {
+	ID              string `json:"id"`
+	SpeechDetection *bool  `json:"speech_detection,omitempty"`
+	Codec           string `json:"codec,omitempty"`
+}
+
+// deleteLegPayload carries the inputs for delete_leg.
+type deleteLegPayload struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// transferLegPayload combines a leg id with the transfer request.
+type transferLegPayload struct {
+	ID string `json:"id"`
+	TransferRequest
+}
+
+// recordStartPayload combines a leg/room id with the record request.
+type recordStartPayload struct {
+	ID string `json:"id"`
+	RecordRequest
+}
+
+// agentElevenLabsPayload combines a leg/room id with the ElevenLabs agent request.
+type agentElevenLabsPayload struct {
+	ID string `json:"id"`
+	ElevenLabsAgentRequest
+}
+
+// agentVAPIPayload combines a leg/room id with the VAPI agent request.
+type agentVAPIPayload struct {
+	ID string `json:"id"`
+	VAPIAgentRequest
+}
+
+// agentPipecatPayload combines a leg/room id with the Pipecat agent request.
+type agentPipecatPayload struct {
+	ID string `json:"id"`
+	PipecatAgentRequest
+}
+
+// agentDeepgramPayload combines a leg/room id with the Deepgram agent request.
+type agentDeepgramPayload struct {
+	ID string `json:"id"`
+	DeepgramAgentRequest
+}
+
+// rttPayload carries text for send_leg_rtt.
+type rttPayload struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// vsiWebRTCAddCandidatePayload combines a leg id with an ICE candidate for
+// webrtc_add_candidate.
+type vsiWebRTCAddCandidatePayload struct {
+	ID        string                  `json:"id"`
+	Candidate webrtc.ICECandidateInit `json:"candidate"`
 }
 
 // addLegPayload combines room_id with AddLegRequest fields.
@@ -64,11 +177,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsCreateLeg(lw, msg, req)
 
 	case "answer_leg":
-		var p struct {
-			ID              string `json:"id"`
-			SpeechDetection *bool  `json:"speech_detection,omitempty"`
-			Codec           string `json:"codec,omitempty"`
-		}
+		var p answerLegPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
@@ -79,10 +188,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsCommandResult(lw, msg, map[string]string{"status": "answering"})
 
 	case "delete_leg":
-		var p struct {
-			ID     string `json:"id"`
-			Reason string `json:"reason,omitempty"`
-		}
+		var p deleteLegPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
@@ -149,6 +255,58 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		s.wsSimpleLegCommand(lw, msg, s.doAcceptLegDTMF, "dtmf_accepting")
 	case "reject_leg_dtmf":
 		s.wsSimpleLegCommand(lw, msg, s.doRejectLegDTMF, "dtmf_rejecting")
+
+	// ── RTT (Real-Time Text, T.140) ─────────────────────────────────
+	case "send_leg_rtt":
+		var p rttPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doSendLegRTT(context.Background(), rttSourceVSI, p.ID, p.Text); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "sent"})
+	case "accept_leg_rtt":
+		s.wsSimpleLegCommand(lw, msg, s.doAcceptLegRTT, "rtt_accepting")
+	case "reject_leg_rtt":
+		s.wsSimpleLegCommand(lw, msg, s.doRejectLegRTT, "rtt_rejecting")
+
+	// ── WebRTC ──────────────────────────────────────────────────────
+	case "webrtc_offer":
+		var req WebRTCOfferRequest
+		if !s.wsParsePayload(lw, msg, &req) {
+			return
+		}
+		result, err := s.doWebRTCOffer(req)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, result)
+
+	case "webrtc_add_candidate":
+		var p vsiWebRTCAddCandidatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doWebRTCAddCandidate(p.ID, p.Candidate); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "added"})
+
+	case "webrtc_get_candidates":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		result, err := s.doWebRTCGetCandidates(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, result)
 
 	// ── Room queries ────────────────────────────────────────────────
 	case "list_rooms":
@@ -232,6 +390,380 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			return
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "removed"})
+
+	// ── Leg control gaps ────────────────────────────────────────────
+	case "leg_ring":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doRingLeg(p.ID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "ringing"})
+	case "leg_early_media":
+		var p earlyMediaPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doEarlyMediaLeg(p.ID, p.Codec); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "early_media"})
+	case "leg_amd_start":
+		var p legAMDStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		amd := p.AMDParams
+		if err := s.doStartAMDLeg(p.ID, &amd); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "started"})
+
+	// ── Recording (resource-first naming for new commands) ──────────
+	case "leg_record_start":
+		var p recordStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartRecordLeg(p.ID, p.RecordRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_record_start":
+		var p recordStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartRecordRoom(p.ID, p.RecordRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_record_pause":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doPauseRecordLeg(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_record_resume":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doResumeRecordLeg(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_record_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopRecordLeg(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_record_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopRecordRoom(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_record_pause":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doPauseRecordRoom(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_record_resume":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doResumeRecordRoom(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── Playback start/stop ─────────────────────────────────────────
+	case "leg_play_start":
+		var p playbackStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartLegPlay(p.ID, p.PlaybackRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_play_stop":
+		var p playbackTargetPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopLegPlay(p.ID, p.PlaybackID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_play_start":
+		var p playbackStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartRoomPlay(p.ID, p.PlaybackRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_play_stop":
+		var p playbackTargetPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopRoomPlay(p.ID, p.PlaybackID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── TTS ─────────────────────────────────────────────────────────
+	case "leg_tts":
+		var p ttsStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doLegTTS(p.ID, p.TTSRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_tts":
+		var p ttsStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doRoomTTS(p.ID, p.TTSRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── Transfer ────────────────────────────────────────────────────
+	case "leg_transfer":
+		var p transferLegPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doTransferLeg(p.ID, p.TransferRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── Playback volume ─────────────────────────────────────────────
+	case "leg_play_volume":
+		var p playbackVolumePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doVolumeLegPlay(p.ID, p.PlaybackID, p.Volume); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "ok"})
+	case "room_play_volume":
+		var p playbackVolumePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doVolumeRoomPlay(p.ID, p.PlaybackID, p.Volume); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "ok"})
+
+	// ── STT start ───────────────────────────────────────────────────
+	case "leg_stt_start":
+		var p sttStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartSTTLeg(p.ID, p.STTRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_stt_start":
+		var p sttStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStartSTTRoom(p.ID, p.STTRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── STT stop ────────────────────────────────────────────────────
+	case "leg_stt_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopSTTLeg(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_stt_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopSTTRoom(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── Agent start (per-provider) ──────────────────────────────────
+	case "leg_agent_elevenlabs":
+		var p agentElevenLabsPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartLegAgentElevenLabs(lw, msg, p)
+	case "leg_agent_vapi":
+		var p agentVAPIPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartLegAgentVAPI(lw, msg, p)
+	case "leg_agent_pipecat":
+		var p agentPipecatPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartLegAgentPipecat(lw, msg, p)
+	case "leg_agent_deepgram":
+		var p agentDeepgramPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartLegAgentDeepgram(lw, msg, p)
+	case "room_agent_elevenlabs":
+		var p agentElevenLabsPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartRoomAgentElevenLabs(lw, msg, p)
+	case "room_agent_vapi":
+		var p agentVAPIPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartRoomAgentVAPI(lw, msg, p)
+	case "room_agent_pipecat":
+		var p agentPipecatPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartRoomAgentPipecat(lw, msg, p)
+	case "room_agent_deepgram":
+		var p agentDeepgramPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		s.vsiStartRoomAgentDeepgram(lw, msg, p)
+
+	// ── Agent message ───────────────────────────────────────────────
+	case "leg_agent_message":
+		var p agentMessagePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doLegAgentMessage(context.Background(), p.ID, p.Message)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_agent_message":
+		var p agentMessagePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doRoomAgentMessage(context.Background(), p.ID, p.Message)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
+	// ── Agent stop ──────────────────────────────────────────────────
+	case "leg_agent_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopAgentLeg(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "room_agent_stop":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doStopAgentRoom(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
 
 	default:
 		s.vsiSendResponse(lw, msg.RequestID, "error",

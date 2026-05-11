@@ -2,6 +2,7 @@ package leg
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"sync"
@@ -65,6 +66,11 @@ type Leg interface {
 	SendDTMF(ctx context.Context, digits string) error
 	AcceptDTMF() bool
 	SetAcceptDTMF(accept bool)
+	OnTextReceived(func(text string, lossMarker bool))
+	SendText(ctx context.Context, text string) error
+	AcceptText() bool
+	SetAcceptText(accept bool)
+	RTTNegotiated() bool
 	Hangup(ctx context.Context) error
 	Answer(ctx context.Context) error
 	Context() context.Context
@@ -90,6 +96,10 @@ type Leg interface {
 	// duplicate events.
 	ClaimDisconnect() bool
 }
+
+// ErrRTTNotNegotiated is returned by SendText when RTT was not agreed in the
+// SDP offer/answer exchange (or the leg type does not support RTT).
+var ErrRTTNotNegotiated = errors.New("RTT not negotiated for this leg")
 
 type Manager struct {
 	mu   sync.RWMutex

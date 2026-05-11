@@ -273,7 +273,7 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 		// Idle deadline so a silent peer can't pin us beyond the timeout
 		// even when ctx is alive. The watcher above handles ctx cancel; this
 		// handles "no traffic, no cancel either".
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

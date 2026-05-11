@@ -105,6 +105,7 @@ Originate an outbound SIP call.
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
+| `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -564,6 +565,69 @@ curl -X POST http://localhost:8080/v1/legs/abc-123/dtmf/reject
 
 **Errors:**
 - `404` — Leg not found
+
+---
+
+### Real-Time Text (RTT, ITU-T T.140 / RFC 4103)
+
+VoiceBlender can negotiate an `m=text` media line alongside `m=audio` on SIP legs and exchange UTF-8 text in real time using the RFC 4103 RTP payload with RFC 2198 redundancy. Useful for accessibility (deaf / hard-of-hearing callers) and totally-conversational compliance scenarios.
+
+- **Inbound calls** automatically accept any `m=text` section the caller offers — no configuration needed.
+- **Outbound calls** offer RTT only when the originate request sets `"rtt": true` (see `POST /v1/legs`). Peers that don't speak RFC 4103 simply ignore or reject the section, and audio still negotiates normally.
+
+WebRTC legs do not currently bridge RTT (browsers use RFC 8865 over data channels rather than RFC 4103 over RTP).
+
+---
+
+### POST /v1/legs/{id}/rtt
+
+Send a chunk of UTF-8 text on the leg's RTT stream. Requires that the SDP exchange agreed on `m=text`.
+
+**Request:**
+
+```json
+{ "text": "hello\n" }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `text` | string | yes | UTF-8 text. May include T.140 control codes such as backspace (``) or CR/LF. |
+
+**Response:** `200 OK`
+
+```json
+{ "status": "sent" }
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/abc-123/rtt \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"hello"}'
+```
+
+**Errors:**
+- `400` — Invalid JSON or empty text
+- `404` — Leg not found
+- `409` — RTT was not negotiated for this leg (peer didn't include `m=text`, or `RTT_ENABLED=false`)
+- `500` — Send failed
+
+---
+
+### POST /v1/legs/{id}/rtt/accept
+
+Allow this leg to receive RTT text broadcast from other legs in the same room and to emit `rtt.received` events. Default for new legs.
+
+**Response:** `200 OK { "status": "rtt_accepting" }`
+
+---
+
+### POST /v1/legs/{id}/rtt/reject
+
+Block this leg from receiving RTT text broadcast from other legs and suppress `rtt.received` events for it.
+
+**Response:** `200 OK { "status": "rtt_rejecting" }`
 
 ---
 
@@ -1754,6 +1818,8 @@ The server sends application-level pings every 30 seconds. The connection is als
 
 Upgrade to a WebSocket connection and receive all events in real-time as JSON text frames. The JSON shape is identical to webhook payloads (same `Event.MarshalJSON` format).
 
+The full machine-readable contract for the VSI WebSocket — every command, every event, every lifecycle frame — lives in [`asyncapi.yaml`](./asyncapi.yaml) (AsyncAPI 3.0). The tables below are a quick reference; the YAML is authoritative and is generated from `internal/api/vsi_meta.go` via `make asyncapi`.
+
 **Upgrade:** Standard HTTP → WebSocket upgrade. No request body.
 
 **Query Parameters:**
@@ -1837,12 +1903,59 @@ The WebSocket accepts bidirectional commands using the same naming as the REST A
 | `send_leg_dtmf` | `{"id":"...","digits":"123"}` | Send DTMF digits on a leg |
 | `accept_leg_dtmf` | `{"id":"..."}` | Enable DTMF reception |
 | `reject_leg_dtmf` | `{"id":"..."}` | Disable DTMF reception |
+| `send_leg_rtt` | `{"id":"...","text":"hello"}` | Send Real-Time Text (T.140) on a SIP leg with negotiated `m=text` |
+| `accept_leg_rtt` | `{"id":"..."}` | Enable RTT reception (default) |
+| `reject_leg_rtt` | `{"id":"..."}` | Disable RTT reception |
+| `webrtc_offer` | `{"sdp":"..."}` | Establish a WebRTC leg via SDP offer/answer; returns `{leg_id, sdp}` |
+| `webrtc_add_candidate` | `{"id":"...","candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0}}` | Add a remote ICE candidate to a WebRTC leg |
+| `webrtc_get_candidates` | `{"id":"..."}` | Drain server-gathered ICE candidates; returns `{candidates, done}` |
 | `list_rooms` | *(none)* | List all rooms |
 | `get_room` | `{"id":"..."}` | Get a single room |
 | `create_room` | `CreateRoomRequest` | Create a room |
 | `delete_room` | `{"id":"..."}` | Delete a room |
 | `add_leg_to_room` | `{"room_id":"...","leg_id":"..."}` | Add or move leg to room (supports `mute`, `deaf`, `accept_dtmf`) |
 | `remove_leg_from_room` | `{"room_id":"...","leg_id":"..."}` | Remove leg from room |
+
+The commands below mirror the corresponding REST endpoints and use **resource-first** naming (`leg_*`, `room_*`). All payloads merge the URL identifier with the REST request body fields.
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `leg_ring` | `{"id":"..."}` | Send 180 Ringing on a SIP inbound leg |
+| `leg_early_media` | `{"id":"...","codec":"PCMU"}` | Enable 183 Session Progress with media on a SIP inbound leg |
+| `leg_amd_start` | `{"id":"...","initial_silence_timeout":2500,...}` | Start AMD on a connected SIP leg (all `AMDParams` fields are optional) |
+| `leg_transfer` | `{"id":"...","target":"sip:bob@example.com","replaces_leg_id":""}` | Initiate SIP REFER transfer (blind or attended) |
+| `leg_record_start` | `{"id":"...","storage":"file",...}` | Start recording a leg (stereo when in a room or SIP, mono otherwise) |
+| `leg_record_stop` | `{"id":"..."}` | Stop a leg recording; returns `{status, file}` |
+| `leg_record_pause` | `{"id":"..."}` | Pause a leg recording |
+| `leg_record_resume` | `{"id":"..."}` | Resume a paused leg recording |
+| `room_record_start` | `{"id":"...","multi_channel":true,...}` | Start recording a room mix |
+| `room_record_stop` | `{"id":"..."}` | Stop a room recording |
+| `room_record_pause` | `{"id":"..."}` | Pause a room recording |
+| `room_record_resume` | `{"id":"..."}` | Resume a paused room recording |
+| `leg_play_start` | `{"id":"...","url":"https://...","volume":0}` | Start audio playback on a leg; returns `{playback_id, status}` |
+| `leg_play_stop` | `{"id":"...","playback_id":"pb-..."}` | Stop a leg playback |
+| `leg_play_volume` | `{"id":"...","playback_id":"pb-...","volume":-3}` | Adjust active playback volume (-8..8) |
+| `room_play_start` | `{"id":"...","tone":"us_ringback"}` | Start audio playback into a room mix |
+| `room_play_stop` | `{"id":"...","playback_id":"pb-..."}` | Stop a room playback |
+| `room_play_volume` | `{"id":"...","playback_id":"pb-...","volume":2}` | Adjust active room playback volume |
+| `leg_stt_start` | `{"id":"...","provider":"deepgram","language":"en"}` | Start speech-to-text on a leg |
+| `leg_stt_stop` | `{"id":"..."}` | Stop STT on a leg |
+| `room_stt_start` | `{"id":"...","provider":"elevenlabs"}` | Start STT on every participant of a room (auto-extends to legs that join later) |
+| `room_stt_stop` | `{"id":"..."}` | Stop room STT |
+| `leg_tts` | `{"id":"...","text":"Hello","voice":"Joanna","provider":"aws"}` | Synthesize and play TTS on a leg; returns `{tts_id, status}` |
+| `room_tts` | `{"id":"...","text":"...","voice":"..."}` | Synthesize and play TTS into a room mix |
+| `leg_agent_elevenlabs` | `{"id":"...","agent_id":"..."}` | Attach an ElevenLabs Conversational AI agent to a leg |
+| `leg_agent_vapi` | `{"id":"...","assistant_id":"..."}` | Attach a VAPI agent to a leg |
+| `leg_agent_pipecat` | `{"id":"...","websocket_url":"ws://..."}` | Attach a Pipecat bot to a leg |
+| `leg_agent_deepgram` | `{"id":"...","greeting":"...","settings":{...}}` | Attach a Deepgram Voice Agent to a leg |
+| `leg_agent_message` | `{"id":"...","message":"..."}` | Inject a text message into a running leg agent session |
+| `leg_agent_stop` | `{"id":"..."}` | Detach the agent from a leg |
+| `room_agent_elevenlabs` | `{"id":"...","agent_id":"..."}` | Attach ElevenLabs agent to a room |
+| `room_agent_vapi` | `{"id":"...","assistant_id":"..."}` | Attach VAPI agent to a room |
+| `room_agent_pipecat` | `{"id":"...","websocket_url":"ws://..."}` | Attach Pipecat bot to a room |
+| `room_agent_deepgram` | `{"id":"...","greeting":"..."}` | Attach Deepgram agent to a room |
+| `room_agent_message` | `{"id":"...","message":"..."}` | Inject a text message into a running room agent session |
+| `room_agent_stop` | `{"id":"..."}` | Detach the agent from a room |
 
 The server sends application-level pings every 30 seconds. If a client reads too slowly, events are buffered per-connection. When the buffer is full, **new events are dropped** and the server sends a notification before the next successfully delivered event:
 
@@ -1990,6 +2103,40 @@ Retrieve server-side ICE candidates gathered since the last call (trickle ICE). 
 
 ---
 
+### WebRTC over VSI
+
+The same offer/answer/trickle-ICE flow is also available over the `/v1/vsi` WebSocket — useful when a client is already connected to receive events and wants to avoid an extra HTTP round trip per ICE candidate. Three commands mirror the REST endpoints:
+
+| Command | Payload | Result |
+|---------|---------|--------|
+| `webrtc_offer` | `{"sdp":"..."}` | `{"leg_id":"...","sdp":"..."}` |
+| `webrtc_add_candidate` | `{"id":"...","candidate":{...}}` | `{"status":"added"}` |
+| `webrtc_get_candidates` | `{"id":"..."}` | `{"candidates":[...],"done":true}` |
+
+**Example exchange:**
+
+```json
+// Client → server
+{"type":"webrtc_offer","request_id":"r1","payload":{"sdp":"v=0\r\no=- ..."}}
+
+// Server → client
+{"type":"webrtc_offer.result","request_id":"r1","data":{"leg_id":"550e8400-...","sdp":"v=0\r\no=- ..."}}
+
+// Client → server (one frame per browser-side candidate)
+{"type":"webrtc_add_candidate","request_id":"r2","payload":{"id":"550e8400-...","candidate":{"candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}}}
+
+// Server → client
+{"type":"webrtc_add_candidate.result","request_id":"r2","data":{"status":"added"}}
+
+// Client polls until done=true
+{"type":"webrtc_get_candidates","request_id":"r3","payload":{"id":"550e8400-..."}}
+{"type":"webrtc_get_candidates.result","request_id":"r3","data":{"candidates":[{"candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}],"done":false}}
+```
+
+The returned `leg_id` is interchangeable with REST: subsequent `mute_leg`, `add_leg_to_room`, `delete_leg`, etc. all accept it. Errors follow the standard VSI error envelope (`{"type":"error","request_id":"...","data":{"code":...,"message":"..."}}`).
+
+---
+
 ## Webhooks
 
 Webhooks deliver real-time event notifications via HTTP POST. There are three ways to configure webhooks:
@@ -2085,6 +2232,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.transfer_completed` | Transfer reached terminal 2xx; leg is hung up | `leg_id`, `status_code`, `reason` |
 | `leg.transfer_failed` | Transfer ended in non-2xx or local error | `leg_id`, `status_code`, `reason`, `error` |
 | `dtmf.received` | DTMF digit received | `leg_id`, `digit`, `seq` |
+| `rtt.received` | RTT (T.140 / RFC 4103) text chunk received | `leg_id`, `text`, `seq`, `loss_marker` |
 | `speaking.started` | Participant started speaking | `leg_id`, `room_id` (if in a room) |
 | `speaking.stopped` | Participant stopped speaking | `leg_id`, `room_id` (if in a room) |
 

@@ -114,3 +114,44 @@ func TestSetRemote_IPv4(t *testing.T) {
 		t.Errorf("port = %d, want 5004", addr.Port)
 	}
 }
+
+// TestClose_IdempotentReleasesOnce guards against the double-release bug:
+// multiple rollback paths in engine.Invite each call Close on the same
+// RTPSession; without idempotency, the second call would release the port
+// to the allocator a second time, potentially yanking it from another leg
+// that has since been handed the same port.
+func TestClose_IdempotentReleasesOnce(t *testing.T) {
+	alloc, err := NewPortAllocator(40000, 40200)
+	if err != nil {
+		t.Fatalf("NewPortAllocator: %v", err)
+	}
+	sess, err := NewRTPSessionFromAllocator(alloc)
+	if err != nil {
+		t.Fatalf("NewRTPSessionFromAllocator: %v", err)
+	}
+	port := sess.LocalPort()
+
+	if err := sess.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	// Re-allocate the now-released port to a second session.
+	sess2, err := NewRTPSessionOnPort(port)
+	if err != nil {
+		t.Fatalf("re-listen on released port %d: %v", port, err)
+	}
+	sess2.allocator = alloc
+	alloc.used[port] = true
+	defer sess2.Close()
+
+	// A second Close on the original session must NOT release sess2's port.
+	if err := sess.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	alloc.mu.Lock()
+	stillHeld := alloc.used[port]
+	alloc.mu.Unlock()
+	if !stillHeld {
+		t.Errorf("port %d was released by double-close on sess1 — sess2 is now homeless", port)
+	}
+}

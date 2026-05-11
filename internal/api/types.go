@@ -39,6 +39,7 @@ type CreateLegRequest struct {
 	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
@@ -59,6 +60,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"rtt":              {Description: "If true, the outbound INVITE offers Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. The peer may accept or ignore the m=text section; SDP negotiation either yields RTT or audio-only. Default: false.", Default: false},
 }
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
@@ -249,6 +251,15 @@ var dtmfRequestFields = map[string]FieldEnrichment{
 	"digits": {Description: "DTMF digits to send (0-9, *, #)"},
 }
 
+// RTTRequest is the request body for POST /v1/legs/{id}/rtt.
+type RTTRequest struct {
+	Text string `json:"text"`
+}
+
+var rttRequestFields = map[string]FieldEnrichment{
+	"text": {Description: "UTF-8 text to send. May be one or more characters and may include T.140 control codes (e.g. backspace U+0008, CR/LF)."},
+}
+
 // TTSRequest is the request body for POST /v1/legs/{id}/tts and POST /v1/rooms/{id}/tts.
 type TTSRequest struct {
 	Text     string `json:"text"`
@@ -413,6 +424,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("PlaybackRequest", playbackRequestFields)
 	collect("VolumeRequest", volumeRequestFields)
 	collect("DTMFRequest", dtmfRequestFields)
+	collect("RTTRequest", rttRequestFields)
 	collect("TTSRequest", ttsRequestFields)
 	collect("STTRequest", sttRequestFields)
 	collect("RecordRequest", recordRequestFields)

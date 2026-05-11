@@ -43,6 +43,11 @@ func (m *apiMockLeg) IsDeaf() bool                           { return m.deaf }
 func (m *apiMockLeg) SetDeaf(v bool)                         { m.deaf = v }
 func (m *apiMockLeg) AcceptDTMF() bool                       { return m.acceptDTMF }
 func (m *apiMockLeg) SetAcceptDTMF(v bool)                   { m.acceptDTMF = v }
+func (m *apiMockLeg) OnTextReceived(func(string, bool))      {}
+func (m *apiMockLeg) SendText(context.Context, string) error { return leg.ErrRTTNotNegotiated }
+func (m *apiMockLeg) AcceptText() bool                       { return false }
+func (m *apiMockLeg) SetAcceptText(bool)                     {}
+func (m *apiMockLeg) RTTNegotiated() bool                    { return false }
 func (m *apiMockLeg) SetSpeakingTap(io.Writer)               {}
 func (m *apiMockLeg) ClearSpeakingTap()                      {}
 func (m *apiMockLeg) IsHeld() bool                           { return false }

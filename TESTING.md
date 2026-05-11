@@ -14,6 +14,9 @@ go test ./internal/... && go test -tags integration -timeout 60s ./tests/integra
 
 # Benchmark (scaling + audio latency)
 go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
+
+# Two-instance cluster (for manual end-to-end / peer-to-peer scenarios)
+docker compose -f docker/docker-compose.cluster.yml up --build
 ```
 
 ---
@@ -96,6 +99,7 @@ go test -tags integration -v -timeout 60s -run TestOutboundInbound_Connect ./tes
 go test -tags integration -v -timeout 60s -run TestRecording ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestRTT ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 ```
 
@@ -104,6 +108,7 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | Test | Description |
 |------|-------------|
 | `TestOutboundInbound_Connect` | Basic SIP call: A dials B, B answers, both connect |
+| `TestUseSourceSocket_RoundTripCall` | Smoke test for `SIP_USE_SOURCE_SOCKET=true`: end-to-end call setup, BYE, and disconnect events still complete with the flag enabled. Unit tests in `internal/sip/engine_test.go` (`TestEngine_PinDestinationToSource`) cover the destination-pinning logic itself. |
 | `TestCall_IPv6Loopback` | Same as above, but both instances are bound to `[::1]` (IPv6 loopback). Skipped when the host has no IPv6 loopback. |
 | `TestCall_DualStackInterop_V4Caller` | A dual-stack callee answers an IPv4-only caller with `IN IP4` SDP — exercises the family-from-offer rule. |
 | `TestDisconnect_DurationFields` | Verify `duration_total` and `duration_answered` in disconnect event |
@@ -140,6 +145,14 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestDTMFBroadcast_RejectAtOriginate` | `accept_dtmf:false` in originate body blocks reception from the start |
 | `TestDTMFBroadcast_SequenceNumbers` | DTMF events carry monotonically increasing per-leg sequence numbers |
 | `TestDTMFBroadcast_SenderExcluded` | Originating leg never receives a forwarded copy of its own DTMF |
+| `TestRTT_RoundTrip` | Two RTT-enabled instances exchange T.140 / RFC 4103 text in both directions; `rtt.received` events fire with the sent payload |
+| `TestRTT_NotEnabledRejectsSendCleanly` | When the peer omits `m=text`, audio still negotiates; `POST /v1/legs/{id}/rtt` on the un-negotiated side returns 409 |
+| `TestVSI_RTT_SendDelivers` | VSI `send_leg_rtt` over the `/v1/vsi` WebSocket delivers text to the remote leg (parity with REST `POST /rtt`) |
+| `TestVSI_RTT_AcceptRejectFlags` | VSI `accept_leg_rtt`/`reject_leg_rtt` toggle the receiver's `accept_text` flag; rejected legs suppress `rtt.received` events |
+| `TestVSI_RTT_SendOnNonNegotiatedLegReturns409` | VSI `send_leg_rtt` returns an error frame when RTT was never negotiated on the leg |
+| `TestVSI_WebRTC_FullFlow` | VSI `webrtc_offer` / `webrtc_get_candidates` / `webrtc_add_candidate` round-trip with a real pion client; leg appears in `list_legs` and emits `leg.connected` |
+| `TestVSI_WebRTC_OfferInvalidSDP` | VSI `webrtc_offer` with malformed SDP returns a 400 error frame |
+| `TestVSI_WebRTC_AddCandidateNotFound` | VSI `webrtc_add_candidate` for an unknown leg returns a 404 error frame |
 | `TestWSEvents_ConnectedAndEvents` | Connect to `/v1/vsi`, originate a call, verify `leg.ringing` event arrives |
 | `TestWSEvents_UnknownCommand` | Send unknown command with `request_id`, verify error response echoes it |
 | `TestWSEvents_StopCommand` | Send `stop`, verify server closes the connection |
@@ -357,3 +370,30 @@ go test ./internal/... && go test -tags integration -v -timeout 300s ./tests/int
 **Port conflicts:** Each test instance picks random free UDP/TCP ports. Conflicts are unlikely but possible under heavy system load. Re-running usually resolves this.
 
 **`no test files` for integration tests:** You forgot `-tags integration`. The test files have a `//go:build integration` constraint.
+
+---
+
+## Manual RTT (Real-Time Text) Interop
+
+Automated coverage exercises VoiceBlender against itself. To verify wire-level interop with a third-party SIP UA, [Linphone](https://www.linphone.org/) is the most reliable open-source RFC 4103 implementation:
+
+1. Start VoiceBlender with `RTT_ENABLED=true` and a webhook receiver listening for `rtt.received`.
+2. In Linphone, enable Real-Time Text in account settings, then call into VoiceBlender's SIP port.
+3. Answer the call via the REST API: `POST /v1/legs/{id}/answer`.
+4. Type in Linphone's RTT pane — observe `rtt.received` events arriving at your webhook with the typed text and a monotonically increasing `seq`.
+5. Send text from VoiceBlender:
+
+   ```bash
+   curl -X POST http://localhost:8080/v1/legs/<leg_id>/rtt \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"hello"}'
+   ```
+
+   The text appears in Linphone's RTT pane.
+6. To verify RFC 2198 redundancy, force packet loss on loopback before step 4:
+   ```bash
+   sudo tc qdisc add dev lo root netem loss 10%
+   # ... run the test ...
+   sudo tc qdisc del dev lo root netem
+   ```
+   Most characters should still arrive; bursts of loss show up as the U+FFFD replacement character with `loss_marker: true` on the event.

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 
@@ -57,49 +56,35 @@ func (t *transferStore) del(callID string) {
 	delete(t.m, callID)
 }
 
-// transferLeg implements POST /v1/legs/{id}/transfer.
-func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+// TransferLegResult is the success payload for initiating a transfer.
+type TransferLegResult struct {
+	Status string `json:"status"`
+}
 
-	var req TransferRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
-			return
-		}
-	}
+func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegResult, error) {
 	if req.Target == "" {
-		writeError(w, http.StatusBadRequest, "missing target")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "missing target")
 	}
 	target := sip.Uri{}
 	if err := sip.ParseUri(req.Target, &target); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid target URI: %v", err))
-		return
+		return nil, newAPIError(http.StatusBadRequest, "invalid target URI: %v", err)
 	}
-	// sipgo's ParseUri accepts "sip:" with no host.
 	if target.Host == "" {
-		writeError(w, http.StatusBadRequest, "target URI missing host")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "target URI missing host")
 	}
-
-	l, ok := s.LegMgr.Get(id)
+	l, ok := s.LegMgr.Get(legID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
 	if _, ok := l.(*leg.WhatsAppLeg); ok {
-		writeError(w, http.StatusConflict, "transfer is not supported for WhatsApp legs (Meta disallows REFER)")
-		return
+		return nil, newAPIError(http.StatusConflict, "transfer is not supported for WhatsApp legs (Meta disallows REFER)")
 	}
 	sl, ok := l.(*leg.SIPLeg)
 	if !ok {
-		writeError(w, http.StatusConflict, "transfer is supported only on SIP legs")
-		return
+		return nil, newAPIError(http.StatusConflict, "transfer is supported only on SIP legs")
 	}
 	if sl.State() != leg.StateConnected {
-		writeError(w, http.StatusConflict, "leg must be connected to transfer")
-		return
+		return nil, newAPIError(http.StatusConflict, "leg must be connected to transfer")
 	}
 
 	kind := "blind"
@@ -108,20 +93,16 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 	if req.ReplacesLegID != "" {
 		other, found := s.LegMgr.Get(req.ReplacesLegID)
 		if !found {
-			writeError(w, http.StatusConflict, "replaces_leg_id not found")
-			return
+			return nil, newAPIError(http.StatusConflict, "replaces_leg_id not found")
 		}
 		osl, isSip := other.(*leg.SIPLeg)
 		if !isSip || osl.State() != leg.StateConnected {
-			writeError(w, http.StatusConflict, "replaces_leg_id must be a connected SIP leg")
-			return
+			return nil, newAPIError(http.StatusConflict, "replaces_leg_id must be a connected SIP leg")
 		}
 		callID, localTag, remoteTag, ok := osl.DialogIdentity()
 		if !ok {
-			writeError(w, http.StatusConflict, "replaces_leg_id has no usable dialog identity")
-			return
+			return nil, newAPIError(http.StatusConflict, "replaces_leg_id has no usable dialog identity")
 		}
-		// RFC 3891: tags are from the replaced party's view → swap.
 		replaces = &sipmod.ReplacesParams{
 			CallID:  callID,
 			FromTag: localTag,
@@ -141,8 +122,6 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		direction:     transferOutbound,
 	})
 
-	// Some peers skip 202 Accepted and signal only via NOTIFY; emit
-	// transfer_initiated before Do() so the event fires regardless.
 	s.Bus.Publish(events.LegTransferInitiated, &events.LegTransferInitiatedData{
 		LegScope:      events.LegScope{LegID: sl.ID(), AppID: sl.AppID()},
 		Kind:          kind,
@@ -150,11 +129,9 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		ReplacesLegID: req.ReplacesLegID,
 	})
 
-	// Use the leg's context, not r.Context() (HTTP request closes early).
 	go func() {
 		callID := sl.CallID()
 		if err := sl.Transfer(sl.Context(), req.Target, replaces); err != nil {
-			// NOTIFY-terminated may have resolved this already.
 			if _, stillPending := s.transfers.get(callID); !stillPending {
 				s.Log.Debug("transfer REFER returned after NOTIFY-terminated resolution", "leg_id", sl.ID(), "error", err)
 				return
@@ -169,7 +146,25 @@ func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "transfer_initiated"})
+	return &TransferLegResult{Status: "transfer_initiated"}, nil
+}
+
+// transferLeg implements POST /v1/legs/{id}/transfer.
+func (s *Server) transferLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req TransferRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+	}
+	res, err := s.doTransferLeg(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, res)
 }
 
 // HandleReferNotify dispatches NOTIFY sipfrag updates for outbound transfers.

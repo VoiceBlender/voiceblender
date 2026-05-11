@@ -15,6 +15,16 @@ type SDPConfig struct {
 	LocalIP string
 	RTPPort int
 	Codecs  []codec.CodecType // Offered/supported codecs in preference order
+
+	// Optional RTT (T.140 / RFC 4103) section. Set TextRTPPort != 0 to emit
+	// an m=text line in offers/answers/re-INVITEs. TextT140PT and TextREDPT
+	// are dynamic payload types; TextREDPT == 0 disables RFC 2198 redundancy.
+	// RTTRedundancy is the number of t140/t140/.../t140 generations declared
+	// in the RED fmtp.
+	TextRTPPort   int
+	TextT140PT    uint8
+	TextREDPT     uint8
+	RTTRedundancy int
 }
 
 // SDPMedia holds parsed remote media parameters.
@@ -27,6 +37,20 @@ type SDPMedia struct {
 	CodecRates    map[codec.CodecType]int   // Clock rate (Hz) for each codec, from a=rtpmap; falls back to codec default
 	Ptime         int                       // ms, default 20
 	Direction     string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
+
+	// Text (RTT, T.140 / RFC 4103). Non-nil when the remote SDP carried an
+	// m=text line with a non-zero port. A port of zero (peer rejecting the
+	// text section per RFC 3264) leaves this field nil.
+	Text *SDPTextMedia
+}
+
+// SDPTextMedia holds parsed remote RTT parameters.
+type SDPTextMedia struct {
+	RemoteIP   string
+	RemotePort int
+	T140PT     uint8 // 0 if no t140/1000 advertised
+	REDPT      uint8 // 0 if no red/1000 advertised
+	Direction  string
 }
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
@@ -94,6 +118,74 @@ func addTelephoneEvent(md *pionsdp.MediaDescription, pt uint8, clockRate int) {
 		pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d 0-16", pt)))
 }
 
+// buildTextMediaDescription returns an m=text MediaDescription for RTT
+// (RFC 4103 + RFC 2198 redundancy) using the parameters in cfg, or nil if
+// cfg.TextRTPPort is zero. direction must be one of the standard SDP
+// direction attribute names ("sendrecv", "sendonly", "recvonly", "inactive").
+func buildTextMediaDescription(cfg SDPConfig, direction string) *pionsdp.MediaDescription {
+	if cfg.TextRTPPort == 0 {
+		return nil
+	}
+	t140PT := cfg.TextT140PT
+	if t140PT == 0 {
+		t140PT = 99
+	}
+	redPT := cfg.TextREDPT
+
+	formats := []string{}
+	if redPT != 0 {
+		formats = append(formats, strconv.Itoa(int(redPT)))
+	}
+	formats = append(formats, strconv.Itoa(int(t140PT)))
+
+	md := &pionsdp.MediaDescription{
+		MediaName: pionsdp.MediaName{
+			Media:   "text",
+			Port:    pionsdp.RangedPort{Value: cfg.TextRTPPort},
+			Protos:  []string{"RTP", "AVP"},
+			Formats: formats,
+		},
+	}
+	if redPT != 0 {
+		md.Attributes = append(md.Attributes,
+			pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d red/1000", redPT)))
+	}
+	md.Attributes = append(md.Attributes,
+		pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d t140/1000", t140PT)))
+	if redPT != 0 {
+		// fmtp lists redundancy generations: e.g. "98 99/99/99" for 2-gen RED.
+		repeats := cfg.RTTRedundancy + 1
+		if repeats < 2 {
+			repeats = 2
+		}
+		parts := make([]string, repeats)
+		for i := range parts {
+			parts[i] = strconv.Itoa(int(t140PT))
+		}
+		md.Attributes = append(md.Attributes,
+			pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", redPT, strings.Join(parts, "/"))))
+	}
+	if direction != "" {
+		md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute(direction))
+	}
+	return md
+}
+
+// rejectedTextSection returns an m=text section with port=0 — the RFC 3264
+// way to reject a text section offered by the peer. Generated when the peer
+// offers RTT and we have it disabled; preserves m-line ordering for the
+// answer.
+func rejectedTextSection() *pionsdp.MediaDescription {
+	return &pionsdp.MediaDescription{
+		MediaName: pionsdp.MediaName{
+			Media:   "text",
+			Port:    pionsdp.RangedPort{Value: 0},
+			Protos:  []string{"RTP", "AVP"},
+			Formats: []string{"0"},
+		},
+	}
+}
+
 // GenerateOffer builds an SDP offer with all configured codecs.
 func GenerateOffer(cfg SDPConfig) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
@@ -143,13 +235,19 @@ func GenerateOffer(cfg SDPConfig) []byte {
 
 	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
 
+	if textMD := buildTextMediaDescription(cfg, "sendrecv"); textMD != nil {
+		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
+	}
+
 	b, _ := sd.Marshal()
 	return b
 }
 
 // GenerateAnswer builds an SDP answer with a single selected codec.
-// selectedPT is the payload type to use (echoed from the remote offer for dynamic PTs).
-func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8) []byte {
+// selectedPT echoes the remote offer's PT for dynamic codecs. When
+// cfg.TextRTPPort != 0 the answer accepts RTT; when textRejected is true
+// the answer includes a port=0 m=text section per RFC 3264.
+func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, textRejected bool) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
 	formats := []string{strconv.Itoa(int(selectedPT))}
@@ -181,6 +279,14 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8) [
 
 	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
 
+	if cfg.TextRTPPort != 0 {
+		if tmd := buildTextMediaDescription(cfg, "sendrecv"); tmd != nil {
+			sd.MediaDescriptions = append(sd.MediaDescriptions, tmd)
+		}
+	} else if textRejected {
+		sd.MediaDescriptions = append(sd.MediaDescriptions, rejectedTextSection())
+	}
+
 	b, _ := sd.Marshal()
 	return b
 }
@@ -204,93 +310,18 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 		m.AddressFamily = sd.ConnectionInformation.AddressType
 	}
 
+	audioParsed := false
 	for _, md := range sd.MediaDescriptions {
-		if md.MediaName.Media != "audio" {
-			continue
-		}
-		m.RemotePort = md.MediaName.Port.Value
-
-		// Media-level c= overrides session-level.
-		if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
-			m.RemoteIP = md.ConnectionInformation.Address.Address
-			m.AddressFamily = md.ConnectionInformation.AddressType
-		}
-
-		// Build rtpmap: PT → codec name + clock rate from attributes.
-		rtpmap := make(map[uint8]string)
-		rtpmapRate := make(map[uint8]int)
-		for _, a := range md.Attributes {
-			if a.Key == "rtpmap" {
-				parts := strings.SplitN(a.Value, " ", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				pt, err := strconv.Atoi(parts[0])
-				if err != nil {
-					continue
-				}
-				name := parts[1]
-				if idx := strings.Index(name, "/"); idx > 0 {
-					rest := name[idx+1:]
-					name = name[:idx]
-					rateStr := rest
-					if i := strings.Index(rest, "/"); i > 0 {
-						rateStr = rest[:i]
-					}
-					if rate, err := strconv.Atoi(rateStr); err == nil {
-						rtpmapRate[uint8(pt)] = rate
-					}
-				}
-				rtpmap[uint8(pt)] = name
-			}
-			if a.Key == "ptime" {
-				if v, err := strconv.Atoi(a.Value); err == nil {
-					m.Ptime = v
-				}
-			}
-			switch a.Key {
-			case "sendrecv", "sendonly", "recvonly", "inactive":
-				m.Direction = a.Key
-			}
-		}
-
-		// Parse payload types from m= line formats.
-		for _, ptStr := range md.MediaName.Formats {
-			pt, err := strconv.Atoi(ptStr)
-			if err != nil {
+		switch md.MediaName.Media {
+		case "audio":
+			if audioParsed {
 				continue
 			}
-			upt := uint8(pt)
-
-			// Try static PT mapping first.
-			ct := codec.CodecTypeFromPT(upt)
-			if ct != codec.CodecUnknown {
-				m.Codecs = append(m.Codecs, ct)
-				m.CodecPTs[ct] = upt
-				if rate, ok := rtpmapRate[upt]; ok {
-					m.CodecRates[ct] = rate
-				} else {
-					m.CodecRates[ct] = ct.ClockRate()
-				}
-				continue
-			}
-
-			// Try rtpmap for dynamic PTs.
-			if name, ok := rtpmap[upt]; ok {
-				ct = codec.CodecTypeFromName(name)
-				if ct != codec.CodecUnknown {
-					m.Codecs = append(m.Codecs, ct)
-					m.CodecPTs[ct] = upt
-					if rate, ok := rtpmapRate[upt]; ok {
-						m.CodecRates[ct] = rate
-					} else {
-						m.CodecRates[ct] = ct.ClockRate()
-					}
-				}
-			}
+			parseAudioMedia(md, m)
+			audioParsed = true
+		case "text":
+			parseTextMedia(md, m, &sd)
 		}
-
-		break // Only handle first audio m= line.
 	}
 
 	if m.RemoteIP == "" {
@@ -301,6 +332,131 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 	}
 
 	return m, nil
+}
+
+// parseAudioMedia populates the audio-related fields of m from a single
+// audio MediaDescription.
+func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
+	m.RemotePort = md.MediaName.Port.Value
+	if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
+		m.RemoteIP = md.ConnectionInformation.Address.Address
+		m.AddressFamily = md.ConnectionInformation.AddressType
+	}
+
+	rtpmap := make(map[uint8]string)
+	rtpmapRate := make(map[uint8]int)
+	for _, a := range md.Attributes {
+		if a.Key == "rtpmap" {
+			parts := strings.SplitN(a.Value, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			pt, err := strconv.Atoi(parts[0])
+			if err != nil {
+				continue
+			}
+			name := parts[1]
+			if idx := strings.Index(name, "/"); idx > 0 {
+				rest := name[idx+1:]
+				name = name[:idx]
+				rateStr := rest
+				if i := strings.Index(rest, "/"); i > 0 {
+					rateStr = rest[:i]
+				}
+				if rate, err := strconv.Atoi(rateStr); err == nil {
+					rtpmapRate[uint8(pt)] = rate
+				}
+			}
+			rtpmap[uint8(pt)] = name
+		}
+		if a.Key == "ptime" {
+			if v, err := strconv.Atoi(a.Value); err == nil {
+				m.Ptime = v
+			}
+		}
+		switch a.Key {
+		case "sendrecv", "sendonly", "recvonly", "inactive":
+			m.Direction = a.Key
+		}
+	}
+
+	for _, ptStr := range md.MediaName.Formats {
+		pt, err := strconv.Atoi(ptStr)
+		if err != nil {
+			continue
+		}
+		upt := uint8(pt)
+
+		ct := codec.CodecTypeFromPT(upt)
+		if ct != codec.CodecUnknown {
+			m.Codecs = append(m.Codecs, ct)
+			m.CodecPTs[ct] = upt
+			if rate, ok := rtpmapRate[upt]; ok {
+				m.CodecRates[ct] = rate
+			} else {
+				m.CodecRates[ct] = ct.ClockRate()
+			}
+			continue
+		}
+		if name, ok := rtpmap[upt]; ok {
+			ct = codec.CodecTypeFromName(name)
+			if ct != codec.CodecUnknown {
+				m.Codecs = append(m.Codecs, ct)
+				m.CodecPTs[ct] = upt
+				if rate, ok := rtpmapRate[upt]; ok {
+					m.CodecRates[ct] = rate
+				} else {
+					m.CodecRates[ct] = ct.ClockRate()
+				}
+			}
+		}
+	}
+}
+
+// parseTextMedia parses an m=text section (RFC 4103) and, when port != 0,
+// stores the negotiated parameters in m.Text.
+func parseTextMedia(md *pionsdp.MediaDescription, m *SDPMedia, sd *pionsdp.SessionDescription) {
+	port := md.MediaName.Port.Value
+	if port == 0 {
+		// Peer rejecting the text section — leave m.Text nil.
+		return
+	}
+	tx := &SDPTextMedia{RemotePort: port}
+	if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
+		tx.RemoteIP = md.ConnectionInformation.Address.Address
+	} else if sd.ConnectionInformation != nil && sd.ConnectionInformation.Address != nil {
+		tx.RemoteIP = sd.ConnectionInformation.Address.Address
+	}
+	for _, a := range md.Attributes {
+		switch a.Key {
+		case "rtpmap":
+			parts := strings.SplitN(a.Value, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			pt, err := strconv.Atoi(parts[0])
+			if err != nil {
+				continue
+			}
+			name := parts[1]
+			if idx := strings.Index(name, "/"); idx > 0 {
+				name = name[:idx]
+			}
+			switch strings.ToLower(name) {
+			case "t140":
+				tx.T140PT = uint8(pt)
+			case "red":
+				tx.REDPT = uint8(pt)
+			}
+		case "sendrecv", "sendonly", "recvonly", "inactive":
+			tx.Direction = a.Key
+		}
+	}
+	if tx.T140PT == 0 && tx.REDPT == 0 {
+		// No usable PT advertised; treat as not negotiated.
+		return
+	}
+	m.Text = tx
 }
 
 // GenerateReInviteSDP builds an SDP body for a re-INVITE (hold/unhold).
@@ -336,6 +492,10 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 	)
 
 	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
+
+	if textMD := buildTextMediaDescription(cfg, direction); textMD != nil {
+		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
+	}
 
 	b, _ := sd.Marshal()
 	return b

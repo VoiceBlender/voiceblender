@@ -1,28 +1,33 @@
-// Package wsutilx provides small helpers shared by the codebase's many
-// WebSocket recv-loop implementations. The central problem it addresses is
-// that gobwas/ws's wsutil.Reader.NextFrame ignores context cancellation —
-// when the underlying TCP connection enters a zombie state (no FIN, no RST
-// observable to userspace, e.g. carrier NAT timeout), the read blocks
-// indefinitely, the surrounding loop never wakes to check ctx.Done, and the
-// goroutine plus everything it pins (event-bus subscriptions, channels,
-// peer goroutines) leaks. Read deadlines bound the wait so loops always
-// wake within a known interval.
+// Package wsutilx provides shared helpers for WebSocket recv loops.
+// gobwas/ws's NextFrame ignores ctx cancellation; read deadlines bound
+// the wait so half-open sockets can't pin goroutines indefinitely.
 package wsutilx
 
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
-// DefaultReadTimeout is a sensible upper bound for inter-frame idle on
-// long-lived application WebSockets. Server-driven pings run every 30s in
-// our codebase, so 60s gives one missed ping plus margin before the recv
-// loop unblocks and cleanup runs.
-//
-// Declared as a var (rather than const) so integration tests can shrink it
-// to verify zombie-connection cleanup without waiting a full minute.
-var DefaultReadTimeout = 60 * time.Second
+// DurationVar is an atomic time.Duration suitable for package-level
+// configuration knobs that may be read concurrently by recv loops while
+// tests mutate them.
+type DurationVar struct{ ns atomic.Int64 }
+
+// Load returns the current value.
+func (v *DurationVar) Load() time.Duration { return time.Duration(v.ns.Load()) }
+
+// Store atomically replaces the value.
+func (v *DurationVar) Store(d time.Duration) { v.ns.Store(int64(d)) }
+
+// DefaultReadTimeout caps inter-frame idle on application WebSockets.
+// 60s = 30s ping interval + 1 missed ping + margin. Tests may override.
+var DefaultReadTimeout DurationVar
+
+func init() {
+	DefaultReadTimeout.Store(60 * time.Second)
+}
 
 // SetReadDeadline pushes the read deadline forward on conn. Call before
 // each blocking read inside a recv loop; pass timeout <= 0 to skip (e.g.

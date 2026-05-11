@@ -52,6 +52,11 @@ func (m *mockLeg) IsDeaf() bool                                 { return m.deaf 
 func (m *mockLeg) SetDeaf(v bool)                               { m.deaf = v }
 func (m *mockLeg) AcceptDTMF() bool                             { return m.acceptDTMF }
 func (m *mockLeg) SetAcceptDTMF(v bool)                         { m.acceptDTMF = v }
+func (m *mockLeg) OnTextReceived(func(string, bool))            {}
+func (m *mockLeg) SendText(context.Context, string) error       { return ErrRTTNotNegotiated }
+func (m *mockLeg) AcceptText() bool                             { return false }
+func (m *mockLeg) SetAcceptText(bool)                           {}
+func (m *mockLeg) RTTNegotiated() bool                          { return false }
 func (m *mockLeg) SetSpeakingTap(w io.Writer)                   {}
 func (m *mockLeg) ClearSpeakingTap()                            {}
 func (m *mockLeg) IsHeld() bool                                 { return m.held }

@@ -281,5 +281,13 @@ func (l *WhatsAppLeg) SendDTMF(_ context.Context, _ string) error {
 	return fmt.Errorf("DTMF send over WhatsApp not yet implemented")
 }
 
+func (l *WhatsAppLeg) OnTextReceived(_ func(text string, lossMarker bool)) {}
+
+func (l *WhatsAppLeg) SendText(_ context.Context, _ string) error { return ErrRTTNotNegotiated }
+
+func (l *WhatsAppLeg) AcceptText() bool     { return false }
+func (l *WhatsAppLeg) SetAcceptText(_ bool) {}
+func (l *WhatsAppLeg) RTTNegotiated() bool  { return false }
+
 func (l *WhatsAppLeg) AudioReader() io.Reader { return l.media.AudioReader() }
 func (l *WhatsAppLeg) AudioWriter() io.Writer { return l.media.AudioWriter() }

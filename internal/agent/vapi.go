@@ -324,7 +324,7 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 		default:
 		}
 
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

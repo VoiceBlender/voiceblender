@@ -30,6 +30,8 @@ const (
 
 	DTMFReceived EventType = "dtmf.received"
 
+	RTTReceived EventType = "rtt.received"
+
 	PlaybackStarted  EventType = "playback.started"
 	PlaybackFinished EventType = "playback.finished"
 	PlaybackError    EventType = "playback.error"

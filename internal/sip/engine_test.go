@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/emiago/sipgo/sip"
 )
 
 func TestEngine_ExternalIP(t *testing.T) {
@@ -122,3 +123,67 @@ func TestEngine_AdvertisedIPForFamily_Fallback(t *testing.T) {
 	}
 }
 
+func TestEngine_PinDestinationToSource(t *testing.T) {
+	const (
+		source    = "203.0.113.7:5060" // actual UDP source (e.g. behind NAT)
+		viaTarget = "192.0.2.1:5060"   // raddr resolved from Via — unroutable
+	)
+
+	makeReq := func() *sip.Request {
+		req := sip.NewRequest(sip.OPTIONS, sip.Uri{Scheme: "sip", User: "a", Host: "example.com"})
+		req.SetSource(source)
+		return req
+	}
+
+	cases := []struct {
+		name     string
+		flag     bool
+		reqSrc   string
+		preset   string // simulated raddr
+		expected string
+	}{
+		{name: "flag on, source available, preset overridden", flag: true, reqSrc: source, preset: viaTarget, expected: source},
+		{name: "flag off, preset preserved", flag: false, reqSrc: source, preset: viaTarget, expected: viaTarget},
+		{name: "flag on, no source, preset preserved", flag: true, reqSrc: "", preset: viaTarget, expected: viaTarget},
+		{name: "flag on, synthetic :port source, preset preserved", flag: true, reqSrc: ":5060", preset: viaTarget, expected: viaTarget},
+		{name: "flag on, synthetic :0 source, preset preserved", flag: true, reqSrc: ":0", preset: viaTarget, expected: viaTarget},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Engine{useSourceSocket: tc.flag, log: slog.Default()}
+			req := makeReq()
+			req.SetSource(tc.reqSrc)
+			res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+			res.SetDestination(tc.preset)
+
+			e.pinDestinationToSource(req, res)
+
+			if got := res.Destination(); got != tc.expected {
+				t.Errorf("Destination = %q, want %q (flag=%v, src=%q)", got, tc.expected, tc.flag, tc.reqSrc)
+			}
+		})
+	}
+}
+
+func TestEngine_UseSourceSocketPropagated(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		want := want
+		t.Run("", func(t *testing.T) {
+			e, err := NewEngine(EngineConfig{
+				BindIP:          "127.0.0.1",
+				BindPort:        0,
+				SIPHost:         "test",
+				Codecs:          []codec.CodecType{codec.CodecPCMU},
+				Log:             slog.Default(),
+				UseSourceSocket: want,
+			})
+			if err != nil {
+				t.Fatalf("NewEngine: %v", err)
+			}
+			if got := e.useSourceSocket; got != want {
+				t.Errorf("engine.useSourceSocket = %v, want %v", got, want)
+			}
+		})
+	}
+}

@@ -206,6 +206,20 @@ type DTMFReceivedData struct {
 	Seq   uint64 `json:"seq"`
 }
 
+// --- RTT (Real-Time Text, ITU-T T.140 / RFC 4103) ---
+
+// RTTReceivedData is emitted whenever a SIP leg receives a chunk of T.140
+// text from the remote UA. Text may be an arbitrary UTF-8 string (single
+// character, several characters, or control codes such as backspace).
+// LossMarker is true when a U+FFFD has been prepended to indicate that
+// preceding text was lost beyond what RFC 2198 redundancy could recover.
+type RTTReceivedData struct {
+	LegScope
+	Text       string `json:"text"`
+	Seq        uint64 `json:"seq"`
+	LossMarker bool   `json:"loss_marker,omitempty"`
+}
+
 // --- Playback ---
 
 type PlaybackStartedData struct {
