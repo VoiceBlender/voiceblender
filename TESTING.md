@@ -14,6 +14,9 @@ go test ./internal/... && go test -tags integration -timeout 60s ./tests/integra
 
 # Benchmark (scaling + audio latency)
 go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
+
+# Two-instance cluster (for manual end-to-end / peer-to-peer scenarios)
+docker compose -f docker/docker-compose.cluster.yml up --build
 ```
 
 ---

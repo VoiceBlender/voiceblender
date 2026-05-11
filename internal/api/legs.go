@@ -64,11 +64,9 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 	return d
 }
 
-// publishDisconnect publishes the leg.disconnected event and then clears the
-// per-leg webhook. The clear MUST happen after publish so the event has a
-// route. Gated by leg.ClaimDisconnect so racing termination paths (DELETE,
-// remote BYE, RTP timeout, session expiry, etc.) cannot publish duplicate
-// events for the same leg — only the first caller wins.
+// publishDisconnect publishes leg.disconnected then clears the per-leg
+// webhook. Order matters: the clear must follow publish so the event has
+// a route. ClaimDisconnect gates racing termination paths.
 func (s *Server) publishDisconnect(l leg.Leg, reason string) {
 	if !l.ClaimDisconnect() {
 		return
@@ -186,9 +184,8 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 	}
 }
 
-// buildOfferedCodecs converts a parsed remote SDP into the list emitted in
-// the leg.ringing event. Order in remote.Codecs already reflects the offer's
-// m= line preference; we surface that as a 1-based priority field.
+// buildOfferedCodecs emits a 1-based priority list matching the m= line
+// preference order in the offer.
 func buildOfferedCodecs(remote *sipmod.SDPMedia) []events.OfferedCodec {
 	if remote == nil || len(remote.Codecs) == 0 {
 		return nil
@@ -263,53 +260,65 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "answering"})
 }
 
-func (s *Server) ringLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) doRingLeg(id string) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return newAPIError(http.StatusNotFound, "leg not found")
 	}
-
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "only SIP inbound legs can be rung")
-		return
+		return newAPIError(http.StatusBadRequest, "only SIP inbound legs can be rung")
 	}
-
 	if l.State() != leg.StateRinging {
-		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
-		return
+		return newAPIError(http.StatusConflict, "leg is %s, not ringing", l.State())
 	}
-
 	go func() {
 		if err := sipLeg.SendRinging(context.Background()); err != nil {
 			s.publishCommandFailed(sipLeg, "ring", err)
 		}
 	}()
+	return nil
+}
 
+func (s *Server) ringLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.doRingLeg(id); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ringing"})
+}
+
+func (s *Server) doEarlyMediaLeg(id, codecName string) error {
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		return newAPIError(http.StatusBadRequest, "only SIP inbound legs support early media")
+	}
+	if l.State() != leg.StateRinging {
+		return newAPIError(http.StatusConflict, "leg is %s, not ringing", l.State())
+	}
+	preferred := codec.CodecUnknown
+	if codecName != "" {
+		c, err := resolveOfferedCodec(sipLeg, codecName)
+		if err != nil {
+			return err
+		}
+		preferred = c
+	}
+	go func() {
+		if err := sipLeg.EnableEarlyMedia(context.Background(), preferred); err != nil {
+			s.publishCommandFailed(sipLeg, "early_media", err)
+		}
+	}()
+	return nil
 }
 
 func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
-	}
-
-	sipLeg, ok := l.(*leg.SIPLeg)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "only SIP inbound legs support early media")
-		return
-	}
-
-	if l.State() != leg.StateRinging {
-		writeError(w, http.StatusConflict, fmt.Sprintf("leg is %s, not ringing", l.State()))
-		return
-	}
-
 	var req EarlyMediaLegRequest
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
@@ -317,23 +326,10 @@ func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	preferred := codec.CodecUnknown
-	if req.Codec != "" {
-		c, err := resolveOfferedCodec(sipLeg, req.Codec)
-		if err != nil {
-			handleAPIError(w, err)
-			return
-		}
-		preferred = c
+	if err := s.doEarlyMediaLeg(id, req.Codec); err != nil {
+		handleAPIError(w, err)
+		return
 	}
-
-	go func() {
-		if err := sipLeg.EnableEarlyMedia(context.Background(), preferred); err != nil {
-			s.publishCommandFailed(sipLeg, "early_media", err)
-		}
-	}()
-
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "early_media"})
 }
 
@@ -497,6 +493,40 @@ func (s *Server) setupHoldCallbacks(l *leg.SIPLeg) {
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
+	})
+}
+
+// setupLegEventForwarding wires DTMF, RTT, and RTP-timeout callbacks on a
+// SIPLeg to publish bus events and (for DTMF/RTT) broadcast to peer legs.
+func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
+	var dtmfSeq atomic.Uint64
+	l.OnDTMF(func(digit rune) {
+		seq := dtmfSeq.Add(1)
+		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+			Digit:    string(digit),
+			Seq:      seq,
+		})
+		s.broadcastDTMF(l.ID(), digit)
+	})
+
+	var rttSeq atomic.Uint64
+	l.OnTextReceived(func(text string, lossMarker bool) {
+		seq := rttSeq.Add(1)
+		s.Bus.Publish(events.RTTReceived, &events.RTTReceivedData{
+			LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+			Text:       text,
+			Seq:        seq,
+			LossMarker: lossMarker,
+		})
+		s.broadcastRTT(l.ID(), text)
+	})
+
+	l.OnRTPTimeout(func() {
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.publishDisconnect(l, "rtp_timeout")
+		}
 	})
 }
 
@@ -720,36 +750,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		l.SetAppID(req.AppID)
 	}
 
-	var dtmfSeq atomic.Uint64
-	l.OnDTMF(func(digit rune) {
-		seq := dtmfSeq.Add(1)
-		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
-			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-			Digit:    string(digit),
-			Seq:      seq,
-		})
-		s.broadcastDTMF(l.ID(), digit)
-	})
-
-	var rttSeq atomic.Uint64
-	l.OnTextReceived(func(text string, lossMarker bool) {
-		seq := rttSeq.Add(1)
-		s.Bus.Publish(events.RTTReceived, &events.RTTReceivedData{
-			LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-			Text:       text,
-			Seq:        seq,
-			LossMarker: lossMarker,
-		})
-		s.broadcastRTT(l.ID(), text)
-	})
-
-	l.OnRTPTimeout(func() {
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "rtp_timeout")
-		}
-	})
-
+	s.setupLegEventForwarding(l)
 	s.setupHoldCallbacks(l)
 
 	// addToRoom adds the leg to the requested room at most once (on early
@@ -970,37 +971,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			return
 		}
 
-		// Set up DTMF event forwarding
-		var dtmfSeq atomic.Uint64
-		l.OnDTMF(func(digit rune) {
-			seq := dtmfSeq.Add(1)
-			s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
-				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-				Digit:    string(digit),
-				Seq:      seq,
-			})
-			s.broadcastDTMF(l.ID(), digit)
-		})
-
-		var rttSeq atomic.Uint64
-		l.OnTextReceived(func(text string, lossMarker bool) {
-			seq := rttSeq.Add(1)
-			s.Bus.Publish(events.RTTReceived, &events.RTTReceivedData{
-				LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-				Text:       text,
-				Seq:        seq,
-				LossMarker: lossMarker,
-			})
-			s.broadcastRTT(l.ID(), text)
-		})
-
-		l.OnRTPTimeout(func() {
-			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "rtp_timeout")
-			}
-		})
-
+		s.setupLegEventForwarding(l)
 		s.setupHoldCallbacks(l)
 
 		// Wire session timer expiry to hangup + event.
@@ -1029,9 +1000,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		// Caller hung up before answer.
 	}
 
-	// Skip publishing if the API already drove the disconnect (its goroutine
-	// owns the disconnect event in that case, including any user-supplied
-	// reason). Mirrors the guard on the post-answer disconnect path below.
+	// API path already published; ClaimDisconnect would no-op anyway.
 	if l.State() == leg.StateHungUp {
 		return
 	}
@@ -1093,39 +1062,40 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 	return start, nil
 }
 
+func (s *Server) doStartAMDLeg(id string, req *AMDParams) error {
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	sipLeg, ok := l.(*leg.SIPLeg)
+	if !ok {
+		return newAPIError(http.StatusBadRequest, "AMD is only supported on SIP legs")
+	}
+	if l.State() != leg.StateConnected {
+		return newAPIError(http.StatusConflict, "leg must be connected, current state: %s", l.State())
+	}
+	if req == nil {
+		req = &AMDParams{}
+	}
+	start, err := s.prepareAMD(sipLeg, req)
+	if err != nil {
+		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
+	start()
+	return nil
+}
+
 // startAMDLeg handles POST /v1/legs/{id}/amd — starts AMD on a connected leg.
 func (s *Server) startAMDLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
-	}
-
-	sipLeg, ok := l.(*leg.SIPLeg)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "AMD is only supported on SIP legs")
-		return
-	}
-
-	if l.State() != leg.StateConnected {
-		writeError(w, http.StatusConflict, fmt.Sprintf("leg must be connected, current state: %s", l.State()))
-		return
-	}
-
 	var req AMDParams
 	if err := decodeJSON(r, &req); err != nil {
-		// Empty body is fine — use all defaults.
 		req = AMDParams{}
 	}
-
-	start, err := s.prepareAMD(sipLeg, &req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := s.doStartAMDLeg(id, &req); err != nil {
+		handleAPIError(w, err)
 		return
 	}
-
-	start()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 }
 

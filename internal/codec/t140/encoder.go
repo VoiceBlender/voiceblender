@@ -65,13 +65,9 @@ func (e *Encoder) Flush(ts uint32) (payload []byte, useRED bool) {
 		return nil, false
 	}
 
-	// Always emit exactly `e.redundancy` redundant block headers per packet
-	// (RFC 4103 §4.3 / RFC 2198). When history is shallower than the
-	// configured depth, leading slots are filled with length-0 placeholder
-	// blocks. Some peers (notably JMF-based stacks like Omnitor TIPcon1)
-	// fall back to "treat as plain T.140" when the redundancy structure
-	// doesn't match the depth they negotiated, which surfaces our 1-byte
-	// primary header as a literal character at the start of the message.
+	// RFC 4103 §4.3 / RFC 2198: always emit exactly `e.redundancy` redundant
+	// block headers; leading slots are length-0 placeholders when history is
+	// shallower than the configured depth.
 	emptySlots := e.redundancy - len(e.history)
 	headerLen := 4*e.redundancy + 1
 	totalDataLen := len(primaryData)

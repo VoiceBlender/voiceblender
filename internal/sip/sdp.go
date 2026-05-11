@@ -244,8 +244,10 @@ func GenerateOffer(cfg SDPConfig) []byte {
 }
 
 // GenerateAnswer builds an SDP answer with a single selected codec.
-// selectedPT is the payload type to use (echoed from the remote offer for dynamic PTs).
-func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8) []byte {
+// selectedPT echoes the remote offer's PT for dynamic codecs. When
+// cfg.TextRTPPort != 0 the answer accepts RTT; when textRejected is true
+// the answer includes a port=0 m=text section per RFC 3264.
+func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, textRejected bool) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
 	formats := []string{strconv.Itoa(int(selectedPT))}
@@ -275,47 +277,6 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8) [
 		pionsdp.NewPropertyAttribute("rtcp-mux"),
 	)
 
-	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
-
-	if textMD := buildTextMediaDescription(cfg, "sendrecv"); textMD != nil {
-		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
-	}
-
-	b, _ := sd.Marshal()
-	return b
-}
-
-// GenerateAnswerWithText is like GenerateAnswer but emits an m=text section
-// reflecting the local RTT decision. When cfg.TextRTPPort != 0 the answer
-// accepts RTT; when textRejected is true the answer includes a rejected
-// (port=0) m=text section to acknowledge the peer's offer per RFC 3264.
-func GenerateAnswerWithText(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, textRejected bool) []byte {
-	sd := buildSessionDescription(cfg.LocalIP)
-
-	formats := []string{strconv.Itoa(int(selectedPT))}
-	if selected == codec.CodecOpus {
-		formats = append(formats, "100")
-	}
-	formats = append(formats, "101")
-
-	md := &pionsdp.MediaDescription{
-		MediaName: pionsdp.MediaName{
-			Media:   "audio",
-			Port:    pionsdp.RangedPort{Value: cfg.RTPPort},
-			Protos:  []string{"RTP", "AVP"},
-			Formats: formats,
-		},
-	}
-	addCodecAttributes(md, selectedPT, selected)
-	if selected == codec.CodecOpus {
-		addTelephoneEvent(md, 100, 48000)
-	}
-	addTelephoneEvent(md, 101, 8000)
-	md.Attributes = append(md.Attributes,
-		pionsdp.NewAttribute("ptime", "20"),
-		pionsdp.NewPropertyAttribute("sendrecv"),
-		pionsdp.NewPropertyAttribute("rtcp-mux"),
-	)
 	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
 
 	if cfg.TextRTPPort != 0 {

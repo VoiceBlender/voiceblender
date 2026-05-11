@@ -58,4 +58,12 @@ func TestUseSourceSocket_RoundTripCall(t *testing.T) {
 
 	instA.collector.waitForMatch(t, events.LegDisconnected, nil, 5*time.Second)
 	instB.collector.waitForMatch(t, events.LegDisconnected, nil, 5*time.Second)
+
+	// Assert the flag actually pinned a destination on at least one side.
+	// Without this guard a silent no-op (e.g. due to a future refactor that
+	// drops the SetDestination call) would still let the round trip succeed
+	// because both peers happen to share 127.0.0.1.
+	if instA.engine.DestinationsPinned() == 0 && instB.engine.DestinationsPinned() == 0 {
+		t.Errorf("SIP_USE_SOURCE_SOCKET=true but no destination pinning fired on either side")
+	}
 }

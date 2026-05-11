@@ -251,52 +251,43 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 	}
 }
 
-func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
+// RecordingStartResult is the success payload for starting a leg or room recording.
+type RecordingStartResult struct {
+	Status string `json:"status"`
+	File   string `json:"file"`
+}
+
+func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingStartResult, error) {
+	l, ok := s.LegMgr.Get(legID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-
-	var req RecordRequest
-	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&req) // ignore error; empty body is fine
-	}
-
 	backend, err := s.resolveStorage(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
 	rec := recording.NewRecorder(s.Log)
 	var fpath string
 	var recErr error
+	id := legID
 
-	// If the leg is in a room, record stereo: left=incoming audio, right=mixed-minus-self.
 	if roomID := l.RoomID(); roomID != "" {
 		rm, rmOK := s.RoomMgr.Get(roomID)
 		if !rmOK {
-			writeError(w, http.StatusConflict, "leg's room not found")
-			return
+			return nil, newAPIError(http.StatusConflict, "leg's room not found")
 		}
-
 		leftPR, leftPW := createPipe()
 		rightPR, rightPW := createPipe()
-
 		mix := rm.Mixer()
 		mix.SetParticipantTap(id, leftPW)
 		mix.SetParticipantOutTap(id, rightPW)
-
 		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
 		if recErr != nil {
 			mix.ClearParticipantTap(id)
 			mix.ClearParticipantOutTap(id)
-			writeError(w, http.StatusInternalServerError, recErr.Error())
-			return
+			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
 		}
-
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
 			roomID:  roomID,
@@ -305,22 +296,16 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 		}
 		legRecordState.Unlock()
 	} else if sipLeg, ok := l.(*leg.SIPLeg); ok {
-		// Standalone SIP leg — stereo via RTP taps:
-		// left = incoming (what remote says), right = outgoing (what we send).
 		leftPR, leftPW := createPipe()
 		rightPR, rightPW := createPipe()
-
 		sipLeg.SetInTap(leftPW)
 		sipLeg.SetOutTap(rightPW)
-
 		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(l.SampleRate()))
 		if recErr != nil {
 			sipLeg.ClearInTap()
 			sipLeg.ClearOutTap()
-			writeError(w, http.StatusInternalServerError, recErr.Error())
-			return
+			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
 		}
-
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
 			pipes:   []*pipeWriter{leftPW, rightPW},
@@ -328,23 +313,16 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 		}
 		legRecordState.Unlock()
 	} else {
-		// Non-SIP standalone leg — mono recording from the leg's audio reader.
 		reader := l.AudioReader()
 		if reader == nil {
-			writeError(w, http.StatusConflict, "leg has no audio reader")
-			return
+			return nil, newAPIError(http.StatusConflict, "leg has no audio reader")
 		}
 		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()))
 		if recErr != nil {
-			writeError(w, http.StatusInternalServerError, recErr.Error())
-			return
+			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
 		}
-
-		// Mono leg still needs storage tracking.
 		legRecordState.Lock()
-		legRecordState.m[id] = &legRecordInfo{
-			storage: backend,
-		}
+		legRecordState.m[id] = &legRecordInfo{storage: backend}
 		legRecordState.Unlock()
 	}
 
@@ -356,7 +334,21 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 		LegRoomScope: events.LegRoomScope{LegID: id, AppID: l.AppID()},
 		File:         fpath,
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "recording", "file": fpath})
+	return &RecordingStartResult{Status: "recording", File: fpath}, nil
+}
+
+func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req RecordRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+	res, err := s.doStartRecordLeg(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // stopLegRecording stops any active recording for the given leg, cleans up
@@ -434,96 +426,119 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	return location, true
 }
 
+// RecordingStopLegResult is the success payload for stopping a leg recording.
+type RecordingStopLegResult struct {
+	Status string `json:"status"`
+	File   string `json:"file"`
+}
+
+// RecordingPauseResumeResult is the success payload for pause/resume on a leg
+// or room recording. Status is one of "paused", "already_paused", "resumed",
+// "not_paused".
+type RecordingPauseResumeResult struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) doStopRecordLeg(legID string) (*RecordingStopLegResult, error) {
+	fpath, ok := s.stopLegRecording(legID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
+	}
+	return &RecordingStopLegResult{Status: "stopped", File: fpath}, nil
+}
+
 func (s *Server) stopRecordLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	fpath, ok := s.stopLegRecording(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
+	res, err := s.doStopRecordLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "file": fpath})
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doPauseRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
+	legRecorders.Lock()
+	rec, ok := legRecorders.m[legID]
+	legRecorders.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
+	}
+	if !rec.Pause() {
+		return &RecordingPauseResumeResult{Status: "already_paused"}, nil
+	}
+	legAppID := ""
+	if ll, ok := s.LegMgr.Get(legID); ok {
+		legAppID = ll.AppID()
+	}
+	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
+		LegRoomScope: events.LegRoomScope{LegID: legID, AppID: legAppID},
+	})
+	return &RecordingPauseResumeResult{Status: "paused"}, nil
 }
 
 func (s *Server) pauseRecordLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	res, err := s.doPauseRecordLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doResumeRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
 	legRecorders.Lock()
-	rec, ok := legRecorders.m[id]
+	rec, ok := legRecorders.m[legID]
 	legRecorders.Unlock()
 	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
-		return
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
 	}
-	if !rec.Pause() {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
-		return
+	if !rec.Resume() {
+		return &RecordingPauseResumeResult{Status: "not_paused"}, nil
 	}
 	legAppID := ""
-	if ll, ok := s.LegMgr.Get(id); ok {
+	if ll, ok := s.LegMgr.Get(legID); ok {
 		legAppID = ll.AppID()
 	}
-	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
-		LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
+	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
+		LegRoomScope: events.LegRoomScope{LegID: legID, AppID: legAppID},
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
+	return &RecordingPauseResumeResult{Status: "resumed"}, nil
 }
 
 func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	legRecorders.Lock()
-	rec, ok := legRecorders.m[id]
-	legRecorders.Unlock()
-	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
+	res, err := s.doResumeRecordLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	if !rec.Resume() {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
-		return
-	}
-	legAppID := ""
-	if ll, ok := s.LegMgr.Get(id); ok {
-		legAppID = ll.AppID()
-	}
-	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
-		LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
-	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
+	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	rm, ok := s.RoomMgr.Get(id)
+func (s *Server) doStartRecordRoom(roomID string, req RecordRequest) (*RecordingStartResult, error) {
+	rm, ok := s.RoomMgr.Get(roomID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "room not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
-
-	var req RecordRequest
-	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&req)
-	}
-
 	backend, err := s.resolveStorage(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
-
 	parts := rm.Participants()
 	if len(parts) == 0 {
-		writeError(w, http.StatusConflict, "room has no participants")
-		return
+		return nil, newAPIError(http.StatusConflict, "room has no participants")
 	}
 
-	// Use the mixer tap via a pipe for room recording (full mix, always started)
+	id := roomID
 	pr, pw := createPipe()
 	rm.Mixer().SetTap(pw)
 
 	rec := recording.NewRecorder(s.Log)
 	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
 	}
 
 	roomRecorders.Lock()
@@ -538,7 +553,6 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	roomRecordStorage.m[id] = backend
 	roomRecordStorage.Unlock()
 
-	// Multi-channel: start per-participant recordings.
 	if req.MultiChannel {
 		mc := &multiChannelState{
 			active:       true,
@@ -556,7 +570,6 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 		roomMultiChannel.Lock()
 		roomMultiChannel.m[id] = mc
 		roomMultiChannel.Unlock()
-
 		mix := rm.Mixer()
 		for _, p := range parts {
 			mc.startLeg(p.ID(), mix, s.Config.RecordingDir)
@@ -567,7 +580,21 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: rm.AppID},
 		File:         fpath,
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "recording", "file": fpath})
+	return &RecordingStartResult{Status: "recording", File: fpath}, nil
+}
+
+func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req RecordRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+	res, err := s.doStartRecordRoom(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // cleanupRoomRecording stops all recording activity for a room and returns
@@ -631,41 +658,48 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 	return location, mcResult, true
 }
 
-func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+// RecordingStopRoomResult is the success payload for stopping a room
+// recording. multi_channel_file/channels are present only when the recording
+// was started with multi_channel=true.
+type RecordingStopRoomResult struct {
+	Status           string                           `json:"status"`
+	File             string                           `json:"file"`
+	MultiChannelFile string                           `json:"multi_channel_file,omitempty"`
+	Channels         map[string]recording.ChannelInfo `json:"channels,omitempty"`
+}
 
-	location, mcResult, ok := s.cleanupRoomRecording(id)
+func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, error) {
+	location, mcResult, ok := s.cleanupRoomRecording(roomID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
-		return
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
 	}
-
 	roomAppID := ""
-	if rm, ok := s.RoomMgr.Get(id); ok {
+	if rm, ok := s.RoomMgr.Get(roomID); ok {
 		roomAppID = rm.AppID
 	}
-	resp := map[string]interface{}{"status": "stopped", "file": location}
+	res := &RecordingStopRoomResult{Status: "stopped", File: location}
 	evtData := &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 		File:         location,
 	}
 	if mcResult != nil {
-		resp["multi_channel_file"] = mcResult.FilePath
-		channels := make(map[string]interface{}, len(mcResult.Channels))
-		for legID, ch := range mcResult.Channels {
-			channels[legID] = map[string]interface{}{
-				"channel":  ch.Channel,
-				"start_ms": ch.StartMs,
-				"end_ms":   ch.EndMs,
-			}
-		}
-		resp["channels"] = channels
+		res.MultiChannelFile = mcResult.FilePath
+		res.Channels = mcResult.Channels
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
 	}
-
 	s.Bus.Publish(events.RecordingFinished, evtData)
-	writeJSON(w, http.StatusOK, resp)
+	return res, nil
+}
+
+func (s *Server) stopRecordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doStopRecordRoom(id)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // setRoomRecordingPaused applies paused to the room mix recorder and, if
@@ -708,46 +742,60 @@ func setRoomRecordingPaused(roomID string, paused bool) (changed bool, found boo
 	return changed, true
 }
 
-func (s *Server) pauseRecordRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	changed, ok := setRoomRecordingPaused(id, true)
+func (s *Server) doPauseRecordRoom(roomID string) (*RecordingPauseResumeResult, error) {
+	changed, ok := setRoomRecordingPaused(roomID, true)
 	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
-		return
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
 	}
 	if !changed {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already_paused"})
-		return
+		return &RecordingPauseResumeResult{Status: "already_paused"}, nil
 	}
 	roomAppID := ""
-	if rm, ok := s.RoomMgr.Get(id); ok {
+	if rm, ok := s.RoomMgr.Get(roomID); ok {
 		roomAppID = rm.AppID
 	}
 	s.Bus.Publish(events.RecordingPaused, &events.RecordingPausedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "paused"})
+	return &RecordingPauseResumeResult{Status: "paused"}, nil
+}
+
+func (s *Server) pauseRecordRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doPauseRecordRoom(id)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doResumeRecordRoom(roomID string) (*RecordingPauseResumeResult, error) {
+	changed, ok := setRoomRecordingPaused(roomID, false)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
+	}
+	if !changed {
+		return &RecordingPauseResumeResult{Status: "not_paused"}, nil
+	}
+	roomAppID := ""
+	if rm, ok := s.RoomMgr.Get(roomID); ok {
+		roomAppID = rm.AppID
+	}
+	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
+		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
+	})
+	return &RecordingPauseResumeResult{Status: "resumed"}, nil
 }
 
 func (s *Server) resumeRecordRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	changed, ok := setRoomRecordingPaused(id, false)
-	if !ok {
-		writeError(w, http.StatusNotFound, "no recording in progress")
+	res, err := s.doResumeRecordRoom(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	if !changed {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "not_paused"})
-		return
-	}
-	roomAppID := ""
-	if rm, ok := s.RoomMgr.Get(id); ok {
-		roomAppID = rm.AppID
-	}
-	s.Bus.Publish(events.RecordingResumed, &events.RecordingResumedData{
-		LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
-	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "resumed"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 // stopRoomRecordingIfEmpty stops the room's recording when no leg participants

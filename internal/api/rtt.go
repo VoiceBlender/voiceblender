@@ -16,6 +16,12 @@ import (
 // is still available via SIP_DEBUG wire dumps when needed.
 const rttPreviewMaxRunes = 64
 
+// RTT send source tags surfaced in debug logs.
+const (
+	rttSourceREST = "rest"
+	rttSourceVSI  = "vsi"
+)
+
 // rttPreview returns a UTF-8-safe preview suitable for slog values.
 func rttPreview(text string) string {
 	if utf8.RuneCountInString(text) <= rttPreviewMaxRunes {
@@ -60,7 +66,7 @@ func (s *Server) sendRTT(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := s.doSendLegRTT(r.Context(), "rest", id, req.Text); err != nil {
+	if err := s.doSendLegRTT(r.Context(), rttSourceREST, id, req.Text); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -107,6 +113,8 @@ func (s *Server) rejectRTTLeg(w http.ResponseWriter, r *http.Request) {
 
 // broadcastRTT forwards a chunk of received text to every other RTT-capable
 // leg in the same room that has accept_text enabled. Mirrors broadcastDTMF.
+// Runs inline on the source leg's dispatcher; the short per-peer deadline
+// caps the worst-case stall when a peer's outbound text queue is full.
 func (s *Server) broadcastRTT(fromLegID, text string) {
 	roomID, ok := s.RoomMgr.FindLegRoom(fromLegID)
 	if !ok {
@@ -121,12 +129,11 @@ func (s *Server) broadcastRTT(fromLegID, text string) {
 			continue
 		}
 		s.Log.Debug("rtt broadcast", "from_leg", fromLegID, "to_leg", p.ID(), "len", len(text))
-		go func(target leg.Leg) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if err := target.SendText(ctx, text); err != nil {
-				s.Log.Warn("rtt forward failed", "from_leg", fromLegID, "to_leg", target.ID(), "error", err)
-			}
-		}(p)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		err := p.SendText(ctx, text)
+		cancel()
+		if err != nil {
+			s.Log.Warn("rtt forward failed", "from_leg", fromLegID, "to_leg", p.ID(), "error", err)
+		}
 	}
 }

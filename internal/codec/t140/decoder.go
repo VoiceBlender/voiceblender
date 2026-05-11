@@ -14,7 +14,9 @@ type Decoder struct {
 	haveSeq  bool
 	lastSeq  uint16
 	seenTS   map[uint32]struct{}
-	recentTS []uint32
+	recentTS [dedupWindow]uint32 // ring buffer of timestamps in seenTS
+	head     int                 // next ring index to write
+	count    int                 // valid entries in the ring (≤ dedupWindow)
 }
 
 // NewDecoder returns an empty decoder.
@@ -91,13 +93,14 @@ func (d *Decoder) markSeen(ts uint32) {
 	if _, ok := d.seenTS[ts]; ok {
 		return
 	}
-	d.seenTS[ts] = struct{}{}
-	d.recentTS = append(d.recentTS, ts)
-	if len(d.recentTS) > dedupWindow {
-		evict := d.recentTS[0]
-		d.recentTS = d.recentTS[1:]
-		delete(d.seenTS, evict)
+	if d.count == dedupWindow {
+		delete(d.seenTS, d.recentTS[d.head])
+	} else {
+		d.count++
 	}
+	d.recentTS[d.head] = ts
+	d.head = (d.head + 1) % dedupWindow
+	d.seenTS[ts] = struct{}{}
 }
 
 type decodedBlock struct {

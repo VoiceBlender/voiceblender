@@ -30,14 +30,9 @@ func NewOpusEncoder() (*OpusEncoder, error) {
 	}, nil
 }
 
-// Encode encodes 48kHz int16 PCM samples to an Opus packet.
-//
-// The third-party gopus library has had recurring index-out-of-range panics
-// in CELT's pulse-vector quantizer (cwrs.go / bands_quant.go) for certain
-// (n, k) combinations its fast-path bounds checks miss. We catch those here
-// and convert them to errors so a single bad frame fails the leg cleanly
-// (via writeLoop's existing error handling) rather than crashing the
-// process.
+// Encode encodes 48kHz int16 PCM samples to an Opus packet. Panics in the
+// underlying codec are converted to errors so one bad frame fails just the
+// leg, not the process.
 func (e *OpusEncoder) Encode(samples []int16) (out []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -79,9 +74,7 @@ func NewOpusDecoder() (*OpusDecoder, error) {
 }
 
 // Decode decodes an Opus packet to 48kHz int16 PCM samples. Mirrors Encode's
-// panic-recover policy: a malformed packet that trips a gopus internal panic
-// becomes an error so the calling readLoop can drop the frame instead of
-// taking down the process.
+// panic-to-error conversion.
 func (d *OpusDecoder) Decode(data []byte) (out []int16, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -90,9 +83,8 @@ func (d *OpusDecoder) Decode(data []byte) (out []int16, err error) {
 		}
 	}()
 
-	// A 1-byte Opus packet (TOC only, frame code 0, 0 bytes of frame data)
-	// is a valid DTX silence indicator per RFC 6716 §3.2.1. The gopus
-	// decoder doesn't handle 0-byte CELT frames, so output silence directly.
+	// 1-byte DTX silence indicator (RFC 6716 §3.2.1): emit silence directly
+	// since the underlying decoder can't handle 0-byte CELT frames.
 	if len(data) == 1 && (data[0]&0x03) == 0 {
 		toc := data[0]
 		// Extract frame size from TOC config (bits 7-3).

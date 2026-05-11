@@ -192,7 +192,7 @@ func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw 
 		default:
 		}
 
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

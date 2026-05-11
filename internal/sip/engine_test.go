@@ -145,6 +145,8 @@ func TestEngine_PinDestinationToSource(t *testing.T) {
 		{name: "flag on, source available, preset overridden", flag: true, reqSrc: source, preset: viaTarget, expected: source},
 		{name: "flag off, preset preserved", flag: false, reqSrc: source, preset: viaTarget, expected: viaTarget},
 		{name: "flag on, no source, preset preserved", flag: true, reqSrc: "", preset: viaTarget, expected: viaTarget},
+		{name: "flag on, synthetic :port source, preset preserved", flag: true, reqSrc: ":5060", preset: viaTarget, expected: viaTarget},
+		{name: "flag on, synthetic :0 source, preset preserved", flag: true, reqSrc: ":0", preset: viaTarget, expected: viaTarget},
 	}
 
 	for _, tc := range cases {

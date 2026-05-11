@@ -118,6 +118,150 @@ channels:
                 $ref: '#/components/messages/remove_leg_from_room'
             remove_leg_from_room.result:
                 $ref: '#/components/messages/remove_leg_from_roomResult'
+            leg_ring:
+                $ref: '#/components/messages/leg_ring'
+            leg_ring.result:
+                $ref: '#/components/messages/leg_ringResult'
+            leg_early_media:
+                $ref: '#/components/messages/leg_early_media'
+            leg_early_media.result:
+                $ref: '#/components/messages/leg_early_mediaResult'
+            leg_amd_start:
+                $ref: '#/components/messages/leg_amd_start'
+            leg_amd_start.result:
+                $ref: '#/components/messages/leg_amd_startResult'
+            leg_record_start:
+                $ref: '#/components/messages/leg_record_start'
+            leg_record_start.result:
+                $ref: '#/components/messages/leg_record_startResult'
+            room_record_start:
+                $ref: '#/components/messages/room_record_start'
+            room_record_start.result:
+                $ref: '#/components/messages/room_record_startResult'
+            leg_record_pause:
+                $ref: '#/components/messages/leg_record_pause'
+            leg_record_pause.result:
+                $ref: '#/components/messages/leg_record_pauseResult'
+            leg_record_resume:
+                $ref: '#/components/messages/leg_record_resume'
+            leg_record_resume.result:
+                $ref: '#/components/messages/leg_record_resumeResult'
+            leg_record_stop:
+                $ref: '#/components/messages/leg_record_stop'
+            leg_record_stop.result:
+                $ref: '#/components/messages/leg_record_stopResult'
+            room_record_stop:
+                $ref: '#/components/messages/room_record_stop'
+            room_record_stop.result:
+                $ref: '#/components/messages/room_record_stopResult'
+            room_record_pause:
+                $ref: '#/components/messages/room_record_pause'
+            room_record_pause.result:
+                $ref: '#/components/messages/room_record_pauseResult'
+            room_record_resume:
+                $ref: '#/components/messages/room_record_resume'
+            room_record_resume.result:
+                $ref: '#/components/messages/room_record_resumeResult'
+            leg_play_start:
+                $ref: '#/components/messages/leg_play_start'
+            leg_play_start.result:
+                $ref: '#/components/messages/leg_play_startResult'
+            leg_play_stop:
+                $ref: '#/components/messages/leg_play_stop'
+            leg_play_stop.result:
+                $ref: '#/components/messages/leg_play_stopResult'
+            room_play_start:
+                $ref: '#/components/messages/room_play_start'
+            room_play_start.result:
+                $ref: '#/components/messages/room_play_startResult'
+            room_play_stop:
+                $ref: '#/components/messages/room_play_stop'
+            room_play_stop.result:
+                $ref: '#/components/messages/room_play_stopResult'
+            leg_play_volume:
+                $ref: '#/components/messages/leg_play_volume'
+            leg_play_volume.result:
+                $ref: '#/components/messages/leg_play_volumeResult'
+            room_play_volume:
+                $ref: '#/components/messages/room_play_volume'
+            room_play_volume.result:
+                $ref: '#/components/messages/room_play_volumeResult'
+            leg_stt_start:
+                $ref: '#/components/messages/leg_stt_start'
+            leg_stt_start.result:
+                $ref: '#/components/messages/leg_stt_startResult'
+            room_stt_start:
+                $ref: '#/components/messages/room_stt_start'
+            room_stt_start.result:
+                $ref: '#/components/messages/room_stt_startResult'
+            leg_stt_stop:
+                $ref: '#/components/messages/leg_stt_stop'
+            leg_stt_stop.result:
+                $ref: '#/components/messages/leg_stt_stopResult'
+            room_stt_stop:
+                $ref: '#/components/messages/room_stt_stop'
+            room_stt_stop.result:
+                $ref: '#/components/messages/room_stt_stopResult'
+            leg_tts:
+                $ref: '#/components/messages/leg_tts'
+            leg_tts.result:
+                $ref: '#/components/messages/leg_ttsResult'
+            room_tts:
+                $ref: '#/components/messages/room_tts'
+            room_tts.result:
+                $ref: '#/components/messages/room_ttsResult'
+            leg_transfer:
+                $ref: '#/components/messages/leg_transfer'
+            leg_transfer.result:
+                $ref: '#/components/messages/leg_transferResult'
+            leg_agent_elevenlabs:
+                $ref: '#/components/messages/leg_agent_elevenlabs'
+            leg_agent_elevenlabs.result:
+                $ref: '#/components/messages/leg_agent_elevenlabsResult'
+            leg_agent_vapi:
+                $ref: '#/components/messages/leg_agent_vapi'
+            leg_agent_vapi.result:
+                $ref: '#/components/messages/leg_agent_vapiResult'
+            leg_agent_pipecat:
+                $ref: '#/components/messages/leg_agent_pipecat'
+            leg_agent_pipecat.result:
+                $ref: '#/components/messages/leg_agent_pipecatResult'
+            leg_agent_deepgram:
+                $ref: '#/components/messages/leg_agent_deepgram'
+            leg_agent_deepgram.result:
+                $ref: '#/components/messages/leg_agent_deepgramResult'
+            room_agent_elevenlabs:
+                $ref: '#/components/messages/room_agent_elevenlabs'
+            room_agent_elevenlabs.result:
+                $ref: '#/components/messages/room_agent_elevenlabsResult'
+            room_agent_vapi:
+                $ref: '#/components/messages/room_agent_vapi'
+            room_agent_vapi.result:
+                $ref: '#/components/messages/room_agent_vapiResult'
+            room_agent_pipecat:
+                $ref: '#/components/messages/room_agent_pipecat'
+            room_agent_pipecat.result:
+                $ref: '#/components/messages/room_agent_pipecatResult'
+            room_agent_deepgram:
+                $ref: '#/components/messages/room_agent_deepgram'
+            room_agent_deepgram.result:
+                $ref: '#/components/messages/room_agent_deepgramResult'
+            leg_agent_stop:
+                $ref: '#/components/messages/leg_agent_stop'
+            leg_agent_stop.result:
+                $ref: '#/components/messages/leg_agent_stopResult'
+            room_agent_stop:
+                $ref: '#/components/messages/room_agent_stop'
+            room_agent_stop.result:
+                $ref: '#/components/messages/room_agent_stopResult'
+            leg_agent_message:
+                $ref: '#/components/messages/leg_agent_message'
+            leg_agent_message.result:
+                $ref: '#/components/messages/leg_agent_messageResult'
+            room_agent_message:
+                $ref: '#/components/messages/room_agent_message'
+            room_agent_message.result:
+                $ref: '#/components/messages/room_agent_messageResult'
             leg.ringing:
                 $ref: '#/components/messages/evt_leg_ringing'
             leg.early_media:
@@ -142,6 +286,8 @@ channels:
                 $ref: '#/components/messages/evt_leg_hold'
             leg.unhold:
                 $ref: '#/components/messages/evt_leg_unhold'
+            leg.command_failed:
+                $ref: '#/components/messages/evt_leg_command_failed'
             dtmf.received:
                 $ref: '#/components/messages/evt_dtmf_received'
             rtt.received:
@@ -552,6 +698,474 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/remove_leg_from_room.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_leg_ring:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Send a 180 Ringing on a SIP inbound leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_ring'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_ring.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_early_media:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Enable early media (183 Session Progress) on a SIP inbound leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_early_media'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_early_media.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_amd_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start Answering Machine Detection on a connected SIP leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_amd_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_amd_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_record_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start recording a leg (stereo when in a room or SIP, mono otherwise)
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_record_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_record_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_record_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start recording the full room mix (mono; multi_channel adds per-participant tracks)
+        messages:
+            - $ref: '#/channels/vsi/messages/room_record_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_record_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_record_pause:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Pause a leg recording
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_record_pause'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_record_pause.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_record_resume:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Resume a paused leg recording
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_record_resume'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_record_resume.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_record_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop a leg recording
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_record_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_record_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_record_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop a room recording
+        messages:
+            - $ref: '#/channels/vsi/messages/room_record_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_record_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_record_pause:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Pause a room recording
+        messages:
+            - $ref: '#/channels/vsi/messages/room_record_pause'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_record_pause.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_record_resume:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Resume a paused room recording
+        messages:
+            - $ref: '#/channels/vsi/messages/room_record_resume'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_record_resume.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_play_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start audio playback on a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_play_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_play_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_play_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop a leg playback
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_play_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_play_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_play_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start audio playback on a room mix
+        messages:
+            - $ref: '#/channels/vsi/messages/room_play_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_play_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_play_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop a room playback
+        messages:
+            - $ref: '#/channels/vsi/messages/room_play_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_play_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_play_volume:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Adjust the volume of an active leg playback
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_play_volume'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_play_volume.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_play_volume:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Adjust the volume of an active room playback
+        messages:
+            - $ref: '#/channels/vsi/messages/room_play_volume'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_play_volume.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stt_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start speech-to-text on a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stt_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stt_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_stt_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Start speech-to-text on every participant of a room (auto-extends to legs that join later)
+        messages:
+            - $ref: '#/channels/vsi/messages/room_stt_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_stt_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stt_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop speech-to-text on a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stt_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stt_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_stt_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Stop speech-to-text on a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_stt_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_stt_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_tts:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Synthesize speech and play it on a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_tts'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_tts.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_tts:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Synthesize speech and play it into a room mix
+        messages:
+            - $ref: '#/channels/vsi/messages/room_tts'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_tts.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_transfer:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Initiate a SIP REFER transfer (blind or attended)
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_transfer'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_transfer.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_elevenlabs:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach an ElevenLabs Conversational AI agent to a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_elevenlabs'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_elevenlabs.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_vapi:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a VAPI agent to a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_vapi'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_vapi.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_pipecat:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a Pipecat bot to a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_pipecat'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_pipecat.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_deepgram:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a Deepgram Voice Agent to a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_deepgram'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_deepgram.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_elevenlabs:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach an ElevenLabs Conversational AI agent to a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_elevenlabs'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_elevenlabs.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_vapi:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a VAPI agent to a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_vapi'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_vapi.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_pipecat:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a Pipecat bot to a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_pipecat'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_pipecat.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_deepgram:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Attach a Deepgram Voice Agent to a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_deepgram'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_deepgram.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Detach the agent attached to a leg
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_stop:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Detach the agent attached to a room
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_stop'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_agent_message:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Inject a text message into a leg agent session
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_agent_message'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_agent_message.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_agent_message:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Inject a text message into a room agent session
+        messages:
+            - $ref: '#/channels/vsi/messages/room_agent_message'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_agent_message.result'
+                - $ref: '#/channels/vsi/messages/error'
     send_leg_ringing:
         action: send
         channel:
@@ -636,6 +1250,13 @@ operations:
         summary: Leg taken off hold (local or remote)
         messages:
             - $ref: '#/channels/vsi/messages/leg.unhold'
+    send_leg_command_failed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An asynchronous leg command (202 Accepted) failed during execution
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.command_failed'
     send_dtmf_received:
         action: send
         channel:
@@ -982,7 +1603,7 @@ components:
                         type: string
                         description: Echoed back on the matching .result/error frame; clients use it to correlate.
                     payload:
-                        $ref: '#/components/schemas/vsiAnswerLegPayload'
+                        $ref: '#/components/schemas/answerLegPayload'
                 required:
                     - type
         answer_legResult:
@@ -1012,7 +1633,7 @@ components:
                         type: string
                         description: Echoed back on the matching .result/error frame; clients use it to correlate.
                     payload:
-                        $ref: '#/components/schemas/vsiDeleteLegPayload'
+                        $ref: '#/components/schemas/deleteLegPayload'
                 required:
                     - type
         delete_legResult:
@@ -1662,6 +2283,1086 @@ components:
                         $ref: '#/components/schemas/vsiStatusResponse'
                 required:
                     - type
+        leg_ring:
+            name: leg_ring
+            title: Send a 180 Ringing on a SIP inbound leg
+            summary: Send a 180 Ringing on a SIP inbound leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_ring
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_ringResult:
+            name: leg_ringResult
+            title: Send a 180 Ringing on a SIP inbound leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_ring.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        leg_early_media:
+            name: leg_early_media
+            title: Enable early media (183 Session Progress) on a SIP inbound leg
+            summary: Enable early media (183 Session Progress) on a SIP inbound leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_early_media
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/earlyMediaPayload'
+                required:
+                    - type
+        leg_early_mediaResult:
+            name: leg_early_mediaResult
+            title: Enable early media (183 Session Progress) on a SIP inbound leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_early_media.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        leg_amd_start:
+            name: leg_amd_start
+            title: Start Answering Machine Detection on a connected SIP leg
+            summary: Start Answering Machine Detection on a connected SIP leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_amd_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legAMDStartPayload'
+                required:
+                    - type
+        leg_amd_startResult:
+            name: leg_amd_startResult
+            title: Start Answering Machine Detection on a connected SIP leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_amd_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        leg_record_start:
+            name: leg_record_start
+            title: Start recording a leg (stereo when in a room or SIP, mono otherwise)
+            summary: Start recording a leg (stereo when in a room or SIP, mono otherwise)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/recordStartPayload'
+                required:
+                    - type
+        leg_record_startResult:
+            name: leg_record_startResult
+            title: Start recording a leg (stereo when in a room or SIP, mono otherwise) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingStartResult'
+                required:
+                    - type
+        room_record_start:
+            name: room_record_start
+            title: Start recording the full room mix (mono; multi_channel adds per-participant tracks)
+            summary: Start recording the full room mix (mono; multi_channel adds per-participant tracks)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/recordStartPayload'
+                required:
+                    - type
+        room_record_startResult:
+            name: room_record_startResult
+            title: Start recording the full room mix (mono; multi_channel adds per-participant tracks) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingStartResult'
+                required:
+                    - type
+        leg_record_pause:
+            name: leg_record_pause
+            title: Pause a leg recording
+            summary: Pause a leg recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_pause
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_record_pauseResult:
+            name: leg_record_pauseResult
+            title: Pause a leg recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_pause.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingPauseResumeResult'
+                required:
+                    - type
+        leg_record_resume:
+            name: leg_record_resume
+            title: Resume a paused leg recording
+            summary: Resume a paused leg recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_resume
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_record_resumeResult:
+            name: leg_record_resumeResult
+            title: Resume a paused leg recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_resume.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingPauseResumeResult'
+                required:
+                    - type
+        leg_record_stop:
+            name: leg_record_stop
+            title: Stop a leg recording
+            summary: Stop a leg recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_record_stopResult:
+            name: leg_record_stopResult
+            title: Stop a leg recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_record_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingStopLegResult'
+                required:
+                    - type
+        room_record_stop:
+            name: room_record_stop
+            title: Stop a room recording
+            summary: Stop a room recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_record_stopResult:
+            name: room_record_stopResult
+            title: Stop a room recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingStopRoomResult'
+                required:
+                    - type
+        room_record_pause:
+            name: room_record_pause
+            title: Pause a room recording
+            summary: Pause a room recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_pause
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_record_pauseResult:
+            name: room_record_pauseResult
+            title: Pause a room recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_pause.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingPauseResumeResult'
+                required:
+                    - type
+        room_record_resume:
+            name: room_record_resume
+            title: Resume a paused room recording
+            summary: Resume a paused room recording
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_resume
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_record_resumeResult:
+            name: room_record_resumeResult
+            title: Resume a paused room recording — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_record_resume.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RecordingPauseResumeResult'
+                required:
+                    - type
+        leg_play_start:
+            name: leg_play_start
+            title: Start audio playback on a leg
+            summary: Start audio playback on a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackStartPayload'
+                required:
+                    - type
+        leg_play_startResult:
+            name: leg_play_startResult
+            title: Start audio playback on a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/PlaybackStartResult'
+                required:
+                    - type
+        leg_play_stop:
+            name: leg_play_stop
+            title: Stop a leg playback
+            summary: Stop a leg playback
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackTargetPayload'
+                required:
+                    - type
+        leg_play_stopResult:
+            name: leg_play_stopResult
+            title: Stop a leg playback — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/PlaybackStopResult'
+                required:
+                    - type
+        room_play_start:
+            name: room_play_start
+            title: Start audio playback on a room mix
+            summary: Start audio playback on a room mix
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackStartPayload'
+                required:
+                    - type
+        room_play_startResult:
+            name: room_play_startResult
+            title: Start audio playback on a room mix — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/PlaybackStartResult'
+                required:
+                    - type
+        room_play_stop:
+            name: room_play_stop
+            title: Stop a room playback
+            summary: Stop a room playback
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackTargetPayload'
+                required:
+                    - type
+        room_play_stopResult:
+            name: room_play_stopResult
+            title: Stop a room playback — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/PlaybackStopResult'
+                required:
+                    - type
+        leg_play_volume:
+            name: leg_play_volume
+            title: Adjust the volume of an active leg playback
+            summary: Adjust the volume of an active leg playback
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_volume
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackVolumePayload'
+                required:
+                    - type
+        leg_play_volumeResult:
+            name: leg_play_volumeResult
+            title: Adjust the volume of an active leg playback — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_play_volume.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        room_play_volume:
+            name: room_play_volume
+            title: Adjust the volume of an active room playback
+            summary: Adjust the volume of an active room playback
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_volume
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/playbackVolumePayload'
+                required:
+                    - type
+        room_play_volumeResult:
+            name: room_play_volumeResult
+            title: Adjust the volume of an active room playback — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_play_volume.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        leg_stt_start:
+            name: leg_stt_start
+            title: Start speech-to-text on a leg
+            summary: Start speech-to-text on a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/sttStartPayload'
+                required:
+                    - type
+        leg_stt_startResult:
+            name: leg_stt_startResult
+            title: Start speech-to-text on a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/STTStartLegResult'
+                required:
+                    - type
+        room_stt_start:
+            name: room_stt_start
+            title: Start speech-to-text on every participant of a room (auto-extends to legs that join later)
+            summary: Start speech-to-text on every participant of a room (auto-extends to legs that join later)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_stt_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/sttStartPayload'
+                required:
+                    - type
+        room_stt_startResult:
+            name: room_stt_startResult
+            title: Start speech-to-text on every participant of a room (auto-extends to legs that join later) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_stt_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/STTStartRoomResult'
+                required:
+                    - type
+        leg_stt_stop:
+            name: leg_stt_stop
+            title: Stop speech-to-text on a leg
+            summary: Stop speech-to-text on a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_stt_stopResult:
+            name: leg_stt_stopResult
+            title: Stop speech-to-text on a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/STTStopResult'
+                required:
+                    - type
+        room_stt_stop:
+            name: room_stt_stop
+            title: Stop speech-to-text on a room
+            summary: Stop speech-to-text on a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_stt_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_stt_stopResult:
+            name: room_stt_stopResult
+            title: Stop speech-to-text on a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_stt_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/STTStopResult'
+                required:
+                    - type
+        leg_tts:
+            name: leg_tts
+            title: Synthesize speech and play it on a leg
+            summary: Synthesize speech and play it on a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/ttsStartPayload'
+                required:
+                    - type
+        leg_ttsResult:
+            name: leg_ttsResult
+            title: Synthesize speech and play it on a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TTSStartResult'
+                required:
+                    - type
+        room_tts:
+            name: room_tts
+            title: Synthesize speech and play it into a room mix
+            summary: Synthesize speech and play it into a room mix
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_tts
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/ttsStartPayload'
+                required:
+                    - type
+        room_ttsResult:
+            name: room_ttsResult
+            title: Synthesize speech and play it into a room mix — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_tts.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TTSStartResult'
+                required:
+                    - type
+        leg_transfer:
+            name: leg_transfer
+            title: Initiate a SIP REFER transfer (blind or attended)
+            summary: Initiate a SIP REFER transfer (blind or attended)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_transfer
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/transferLegPayload'
+                required:
+                    - type
+        leg_transferResult:
+            name: leg_transferResult
+            title: Initiate a SIP REFER transfer (blind or attended) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_transfer.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TransferLegResult'
+                required:
+                    - type
+        leg_agent_elevenlabs:
+            name: leg_agent_elevenlabs
+            title: Attach an ElevenLabs Conversational AI agent to a leg
+            summary: Attach an ElevenLabs Conversational AI agent to a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_elevenlabs
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentElevenLabsPayload'
+                required:
+                    - type
+        leg_agent_elevenlabsResult:
+            name: leg_agent_elevenlabsResult
+            title: Attach an ElevenLabs Conversational AI agent to a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_elevenlabs.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartLegResult'
+                required:
+                    - type
+        leg_agent_vapi:
+            name: leg_agent_vapi
+            title: Attach a VAPI agent to a leg
+            summary: Attach a VAPI agent to a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_vapi
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentVAPIPayload'
+                required:
+                    - type
+        leg_agent_vapiResult:
+            name: leg_agent_vapiResult
+            title: Attach a VAPI agent to a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_vapi.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartLegResult'
+                required:
+                    - type
+        leg_agent_pipecat:
+            name: leg_agent_pipecat
+            title: Attach a Pipecat bot to a leg
+            summary: Attach a Pipecat bot to a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_pipecat
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentPipecatPayload'
+                required:
+                    - type
+        leg_agent_pipecatResult:
+            name: leg_agent_pipecatResult
+            title: Attach a Pipecat bot to a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_pipecat.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartLegResult'
+                required:
+                    - type
+        leg_agent_deepgram:
+            name: leg_agent_deepgram
+            title: Attach a Deepgram Voice Agent to a leg
+            summary: Attach a Deepgram Voice Agent to a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_deepgram
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentDeepgramPayload'
+                required:
+                    - type
+        leg_agent_deepgramResult:
+            name: leg_agent_deepgramResult
+            title: Attach a Deepgram Voice Agent to a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_deepgram.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartLegResult'
+                required:
+                    - type
+        room_agent_elevenlabs:
+            name: room_agent_elevenlabs
+            title: Attach an ElevenLabs Conversational AI agent to a room
+            summary: Attach an ElevenLabs Conversational AI agent to a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_elevenlabs
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentElevenLabsPayload'
+                required:
+                    - type
+        room_agent_elevenlabsResult:
+            name: room_agent_elevenlabsResult
+            title: Attach an ElevenLabs Conversational AI agent to a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_elevenlabs.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartRoomResult'
+                required:
+                    - type
+        room_agent_vapi:
+            name: room_agent_vapi
+            title: Attach a VAPI agent to a room
+            summary: Attach a VAPI agent to a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_vapi
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentVAPIPayload'
+                required:
+                    - type
+        room_agent_vapiResult:
+            name: room_agent_vapiResult
+            title: Attach a VAPI agent to a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_vapi.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartRoomResult'
+                required:
+                    - type
+        room_agent_pipecat:
+            name: room_agent_pipecat
+            title: Attach a Pipecat bot to a room
+            summary: Attach a Pipecat bot to a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_pipecat
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentPipecatPayload'
+                required:
+                    - type
+        room_agent_pipecatResult:
+            name: room_agent_pipecatResult
+            title: Attach a Pipecat bot to a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_pipecat.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartRoomResult'
+                required:
+                    - type
+        room_agent_deepgram:
+            name: room_agent_deepgram
+            title: Attach a Deepgram Voice Agent to a room
+            summary: Attach a Deepgram Voice Agent to a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_deepgram
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentDeepgramPayload'
+                required:
+                    - type
+        room_agent_deepgramResult:
+            name: room_agent_deepgramResult
+            title: Attach a Deepgram Voice Agent to a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_deepgram.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStartRoomResult'
+                required:
+                    - type
+        leg_agent_stop:
+            name: leg_agent_stop
+            title: Detach the agent attached to a leg
+            summary: Detach the agent attached to a leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_agent_stopResult:
+            name: leg_agent_stopResult
+            title: Detach the agent attached to a leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStopResult'
+                required:
+                    - type
+        room_agent_stop:
+            name: room_agent_stop
+            title: Detach the agent attached to a room
+            summary: Detach the agent attached to a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_stop
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_agent_stopResult:
+            name: room_agent_stopResult
+            title: Detach the agent attached to a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_stop.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentStopResult'
+                required:
+                    - type
+        leg_agent_message:
+            name: leg_agent_message
+            title: Inject a text message into a leg agent session
+            summary: Inject a text message into a leg agent session
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_message
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentMessagePayload'
+                required:
+                    - type
+        leg_agent_messageResult:
+            name: leg_agent_messageResult
+            title: Inject a text message into a leg agent session — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_agent_message.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentMessageResult'
+                required:
+                    - type
+        room_agent_message:
+            name: room_agent_message
+            title: Inject a text message into a room agent session
+            summary: Inject a text message into a room agent session
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_message
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/agentMessagePayload'
+                required:
+                    - type
+        room_agent_messageResult:
+            name: room_agent_messageResult
+            title: Inject a text message into a room agent session — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_agent_message.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/AgentMessageResult'
+                required:
+                    - type
         evt_leg_ringing:
             name: evt_leg_ringing
             title: SIP call ringing (inbound or outbound)
@@ -1746,6 +3447,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.unhold. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.unhold/post/requestBody/content/application~1json/schema
+        evt_leg_command_failed:
+            name: evt_leg_command_failed
+            title: An asynchronous leg command (202 Accepted) failed during execution
+            summary: An asynchronous leg command (202 Accepted) failed during execution
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.command_failed. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.command_failed/post/requestBody/content/application~1json/schema
         evt_dtmf_received:
             name: evt_dtmf_received
             title: DTMF digit received
@@ -2033,6 +3741,53 @@ components:
                 - status
                 - room_id
                 - leg_id
+        AgentMessageResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        AgentStartLegResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                leg_id:
+                    type: string
+            required:
+                - status
+                - leg_id
+        AgentStartRoomResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                room_id:
+                    type: string
+            required:
+                - status
+                - room_id
+        AgentStopResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        ChannelInfo:
+            type: object
+            properties:
+                channel:
+                    type: integer
+                start_ms:
+                    type: integer
+                end_ms:
+                    type: integer
+            required:
+                - channel
+                - start_ms
+                - end_ms
         ICECandidateInit:
             type: object
             properties:
@@ -2049,6 +3804,115 @@ components:
                 - sdpMid
                 - sdpMLineIndex
                 - usernameFragment
+        PlaybackStartResult:
+            type: object
+            properties:
+                playback_id:
+                    type: string
+                status:
+                    type: string
+            required:
+                - playback_id
+                - status
+        PlaybackStopResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        RecordingPauseResumeResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        RecordingStartResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                file:
+                    type: string
+            required:
+                - status
+                - file
+        RecordingStopLegResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                file:
+                    type: string
+            required:
+                - status
+                - file
+        RecordingStopRoomResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                file:
+                    type: string
+                multi_channel_file:
+                    type: string
+                channels:
+                    type: object
+                    additionalProperties:
+                        $ref: '#/components/schemas/ChannelInfo'
+            required:
+                - status
+                - file
+        STTStartLegResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                leg_id:
+                    type: string
+            required:
+                - status
+                - leg_id
+        STTStartRoomResult:
+            type: object
+            properties:
+                status:
+                    type: string
+                room_id:
+                    type: string
+                leg_ids:
+                    type: array
+                    items:
+                        type: string
+            required:
+                - status
+                - room_id
+                - leg_ids
+        STTStopResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        TTSStartResult:
+            type: object
+            properties:
+                tts_id:
+                    type: string
+                status:
+                    type: string
+            required:
+                - tts_id
+                - status
+        TransferLegResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
         WebRTCCandidatesResult:
             type: object
             properties:
@@ -2094,6 +3958,100 @@ components:
             required:
                 - room_id
                 - leg_id
+        agentDeepgramPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                settings:
+                    type: object
+                    additionalProperties: {}
+                greeting:
+                    type: string
+                language:
+                    type: string
+                api_key:
+                    type: string
+            required:
+                - id
+        agentElevenLabsPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                agent_id:
+                    type: string
+                first_message:
+                    type: string
+                language:
+                    type: string
+                dynamic_variables:
+                    type: object
+                    additionalProperties:
+                        type: string
+                api_key:
+                    type: string
+            required:
+                - id
+                - agent_id
+        agentMessagePayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                message:
+                    type: string
+            required:
+                - id
+                - message
+        agentPipecatPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                websocket_url:
+                    type: string
+            required:
+                - id
+                - websocket_url
+        agentVAPIPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                assistant_id:
+                    type: string
+                first_message:
+                    type: string
+                variable_values:
+                    type: object
+                    additionalProperties:
+                        type: string
+                api_key:
+                    type: string
+            required:
+                - id
+                - assistant_id
+        answerLegPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                speech_detection:
+                    type: boolean
+                codec:
+                    type: string
+            required:
+                - id
+        deleteLegPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                reason:
+                    type: string
+            required:
+                - id
         dtmfPayload:
             type: object
             properties:
@@ -2104,6 +4062,15 @@ components:
             required:
                 - id
                 - digits
+        earlyMediaPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                codec:
+                    type: string
+            required:
+                - id
         idPayload:
             type: object
             properties:
@@ -2111,6 +4078,101 @@ components:
                     type: string
             required:
                 - id
+        legAMDStartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                initial_silence_timeout:
+                    type: integer
+                greeting_duration:
+                    type: integer
+                after_greeting_silence:
+                    type: integer
+                total_analysis_time:
+                    type: integer
+                minimum_word_length:
+                    type: integer
+                beep_timeout:
+                    type: integer
+            required:
+                - id
+        playbackStartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                url:
+                    type: string
+                tone:
+                    type: string
+                mime_type:
+                    type: string
+                repeat:
+                    type: integer
+                volume:
+                    type: integer
+            required:
+                - id
+                - url
+                - tone
+                - mime_type
+                - repeat
+                - volume
+        playbackTargetPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                playback_id:
+                    type: string
+            required:
+                - id
+                - playback_id
+        playbackVolumePayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                playback_id:
+                    type: string
+                volume:
+                    type: integer
+            required:
+                - id
+                - playback_id
+                - volume
+        recordStartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                storage:
+                    type: string
+                multi_channel:
+                    type: boolean
+                s3_bucket:
+                    type: string
+                s3_region:
+                    type: string
+                s3_endpoint:
+                    type: string
+                s3_prefix:
+                    type: string
+                s3_access_key:
+                    type: string
+                s3_secret_key:
+                    type: string
+            required:
+                - id
+                - storage
+                - multi_channel
+                - s3_bucket
+                - s3_region
+                - s3_endpoint
+                - s3_prefix
+                - s3_access_key
+                - s3_secret_key
         roomLegPayload:
             type: object
             properties:
@@ -2131,26 +4193,62 @@ components:
             required:
                 - id
                 - text
-        vsiAnswerLegPayload:
+        sttStartPayload:
             type: object
             properties:
                 id:
                     type: string
-                speech_detection:
+                language:
+                    type: string
+                partial:
                     type: boolean
-                codec:
+                provider:
+                    type: string
+                api_key:
                     type: string
             required:
                 - id
-        vsiDeleteLegPayload:
+                - language
+                - partial
+        transferLegPayload:
             type: object
             properties:
                 id:
                     type: string
-                reason:
+                target:
+                    type: string
+                replaces_leg_id:
                     type: string
             required:
                 - id
+                - target
+        ttsStartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                text:
+                    type: string
+                voice:
+                    type: string
+                model_id:
+                    type: string
+                language:
+                    type: string
+                prompt:
+                    type: string
+                volume:
+                    type: integer
+                provider:
+                    type: string
+                api_key:
+                    type: string
+            required:
+                - id
+                - text
+                - voice
+                - model_id
+                - volume
         vsiStatusResponse:
             type: object
             properties:

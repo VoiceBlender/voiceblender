@@ -134,25 +134,190 @@ func newAgentSession(s *Server, provider string) agent.Provider {
 	}
 }
 
-// startLegAgent is the shared logic for all per-provider leg agent handlers.
-func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
-	id := chi.URLParam(r, "id")
+// elevenLabsAgentOpts builds the shared options struct for ElevenLabs agents.
+func elevenLabsAgentOpts(req ElevenLabsAgentRequest) agent.Options {
+	return agent.Options{
+		AgentID:          req.AgentID,
+		Language:         req.Language,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.DynamicVariables,
+	}
+}
 
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
+func vapiAgentOpts(req VAPIAgentRequest) agent.Options {
+	return agent.Options{
+		AgentID:          req.AssistantID,
+		FirstMessage:     req.FirstMessage,
+		DynamicVariables: req.VariableValues,
+	}
+}
+
+func pipecatAgentOpts(req PipecatAgentRequest) agent.Options {
+	return agent.Options{AgentID: req.WebsocketURL}
+}
+
+func deepgramAgentOpts(req DeepgramAgentRequest) agent.Options {
+	return agent.Options{
+		Language:     req.Language,
+		FirstMessage: req.Greeting,
+		Settings:     req.Settings,
+	}
+}
+
+// vsiStartLegAgentElevenLabs validates and starts an ElevenLabs leg agent over VSI.
+func (s *Server) vsiStartLegAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
+	if p.AgentID == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "agent_id is required"))
 		return
 	}
-	if l.State() != leg.StateConnected {
-		writeError(w, http.StatusConflict, "leg not connected")
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.ElevenLabsAPIKey, "elevenlabs")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
 		return
+	}
+	res, err := s.doStartLegAgent(p.ID, "elevenlabs", apiKey, elevenLabsAgentOpts(p.ElevenLabsAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartLegAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agentVAPIPayload) {
+	if p.AssistantID == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "assistant_id is required"))
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.VAPIAPIKey, "vapi")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
+		return
+	}
+	res, err := s.doStartLegAgent(p.ID, "vapi", apiKey, vapiAgentOpts(p.VAPIAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartLegAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p agentPipecatPayload) {
+	if p.WebsocketURL == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "websocket_url is required"))
+		return
+	}
+	res, err := s.doStartLegAgent(p.ID, "pipecat", "", pipecatAgentOpts(p.PipecatAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartLegAgentDeepgram(lw *wsLockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.DeepgramAPIKey, "deepgram")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
+		return
+	}
+	res, err := s.doStartLegAgent(p.ID, "deepgram", apiKey, deepgramAgentOpts(p.DeepgramAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartRoomAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
+	if p.AgentID == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "agent_id is required"))
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.ElevenLabsAPIKey, "elevenlabs")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
+		return
+	}
+	res, err := s.doStartRoomAgent(p.ID, "elevenlabs", apiKey, elevenLabsAgentOpts(p.ElevenLabsAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartRoomAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agentVAPIPayload) {
+	if p.AssistantID == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "assistant_id is required"))
+		return
+	}
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.VAPIAPIKey, "vapi")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
+		return
+	}
+	res, err := s.doStartRoomAgent(p.ID, "vapi", apiKey, vapiAgentOpts(p.VAPIAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartRoomAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p agentPipecatPayload) {
+	if p.WebsocketURL == "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "websocket_url is required"))
+		return
+	}
+	res, err := s.doStartRoomAgent(p.ID, "pipecat", "", pipecatAgentOpts(p.PipecatAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+func (s *Server) vsiStartRoomAgentDeepgram(lw *wsLockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
+	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.DeepgramAPIKey, "deepgram")
+	if errMsg != "" {
+		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
+		return
+	}
+	res, err := s.doStartRoomAgent(p.ID, "deepgram", apiKey, deepgramAgentOpts(p.DeepgramAgentRequest))
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, res)
+}
+
+// AgentStartLegResult is the success payload for starting an agent on a leg.
+type AgentStartLegResult struct {
+	Status string `json:"status"`
+	LegID  string `json:"leg_id"`
+}
+
+// AgentStartRoomResult is the success payload for starting an agent on a room.
+type AgentStartRoomResult struct {
+	Status string `json:"status"`
+	RoomID string `json:"room_id"`
+}
+
+// doStartLegAgent is the shared logic for all per-provider leg agent handlers.
+func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Options) (*AgentStartLegResult, error) {
+	id := legID
+	l, ok := s.LegMgr.Get(id)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
+	}
+	if l.State() != leg.StateConnected {
+		return nil, newAPIError(http.StatusConflict, "leg not connected")
 	}
 
 	legAgents.Lock()
 	if _, exists := legAgents.m[id]; exists {
 		legAgents.Unlock()
-		writeError(w, http.StatusConflict, "agent already attached to this leg")
-		return
+		return nil, newAPIError(http.StatusConflict, "agent already attached to this leg")
 	}
 	legAgents.Unlock()
 
@@ -163,13 +328,10 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 	var audioOut interface{ Write([]byte) (int, error) }
 
 	if roomID := l.RoomID(); roomID != "" {
-		// Leg is in a room — use tap + playback source.
 		rm, rmOK := s.RoomMgr.Get(roomID)
 		if !rmOK {
-			writeError(w, http.StatusConflict, "room not found")
-			return
+			return nil, newAPIError(http.StatusConflict, "room not found")
 		}
-
 		tapPR, tapPW := createPipe()
 		rm.Mixer().SetParticipantTap(id, tapPW)
 
@@ -185,12 +347,10 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 		info.speakBuf = sb
 		info.roomID = roomID
 	} else {
-		// Standalone leg — read/write audio directly with resampling.
 		ar := l.AudioReader()
 		aw := l.AudioWriter()
 		if ar == nil || aw == nil {
-			writeError(w, http.StatusConflict, "leg has no audio reader/writer")
-			return
+			return nil, newAPIError(http.StatusConflict, "leg has no audio reader/writer")
 		}
 		audioIn = mixer.NewResampleReader(ar, l.SampleRate(), mixer.DefaultSampleRate)
 
@@ -198,7 +358,7 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 		audioOut = mixer.NewResampleWriter(sb, mixer.DefaultSampleRate, l.SampleRate())
 		info.speakBuf = sb
 
-		frameSize := l.SampleRate() / 50 * 2 // 20ms PCM frame at leg's native rate
+		frameSize := l.SampleRate() / 50 * 2
 		go func() {
 			buf := make([]byte, frameSize)
 			for {
@@ -251,7 +411,18 @@ func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider,
 		s.cleanupLegAgent(id)
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_started", "leg_id": id})
+	return &AgentStartLegResult{Status: "agent_started", LegID: id}, nil
+}
+
+// startLegAgent is the REST adapter — keeps callers (chi handlers) unchanged.
+func (s *Server) startLegAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doStartLegAgent(id, provider, apiKey, opts)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) agentLegElevenLabs(w http.ResponseWriter, r *http.Request) {
@@ -334,98 +505,112 @@ func (s *Server) agentLegDeepgram(w http.ResponseWriter, r *http.Request) {
 	s.startLegAgent(w, r, "deepgram", apiKey, opts)
 }
 
+// AgentMessageResult is the success payload for injecting a message into a
+// leg or room agent session.
+type AgentMessageResult struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) doLegAgentMessage(ctx context.Context, legID, message string) (*AgentMessageResult, error) {
+	if message == "" {
+		return nil, newAPIError(http.StatusBadRequest, "message is required")
+	}
+	legAgents.Lock()
+	info, ok := legAgents.m[legID]
+	legAgents.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no agent attached to this leg")
+	}
+	if !info.session.Running() {
+		return nil, newAPIError(http.StatusConflict, "agent session not running")
+	}
+	err := info.session.InjectMessage(ctx, message)
+	if errors.Is(err, agent.ErrNotSupported) {
+		return nil, newAPIError(http.StatusNotImplemented, "this agent provider does not support message injection")
+	}
+	if err != nil {
+		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
+	}
+	return &AgentMessageResult{Status: "message_sent"}, nil
+}
+
 func (s *Server) agentLegMessage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
 	var req AgentMessageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Message == "" {
-		writeError(w, http.StatusBadRequest, "message is required")
+	res, err := s.doLegAgentMessage(r.Context(), id, req.Message)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, res)
+}
 
-	legAgents.Lock()
-	info, ok := legAgents.m[id]
-	legAgents.Unlock()
-
+func (s *Server) doRoomAgentMessage(ctx context.Context, roomID, message string) (*AgentMessageResult, error) {
+	if message == "" {
+		return nil, newAPIError(http.StatusBadRequest, "message is required")
+	}
+	roomAgents.Lock()
+	info, ok := roomAgents.m[roomID]
+	roomAgents.Unlock()
 	if !ok {
-		writeError(w, http.StatusNotFound, "no agent attached to this leg")
-		return
+		return nil, newAPIError(http.StatusNotFound, "no agent attached to this room")
 	}
 	if !info.session.Running() {
-		writeError(w, http.StatusConflict, "agent session not running")
-		return
+		return nil, newAPIError(http.StatusConflict, "agent session not running")
 	}
-
-	err := info.session.InjectMessage(r.Context(), req.Message)
+	err := info.session.InjectMessage(ctx, message)
 	if errors.Is(err, agent.ErrNotSupported) {
-		writeError(w, http.StatusNotImplemented, "this agent provider does not support message injection")
-		return
+		return nil, newAPIError(http.StatusNotImplemented, "this agent provider does not support message injection")
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
 	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "message_sent"})
+	return &AgentMessageResult{Status: "message_sent"}, nil
 }
 
 func (s *Server) agentRoomMessage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
 	var req AgentMessageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Message == "" {
-		writeError(w, http.StatusBadRequest, "message is required")
-		return
-	}
-
-	roomAgents.Lock()
-	info, ok := roomAgents.m[id]
-	roomAgents.Unlock()
-
-	if !ok {
-		writeError(w, http.StatusNotFound, "no agent attached to this room")
-		return
-	}
-	if !info.session.Running() {
-		writeError(w, http.StatusConflict, "agent session not running")
-		return
-	}
-
-	err := info.session.InjectMessage(r.Context(), req.Message)
-	if errors.Is(err, agent.ErrNotSupported) {
-		writeError(w, http.StatusNotImplemented, "this agent provider does not support message injection")
-		return
-	}
+	res, err := s.doRoomAgentMessage(r.Context(), id, req.Message)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		handleAPIError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, res)
+}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "message_sent"})
+// AgentStopResult is the success payload for stopping a leg or room agent.
+type AgentStopResult struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) doStopAgentLeg(legID string) (*AgentStopResult, error) {
+	legAgents.Lock()
+	_, ok := legAgents.m[legID]
+	legAgents.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no agent attached to this leg")
+	}
+	s.cleanupLegAgent(legID)
+	return &AgentStopResult{Status: "agent_stopped"}, nil
 }
 
 func (s *Server) stopAgentLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
-	legAgents.Lock()
-	_, ok := legAgents.m[id]
-	legAgents.Unlock()
-
-	if !ok {
-		writeError(w, http.StatusNotFound, "no agent attached to this leg")
+	res, err := s.doStopAgentLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-
-	s.cleanupLegAgent(id)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_stopped"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) cleanupLegAgent(legID string) {
@@ -465,31 +650,24 @@ func (s *Server) cleanupLegAgent(legID string) {
 	}
 }
 
-// startRoomAgent is the shared logic for all per-provider room agent handlers.
-func (s *Server) startRoomAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
-	id := chi.URLParam(r, "id")
-
+// doStartRoomAgent is the shared logic for all per-provider room agent handlers.
+func (s *Server) doStartRoomAgent(roomID, provider, apiKey string, opts agent.Options) (*AgentStartRoomResult, error) {
+	id := roomID
 	rm, ok := s.RoomMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "room not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
 
 	roomAgents.Lock()
 	if _, exists := roomAgents.m[id]; exists {
 		roomAgents.Unlock()
-		writeError(w, http.StatusConflict, "agent already attached to this room")
-		return
+		return nil, newAPIError(http.StatusConflict, "agent already attached to this room")
 	}
 	roomAgents.Unlock()
 
 	sourceID := "agent-" + uuid.New().String()[:8]
-
-	// speak buffer: agent writes PCM → paced streamBuffer → mixer reads
 	sb := newStreamBuffer()
-	// listen pipe: mixer writes mixed-minus-self → agent reads it
 	listenPR, listenPW := createPipe()
-
 	rm.Mixer().AddParticipant(sourceID, sb, listenPW)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -541,7 +719,18 @@ func (s *Server) startRoomAgent(w http.ResponseWriter, r *http.Request, provider
 		s.cleanupRoomAgent(id)
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_started", "room_id": id})
+	return &AgentStartRoomResult{Status: "agent_started", RoomID: id}, nil
+}
+
+// startRoomAgent is the REST adapter — keeps callers (chi handlers) unchanged.
+func (s *Server) startRoomAgent(w http.ResponseWriter, r *http.Request, provider, apiKey string, opts agent.Options) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doStartRoomAgent(id, provider, apiKey, opts)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) agentRoomElevenLabs(w http.ResponseWriter, r *http.Request) {
@@ -624,20 +813,25 @@ func (s *Server) agentRoomDeepgram(w http.ResponseWriter, r *http.Request) {
 	s.startRoomAgent(w, r, "deepgram", apiKey, opts)
 }
 
+func (s *Server) doStopAgentRoom(roomID string) (*AgentStopResult, error) {
+	roomAgents.Lock()
+	_, ok := roomAgents.m[roomID]
+	roomAgents.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no agent attached to this room")
+	}
+	s.cleanupRoomAgent(roomID)
+	return &AgentStopResult{Status: "agent_stopped"}, nil
+}
+
 func (s *Server) stopAgentRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
-	roomAgents.Lock()
-	_, ok := roomAgents.m[id]
-	roomAgents.Unlock()
-
-	if !ok {
-		writeError(w, http.StatusNotFound, "no agent attached to this room")
+	res, err := s.doStopAgentRoom(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-
-	s.cleanupRoomAgent(id)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "agent_stopped"})
+	writeJSON(w, http.StatusOK, res)
 }
 
 // stopRoomAgentIfEmpty cleans up the room's agent when no leg participants

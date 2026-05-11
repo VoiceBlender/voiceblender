@@ -187,7 +187,7 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		default:
 		}
 
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

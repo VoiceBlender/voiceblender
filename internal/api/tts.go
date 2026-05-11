@@ -13,48 +13,40 @@ import (
 	"github.com/google/uuid"
 )
 
-func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
+// TTSStartResult is the success payload for synthesizing TTS on a leg or room.
+type TTSStartResult struct {
+	TTSID  string `json:"tts_id"`
+	Status string `json:"status"`
+}
+
+func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error) {
+	l, ok := s.LegMgr.Get(legID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-
-	var req TTSRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-
 	provider, apiKey := s.resolveTTSProvider(req)
 	if provider == nil {
 		providerName := req.Provider
 		if providerName == "" {
 			providerName = "elevenlabs"
 		}
-		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-		return
+		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
 	}
-
 	if req.Text == "" {
-		writeError(w, http.StatusBadRequest, "text is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "text is required")
 	}
 	if req.Voice == "" {
-		writeError(w, http.StatusBadRequest, "voice is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "voice is required")
 	}
 	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
 	}
-
 	directWriter := l.AudioWriter()
 	if directWriter == nil {
-		writeError(w, http.StatusConflict, "leg has no audio writer")
-		return
+		return nil, newAPIError(http.StatusConflict, "leg has no audio writer")
 	}
+
+	id := legID
 
 	// Route through the mixer inject channel when the leg is in a room,
 	// identical to playLeg. This prevents contention on the leg's outFrames
@@ -138,51 +130,52 @@ func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]string{"tts_id": ttsID, "status": "playing"})
+	return &TTSStartResult{TTSID: ttsID, Status: "playing"}, nil
 }
 
-func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	rm, ok := s.RoomMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "room not found")
-		return
-	}
-
 	var req TTSRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	res, err := s.doLegTTS(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
 
+func (s *Server) doRoomTTS(roomID string, req TTSRequest) (*TTSStartResult, error) {
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "room not found")
+	}
 	provider, apiKey := s.resolveTTSProvider(req)
 	if provider == nil {
 		providerName := req.Provider
 		if providerName == "" {
 			providerName = "elevenlabs"
 		}
-		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-		return
+		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
 	}
-
 	if req.Text == "" {
-		writeError(w, http.StatusBadRequest, "text is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "text is required")
 	}
 	if req.Voice == "" {
-		writeError(w, http.StatusBadRequest, "voice is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "voice is required")
 	}
 	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
 	}
-
 	parts := rm.Participants()
 	if len(parts) == 0 {
-		writeError(w, http.StatusConflict, "room has no participants")
-		return
+		return nil, newAPIError(http.StatusConflict, "room has no participants")
 	}
+
+	id := roomID
 
 	ttsID := "tts-" + uuid.New().String()[:8]
 	roomAppID := rm.AppID
@@ -257,7 +250,22 @@ func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]string{"tts_id": ttsID, "status": "playing"})
+	return &TTSStartResult{TTSID: ttsID, Status: "playing"}, nil
+}
+
+func (s *Server) ttsRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req TTSRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	res, err := s.doRoomTTS(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // resolveTTSProvider returns the TTS provider and API key for the request.

@@ -7,13 +7,12 @@ import (
 )
 
 // VSICommandMeta describes a single command accepted on the /v1/vsi
-// WebSocket. The asyncapi-gen tool consumes this list to emit asyncapi.yaml
-// — every VSI command MUST be present here, otherwise the generated spec
-// will be incomplete and the rule in CLAUDE.md is violated.
+// WebSocket. asyncapi-gen consumes this list — every command must be
+// registered here or it will be missing from asyncapi.yaml.
 //
-// Inbound frame shape: {"type": Name, "request_id": "...", "payload": Payload}.
-// Successful response: {"type": Name + ".result", "request_id": "...", "data": Result}.
-// Error response: {"type": "error", "request_id": "...", "data": {"code": int, "message": string}}.
+// Inbound:  {"type": Name, "request_id": "...", "payload": Payload}
+// Result:   {"type": Name + ".result", "request_id": "...", "data": Result}
+// Error:    {"type": "error", "request_id": "...", "data": {"code": int, "message": string}}
 type VSICommandMeta struct {
 	Name        string
 	Summary     string
@@ -69,12 +68,12 @@ func VSICommandsMetadata() []VSICommandMeta {
 		},
 		{
 			Name: "answer_leg", Summary: "Answer a ringing inbound leg",
-			PayloadType: vsiAnswerLegPayload{}, ResultType: vsiStatusResponse{},
+			PayloadType: answerLegPayload{}, ResultType: vsiStatusResponse{},
 			ErrorCodes: []int{400, 404, 409},
 		},
 		{
 			Name: "delete_leg", Summary: "Hang up a leg",
-			PayloadType: vsiDeleteLegPayload{}, ResultType: vsiStatusResponse{},
+			PayloadType: deleteLegPayload{}, ResultType: vsiStatusResponse{},
 			ErrorCodes: []int{400, 404},
 		},
 		// ── Mute / deaf / hold ──────────────────────────────────────────
@@ -118,20 +117,60 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "delete_room", Summary: "Delete a room", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 		{Name: "add_leg_to_room", Summary: "Add or move a leg into a room", PayloadType: addLegPayload{}, ResultType: AddLegToRoomResult{}, ErrorCodes: []int{400, 404}},
 		{Name: "remove_leg_from_room", Summary: "Remove a leg from a room", PayloadType: roomLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+
+		// ── Leg control ─────────────────────────────────────────────────
+		// New commands use resource-first naming (leg_*, room_*) by design.
+		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
+		// — preserve the resource-first style for any future commands added here.
+		{Name: "leg_ring", Summary: "Send a 180 Ringing on a SIP inbound leg", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_early_media", Summary: "Enable early media (183 Session Progress) on a SIP inbound leg", PayloadType: earlyMediaPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_amd_start", Summary: "Start Answering Machine Detection on a connected SIP leg", PayloadType: legAMDStartPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+
+		// ── Recording ───────────────────────────────────────────────────
+		{Name: "leg_record_start", Summary: "Start recording a leg (stereo when in a room or SIP, mono otherwise)", PayloadType: recordStartPayload{}, ResultType: RecordingStartResult{}, ErrorCodes: []int{400, 404, 409, 500}},
+		{Name: "room_record_start", Summary: "Start recording the full room mix (mono; multi_channel adds per-participant tracks)", PayloadType: recordStartPayload{}, ResultType: RecordingStartResult{}, ErrorCodes: []int{400, 404, 409, 500}},
+		{Name: "leg_record_pause", Summary: "Pause a leg recording", PayloadType: idPayload{}, ResultType: RecordingPauseResumeResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_record_resume", Summary: "Resume a paused leg recording", PayloadType: idPayload{}, ResultType: RecordingPauseResumeResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_record_stop", Summary: "Stop a leg recording", PayloadType: idPayload{}, ResultType: RecordingStopLegResult{}, ErrorCodes: []int{404}},
+		{Name: "room_record_stop", Summary: "Stop a room recording", PayloadType: idPayload{}, ResultType: RecordingStopRoomResult{}, ErrorCodes: []int{404}},
+		{Name: "room_record_pause", Summary: "Pause a room recording", PayloadType: idPayload{}, ResultType: RecordingPauseResumeResult{}, ErrorCodes: []int{404}},
+		{Name: "room_record_resume", Summary: "Resume a paused room recording", PayloadType: idPayload{}, ResultType: RecordingPauseResumeResult{}, ErrorCodes: []int{404}},
+
+		// ── Playback ────────────────────────────────────────────────────
+		{Name: "leg_play_start", Summary: "Start audio playback on a leg", PayloadType: playbackStartPayload{}, ResultType: PlaybackStartResult{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_play_stop", Summary: "Stop a leg playback", PayloadType: playbackTargetPayload{}, ResultType: PlaybackStopResult{}, ErrorCodes: []int{404}},
+		{Name: "room_play_start", Summary: "Start audio playback on a room mix", PayloadType: playbackStartPayload{}, ResultType: PlaybackStartResult{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "room_play_stop", Summary: "Stop a room playback", PayloadType: playbackTargetPayload{}, ResultType: PlaybackStopResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_play_volume", Summary: "Adjust the volume of an active leg playback", PayloadType: playbackVolumePayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404}},
+		{Name: "room_play_volume", Summary: "Adjust the volume of an active room playback", PayloadType: playbackVolumePayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404}},
+
+		// ── STT ─────────────────────────────────────────────────────────
+		{Name: "leg_stt_start", Summary: "Start speech-to-text on a leg", PayloadType: sttStartPayload{}, ResultType: STTStartLegResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "room_stt_start", Summary: "Start speech-to-text on every participant of a room (auto-extends to legs that join later)", PayloadType: sttStartPayload{}, ResultType: STTStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_stt_stop", Summary: "Stop speech-to-text on a leg", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
+		{Name: "room_stt_stop", Summary: "Stop speech-to-text on a room", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
+
+		// ── TTS ─────────────────────────────────────────────────────────
+		{Name: "leg_tts", Summary: "Synthesize speech and play it on a leg", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "room_tts", Summary: "Synthesize speech and play it into a room mix", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+
+		// ── Transfer ────────────────────────────────────────────────────
+		{Name: "leg_transfer", Summary: "Initiate a SIP REFER transfer (blind or attended)", PayloadType: transferLegPayload{}, ResultType: TransferLegResult{}, ErrorCodes: []int{400, 404, 409}},
+
+		// ── Agent ───────────────────────────────────────────────────────
+		{Name: "leg_agent_elevenlabs", Summary: "Attach an ElevenLabs Conversational AI agent to a leg", PayloadType: agentElevenLabsPayload{}, ResultType: AgentStartLegResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_agent_vapi", Summary: "Attach a VAPI agent to a leg", PayloadType: agentVAPIPayload{}, ResultType: AgentStartLegResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_agent_pipecat", Summary: "Attach a Pipecat bot to a leg", PayloadType: agentPipecatPayload{}, ResultType: AgentStartLegResult{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_agent_deepgram", Summary: "Attach a Deepgram Voice Agent to a leg", PayloadType: agentDeepgramPayload{}, ResultType: AgentStartLegResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "room_agent_elevenlabs", Summary: "Attach an ElevenLabs Conversational AI agent to a room", PayloadType: agentElevenLabsPayload{}, ResultType: AgentStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "room_agent_vapi", Summary: "Attach a VAPI agent to a room", PayloadType: agentVAPIPayload{}, ResultType: AgentStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "room_agent_pipecat", Summary: "Attach a Pipecat bot to a room", PayloadType: agentPipecatPayload{}, ResultType: AgentStartRoomResult{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "room_agent_deepgram", Summary: "Attach a Deepgram Voice Agent to a room", PayloadType: agentDeepgramPayload{}, ResultType: AgentStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_agent_stop", Summary: "Detach the agent attached to a leg", PayloadType: idPayload{}, ResultType: AgentStopResult{}, ErrorCodes: []int{404}},
+		{Name: "room_agent_stop", Summary: "Detach the agent attached to a room", PayloadType: idPayload{}, ResultType: AgentStopResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_agent_message", Summary: "Inject a text message into a leg agent session", PayloadType: agentMessagePayload{}, ResultType: AgentMessageResult{}, ErrorCodes: []int{400, 404, 409, 500, 501}},
+		{Name: "room_agent_message", Summary: "Inject a text message into a room agent session", PayloadType: agentMessagePayload{}, ResultType: AgentMessageResult{}, ErrorCodes: []int{400, 404, 409, 500, 501}},
 	}
-}
-
-// vsiAnswerLegPayload mirrors the inline struct in ws_commands.go answer_leg case.
-type vsiAnswerLegPayload struct {
-	ID              string `json:"id"`
-	SpeechDetection *bool  `json:"speech_detection,omitempty"`
-	Codec           string `json:"codec,omitempty"`
-}
-
-// vsiDeleteLegPayload mirrors the inline struct in ws_commands.go delete_leg case.
-type vsiDeleteLegPayload struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason,omitempty"`
 }
 
 // EventMeta describes a single event published on the bus, the webhook
@@ -161,6 +200,7 @@ func EventsMetadata() []EventMeta {
 		{events.LegUndeaf, "Leg undeafened (resumes receiving room audio)", reflect.TypeOf(events.LegUndeafData{})},
 		{events.LegHold, "Leg put on hold (local or remote)", reflect.TypeOf(events.LegHoldData{})},
 		{events.LegUnhold, "Leg taken off hold (local or remote)", reflect.TypeOf(events.LegUnholdData{})},
+		{events.LegCommandFailed, "An asynchronous leg command (202 Accepted) failed during execution", reflect.TypeOf(events.LegCommandFailedData{})},
 		{events.DTMFReceived, "DTMF digit received", reflect.TypeOf(events.DTMFReceivedData{})},
 		{events.RTTReceived, "Real-Time Text (T.140 / RFC 4103) chunk received from the remote", reflect.TypeOf(events.RTTReceivedData{})},
 		{events.SpeakingStarted, "Participant started speaking", reflect.TypeOf(events.SpeakingData{})},

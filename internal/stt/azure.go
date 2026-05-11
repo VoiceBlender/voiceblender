@@ -201,7 +201,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 		default:
 		}
 
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

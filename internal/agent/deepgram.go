@@ -296,7 +296,7 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 		default:
 		}
 
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout)
+		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
 
 		hdr, err := rd.NextFrame()
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -78,6 +79,7 @@ type Engine struct {
 	log             *slog.Logger
 	sipDebug        bool
 	useSourceSocket bool
+	destPinned      atomic.Uint64 // count of res.Destination overrides applied
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -740,6 +742,14 @@ func (e *Engine) pinDestinationToSource(req *sip.Request, res *sip.Response) {
 		return
 	}
 	res.SetDestination(src)
+	e.destPinned.Add(1)
+}
+
+// DestinationsPinned returns the cumulative count of responses whose
+// destination has been overridden via SIP_USE_SOURCE_SOCKET. Tests use this
+// to assert the flag actually fired rather than silently no-op'd.
+func (e *Engine) DestinationsPinned() uint64 {
+	return e.destPinned.Load()
 }
 
 // respondMaybeFromSource sends a pre-built response, pinning the destination
@@ -760,15 +770,6 @@ func (e *Engine) DialogRespond(d *sipgo.DialogServerSession, statusCode int, rea
 	for _, h := range headers {
 		res.AppendHeader(h)
 	}
-	e.pinDestinationToSource(d.InviteRequest, res)
-	return d.WriteResponse(res)
-}
-
-// DialogRespondSDP is the SDP-bearing counterpart to DialogRespond. Mirrors
-// sipgo's NewSDPResponseFromRequest behavior (200 OK with the SDP body and
-// a Content-Type: application/sdp header), but lets us pin the destination.
-func (e *Engine) DialogRespondSDP(d *sipgo.DialogServerSession, sdp []byte) error {
-	res := sip.NewSDPResponseFromRequest(d.InviteRequest, sdp)
 	e.pinDestinationToSource(d.InviteRequest, res)
 	return d.WriteResponse(res)
 }
@@ -910,6 +911,25 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		return nil, fmt.Errorf("create RTP session: %w", err)
 	}
 
+	var (
+		textRtpSess *RTPSession
+		ds          *sipgo.DialogClientSession
+		committed   bool
+		byeOnError  bool
+	)
+	defer func() {
+		if committed {
+			return
+		}
+		if byeOnError && ds != nil {
+			ds.Bye(ctx)
+		}
+		rtpSess.Close()
+		if textRtpSess != nil {
+			textRtpSess.Close()
+		}
+	}()
+
 	codecs := e.codecs
 	if len(opts.Codecs) > 0 {
 		codecs = opts.Codecs
@@ -922,7 +942,6 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
 
 	// Optionally allocate a second RTP session for RTT (m=text).
-	var textRtpSess *RTPSession
 	cfg := SDPConfig{
 		LocalIP: localIP,
 		RTPPort: rtpSess.LocalPort(),
@@ -931,7 +950,6 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	if opts.RTTEnabled {
 		ts, terr := NewRTPSessionFromAllocator(e.portAlloc)
 		if terr != nil {
-			rtpSess.Close()
 			return nil, fmt.Errorf("create text RTP session: %w", terr)
 		}
 		textRtpSess = ts
@@ -970,12 +988,8 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	e.logSIPMessage("outbound", req)
 
 	// Send INVITE via dialog client cache
-	ds, err := e.dcCache.WriteInvite(ctx, req)
+	ds, err = e.dcCache.WriteInvite(ctx, req)
 	if err != nil {
-		rtpSess.Close()
-		if textRtpSess != nil {
-			textRtpSess.Close()
-		}
 		return nil, fmt.Errorf("invite: %w", err)
 	}
 
@@ -1019,10 +1033,6 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		return nil
 	}
 	if err := ds.WaitAnswer(ctx, answerOpts); err != nil {
-		rtpSess.Close()
-		if textRtpSess != nil {
-			textRtpSess.Close()
-		}
 		return nil, fmt.Errorf("wait answer: %w", err)
 	}
 	if ds.InviteResponse != nil {
@@ -1031,31 +1041,19 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	// Send ACK
 	if err := ds.Ack(ctx); err != nil {
-		rtpSess.Close()
-		if textRtpSess != nil {
-			textRtpSess.Close()
-		}
 		return nil, fmt.Errorf("ack: %w", err)
 	}
+	// Dialog fully established — any subsequent error must BYE.
+	byeOnError = true
 
 	// Parse answer SDP from 200 OK response
 	remoteSDP, err := ParseSDP(ds.InviteResponse.Body())
 	if err != nil {
-		rtpSess.Close()
-		if textRtpSess != nil {
-			textRtpSess.Close()
-		}
-		ds.Bye(ctx)
 		return nil, fmt.Errorf("parse answer SDP: %w", err)
 	}
 
 	// Set remote RTP address
 	if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
-		rtpSess.Close()
-		if textRtpSess != nil {
-			textRtpSess.Close()
-		}
-		ds.Bye(ctx)
 		return nil, fmt.Errorf("set remote: %w", err)
 	}
 
@@ -1067,15 +1065,17 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	}
 
 	// Wire the text RTP session to the answer's text section, if accepted.
+	// Mirrors the acceptance test in SIPLeg.adoptOutboundTextSession so the
+	// engine never returns a session the leg will discard.
 	if textRtpSess != nil {
-		if remoteSDP.Text != nil && remoteSDP.Text.RemotePort != 0 {
+		if remoteSDP.Text != nil && remoteSDP.Text.RemotePort != 0 && remoteSDP.Text.T140PT != 0 {
 			if err := textRtpSess.SetRemote(remoteSDP.Text.RemoteIP, remoteSDP.Text.RemotePort); err != nil {
 				e.log.Warn("text RTP set remote failed", "error", err)
 				textRtpSess.Close()
 				textRtpSess = nil
 			}
 		} else {
-			// Peer rejected RTT — close the unused session.
+			// Peer rejected RTT (no m=text, port=0, or no t140/1000 codec).
 			textRtpSess.Close()
 			textRtpSess = nil
 		}
@@ -1096,6 +1096,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		}
 	}
 
+	committed = true
 	return &OutboundCall{
 		Dialog:       ds,
 		RemoteSDP:    remoteSDP,

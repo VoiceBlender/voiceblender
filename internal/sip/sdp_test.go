@@ -42,7 +42,7 @@ func TestGenerateAnswer_IPv6(t *testing.T) {
 		LocalIP: "::1",
 		RTPPort: 10002,
 		Codecs:  []codec.CodecType{codec.CodecPCMU},
-	}, codec.CodecPCMU, 0)
+	}, codec.CodecPCMU, 0, false)
 	if !strings.Contains(string(sdp), "c=IN IP6 ::1") {
 		t.Errorf("answer missing IN IP6 connection:\n%s", sdp)
 	}
@@ -201,8 +201,8 @@ func TestParseSDPRejectedText(t *testing.T) {
 	}
 }
 
-func TestGenerateAnswerWithTextRejected(t *testing.T) {
-	sdp := GenerateAnswerWithText(SDPConfig{
+func TestGenerateAnswerRejected(t *testing.T) {
+	sdp := GenerateAnswer(SDPConfig{
 		LocalIP: "127.0.0.1",
 		RTPPort: 10002,
 		Codecs:  []codec.CodecType{codec.CodecPCMU},

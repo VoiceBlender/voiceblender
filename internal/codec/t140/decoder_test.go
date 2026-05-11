@@ -16,6 +16,20 @@ func TestParseREDMalformed(t *testing.T) {
 	}
 }
 
+// FuzzParseRED asserts parseRED never panics or out-of-bounds reads on
+// adversarial wire bytes. It runs the parser on arbitrary payloads and is
+// content with either a clean parse or a controlled error.
+func FuzzParseRED(f *testing.F) {
+	f.Add([]byte{0x63, 'h'}, uint32(0))
+	f.Add([]byte{0x80, 0x00, 0x00, 0x01, 'a', 0x63, 'b'}, uint32(0))
+	f.Add([]byte{0x80, 0x00, 0x00, 0x04, 0x00}, uint32(0))
+	f.Add([]byte{}, uint32(0))
+
+	f.Fuzz(func(t *testing.T, payload []byte, primaryTS uint32) {
+		_, _ = parseRED(payload, primaryTS)
+	})
+}
+
 func TestParseREDPrimaryOnly(t *testing.T) {
 	pl := append([]byte{0x63}, []byte("hello")...) // F=0, PT=99, body
 	blocks, err := parseRED(pl, 1000)

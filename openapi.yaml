@@ -2705,6 +2705,7 @@ components:
                 - leg.undeaf
                 - leg.hold
                 - leg.unhold
+                - leg.command_failed
                 - dtmf.received
                 - rtt.received
                 - speaking.started
@@ -3024,6 +3025,24 @@ x-webhooks:
                                     leg_type:
                                         type: string
                                         description: 'Hold direction: "local" or "remote"'
+    leg.command_failed:
+        post:
+            summary: An asynchronous leg command (202 Accepted) failed during execution
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    command:
+                                        type: string
+                                    error:
+                                        type: string
     dtmf.received:
         post:
             summary: DTMF digit received

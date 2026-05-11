@@ -176,8 +176,8 @@ func TestDoWebRTCAddCandidate_HappyPath(t *testing.T) {
 	}
 }
 
-// TestVSIMetadata_WebRTCRegistered guards the asyncapi-gen contract in CLAUDE.md:
-// every VSI command must appear in VSICommandsMetadata.
+// TestVSIMetadata_WebRTCRegistered ensures every WebRTC VSI command is
+// registered in VSICommandsMetadata so asyncapi-gen emits them.
 func TestVSIMetadata_WebRTCRegistered(t *testing.T) {
 	want := map[string]bool{
 		"webrtc_offer":          false,

@@ -33,13 +33,13 @@ var (
 	}{m: make(map[string]*roomSTTState)}
 )
 
-func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+// STTStartLegResult is the success payload for starting STT on a leg.
+type STTStartLegResult struct {
+	Status string `json:"status"`
+	LegID  string `json:"leg_id"`
+}
 
-	var req STTRequest
-	// Body is optional; ignore decode errors for empty body.
-	_ = decodeJSON(r, &req)
-
+func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult, error) {
 	apiKey := req.APIKey
 	if apiKey == "" {
 		switch req.Provider {
@@ -56,27 +56,23 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		if providerName == "" {
 			providerName = "elevenlabs"
 		}
-		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-		return
+		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
 	}
 
+	id := legID
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
 	if l.State() != leg.StateConnected {
-		writeError(w, http.StatusConflict, "leg not connected")
-		return
+		return nil, newAPIError(http.StatusConflict, "leg not connected")
 	}
 
 	legTranscribers.Lock()
 	if _, exists := legTranscribers.m[id]; exists {
 		legTranscribers.Unlock()
-		writeError(w, http.StatusConflict, "STT already running on this leg")
-		return
+		return nil, newAPIError(http.StatusConflict, "STT already running on this leg")
 	}
-
 	var transcriber stt.Provider
 	switch req.Provider {
 	case "deepgram":
@@ -90,34 +86,27 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 	legTranscribers.Unlock()
 
 	var reader interface{ Read([]byte) (int, error) }
-	var tapPW *pipeWriter // non-nil if we set a participant tap
 
 	if roomID := l.RoomID(); roomID != "" {
-		// Leg is in a room — use a per-participant tap from the mixer.
 		rm, ok := s.RoomMgr.Get(roomID)
 		if !ok {
 			legTranscribers.Lock()
 			delete(legTranscribers.m, id)
 			legTranscribers.Unlock()
-			writeError(w, http.StatusConflict, "room not found")
-			return
+			return nil, newAPIError(http.StatusConflict, "room not found")
 		}
 		pr, pw := createPipe()
 		rm.Mixer().SetParticipantTap(id, pw)
 		reader = mixer.NewResampleReader(pr, rm.Mixer().SampleRate(), mixer.DefaultSampleRate)
-		tapPW = pw
-		_ = tapPW // used in cleanup
+		_ = pw
 	} else {
-		// Standalone leg — read audio directly.
 		ar := l.AudioReader()
 		if ar == nil {
 			legTranscribers.Lock()
 			delete(legTranscribers.m, id)
 			legTranscribers.Unlock()
-			writeError(w, http.StatusConflict, "leg has no audio reader")
-			return
+			return nil, newAPIError(http.StatusConflict, "leg has no audio reader")
 		}
-		// Resample to 16kHz if needed.
 		reader = mixer.NewResampleReader(ar, l.SampleRate(), mixer.DefaultSampleRate)
 	}
 
@@ -139,7 +128,6 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		err := transcriber.Start(l.Context(), reader, apiKey, opts, cb)
 		s.Log.Info("stt transcriber exited", "leg_id", id, "error", err)
-		// Cleanup on exit.
 		if roomID := l.RoomID(); roomID != "" {
 			if rm, ok := s.RoomMgr.Get(roomID); ok {
 				rm.Mixer().ClearParticipantTap(id)
@@ -150,44 +138,65 @@ func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
 		legTranscribers.Unlock()
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stt_started", "leg_id": id})
+	return &STTStartLegResult{Status: "stt_started", LegID: id}, nil
+}
+
+func (s *Server) sttLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req STTRequest
+	_ = decodeJSON(r, &req)
+	res, err := s.doStartSTTLeg(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// STTStopResult is the success payload for stopping STT on a leg or room.
+type STTStopResult struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) doStopSTTLeg(legID string) (*STTStopResult, error) {
+	legTranscribers.Lock()
+	transcriber, ok := legTranscribers.m[legID]
+	if ok {
+		delete(legTranscribers.m, legID)
+	}
+	legTranscribers.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no STT in progress")
+	}
+	transcriber.Stop()
+	if l, ok := s.LegMgr.Get(legID); ok {
+		if roomID := l.RoomID(); roomID != "" {
+			if rm, ok := s.RoomMgr.Get(roomID); ok {
+				rm.Mixer().ClearParticipantTap(legID)
+			}
+		}
+	}
+	return &STTStopResult{Status: "stt_stopped"}, nil
 }
 
 func (s *Server) stopSTTLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
-	legTranscribers.Lock()
-	transcriber, ok := legTranscribers.m[id]
-	if ok {
-		delete(legTranscribers.m, id)
-	}
-	legTranscribers.Unlock()
-
-	if !ok {
-		writeError(w, http.StatusNotFound, "no STT in progress")
+	res, err := s.doStopSTTLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-
-	transcriber.Stop()
-
-	// Clear participant tap if leg is in a room.
-	if l, ok := s.LegMgr.Get(id); ok {
-		if roomID := l.RoomID(); roomID != "" {
-			if rm, ok := s.RoomMgr.Get(roomID); ok {
-				rm.Mixer().ClearParticipantTap(id)
-			}
-		}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stt_stopped"})
+	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+// STTStartRoomResult is the success payload for starting STT on a room.
+type STTStartRoomResult struct {
+	Status string   `json:"status"`
+	RoomID string   `json:"room_id"`
+	LegIDs []string `json:"leg_ids"`
+}
 
-	var req STTRequest
-	_ = decodeJSON(r, &req)
-
+func (s *Server) doStartSTTRoom(roomID string, req STTRequest) (*STTStartRoomResult, error) {
 	apiKey := req.APIKey
 	if apiKey == "" {
 		switch req.Provider {
@@ -204,27 +213,23 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 		if providerName == "" {
 			providerName = "elevenlabs"
 		}
-		writeError(w, http.StatusServiceUnavailable, "no "+providerName+" API key provided")
-		return
+		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
 	}
 
+	id := roomID
 	rm, ok := s.RoomMgr.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "room not found")
-		return
+		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
-
 	parts := rm.Participants()
 	if len(parts) == 0 {
-		writeError(w, http.StatusConflict, "room has no participants")
-		return
+		return nil, newAPIError(http.StatusConflict, "room has no participants")
 	}
 
 	roomTranscribers.Lock()
 	if _, exists := roomTranscribers.m[id]; exists {
 		roomTranscribers.Unlock()
-		writeError(w, http.StatusConflict, "STT already running on this room")
-		return
+		return nil, newAPIError(http.StatusConflict, "STT already running on this room")
 	}
 	opts := stt.Options{Language: req.Language, Partial: req.Partial}
 	state := &roomSTTState{
@@ -236,20 +241,25 @@ func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
 	roomTranscribers.m[id] = state
 	roomTranscribers.Unlock()
 
-	roomID := id
 	legIDs := make([]string, 0, len(parts))
-
 	for _, l := range parts {
 		legID := l.ID()
 		legIDs = append(legIDs, legID)
-		s.startRoomLegSTT(roomID, legID, l, rm.Mixer(), state)
+		s.startRoomLegSTT(id, legID, l, rm.Mixer(), state)
 	}
+	return &STTStartRoomResult{Status: "stt_started", RoomID: id, LegIDs: legIDs}, nil
+}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "stt_started",
-		"room_id": id,
-		"leg_ids": legIDs,
-	})
+func (s *Server) sttRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req STTRequest
+	_ = decodeJSON(r, &req)
+	res, err := s.doStartSTTRoom(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // startRoomLegSTT spins up a transcriber for a single leg within a room STT session.
@@ -332,28 +342,32 @@ func (s *Server) onLegJoinedRoom(roomID, legID string) {
 	s.startRoomLegSTT(roomID, legID, l, rm.Mixer(), state)
 }
 
-func (s *Server) stopSTTRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-
+func (s *Server) doStopSTTRoom(roomID string) (*STTStopResult, error) {
 	roomTranscribers.Lock()
-	state, ok := roomTranscribers.m[id]
+	state, ok := roomTranscribers.m[roomID]
 	if ok {
-		delete(roomTranscribers.m, id)
+		delete(roomTranscribers.m, roomID)
 	}
 	roomTranscribers.Unlock()
-
 	if !ok {
-		writeError(w, http.StatusNotFound, "no STT in progress")
-		return
+		return nil, newAPIError(http.StatusNotFound, "no STT in progress")
 	}
-
-	rm, rmOK := s.RoomMgr.Get(id)
+	rm, rmOK := s.RoomMgr.Get(roomID)
 	for legID, transcriber := range state.transcribers {
 		transcriber.Stop()
 		if rmOK {
 			rm.Mixer().ClearParticipantTap(legID)
 		}
 	}
+	return &STTStopResult{Status: "stt_stopped"}, nil
+}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stt_stopped"})
+func (s *Server) stopSTTRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doStopSTTRoom(id)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

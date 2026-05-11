@@ -112,13 +112,9 @@ type SIPLeg struct {
 	rttNegotiated  atomic.Bool
 	rttRedundancy  int
 	rttBufferMs    int
-	rttLocalPort   int   // bound local UDP port for the text session
-	textWriteStart int64 // UnixNano captured when writeLoop starts; basis for the 1 kHz timestamp
+	rttLocalPort int // bound local UDP port for the text session
 
-	// Idempotency gates. Termination methods (Hangup, Reject) and the
-	// disconnect-event publisher all run from racing goroutines (API DELETE,
-	// remote BYE, RTP timeout, etc.); these flags ensure each side-effect
-	// happens exactly once per leg.
+	// Terminate-once gates: racing termination paths converge here.
 	byeOnce        sync.Once
 	rejectOnce     sync.Once
 	disconnectDone atomic.Bool
@@ -479,13 +475,6 @@ func (l *SIPLeg) SignalAnswer(preferred codec.CodecType) {
 	}
 }
 
-// PreferredCodec returns the codec hint last set via SignalAnswer.
-func (l *SIPLeg) PreferredCodec() codec.CodecType {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	return l.preferredCodec
-}
-
 // RemoteOfferCodecs returns the codecs offered by the remote in the inbound
 // INVITE SDP, in offer order. Returns nil for outbound legs or when no offer
 // has been parsed yet.
@@ -620,7 +609,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
 
 	// Generate answer SDP — echo the remote's PT for dynamic codecs.
-	answerSDP := sipmod.GenerateAnswerWithText(sipmod.SDPConfig{
+	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
 		LocalIP:       l.localIP,
 		RTPPort:       rtpSess.LocalPort(),
 		Codecs:        l.supportedCodecs,
@@ -723,7 +712,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
 
 	// Generate answer SDP — echo the remote's PT for dynamic codecs.
-	answerSDP := sipmod.GenerateAnswerWithText(sipmod.SDPConfig{
+	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
 		LocalIP:       l.localIP,
 		RTPPort:       rtpSess.LocalPort(),
 		Codecs:        l.supportedCodecs,
@@ -839,19 +828,34 @@ func (l *SIPLeg) popLoop() {
 	}
 }
 
+// recoverLoop logs a panic on the named loop goroutine.
+func (l *SIPLeg) recoverLoop(loop string) {
+	if r := recover(); r != nil {
+		l.log.Error(loop+" panic",
+			"leg_id", l.id,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+	}
+}
+
+// recoverLoopAndHangup is recoverLoop for audio-pipeline loops that must
+// also hang up the leg after a panic, since further operation is unsafe.
+func (l *SIPLeg) recoverLoopAndHangup(loop string) {
+	if r := recover(); r != nil {
+		l.log.Error(loop+" panic, hanging up leg",
+			"leg_id", l.id,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+		_ = l.Hangup(context.Background())
+	}
+}
+
 // readLoop reads RTP packets from the UDP socket, decodes audio, and pushes
 // native-rate PCM frames into inFrames.
 func (l *SIPLeg) readLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			l.log.Error("readLoop panic, hanging up leg",
-				"leg_id", l.id,
-				"panic", r,
-				"stack", string(debug.Stack()),
-			)
-			_ = l.Hangup(context.Background())
-		}
-	}()
+	defer l.recoverLoopAndHangup("readLoop")
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -1054,20 +1058,7 @@ func (l *SIPLeg) RTPStats() RTPStats {
 
 // writeLoop sends RTP packets on a 20ms ticker.
 func (l *SIPLeg) writeLoop() {
-	// Defense in depth against panics deep in the audio pipeline (third-party
-	// codec libraries, pion, etc.). Without this, one bad frame on one leg
-	// kills the whole instance. Recover, log with stack, and hang up just
-	// this leg cleanly via the normal teardown path.
-	defer func() {
-		if r := recover(); r != nil {
-			l.log.Error("writeLoop panic, hanging up leg",
-				"leg_id", l.id,
-				"panic", r,
-				"stack", string(debug.Stack()),
-			)
-			_ = l.Hangup(context.Background())
-		}
-	}()
+	defer l.recoverLoopAndHangup("writeLoop")
 
 	const (
 		ptime            = 20 * time.Millisecond
@@ -1386,7 +1377,12 @@ func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
 	if l.rtpSess == nil {
 		return nil
 	}
+	return sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, ourDirection)
+}
 
+// sdpConfig returns an SDPConfig populated from the leg's current local
+// media state (audio + optional text). Assumes l.rtpSess is non-nil.
+func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 	cfg := sipmod.SDPConfig{
 		LocalIP: l.localIP,
 		RTPPort: l.rtpSess.LocalPort(),
@@ -1398,7 +1394,7 @@ func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
 		cfg.TextREDPT = l.textREDPT
 		cfg.RTTRedundancy = l.rttRedundancy
 	}
-	return sipmod.GenerateReInviteSDP(cfg, l.codecType, l.rtpPT, ourDirection)
+	return cfg
 }
 
 // CallID returns the SIP Call-ID for this leg's dialog.
@@ -1475,18 +1471,7 @@ func (l *SIPLeg) Hold(ctx context.Context) error {
 		return fmt.Errorf("leg is %s, must be connected to hold", st)
 	}
 
-	cfg := sipmod.SDPConfig{
-		LocalIP: l.localIP,
-		RTPPort: l.rtpSess.LocalPort(),
-		Codecs:  l.supportedCodecs,
-	}
-	if l.textRtpSess != nil {
-		cfg.TextRTPPort = l.textRtpSess.LocalPort()
-		cfg.TextT140PT = l.textT140PT
-		cfg.TextREDPT = l.textREDPT
-		cfg.RTTRedundancy = l.rttRedundancy
-	}
-	sdpBody := sipmod.GenerateReInviteSDP(cfg, l.codecType, l.rtpPT, "sendonly")
+	sdpBody := sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, "sendonly")
 
 	var dialog interface{}
 	if l.inbound != nil {
@@ -1521,18 +1506,7 @@ func (l *SIPLeg) Unhold(ctx context.Context) error {
 		return nil // not held
 	}
 
-	cfg := sipmod.SDPConfig{
-		LocalIP: l.localIP,
-		RTPPort: l.rtpSess.LocalPort(),
-		Codecs:  l.supportedCodecs,
-	}
-	if l.textRtpSess != nil {
-		cfg.TextRTPPort = l.textRtpSess.LocalPort()
-		cfg.TextT140PT = l.textT140PT
-		cfg.TextREDPT = l.textREDPT
-		cfg.RTTRedundancy = l.rttRedundancy
-	}
-	sdpBody := sipmod.GenerateReInviteSDP(cfg, l.codecType, l.rtpPT, "sendrecv")
+	sdpBody := sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, "sendrecv")
 
 	var dialog interface{}
 	if l.inbound != nil {
@@ -1814,15 +1788,7 @@ func (l *SIPLeg) setupTextMedia() {
 // textReadLoop reads RTP packets from the text RTP session, decodes them,
 // and forwards the resulting text to the dispatch loop.
 func (l *SIPLeg) textReadLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			l.log.Error("textReadLoop panic",
-				"leg_id", l.id,
-				"panic", r,
-				"stack", string(debug.Stack()),
-			)
-		}
-	}()
+	defer l.recoverLoop("textReadLoop")
 
 	rs := l.textRtpSess
 	t140PT := l.textT140PT
@@ -1881,15 +1847,21 @@ func (l *SIPLeg) textReadLoop() {
 			continue
 		}
 		seq := rttSeq.Add(1)
+		in := rttIn{seq: seq, text: text, lossMarker: lost}
 		select {
-		case l.textInCh <- rttIn{seq: seq, text: text, lossMarker: lost}:
+		case l.textInCh <- in:
 		default:
-			// Drop oldest if dispatcher is behind — RTT is best-effort.
+			// Buffer full: drop oldest then re-attempt. Both ops are
+			// non-blocking so the read loop can never wedge on a stalled
+			// dispatcher, regardless of writer/reader cardinality.
 			select {
 			case <-l.textInCh:
 			default:
 			}
-			l.textInCh <- rttIn{seq: seq, text: text, lossMarker: lost}
+			select {
+			case l.textInCh <- in:
+			default:
+			}
 		}
 	}
 }
@@ -1915,15 +1887,7 @@ func (l *SIPLeg) textDispatchLoop() {
 // textWriteLoop drains the outbound text channel at the configured buffer
 // interval and emits one RTP packet per tick if there are pending bytes.
 func (l *SIPLeg) textWriteLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			l.log.Error("textWriteLoop panic",
-				"leg_id", l.id,
-				"panic", r,
-				"stack", string(debug.Stack()),
-			)
-		}
-	}()
+	defer l.recoverLoop("textWriteLoop")
 
 	rs := l.textRtpSess
 	enc := l.textEncoder

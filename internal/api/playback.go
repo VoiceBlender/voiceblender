@@ -32,59 +32,55 @@ var (
 	}{m: make(map[string]map[string]*playback.Player)}
 )
 
-func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return
-	}
+// PlaybackStartResult is the success payload for starting a playback on a
+// leg or room. The same shape is returned by leg_tts and room_tts (with
+// "tts_id" semantics).
+type PlaybackStartResult struct {
+	PlaybackID string `json:"playback_id"`
+	Status     string `json:"status"`
+}
 
-	var req PlaybackRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
+// PlaybackStopResult is the success payload for stopping a playback.
+type PlaybackStopResult struct {
+	Status string `json:"status"`
+}
+
+func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackStartResult, error) {
+	l, ok := s.LegMgr.Get(legID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
 	if req.URL != "" && req.Tone != "" {
-		writeError(w, http.StatusBadRequest, "url and tone are mutually exclusive")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "url and tone are mutually exclusive")
 	}
 	if req.URL == "" && req.Tone == "" {
-		writeError(w, http.StatusBadRequest, "url or tone is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "url or tone is required")
 	}
 	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
+	}
+
+	directWriter := l.AudioWriter()
+	if directWriter == nil {
+		return nil, newAPIError(http.StatusConflict, "leg has no audio writer")
 	}
 
 	playbackID := "pb-" + uuid.New().String()[:8]
 	player := playback.NewPlayer(s.Log)
 	player.SetVolume(req.Volume)
 
-	directWriter := l.AudioWriter()
-	if directWriter == nil {
-		writeError(w, http.StatusConflict, "leg has no audio writer")
-		return
-	}
-
-	// Use a dynamic writer that checks per-frame whether the leg is in a
-	// room. When in a room, frames are injected into the mixer (mixed with
-	// room audio). When not in a room, frames go directly to the leg.
-	// Playback always runs at the mixer's 16kHz rate; the dynamic writer
-	// resamples to the leg's native rate when writing directly.
 	writer := &legPlaybackWriter{
-		legID:        id,
+		legID:        legID,
 		leg:          l,
 		directWriter: directWriter,
 		roomMgr:      s.RoomMgr,
 	}
 
 	legPlayers.Lock()
-	if legPlayers.m[id] == nil {
-		legPlayers.m[id] = make(map[string]*playback.Player)
+	if legPlayers.m[legID] == nil {
+		legPlayers.m[legID] = make(map[string]*playback.Player)
 	}
-	legPlayers.m[id][playbackID] = player
+	legPlayers.m[legID][playbackID] = player
 	legPlayers.Unlock()
 
 	playRate := uint32(mixer.DefaultSampleRate)
@@ -97,7 +93,7 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 	appID := l.AppID()
 	player.OnStart(func() {
 		s.Bus.Publish(events.PlaybackStarted, &events.PlaybackStartedData{
-			LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
+			LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 			PlaybackID:   playbackID,
 		})
 	})
@@ -107,7 +103,7 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 			spec, ok := playback.LookupTone(req.Tone)
 			if !ok {
 				s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-					LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
+					LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 					PlaybackID:   playbackID,
 					Error:        fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
 				})
@@ -119,104 +115,111 @@ func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 			err = player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, playRate, req.Repeat)
 		}
 		legPlayers.Lock()
-		delete(legPlayers.m[id], playbackID)
-		if len(legPlayers.m[id]) == 0 {
-			delete(legPlayers.m, id)
+		delete(legPlayers.m[legID], playbackID)
+		if len(legPlayers.m[legID]) == 0 {
+			delete(legPlayers.m, legID)
 		}
 		legPlayers.Unlock()
 		if err != nil && err != context.Canceled {
 			s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
+				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 				PlaybackID:   playbackID,
 				Error:        err.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
+				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 				PlaybackID:   playbackID,
 			})
 		}
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]string{"playback_id": playbackID, "status": "playing"})
+	return &PlaybackStartResult{PlaybackID: playbackID, Status: "playing"}, nil
 }
 
-func (s *Server) stopPlayLeg(w http.ResponseWriter, r *http.Request) {
+func (s *Server) playLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	playbackID := chi.URLParam(r, "playbackID")
-	legPlayers.Lock()
-	players, ok := legPlayers.m[id]
-	if !ok {
-		legPlayers.Unlock()
-		writeError(w, http.StatusNotFound, "no playback in progress")
-		return
-	}
-	p, ok := players[playbackID]
-	if !ok {
-		legPlayers.Unlock()
-		writeError(w, http.StatusNotFound, "no playback in progress")
-		return
-	}
-	delete(players, playbackID)
-	if len(players) == 0 {
-		delete(legPlayers.m, id)
-	}
-	legPlayers.Unlock()
-	p.Stop()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-}
-
-func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	rm, ok := s.RoomMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "room not found")
-		return
-	}
-
 	var req PlaybackRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.URL != "" && req.Tone != "" {
-		writeError(w, http.StatusBadRequest, "url and tone are mutually exclusive")
+	res, err := s.doStartLegPlay(id, req)
+	if err != nil {
+		handleAPIError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doStopLegPlay(legID, playbackID string) (*PlaybackStopResult, error) {
+	legPlayers.Lock()
+	players, ok := legPlayers.m[legID]
+	if !ok {
+		legPlayers.Unlock()
+		return nil, newAPIError(http.StatusNotFound, "no playback in progress")
+	}
+	p, ok := players[playbackID]
+	if !ok {
+		legPlayers.Unlock()
+		return nil, newAPIError(http.StatusNotFound, "no playback in progress")
+	}
+	delete(players, playbackID)
+	if len(players) == 0 {
+		delete(legPlayers.m, legID)
+	}
+	legPlayers.Unlock()
+	p.Stop()
+	return &PlaybackStopResult{Status: "stopped"}, nil
+}
+
+func (s *Server) stopPlayLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	playbackID := chi.URLParam(r, "playbackID")
+	res, err := s.doStopLegPlay(id, playbackID)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doStartRoomPlay(roomID string, req PlaybackRequest) (*PlaybackStartResult, error) {
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "room not found")
+	}
+	if req.URL != "" && req.Tone != "" {
+		return nil, newAPIError(http.StatusBadRequest, "url and tone are mutually exclusive")
 	}
 	if req.URL == "" && req.Tone == "" {
-		writeError(w, http.StatusBadRequest, "url or tone is required")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "url or tone is required")
 	}
 	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
-		return
+		return nil, newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
 	}
-
 	parts := rm.Participants()
 	if len(parts) == 0 {
-		writeError(w, http.StatusConflict, "room has no participants")
-		return
+		return nil, newAPIError(http.StatusConflict, "room has no participants")
 	}
 
 	playbackID := "pb-" + uuid.New().String()[:8]
-
-	// Create a pipe: player writes 16kHz PCM into pw, mixer reads from pr.
 	pr, pw := io.Pipe()
 	rm.Mixer().AddPlaybackSource(playbackID, pr)
 
 	player := playback.NewPlayer(s.Log)
 	player.SetVolume(req.Volume)
 	roomPlayers.Lock()
-	if roomPlayers.m[id] == nil {
-		roomPlayers.m[id] = make(map[string]*playback.Player)
+	if roomPlayers.m[roomID] == nil {
+		roomPlayers.m[roomID] = make(map[string]*playback.Player)
 	}
-	roomPlayers.m[id][playbackID] = player
+	roomPlayers.m[roomID][playbackID] = player
 	roomPlayers.Unlock()
 
 	roomAppID := rm.AppID
 	player.OnStart(func() {
 		s.Bus.Publish(events.PlaybackStarted, &events.PlaybackStartedData{
-			LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+			LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 			PlaybackID:   playbackID,
 		})
 	})
@@ -229,7 +232,7 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 				pw.Close()
 				rm.Mixer().RemoveParticipant(playbackID)
 				s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-					LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+					LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 					PlaybackID:   playbackID,
 					Error:        fmt.Sprintf("unknown tone %q, available: %s", req.Tone, strings.Join(playback.ToneNames(), ", ")),
 				})
@@ -244,52 +247,88 @@ func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
 		pw.Close()
 		rm.Mixer().RemoveParticipant(playbackID)
 		roomPlayers.Lock()
-		delete(roomPlayers.m[id], playbackID)
-		if len(roomPlayers.m[id]) == 0 {
-			delete(roomPlayers.m, id)
+		delete(roomPlayers.m[roomID], playbackID)
+		if len(roomPlayers.m[roomID]) == 0 {
+			delete(roomPlayers.m, roomID)
 		}
 		roomPlayers.Unlock()
 		if err != nil && err != context.Canceled {
-			s.Log.Debug("room playback error", "room_id", id, "error", err)
+			s.Log.Debug("room playback error", "room_id", roomID, "error", err)
 			s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
-				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+				LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 				PlaybackID:   playbackID,
 				Error:        err.Error(),
 			})
 		} else {
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
-				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
+				LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 				PlaybackID:   playbackID,
 			})
 		}
 	}()
 
-	writeJSON(w, http.StatusOK, map[string]string{"playback_id": playbackID, "status": "playing"})
+	return &PlaybackStartResult{PlaybackID: playbackID, Status: "playing"}, nil
+}
+
+func (s *Server) playRoom(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req PlaybackRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	res, err := s.doStartRoomPlay(id, req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doStopRoomPlay(roomID, playbackID string) (*PlaybackStopResult, error) {
+	roomPlayers.Lock()
+	players, ok := roomPlayers.m[roomID]
+	if !ok {
+		roomPlayers.Unlock()
+		return nil, newAPIError(http.StatusNotFound, "no playback in progress")
+	}
+	p, ok := players[playbackID]
+	if !ok {
+		roomPlayers.Unlock()
+		return nil, newAPIError(http.StatusNotFound, "no playback in progress")
+	}
+	delete(players, playbackID)
+	if len(players) == 0 {
+		delete(roomPlayers.m, roomID)
+	}
+	roomPlayers.Unlock()
+	p.Stop()
+	return &PlaybackStopResult{Status: "stopped"}, nil
 }
 
 func (s *Server) stopPlayRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	playbackID := chi.URLParam(r, "playbackID")
-	roomPlayers.Lock()
-	players, ok := roomPlayers.m[id]
-	if !ok {
-		roomPlayers.Unlock()
-		writeError(w, http.StatusNotFound, "no playback in progress")
+	res, err := s.doStopRoomPlay(id, playbackID)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	p, ok := players[playbackID]
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) doVolumeLegPlay(legID, playbackID string, volume int) error {
+	if volume < -8 || volume > 8 {
+		return newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
+	}
+	legPlayers.Lock()
+	p, ok := legPlayers.m[legID][playbackID]
+	legPlayers.Unlock()
 	if !ok {
-		roomPlayers.Unlock()
-		writeError(w, http.StatusNotFound, "no playback in progress")
-		return
+		return newAPIError(http.StatusNotFound, "playback not found")
 	}
-	delete(players, playbackID)
-	if len(players) == 0 {
-		delete(roomPlayers.m, id)
-	}
-	roomPlayers.Unlock()
-	p.Stop()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+	p.SetVolume(volume)
+	return nil
 }
 
 func (s *Server) volumePlayLeg(w http.ResponseWriter, r *http.Request) {
@@ -300,19 +339,25 @@ func (s *Server) volumePlayLeg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
+	if err := s.doVolumeLegPlay(id, playbackID, req.Volume); err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	legPlayers.Lock()
-	p, ok := legPlayers.m[id][playbackID]
-	legPlayers.Unlock()
-	if !ok {
-		writeError(w, http.StatusNotFound, "playback not found")
-		return
-	}
-	p.SetVolume(req.Volume)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) doVolumeRoomPlay(roomID, playbackID string, volume int) error {
+	if volume < -8 || volume > 8 {
+		return newAPIError(http.StatusBadRequest, "volume must be between -8 and 8")
+	}
+	roomPlayers.Lock()
+	p, ok := roomPlayers.m[roomID][playbackID]
+	roomPlayers.Unlock()
+	if !ok {
+		return newAPIError(http.StatusNotFound, "playback not found")
+	}
+	p.SetVolume(volume)
+	return nil
 }
 
 func (s *Server) volumePlayRoom(w http.ResponseWriter, r *http.Request) {
@@ -323,18 +368,10 @@ func (s *Server) volumePlayRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.Volume < -8 || req.Volume > 8 {
-		writeError(w, http.StatusBadRequest, "volume must be between -8 and 8")
+	if err := s.doVolumeRoomPlay(id, playbackID, req.Volume); err != nil {
+		handleAPIError(w, err)
 		return
 	}
-	roomPlayers.Lock()
-	p, ok := roomPlayers.m[id][playbackID]
-	roomPlayers.Unlock()
-	if !ok {
-		writeError(w, http.StatusNotFound, "playback not found")
-		return
-	}
-	p.SetVolume(req.Volume)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -1916,6 +1916,47 @@ The WebSocket accepts bidirectional commands using the same naming as the REST A
 | `add_leg_to_room` | `{"room_id":"...","leg_id":"..."}` | Add or move leg to room (supports `mute`, `deaf`, `accept_dtmf`) |
 | `remove_leg_from_room` | `{"room_id":"...","leg_id":"..."}` | Remove leg from room |
 
+The commands below mirror the corresponding REST endpoints and use **resource-first** naming (`leg_*`, `room_*`). All payloads merge the URL identifier with the REST request body fields.
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `leg_ring` | `{"id":"..."}` | Send 180 Ringing on a SIP inbound leg |
+| `leg_early_media` | `{"id":"...","codec":"PCMU"}` | Enable 183 Session Progress with media on a SIP inbound leg |
+| `leg_amd_start` | `{"id":"...","initial_silence_timeout":2500,...}` | Start AMD on a connected SIP leg (all `AMDParams` fields are optional) |
+| `leg_transfer` | `{"id":"...","target":"sip:bob@example.com","replaces_leg_id":""}` | Initiate SIP REFER transfer (blind or attended) |
+| `leg_record_start` | `{"id":"...","storage":"file",...}` | Start recording a leg (stereo when in a room or SIP, mono otherwise) |
+| `leg_record_stop` | `{"id":"..."}` | Stop a leg recording; returns `{status, file}` |
+| `leg_record_pause` | `{"id":"..."}` | Pause a leg recording |
+| `leg_record_resume` | `{"id":"..."}` | Resume a paused leg recording |
+| `room_record_start` | `{"id":"...","multi_channel":true,...}` | Start recording a room mix |
+| `room_record_stop` | `{"id":"..."}` | Stop a room recording |
+| `room_record_pause` | `{"id":"..."}` | Pause a room recording |
+| `room_record_resume` | `{"id":"..."}` | Resume a paused room recording |
+| `leg_play_start` | `{"id":"...","url":"https://...","volume":0}` | Start audio playback on a leg; returns `{playback_id, status}` |
+| `leg_play_stop` | `{"id":"...","playback_id":"pb-..."}` | Stop a leg playback |
+| `leg_play_volume` | `{"id":"...","playback_id":"pb-...","volume":-3}` | Adjust active playback volume (-8..8) |
+| `room_play_start` | `{"id":"...","tone":"us_ringback"}` | Start audio playback into a room mix |
+| `room_play_stop` | `{"id":"...","playback_id":"pb-..."}` | Stop a room playback |
+| `room_play_volume` | `{"id":"...","playback_id":"pb-...","volume":2}` | Adjust active room playback volume |
+| `leg_stt_start` | `{"id":"...","provider":"deepgram","language":"en"}` | Start speech-to-text on a leg |
+| `leg_stt_stop` | `{"id":"..."}` | Stop STT on a leg |
+| `room_stt_start` | `{"id":"...","provider":"elevenlabs"}` | Start STT on every participant of a room (auto-extends to legs that join later) |
+| `room_stt_stop` | `{"id":"..."}` | Stop room STT |
+| `leg_tts` | `{"id":"...","text":"Hello","voice":"Joanna","provider":"aws"}` | Synthesize and play TTS on a leg; returns `{tts_id, status}` |
+| `room_tts` | `{"id":"...","text":"...","voice":"..."}` | Synthesize and play TTS into a room mix |
+| `leg_agent_elevenlabs` | `{"id":"...","agent_id":"..."}` | Attach an ElevenLabs Conversational AI agent to a leg |
+| `leg_agent_vapi` | `{"id":"...","assistant_id":"..."}` | Attach a VAPI agent to a leg |
+| `leg_agent_pipecat` | `{"id":"...","websocket_url":"ws://..."}` | Attach a Pipecat bot to a leg |
+| `leg_agent_deepgram` | `{"id":"...","greeting":"...","settings":{...}}` | Attach a Deepgram Voice Agent to a leg |
+| `leg_agent_message` | `{"id":"...","message":"..."}` | Inject a text message into a running leg agent session |
+| `leg_agent_stop` | `{"id":"..."}` | Detach the agent from a leg |
+| `room_agent_elevenlabs` | `{"id":"...","agent_id":"..."}` | Attach ElevenLabs agent to a room |
+| `room_agent_vapi` | `{"id":"...","assistant_id":"..."}` | Attach VAPI agent to a room |
+| `room_agent_pipecat` | `{"id":"...","websocket_url":"ws://..."}` | Attach Pipecat bot to a room |
+| `room_agent_deepgram` | `{"id":"...","greeting":"..."}` | Attach Deepgram agent to a room |
+| `room_agent_message` | `{"id":"...","message":"..."}` | Inject a text message into a running room agent session |
+| `room_agent_stop` | `{"id":"..."}` | Detach the agent from a room |
+
 The server sends application-level pings every 30 seconds. If a client reads too slowly, events are buffered per-connection. When the buffer is full, **new events are dropped** and the server sends a notification before the next successfully delivered event:
 
 ```json
