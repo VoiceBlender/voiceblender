@@ -107,6 +107,7 @@ func (s *Server) routes() {
 		// Legs
 		r.Post("/legs", s.createLeg)
 		r.Get("/legs", s.listLegs)
+		r.Get("/legs/websocket", s.wsLeg)
 		r.Get("/legs/{id}", s.getLeg)
 		r.Post("/legs/{id}/answer", s.answerLeg)
 		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)

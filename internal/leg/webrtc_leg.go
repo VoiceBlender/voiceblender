@@ -107,6 +107,7 @@ func (l *WebRTCLeg) IsHeld() bool               { return false }
 func (l *WebRTCLeg) CreatedAt() time.Time          { return l.createdAt }
 func (l *WebRTCLeg) AnsweredAt() time.Time         { return l.createdAt }
 func (l *WebRTCLeg) SIPHeaders() map[string]string { return nil }
+func (l *WebRTCLeg) Headers() map[string]string    { return nil }
 func (l *WebRTCLeg) RTPStats() RTPStats            { return RTPStats{} }
 
 func (l *WebRTCLeg) Answer(_ context.Context) error {

@@ -10,6 +10,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
 - **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus 
+- **WebSocket legs** -- inbound (HTTP upgrade) and outbound (dial) PCM-over-WebSocket legs with binary or `json_base64` framing, configurable sample rate (8/16/24/48 kHz), bidirectional text, and caller-supplied X-/P- headers — designed to also back a future generic Agent API
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
@@ -104,8 +105,9 @@ Full reference: [API.md](API.md)
 ### Legs
 
 ```
-POST   /v1/legs                    # Originate outbound SIP call
+POST   /v1/legs                    # Originate outbound leg (sip / whatsapp / websocket)
 GET    /v1/legs                    # List all legs
+GET    /v1/legs/websocket          # Connect a WebSocket leg (HTTP upgrade)
 GET    /v1/legs/{id}               # Get leg details
 POST   /v1/legs/{id}/answer        # Answer ringing inbound leg
 POST   /v1/legs/{id}/early-media   # Enable early media (183)

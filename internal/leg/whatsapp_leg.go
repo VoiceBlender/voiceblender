@@ -192,7 +192,9 @@ func (l *WhatsAppLeg) SIPHeaders() map[string]string {
 	}
 	return out
 }
-func (l *WhatsAppLeg) RTPStats() RTPStats { return RTPStats{} }
+
+func (l *WhatsAppLeg) Headers() map[string]string { return l.SIPHeaders() }
+func (l *WhatsAppLeg) RTPStats() RTPStats         { return RTPStats{} }
 
 func (l *WhatsAppLeg) From() string { return l.from }
 func (l *WhatsAppLeg) To() string   { return l.to }

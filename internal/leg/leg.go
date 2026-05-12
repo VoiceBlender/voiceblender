@@ -12,11 +12,13 @@ import (
 type LegType string
 
 const (
-	TypeSIPInbound       LegType = "sip_inbound"
-	TypeSIPOutbound      LegType = "sip_outbound"
-	TypeWebRTC           LegType = "webrtc"
-	TypeWhatsAppInbound  LegType = "whatsapp_in"
-	TypeWhatsAppOutbound LegType = "whatsapp_out"
+	TypeSIPInbound        LegType = "sip_inbound"
+	TypeSIPOutbound       LegType = "sip_outbound"
+	TypeWebRTC            LegType = "webrtc"
+	TypeWhatsAppInbound   LegType = "whatsapp_in"
+	TypeWhatsAppOutbound  LegType = "whatsapp_out"
+	TypeWebSocketInbound  LegType = "websocket_in"
+	TypeWebSocketOutbound LegType = "websocket_out"
 )
 
 type LegState string
@@ -88,6 +90,12 @@ type Leg interface {
 	CreatedAt() time.Time
 	AnsweredAt() time.Time
 	SIPHeaders() map[string]string
+
+	// Headers returns custom protocol headers exposed by the leg's
+	// transport (X-/P- headers from a SIP INVITE or from a WebSocket HTTP
+	// upgrade, caller-supplied headers on an outbound WebSocket dial,
+	// etc.). Returns nil for leg types with no header concept.
+	Headers() map[string]string
 	RTPStats() RTPStats
 
 	// ClaimDisconnect returns true exactly once per leg. Termination paths

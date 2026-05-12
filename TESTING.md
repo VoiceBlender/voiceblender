@@ -71,6 +71,8 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/sip` (tls) | 4 | `EngineConfig` TLS validation, concurrent UDP+TLS listener startup, self-signed cert handshake loopback |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
+| `internal/leg` (websocket) | 4 | Outbound lifecycle (ringing → connected via `AttachTransport`, audio + text round-trip, ClaimDisconnect single-flight, Hangup); inbound auto-connect with header capture (X-/P- filter); SendText returns `ErrRTTNotNegotiated` when RTT is disabled; SendDTMF returns "not supported" |
+| `internal/wsmedia` | 11 | Framing (binary s16le and json_base64 round-trips), streamBuffer drop-on-overflow + paced read + Close, Transport echo loopback for both wire formats, text round-trip, hangup frame closes peer, context cancel exits loops, ingress overflow drops increment counters, SendStructured for vendor control messages, write deadline trips after `WriteTimeout` |
 
 ---
 
@@ -169,6 +171,10 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestRing_ExplicitRingingThenAnswer` | Default `SIP_AUTO_RINGING=false`; multiple `/ring` calls send 180s, then `/answer` connects |
 | `TestRing_AutoRingingPreservesLegacyFlow` | `SIP_AUTO_RINGING=true` restores auto-180 behavior; no explicit `/ring` needed |
 | `TestRing_RejectsAfterAnswer` | `/ring` on a connected leg returns 409 |
+| `TestWSLegInboundAutoConnect` | WebSocket client connects to `/v1/legs/websocket`, joins a room, exchanges audio + text, `headers` map captures X-/P- headers |
+| `TestWSLegOutboundDialAndHeaders` | `POST /v1/legs` with `type:"websocket"` dials a remote WS echo server, verifies the echo server received the supplied X-Correlation-ID header |
+| `TestWSLegOutboundDialFailure` | Outbound WS dial to a non-listening port produces a `leg.disconnected` event with a mapped reason |
+| `TestWSLegPing` | Inbound WS leg replies to a `{"type":"ping","event_id":N}` text frame with a matching pong |
 
 ---
 

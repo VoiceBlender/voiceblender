@@ -54,6 +54,7 @@ func (m *apiMockLeg) IsHeld() bool                           { return false }
 func (m *apiMockLeg) CreatedAt() time.Time                   { return m.createdAt }
 func (m *apiMockLeg) AnsweredAt() time.Time                  { return time.Time{} }
 func (m *apiMockLeg) SIPHeaders() map[string]string          { return nil }
+func (m *apiMockLeg) Headers() map[string]string             { return nil }
 func (m *apiMockLeg) RTPStats() leg.RTPStats                 { return leg.RTPStats{} }
 func (m *apiMockLeg) ClaimDisconnect() bool                  { return m.disconnectDone.CompareAndSwap(false, true) }
 

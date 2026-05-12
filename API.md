@@ -21,7 +21,7 @@ GET endpoints, in-memory state-change endpoints (`/mute`, `/deaf`, `/dtmf/accept
 
 ## Legs
 
-A **leg** represents one side of a voice call — either a SIP dialog or a WebRTC peer connection.
+A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer connection, a WhatsApp call, or a WebSocket session.
 
 ### Leg Object
 
@@ -36,6 +36,9 @@ A **leg** represents one side of a voice call — either a SIP dialog or a WebRT
   "held": false,
   "sip_headers": {
     "X-Correlation-ID": "abc-123"
+  },
+  "headers": {
+    "X-Correlation-ID": "abc-123"
   }
 }
 ```
@@ -43,13 +46,14 @@ A **leg** represents one side of a voice call — either a SIP dialog or a WebRT
 | Field | Type | Values |
 |-------|------|--------|
 | `id` | string | UUID |
-| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc` |
+| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out` |
 | `state` | string | `ringing`, `early_media`, `connected`, `held`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted (cannot be heard by others) |
 | `deaf` | boolean | `true` if the leg is deaf (cannot hear others) |
 | `held` | boolean | `true` if the call is on hold (SIP legs only) |
-| `sip_headers` | object | `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. |
+| `sip_headers` | object | Deprecated — `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. Use `headers` for new code. |
+| `headers` | object | Custom protocol headers exposed by the leg's transport — `X-`/`P-` headers from a SIP INVITE, WebSocket handshake, or supplied at outbound dial time. |
 
 ---
 
@@ -209,6 +213,81 @@ The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `
 - `POST /v1/legs/{id}/hold`
 - `DELETE /v1/legs/{id}/hold`
 - `POST /v1/legs/{id}/transfer`
+
+---
+
+### WebSocket Legs
+
+A **websocket leg** carries PCM audio over a single WebSocket connection. Both directions are supported:
+
+- **Outbound** (`websocket_out`) — VoiceBlender dials a remote WebSocket. Created via `POST /v1/legs` with `type: "websocket"`.
+- **Inbound** (`websocket_in`) — an external client connects to VoiceBlender. Created by upgrading `GET /v1/legs/websocket`.
+
+Both directions go straight to `connected` (no ringing/answer flow). Audio is signed 16-bit little-endian PCM, mono, at the configured sample rate (8000/16000/24000/48000 Hz — the room mixer resamples automatically). Hold and DTMF send are not supported on websocket legs. The bidirectional text-message channel is enabled with `rtt: true` (outbound) or `?rtt=true` (inbound) and ties into the same `/v1/legs/{id}/rtt` REST endpoint and `rtt.received` event stream that SIP RTT uses.
+
+#### Wire format
+
+`wire_format=binary` (default): each WebSocket binary frame is one 20ms PCM frame at the configured sample rate. Most efficient; matches the framing used by Deepgram / VAPI-style providers.
+
+`wire_format=json_base64`: PCM frames are wrapped as JSON text frames `{"type":"audio","audio":"<base64-pcm>"}`. Browser-friendly; matches the existing `/v1/rooms/{id}/ws` shape.
+
+Text and control messages always use JSON text frames regardless of wire format:
+
+```
+{"type":"text","text":"hello"}            // bidi text (rtt.received event + /rtt REST)
+{"type":"ping","event_id":42}             // server-initiated heartbeat
+{"type":"pong","event_id":42}             // reply to a server ping
+{"type":"hangup"}                          // peer-initiated termination
+```
+
+Inbound text triggers a `rtt.received` event; outbound text is sent via `POST /v1/legs/{id}/rtt` or by the WebSocket peer writing the JSON frame above.
+
+#### Outbound: POST /v1/legs (type=websocket)
+
+```json
+{
+  "type": "websocket",
+  "url": "wss://agent.example.com/voice",
+  "sample_rate": 16000,
+  "wire_format": "binary",
+  "headers": {
+    "Authorization": "Bearer abc-123",
+    "X-Correlation-ID": "call-456"
+  },
+  "room_id": "room-789",
+  "rtt": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | yes | `"websocket"` |
+| `url` | string | yes | `ws://` or `wss://` target URL. |
+| `sample_rate` | int | no | 8000/16000/24000/48000. Default 16000. |
+| `wire_format` | string | no | `binary` (default) or `json_base64`. |
+| `sample_format` | string | no | `s16le` (only option in v1). |
+| `headers` | object | no | Headers sent on the upgrade request (e.g. `Authorization`, `X-*`, `P-*`). |
+| `room_id` | string | no | Room to auto-add the leg to once connected. |
+| `rtt` | boolean | no | Enable bidi text channel. Default false. |
+| `ring_timeout` | int | no | Seconds to wait for the WS handshake to complete. Default unbounded. |
+| `app_id`, `webhook_url`, `webhook_secret`, `max_duration`, `accept_dtmf`, `speech_detection` | — | no | Same semantics as SIP legs. |
+
+**Response:** `201 Created` — Leg object in `ringing` state with `type: "websocket_out"`. The dial completes asynchronously: `leg.connected` (success) or `leg.disconnected` (one of `ring_timeout`, `service_unavailable`, `unauthorized`, `forbidden`, `not_found`, `ws_dial_failed`).
+
+#### Inbound: GET /v1/legs/websocket (HTTP upgrade)
+
+```
+GET /v1/legs/websocket?sample_rate=16000&wire_format=binary&room_id=room-789&rtt=true
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: ...
+X-Tenant: tenant-a
+P-Asserted-Identity: alice@example.com
+```
+
+Query parameters: `sample_rate`, `wire_format`, `sample_format`, `room_id`, `app_id`, `rtt`, `webhook_url`, `webhook_secret`. `X-*` and `P-*` request headers (plus `Authorization`) are captured into the leg's `headers` map and exposed on `leg.ringing` (as `sip_headers` for back-compat) and in `LegView.headers`.
+
+Both `leg.ringing` and `leg.connected` are emitted back-to-back on upgrade. `leg.disconnected` fires when the WS closes — reasons: `hangup`, `timeout`, `connection_reset`, `peer_slow`, `ws_error`.
 
 ---
 

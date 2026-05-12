@@ -36,6 +36,7 @@ func toLegView(l leg.Leg) LegView {
 		Held:       l.IsHeld(),
 		AppID:      l.AppID(),
 		SIPHeaders: l.SIPHeaders(),
+		Headers:    l.Headers(),
 	}
 }
 
@@ -700,6 +701,8 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 		s.createSIPOutboundLeg(w, r, req)
 	case "whatsapp":
 		s.createWhatsAppOutboundLeg(w, r, req)
+	case "websocket":
+		s.createWebSocketOutboundLeg(w, r, req)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported leg type: %s", req.Type))
 	}

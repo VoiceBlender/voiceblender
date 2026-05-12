@@ -22,7 +22,7 @@ var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus"}
 
 // CreateLegRequest is the request body for POST /v1/legs.
 type CreateLegRequest struct {
-	Type            string            `json:"type"`                       // "sip" or "whatsapp"
+	Type            string            `json:"type"`                       // "sip", "whatsapp", or "websocket"
 	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID (user part of the SIP From header, e.g. "+15551234567")
@@ -30,7 +30,7 @@ type CreateLegRequest struct {
 	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
 	Codecs          []string          `json:"codecs,omitempty"`           // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
-	Headers         map[string]string `json:"headers,omitempty"`          // custom SIP headers for outbound INVITE
+	Headers         map[string]string `json:"headers,omitempty"`          // custom SIP/WS headers for outbound INVITE or WS handshake
 	RoomID          string            `json:"room_id,omitempty"`          // add leg to this room once media is ready (early_media or connected)
 	Auth            *SIPAuth          `json:"auth,omitempty"`             // digest auth credentials — required for whatsapp, optional for sip
 	WebhookURL      string            `json:"webhook_url,omitempty"`      // route events for this leg to this URL
@@ -39,19 +39,25 @@ type CreateLegRequest struct {
 	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
-	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE
+	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
+
+	// WebSocket leg fields (only used when Type == "websocket"):
+	URL          string `json:"url,omitempty"`           // ws:// or wss:// target for outbound dial
+	SampleRate   int    `json:"sample_rate,omitempty"`   // 8000/16000/24000/48000; default 16000
+	WireFormat   string `json:"wire_format,omitempty"`   // "binary" (default) or "json_base64"
+	SampleFormat string `json:"sample_format,omitempty"` // "s16le" (default; only format in v1)
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp"}},
+	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket"}},
 	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
 	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
-	"codecs":           {Description: "Codec preference order"},
-	"headers":          {Description: "Custom SIP headers to include in the outbound INVITE (e.g. X-Correlation-ID)"},
+	"codecs":           {Description: "Codec preference order (sip legs only)"},
+	"headers":          {Description: "Custom headers to include in the outbound INVITE (sip/whatsapp) or the WebSocket upgrade request (websocket)"},
 	"room_id":          {Description: "Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created."},
 	"auth":             {Description: "Digest auth credentials. Required for whatsapp legs (Meta-issued password; username defaults to `from` with '+' stripped). Optional for sip legs (sipgo retries on 401/407 challenge)."},
 	"webhook_url":      {Description: "Route all events for this leg exclusively to this URL instead of global webhooks.", Format: "uri"},
@@ -60,7 +66,11 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
-	"rtt":              {Description: "If true, the outbound INVITE offers Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. The peer may accept or ignore the m=text section; SDP negotiation either yields RTT or audio-only. Default: false.", Default: false},
+	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
+	"url":              {Description: "WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.", Format: "uri"},
+	"sample_rate":      {Description: "PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.", Enum: []string{"8000", "16000", "24000", "48000"}, Default: 16000},
+	"wire_format":      {Description: "Audio framing for websocket legs. `binary` ships raw PCM as WebSocket binary frames; `json_base64` wraps PCM as `{\"type\":\"audio\",\"audio\":\"<base64>\"}` text frames (browser-friendly).", Enum: []string{"binary", "json_base64"}, Default: "binary"},
+	"sample_format":    {Description: "On-the-wire PCM sample encoding for websocket legs. v1 only supports `s16le`.", Enum: []string{"s16le"}, Default: "s16le"},
 }
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
@@ -154,11 +164,12 @@ type LegView struct {
 	Held       bool              `json:"held"`
 	AppID      string            `json:"app_id,omitempty"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 var legViewFields = map[string]FieldEnrichment{
 	"id":          {Description: "Unique leg identifier (UUID)"},
-	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out"}},
+	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out", "websocket_in", "websocket_out"}},
 	"state":       {Description: "Leg state", Enum: []string{"ringing", "early_media", "connected", "held", "hung_up"}},
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},
@@ -166,7 +177,8 @@ var legViewFields = map[string]FieldEnrichment{
 	"accept_dtmf": {Description: "Whether the leg receives DTMF digits broadcast from other legs in the same room. Defaults to true."},
 	"held":        {Description: "Whether the call is on hold (SIP legs only)"},
 	"app_id":      {Description: "Application identifier for event stream filtering."},
-	"sip_headers": {Description: "X-* headers from the inbound INVITE. Only present on sip_inbound legs."},
+	"sip_headers": {Description: "Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
+	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time."},
 }
 
 // CreateRoomRequest is the request body for POST /v1/rooms.

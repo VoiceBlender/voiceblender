@@ -63,6 +63,7 @@ func (m *mockLeg) IsHeld() bool                                 { return m.held 
 func (m *mockLeg) CreatedAt() time.Time                         { return m.createdAt }
 func (m *mockLeg) AnsweredAt() time.Time                        { return time.Time{} }
 func (m *mockLeg) SIPHeaders() map[string]string                { return nil }
+func (m *mockLeg) Headers() map[string]string                   { return nil }
 func (m *mockLeg) RTPStats() RTPStats                           { return RTPStats{} }
 func (m *mockLeg) ClaimDisconnect() bool                        { return m.disconnectDone.CompareAndSwap(false, true) }
 

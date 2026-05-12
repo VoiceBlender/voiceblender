@@ -100,19 +100,19 @@ type SIPLeg struct {
 	// a text codec layered on top of pion/rtp. rttNegotiated is set once SDP
 	// agreed on m=text (so SendText can succeed). All non-pointer fields are
 	// only written from within the leg's setup paths.
-	textRtpSess    *sipmod.RTPSession
-	textT140PT     uint8
-	textREDPT      uint8
-	textEncoder    *t140.Encoder
-	textDecoder    *t140.Decoder
-	textInCh       chan rttIn
-	textOutCh      chan string
-	acceptText     atomic.Bool
-	onText         func(text string, lossMarker bool)
-	rttNegotiated  atomic.Bool
-	rttRedundancy  int
-	rttBufferMs    int
-	rttLocalPort int // bound local UDP port for the text session
+	textRtpSess   *sipmod.RTPSession
+	textT140PT    uint8
+	textREDPT     uint8
+	textEncoder   *t140.Encoder
+	textDecoder   *t140.Decoder
+	textInCh      chan rttIn
+	textOutCh     chan string
+	acceptText    atomic.Bool
+	onText        func(text string, lossMarker bool)
+	rttNegotiated atomic.Bool
+	rttRedundancy int
+	rttBufferMs   int
+	rttLocalPort  int // bound local UDP port for the text session
 
 	// Terminate-once gates: racing termination paths converge here.
 	byeOnce        sync.Once
@@ -443,6 +443,7 @@ func (l *SIPLeg) AnsweredAt() time.Time {
 }
 
 func (l *SIPLeg) SIPHeaders() map[string]string { return l.sipHeaders }
+func (l *SIPLeg) Headers() map[string]string    { return l.sipHeaders }
 
 // AnswerCh returns the channel that is closed when the REST answer endpoint is called.
 func (l *SIPLeg) AnswerCh() <-chan struct{} {

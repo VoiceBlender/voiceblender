@@ -197,12 +197,16 @@ func RoutesMetadata() []RouteMeta {
 		// ── Legs ────────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/legs", OperationID: "createLeg",
-			Summary:     "Originate an outbound SIP call",
+			Summary: "Originate an outbound leg",
+			Description: "Originate a new outbound leg. The `type` field selects the transport: " +
+				"`sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; " +
+				"`websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or " +
+				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers).",
 			Tags:        []string{"Legs"},
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Leg created", Type: LegView{}},
-				400: {Description: "Invalid JSON, bad SIP URI, unknown codec, or unsupported type"},
+				400: {Description: "Invalid JSON, bad URI/URL, unknown codec, or unsupported type"},
 			},
 		},
 		{
@@ -211,6 +215,29 @@ func RoutesMetadata() []RouteMeta {
 			Tags:    []string{"Legs"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of legs", Type: []LegView{}},
+			},
+		},
+		{
+			Method: "GET", Path: "/legs/websocket", OperationID: "wsLeg",
+			Summary: "Connect a WebSocket as a leg (HTTP upgrade)",
+			Description: "Upgrades the HTTP request to a WebSocket and creates a `websocket_in` leg. " +
+				"Query parameters: `sample_rate` (8000/16000/24000/48000; default 16000); " +
+				"`wire_format` (`binary` default, or `json_base64`); `sample_format` (`s16le` only in v1); " +
+				"`room_id` to auto-add the leg to a room; `app_id` for event filtering; `rtt=true` to " +
+				"enable the bidirectional text channel; `webhook_url`/`webhook_secret` for per-leg event " +
+				"routing. X-* and P-* request headers (plus Authorization) are captured into the leg's " +
+				"`headers` map and surfaced on `leg.ringing` and in `LegView`. The leg goes straight to " +
+				"`connected` (no ringing/answer flow). Audio frames carry PCM16-LE mono at `sample_rate`; " +
+				"with `wire_format=binary` each WebSocket binary frame is exactly one 20ms PCM frame, with " +
+				"`json_base64` the same payload is wrapped as `{\"type\":\"audio\",\"audio\":\"<base64>\"}`. " +
+				"Text and control messages always use JSON text frames: `{\"type\":\"text\",\"text\":...}`, " +
+				"`{\"type\":\"ping\",\"event_id\":N}`/`{\"type\":\"pong\",\"event_id\":N}`, and " +
+				"`{\"type\":\"hangup\"}` to terminate from the peer side.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				101: {Description: "Switching Protocols — WebSocket upgrade succeeded"},
+				400: {Description: "Invalid query parameters"},
+				500: {Description: "Room create failure"},
 			},
 		},
 		{
