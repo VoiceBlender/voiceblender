@@ -27,7 +27,7 @@ type WebRTCCandidatesResult struct {
 func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, error) {
 	var l *leg.WebRTCLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
-		Codec:      codec.CodecPCMU,
+		Codec:      codec.CodecOpus,
 		ICEServers: s.Config.ICEServers,
 		RTPPortMin: uint16(s.Config.RTPPortMin),
 		RTPPortMax: uint16(s.Config.RTPPortMax),
@@ -66,6 +66,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		LegType:  "webrtc",
 	})
+	s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil
 }
