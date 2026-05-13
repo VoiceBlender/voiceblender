@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -498,6 +499,201 @@ func sqrt(x float64) float64 {
 	return z
 }
 
+// TestRoomWSCompatibleWithLegWS verifies the room-WS endpoint
+// (/v1/rooms/{id}/ws) speaks the same wire protocol as /v1/legs/websocket
+// (now that both share wsmedia.Transport): a leg WS client and a room WS
+// client in the same room exchange audio in both directions using the
+// JSON-base64 frame shape (`{"audio":"<b64>"}`).
+func TestRoomWSCompatibleWithLegWS(t *testing.T) {
+	inst := newTestInstance(t, "room-ws-compat")
+
+	// Pre-create the room so /v1/rooms/{id}/ws finds it.
+	createResp := httpPost(t, inst.baseURL()+"/v1/rooms", map[string]any{
+		"id":          "compat-room",
+		"sample_rate": 16000,
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room: status=%d", createResp.StatusCode)
+	}
+	createResp.Body.Close()
+
+	// Leg WS client (sender) — uses json_base64 to match room WS shape.
+	legURL := "ws://" + inst.httpAddr +
+		"/v1/legs/websocket?sample_rate=16000&wire_format=json_base64&room_id=compat-room"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	legConn, _, _, err := ws.Dial(ctx, legURL)
+	if err != nil {
+		t.Fatalf("dial leg WS: %v", err)
+	}
+	defer legConn.Close()
+
+	ringing := inst.collector.waitForMatch(t, events.LegRinging, nil, 2*time.Second)
+	legID := ringing.Data.GetLegID()
+	inst.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == legID
+	}, 2*time.Second)
+	inst.collector.waitForMatch(t, events.LegJoinedRoom, func(e events.Event) bool {
+		return e.Data.GetLegID() == legID
+	}, 2*time.Second)
+
+	// Room WS client (listener).
+	roomURL := "ws://" + inst.httpAddr + "/v1/rooms/compat-room/ws"
+	roomConn, _, _, err := ws.Dial(ctx, roomURL)
+	if err != nil {
+		t.Fatalf("dial room WS: %v", err)
+	}
+	defer roomConn.Close()
+
+	// First text frame from room WS must be the welcome message.
+	wsutilx.SetReadDeadline(roomConn, 3*time.Second)
+	hdr, err := ws.ReadHeader(roomConn)
+	if err != nil {
+		t.Fatalf("read room welcome header: %v", err)
+	}
+	welcomeBytes := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(roomConn, welcomeBytes); err != nil {
+		t.Fatalf("read welcome payload: %v", err)
+	}
+	if hdr.Masked {
+		ws.Cipher(welcomeBytes, hdr.Mask, 0)
+	}
+	if hdr.OpCode != ws.OpText {
+		t.Fatalf("welcome should be a text frame, got opcode %v", hdr.OpCode)
+	}
+	var welcome map[string]any
+	if err := json.Unmarshal(welcomeBytes, &welcome); err != nil {
+		t.Fatalf("unmarshal welcome: %v", err)
+	}
+	if welcome["type"] != "connected" {
+		t.Fatalf("welcome.type = %v, want connected (raw=%s)", welcome["type"], welcomeBytes)
+	}
+	if welcome["format"] != "pcm_s16le" {
+		t.Fatalf("welcome.format = %v, want pcm_s16le", welcome["format"])
+	}
+	if welcome["participant_id"] == nil {
+		t.Fatalf("welcome missing participant_id (raw=%s)", welcomeBytes)
+	}
+
+	// Sender goroutine: leg WS streams a 1 kHz sine using the room-WS-style
+	// JSON shape `{"audio":"<b64>"}` (no `type` field). The wsmedia
+	// transport on the server side must accept this shape.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		var phase float64
+		const dPhase = 2 * 3.141592653589793 * 1000.0 / 16000.0
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				pcm := make([]byte, 640)
+				for i := 0; i < 320; i++ {
+					sample := int16(8000 * sineApprox(phase))
+					binary.LittleEndian.PutUint16(pcm[i*2:], uint16(sample))
+					phase += dPhase
+				}
+				frame, _ := json.Marshal(map[string]string{
+					"audio": base64.StdEncoding.EncodeToString(pcm),
+				})
+				if err := wsutil.WriteClientText(legConn, frame); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// Listener: read room WS frames, decode the room-WS shape, compute RMS.
+	var (
+		audioBytes []byte
+		gotFrames  int
+		deadline   = time.Now().Add(5 * time.Second)
+	)
+	for gotFrames < 25 && time.Now().Before(deadline) {
+		wsutilx.SetReadDeadline(roomConn, time.Until(deadline))
+		hdr, err := ws.ReadHeader(roomConn)
+		if err != nil {
+			t.Fatalf("room WS read header: %v", err)
+		}
+		payload := make([]byte, hdr.Length)
+		if _, err := io.ReadFull(roomConn, payload); err != nil {
+			t.Fatalf("room WS read payload: %v", err)
+		}
+		if hdr.Masked {
+			ws.Cipher(payload, hdr.Mask, 0)
+		}
+		if hdr.OpCode != ws.OpText {
+			continue
+		}
+		var msg map[string]any
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			continue
+		}
+		// Skip control / heartbeat / welcome — only audio counts.
+		audioStr, _ := msg["audio"].(string)
+		if audioStr == "" {
+			continue
+		}
+		pcm, err := base64.StdEncoding.DecodeString(audioStr)
+		if err != nil {
+			t.Fatalf("decode b64 audio: %v", err)
+		}
+		audioBytes = append(audioBytes, pcm...)
+		gotFrames++
+	}
+
+	if gotFrames < 25 {
+		t.Fatalf("room WS only got %d audio frames within 5s (want 25)", gotFrames)
+	}
+	var sumSquares float64
+	sampleCount := len(audioBytes) / 2
+	for i := 0; i < sampleCount; i++ {
+		s := int16(binary.LittleEndian.Uint16(audioBytes[i*2:]))
+		sumSquares += float64(s) * float64(s)
+	}
+	rms := sqrt(sumSquares / float64(sampleCount))
+	t.Logf("room WS received %d frames (%d samples), RMS=%.1f", gotFrames, sampleCount, rms)
+	if rms < 200 {
+		t.Fatalf("RMS=%.1f too low — leg WS → mixer → room WS path looks broken", rms)
+	}
+
+	// Client-initiated close from the room WS using the room-style verb.
+	stopFrame, _ := json.Marshal(map[string]string{"type": "stop"})
+	if err := wsutil.WriteClientText(roomConn, stopFrame); err != nil {
+		t.Fatalf("send stop: %v", err)
+	}
+	httpDelete(t, inst.baseURL()+"/v1/legs/"+legID)
+}
+
+// readJSONFrame reads the next text frame off conn, decodes the payload
+// as a JSON object, and returns it.
+func readJSONFrame(t *testing.T, conn net.Conn, timeout time.Duration) map[string]any {
+	t.Helper()
+	wsutilx.SetReadDeadline(conn, timeout)
+	hdr, err := ws.ReadHeader(conn)
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	payload := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if hdr.Masked {
+		ws.Cipher(payload, hdr.Mask, 0)
+	}
+	if hdr.OpCode != ws.OpText {
+		t.Fatalf("expected text frame, got opcode %v", hdr.OpCode)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(payload, &out); err != nil {
+		t.Fatalf("unmarshal: %v (raw=%s)", err, payload)
+	}
+	return out
+}
+
 // quick echo control test confirming pong replies and text payloads survive.
 func TestWSLegPing(t *testing.T) {
 	inst := newTestInstance(t, "ws-ping")
@@ -515,28 +711,17 @@ func TestWSLegPing(t *testing.T) {
 	ringing := inst.collector.waitForMatch(t, events.LegRinging, nil, 2*time.Second)
 	legID := ringing.Data.GetLegID()
 
+	// Skip the welcome `connected` frame the leg endpoint sends on upgrade.
+	if got := readJSONFrame(t, conn, 2*time.Second); got["type"] != "connected" {
+		t.Fatalf("first frame should be connected, got %v", got)
+	}
+
 	// Send a control ping and confirm we get a pong back.
 	pingMsg, _ := json.Marshal(map[string]any{"type": "ping", "event_id": 7})
 	if err := wsutil.WriteClientText(conn, pingMsg); err != nil {
 		t.Fatalf("write ping: %v", err)
 	}
-
-	wsutilx.SetReadDeadline(conn, 2*time.Second)
-	hdr, err := ws.ReadHeader(conn)
-	if err != nil {
-		t.Fatalf("read header: %v", err)
-	}
-	payload := make([]byte, hdr.Length)
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		t.Fatalf("read payload: %v", err)
-	}
-	if hdr.Masked {
-		ws.Cipher(payload, hdr.Mask, 0)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(payload, &got); err != nil {
-		t.Fatalf("unmarshal pong: %v", err)
-	}
+	got := readJSONFrame(t, conn, 2*time.Second)
 	if got["type"] != "pong" {
 		t.Fatalf("want pong, got %v", got)
 	}

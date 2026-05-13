@@ -280,8 +280,11 @@ func (t *Transport) handleTextFrame(payload []byte) {
 		t.log.Warn("wsmedia: parse text frame", "error", err)
 		return
 	}
-	switch cf.Type {
-	case "audio":
+	// Room-WS compat: a frame with `audio` set and no (or "audio") `type`
+	// is treated as an audio payload. This lets clients written against
+	// /v1/rooms/{id}/ws talk to /v1/legs/websocket unchanged when the
+	// wire format is json_base64.
+	if cf.Audio != "" && (cf.Type == "" || cf.Type == "audio") {
 		if t.cfg.WireFormat != WireJSONBase64 {
 			t.log.Debug("wsmedia: dropping audio JSON frame in binary mode")
 			return
@@ -292,6 +295,9 @@ func (t *Transport) handleTextFrame(payload []byte) {
 			return
 		}
 		t.writePCM(pcm)
+		return
+	}
+	switch cf.Type {
 	case "text":
 		if !t.cfg.TextEnabledValue() {
 			return
@@ -309,7 +315,8 @@ func (t *Transport) handleTextFrame(payload []byte) {
 		}
 	case "pong":
 		// Heartbeat acknowledgement; nothing to do.
-	case "hangup":
+	case "hangup", "stop":
+		// Room-WS uses "stop"; leg-WS uses "hangup". Accept both.
 		t.Close()
 	default:
 		fn, _ := t.onControl.Load().(func(json.RawMessage))

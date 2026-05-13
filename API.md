@@ -1846,6 +1846,8 @@ Detach the agent from a room (provider-agnostic).
 
 Upgrade to a WebSocket connection and join the room as a bidirectional audio participant. The client sends and receives 16kHz 16-bit signed little-endian PCM audio (mono), base64-encoded in JSON text frames. Each audio frame is 640 bytes (20ms).
 
+This endpoint shares its WebSocket transport (`internal/wsmedia`) and wire protocol with `GET /v1/legs/websocket` when the leg endpoint is invoked with `wire_format=json_base64`. The two endpoints differ only in semantics: this one attaches a raw mixer participant (no leg lifecycle, no `/v1/legs/{id}/...` operations, no leg events), while `/v1/legs/websocket` creates a real leg.
+
 **Upgrade:** Standard HTTP → WebSocket upgrade. No request body.
 
 **Errors:**

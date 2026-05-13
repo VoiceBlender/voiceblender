@@ -1,17 +1,14 @@
 package api
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
-	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
+	"github.com/VoiceBlender/voiceblender/internal/wsmedia"
 	"github.com/go-chi/chi/v5"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -23,7 +20,10 @@ const (
 	wsPongTimeout  = 10 * time.Second
 )
 
-// wsLockedWriter serializes all WebSocket frame writes to a net.Conn (server side).
+// wsLockedWriter serializes all WebSocket frame writes to a net.Conn (server
+// side). Kept here for the VSI commands path (internal/api/agent.go,
+// internal/api/ws_events.go), which still hand-rolls WS framing for
+// command/result messages. The room-WS handler itself uses wsmedia.Transport.
 type wsLockedWriter struct {
 	mu   sync.Mutex
 	conn net.Conn
@@ -41,6 +41,24 @@ func (lw *wsLockedWriter) writeControl(op ws.OpCode, payload []byte) error {
 	return wsutil.WriteServerMessage(lw.conn, op, payload)
 }
 
+// wsRoom upgrades an HTTP request to a WebSocket and wires it as a raw
+// participant of the named room. The wire protocol is identical to the
+// /v1/legs/websocket endpoint (it goes through the same wsmedia.Transport
+// in WireJSONBase64 mode):
+//
+//   - Welcome:           {"type":"connected","participant_id":"...",
+//                         "sample_rate":N,"format":"pcm_s16le"}
+//   - Inbound audio:     {"audio":"<base64-pcm>"} or
+//                        {"type":"audio","audio":"<base64-pcm>"}
+//   - Outbound audio:    {"audio":"<base64-pcm>"}
+//   - Heartbeat:         server →{"type":"ping","event_id":N};
+//                        client →{"type":"pong","event_id":N}
+//   - Client close:      {"type":"stop"} (alias: {"type":"hangup"})
+//   - Bidi text:         {"type":"text","text":"..."}
+//
+// The participant is a raw mixer slot — it does NOT show up in /v1/legs and
+// does NOT receive leg lifecycle events. Use /v1/legs/websocket if you want
+// a real leg.
 func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 	roomID := chi.URLParam(r, "id")
 
@@ -50,166 +68,61 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, _, _, err := ws.UpgradeHTTP(r, w)
+	cfg := wsmedia.Config{
+		SampleRate:   rm.Mixer().SampleRate(),
+		WireFormat:   wsmedia.WireJSONBase64,
+		SampleFormat: wsmedia.SampleS16LE,
+		Log:          s.Log,
+	}
+	if err := cfg.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	tr, _, err := wsmedia.UpgradeServer(w, r, cfg)
 	if err != nil {
 		s.Log.Error("ws upgrade failed", "error", err)
 		return
 	}
-	defer conn.Close()
 
 	participantID := "ws-" + uuid.New().String()[:8]
 
-	// speak buffer: WS client writes PCM → paced streamBuffer → mixer reads
-	speakBuf := newStreamBuffer()
-	// listen pipe: mixer writes mixed-minus-self → we read and send to WS client
-	listenPR, listenPW := createPipe()
+	// Mixer reads inbound PCM from the transport's paced ingress buffer
+	// and writes mixed-minus-self into the egress pipe; the transport's
+	// send loop reads from that pipe and ships PCM back to the client.
+	listenPR, listenPW := io.Pipe()
+	rm.Mixer().AddParticipant(participantID, tr.AudioReader(), listenPW)
 
-	rm.Mixer().AddParticipant(participantID, speakBuf, listenPW)
-
-	lw := &wsLockedWriter{conn: conn}
-
-	// Send connected message.
-	connMsg, _ := json.Marshal(map[string]interface{}{
+	if err := tr.SendStructured(map[string]any{
 		"type":           "connected",
 		"participant_id": participantID,
-		"sample_rate":    rm.Mixer().SampleRate(),
+		"sample_rate":    cfg.SampleRate,
 		"format":         "pcm_s16le",
-	})
-	if err := lw.writeText(connMsg); err != nil {
+	}); err != nil {
 		s.Log.Error("ws send connected failed", "error", err)
-		s.wsCleanup(rm, participantID, speakBuf, listenPW)
+		s.wsCleanup(rm, participantID, tr, listenPW)
 		return
 	}
+
+	tr.Start(listenPR)
 
 	s.Log.Info("ws participant connected", "room_id", roomID, "participant_id", participantID)
 	connectedAt := time.Now()
 
-	var closed atomic.Bool
-
-	// Send loop: read from mixer listen pipe → base64 encode → send JSON.
-	go func() {
-		buf := make([]byte, rm.Mixer().FrameSizeBytes())
-		for {
-			n, err := listenPR.Read(buf)
-			if err != nil || closed.Load() {
-				return
-			}
-			encoded := base64.StdEncoding.EncodeToString(buf[:n])
-			msg, _ := json.Marshal(map[string]string{"audio": encoded})
-			if err := lw.writeText(msg); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Ping loop.
-	go func() {
-		var eventID int64
-		ticker := time.NewTicker(wsPingInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if closed.Load() {
-					return
-				}
-				eventID++
-				msg, _ := json.Marshal(map[string]interface{}{
-					"type":     "ping",
-					"event_id": eventID,
-				})
-				if err := lw.writeText(msg); err != nil {
-					return
-				}
-			}
-		}
-	}()
-
-	// Recv loop: read from WebSocket → decode JSON → base64 decode → write to speakBuf.
-	reason := s.wsRecvLoop(conn, lw, speakBuf, &closed)
+	<-tr.Done()
 
 	s.Log.Info("session closed",
 		"kind", "ws_room",
 		"room_id", roomID,
 		"participant_id", participantID,
-		"reason", reason,
+		"reason", classifyWSReason(tr.Err()),
 		"duration_ms", time.Since(connectedAt).Milliseconds(),
 	)
-	s.wsCleanup(rm, participantID, speakBuf, listenPW)
+	s.wsCleanup(rm, participantID, tr, listenPW)
 }
 
-type wsAudioMsg struct {
-	Audio string `json:"audio,omitempty"`
-	Type  string `json:"type,omitempty"`
-}
-
-func (s *Server) wsRecvLoop(conn net.Conn, lw *wsLockedWriter, speakBuf *streamBuffer, closed *atomic.Bool) string {
-	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
-	rd := &wsutil.Reader{
-		Source: conn,
-		State:  ws.StateServerSide,
-		OnIntermediate: func(hdr ws.Header, r io.Reader) error {
-			return controlHandler(hdr, r)
-		},
-	}
-
-	for {
-		// Bound idle reads so a half-open client TCP can't pin this
-		// goroutine — and indirectly the participant's mixer slot, send
-		// loop, and ping loop — indefinitely.
-		wsutilx.SetReadDeadline(conn, wsutilx.DefaultReadTimeout.Load())
-
-		hdr, err := rd.NextFrame()
-		if err != nil {
-			return classifyReadError(err)
-		}
-
-		if hdr.OpCode.IsControl() {
-			if err := controlHandler(hdr, rd); err != nil {
-				return classifyReadError(err)
-			}
-			continue
-		}
-
-		payload, err := io.ReadAll(rd)
-		if err != nil {
-			return classifyReadError(err)
-		}
-
-		if hdr.OpCode != ws.OpText {
-			continue
-		}
-
-		var msg wsAudioMsg
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			continue
-		}
-
-		if msg.Type == "stop" {
-			closed.Store(true)
-			return "stop"
-		}
-
-		if msg.Type == "pong" {
-			continue
-		}
-
-		if msg.Audio == "" {
-			continue
-		}
-
-		pcm, err := base64.StdEncoding.DecodeString(msg.Audio)
-		if err != nil {
-			s.Log.Warn("ws invalid base64 audio", "error", err)
-			continue
-		}
-
-		speakBuf.Write(pcm)
-	}
-}
-
-func (s *Server) wsCleanup(rm interface{ Mixer() *mixer.Mixer }, participantID string, speakBuf *streamBuffer, listenPW *pipeWriter) {
-	speakBuf.Close()
-	listenPW.Close()
+func (s *Server) wsCleanup(rm interface{ Mixer() *mixer.Mixer }, participantID string, tr *wsmedia.Transport, listenPW *io.PipeWriter) {
+	_ = listenPW.Close()
+	_ = tr.Close()
 	rm.Mixer().RemoveParticipant(participantID)
 }

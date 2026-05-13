@@ -64,6 +64,18 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
 	}
 
+	// Welcome frame mirrors /v1/rooms/{id}/ws so a client written
+	// against either endpoint sees the same handshake shape.
+	// `participant_id` is included as an alias for `leg_id` for drop-in
+	// compatibility with room-WS clients.
+	_ = tr.SendStructured(map[string]any{
+		"type":           "connected",
+		"leg_id":         l.ID(),
+		"participant_id": l.ID(),
+		"sample_rate":    cfg.SampleRate,
+		"format":         "pcm_s16le",
+	})
+
 	s.wireWSLegEventForwarding(l)
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{

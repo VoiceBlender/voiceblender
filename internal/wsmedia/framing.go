@@ -74,8 +74,11 @@ type jsonBase64S16LE struct{}
 
 func (jsonBase64S16LE) WireOpCode() ws.OpCode { return ws.OpText }
 
+// jsonAudioFrame matches the room-WS wire shape (`{"audio":"<b64>"}`,
+// no `type` field) so the same client code works against both the leg
+// and room WebSocket endpoints. Inbound parsing in transport.go accepts
+// either this shape or the explicit `{"type":"audio",...}` form.
 type jsonAudioFrame struct {
-	Type  string `json:"type"`
 	Audio string `json:"audio"`
 }
 
@@ -84,7 +87,7 @@ func (jsonBase64S16LE) Encode(pcm []int16) ([]byte, ws.OpCode, error) {
 	for i, s := range pcm {
 		binary.LittleEndian.PutUint16(raw[i*2:], uint16(s))
 	}
-	enc, err := json.Marshal(jsonAudioFrame{Type: "audio", Audio: base64.StdEncoding.EncodeToString(raw)})
+	enc, err := json.Marshal(jsonAudioFrame{Audio: base64.StdEncoding.EncodeToString(raw)})
 	if err != nil {
 		return nil, 0, err
 	}

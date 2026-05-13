@@ -63,8 +63,11 @@ func TestJSONBase64Encode(t *testing.T) {
 	if err := json.Unmarshal(payload, &f); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if f.Type != "audio" {
-		t.Fatalf("type=%q", f.Type)
+	// Outbound JSON shape matches the room-WS endpoint exactly:
+	// `{"audio":"<b64>"}` with no `type` field. This is verified at
+	// raw-byte level below.
+	if string(payload[:len(`{"audio":"`)]) != `{"audio":"` {
+		t.Fatalf("expected leading {\"audio\":\"...\", got %s", payload)
 	}
 	raw, err := base64.StdEncoding.DecodeString(f.Audio)
 	if err != nil {
