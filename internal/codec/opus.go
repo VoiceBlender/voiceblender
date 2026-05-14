@@ -54,6 +54,13 @@ func (e *OpusEncoder) Reset() {
 	e.enc.Reset()
 }
 
+// SetBitrate adjusts the target bitrate in bits per second (gopus accepts
+// 6_000..510_000). Used by transports that want a tighter rate than the
+// library default.
+func (e *OpusEncoder) SetBitrate(bps int) error {
+	return e.enc.SetBitrate(bps)
+}
+
 // OpusDecoder wraps a gopus Decoder for 48kHz mono.
 type OpusDecoder struct {
 	dec    *gopus.Decoder

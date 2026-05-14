@@ -19,6 +19,7 @@ const (
 	TypeWhatsAppOutbound  LegType = "whatsapp_out"
 	TypeWebSocketInbound  LegType = "websocket_in"
 	TypeWebSocketOutbound LegType = "websocket_out"
+	TypeMoQInbound        LegType = "moq_in"
 )
 
 type LegState string

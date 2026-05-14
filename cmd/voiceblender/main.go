@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,8 @@ import (
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/VoiceBlender/voiceblender/internal/storage"
 	"github.com/VoiceBlender/voiceblender/internal/tts"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/webtransport-go"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -154,6 +157,38 @@ func main() {
 		Handler: apiSrv,
 	}
 
+	// Optional MoQ-over-WebTransport listener. Reuses chi (apiSrv.Router)
+	// as the HTTP/3 handler so /v1/legs/moq routes the same way the rest
+	// of the API does; the CONNECT method gates the route to extended-
+	// CONNECT requests only.
+	var moqSrv *webtransport.Server
+	if cfg.MoQEnabled {
+		if cfg.MoQTLSCertFile == "" || cfg.MoQTLSKeyFile == "" {
+			log.Error("MOQ_ENABLED=true requires MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE")
+			os.Exit(1)
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.MoQTLSCertFile, cfg.MoQTLSKeyFile)
+		if err != nil {
+			log.Error("load MoQ TLS cert/key", "error", err)
+			os.Exit(1)
+		}
+		moqSrv = &webtransport.Server{
+			H3: http3.Server{
+				Addr:    cfg.MoQListenAddr,
+				Handler: apiSrv.Router,
+				TLSConfig: &tls.Config{
+					Certificates: []tls.Certificate{cert},
+					NextProtos:   []string{"h3"},
+				},
+			},
+			// PoC: accept any Origin. Browser demos served from a different
+			// host/port than the MoQ endpoint would otherwise fail the
+			// same-origin check. Tighten before any production use.
+			CheckOrigin: func(*http.Request) bool { return true },
+		}
+		apiSrv.MoQWebTransport = moqSrv
+	}
+
 	// Register inbound call handler
 	engine.OnInvite(apiSrv.HandleInboundCall)
 
@@ -188,6 +223,20 @@ func main() {
 		return httpSrv.ListenAndServe()
 	})
 
+	// MoQ-over-WebTransport server (HTTP/3 over UDP). Listens on
+	// MoQ_LISTEN_ADDR (UDP) with the same chi router as the TCP HTTP
+	// server above.
+	if moqSrv != nil {
+		g.Go(func() error {
+			log.Info("starting MoQ (WebTransport/H3) server", "addr", cfg.MoQListenAddr)
+			err := moqSrv.ListenAndServe()
+			if err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		})
+	}
+
 	// Graceful shutdown
 	g.Go(func() error {
 		<-gCtx.Done()
@@ -197,6 +246,9 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		httpSrv.Shutdown(shutdownCtx)
+		if moqSrv != nil {
+			_ = moqSrv.Close()
+		}
 
 		// Hangup all active legs
 		for _, l := range legMgr.List() {
