@@ -118,6 +118,13 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "add_leg_to_room", Summary: "Add or move a leg into a room", PayloadType: addLegPayload{}, ResultType: AddLegToRoomResult{}, ErrorCodes: []int{400, 404}},
 		{Name: "remove_leg_from_room", Summary: "Remove a leg from a room", PayloadType: roomLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
+		// ── Bridges ─────────────────────────────────────────────────────
+		{Name: "bridge_create", Summary: "Join two rooms' mixers", PayloadType: bridgeCreatePayload{}, ResultType: BridgeView{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "bridge_list", Summary: "List bridges involving a room", PayloadType: bridgeListPayload{}, ResultType: []BridgeView{}, ErrorCodes: []int{404}},
+		{Name: "bridge_get", Summary: "Get a bridge involving a room", PayloadType: bridgeRefPayload{}, ResultType: BridgeView{}, ErrorCodes: []int{404}},
+		{Name: "bridge_update", Summary: "Change a bridge's direction", PayloadType: bridgeUpdatePayload{}, ResultType: BridgeView{}, ErrorCodes: []int{400, 404}},
+		{Name: "bridge_delete", Summary: "Tear down a bridge", PayloadType: bridgeRefPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+
 		// ── Leg control ─────────────────────────────────────────────────
 		// New commands use resource-first naming (leg_*, room_*) by design.
 		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
@@ -222,6 +229,9 @@ func EventsMetadata() []EventMeta {
 		{events.LegTransferFailed, "Transfer failed (REFER rejected, sipfrag non-2xx, or local error)", reflect.TypeOf(events.LegTransferFailedData{})},
 		{events.RoomCreated, "Room created", reflect.TypeOf(events.RoomCreatedData{})},
 		{events.RoomDeleted, "Room deleted", reflect.TypeOf(events.RoomDeletedData{})},
+		{events.RoomBridged, "Two rooms' mixers were joined", reflect.TypeOf(events.RoomBridgedData{})},
+		{events.RoomBridgeUpdated, "A bridge's audio flow direction changed", reflect.TypeOf(events.RoomBridgeUpdatedData{})},
+		{events.RoomUnbridged, "A bridge was torn down", reflect.TypeOf(events.RoomUnbridgedData{})},
 		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},
 		{events.AgentConnected, "Agent connected to provider", reflect.TypeOf(events.AgentConnectedData{})},
 		{events.AgentDisconnected, "Agent session ended", reflect.TypeOf(events.AgentDisconnectedData{})},

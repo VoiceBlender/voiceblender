@@ -114,6 +114,20 @@ func WebhookFieldDescriptions() map[string]string {
 		"room.created.room_id": "Room identifier",
 		"room.deleted.room_id": "Room identifier",
 
+		// room bridge lifecycle
+		"room.bridged.bridge_id":        "Bridge identifier",
+		"room.bridged.room_a_id":        "First bridged room",
+		"room.bridged.room_b_id":        "Second bridged room",
+		"room.bridged.direction":        `Canonical direction relative to room_a_id: "bidirectional", "a_to_b", "b_to_a", or "none"`,
+		"room.bridge_updated.bridge_id": "Bridge identifier",
+		"room.bridge_updated.room_a_id": "First bridged room",
+		"room.bridge_updated.room_b_id": "Second bridged room",
+		"room.bridge_updated.direction": `New canonical direction relative to room_a_id`,
+		"room.unbridged.bridge_id":      "Bridge identifier",
+		"room.unbridged.room_a_id":      "First bridged room",
+		"room.unbridged.room_b_id":      "Second bridged room",
+		"room.unbridged.reason":         `Empty for an explicit delete, or "room_deleted" when a bridged room was deleted`,
+
 		// transfer (SIP REFER)
 		"leg.transfer_initiated.leg_id":           "Leg identifier",
 		"leg.transfer_initiated.kind":             "Transfer kind: \"blind\" or \"attended\"",
@@ -751,6 +765,64 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg removed"},
 				400: {Description: "Room or leg not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/bridges", OperationID: "createRoomBridge",
+			Summary: "Bridge this room's mixer to another room's mixer",
+			Description: "Joins the room in the path with `room_id` so audio flows " +
+				"between their mixers. Both rooms must exist and share a sample " +
+				"rate. `direction` is relative to the room in the path: " +
+				"`bidirectional`, `send` (path room → other), `receive` (other → " +
+				"path room), or `none` (allocated but silent). Bridging rooms into " +
+				"a cycle with feedback-enabled directions causes audio feedback — " +
+				"use one-way directions to break loops.",
+			Tags:        []string{"Bridges"},
+			RequestType: CreateRoomBridgeRequest{},
+			Responses: map[int]ResponseMeta{
+				201: {Description: "Bridge created", Type: BridgeView{}},
+				400: {Description: "Invalid JSON, self-bridge, sample-rate mismatch, or invalid direction"},
+				404: {Description: "Path room or room_id not found"},
+				409: {Description: "A bridge between these rooms already exists"},
+			},
+		},
+		{
+			Method: "GET", Path: "/rooms/{id}/bridges", OperationID: "listRoomBridges",
+			Summary: "List bridges involving this room",
+			Tags:    []string{"Bridges"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Array of bridges (direction relative to the path room)", Type: []BridgeView{}},
+				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "GET", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "getRoomBridge",
+			Summary: "Get a bridge involving this room",
+			Tags:    []string{"Bridges"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Bridge details (direction relative to the path room)", Type: BridgeView{}},
+				404: {Description: "Bridge not found for this room"},
+			},
+		},
+		{
+			Method: "PATCH", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "updateRoomBridge",
+			Summary:     "Change a bridge's audio flow direction",
+			Description: "Live-updates the direction (relative to the room in the path) without interrupting audio.",
+			Tags:        []string{"Bridges"},
+			RequestType: UpdateRoomBridgeRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Bridge updated", Type: BridgeView{}},
+				400: {Description: "Invalid JSON or invalid/missing direction"},
+				404: {Description: "Bridge not found for this room"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "deleteRoomBridge",
+			Summary: "Tear down a bridge",
+			Tags:    []string{"Bridges"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Bridge deleted"},
+				404: {Description: "Bridge not found for this room"},
 			},
 		},
 		{

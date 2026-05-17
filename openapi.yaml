@@ -1390,6 +1390,141 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /rooms/{id}/bridges:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: createRoomBridge
+            summary: Bridge this room's mixer to another room's mixer
+            description: 'Joins the room in the path with `room_id` so audio flows between their mixers. Both rooms must exist and share a sample rate. `direction` is relative to the room in the path: `bidirectional`, `send` (path room → other), `receive` (other → path room), or `none` (allocated but silent). Bridging rooms into a cycle with feedback-enabled directions causes audio feedback — use one-way directions to break loops.'
+            tags:
+                - Bridges
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateRoomBridgeRequest'
+            responses:
+                '201':
+                    description: Bridge created
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/BridgeView'
+                '400':
+                    description: Invalid JSON, self-bridge, sample-rate mismatch, or invalid direction
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Path room or room_id not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: A bridge between these rooms already exists
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        get:
+            operationId: listRoomBridges
+            summary: List bridges involving this room
+            tags:
+                - Bridges
+            responses:
+                '200':
+                    description: Array of bridges (direction relative to the path room)
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: '#/components/schemas/BridgeView'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/bridges/{bridgeID}:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+            - name: bridgeID
+              in: path
+              required: true
+              schema:
+                type: string
+        get:
+            operationId: getRoomBridge
+            summary: Get a bridge involving this room
+            tags:
+                - Bridges
+            responses:
+                '200':
+                    description: Bridge details (direction relative to the path room)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/BridgeView'
+                '404':
+                    description: Bridge not found for this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        patch:
+            operationId: updateRoomBridge
+            summary: Change a bridge's audio flow direction
+            description: Live-updates the direction (relative to the room in the path) without interrupting audio.
+            tags:
+                - Bridges
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateRoomBridgeRequest'
+            responses:
+                '200':
+                    description: Bridge updated
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/BridgeView'
+                '400':
+                    description: Invalid JSON or invalid/missing direction
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Bridge not found for this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: deleteRoomBridge
+            summary: Tear down a bridge
+            tags:
+                - Bridges
+            responses:
+                '200':
+                    description: Bridge deleted
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: Bridge not found for this room
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /rooms/{id}/play:
         parameters:
             - $ref: '#/components/parameters/RoomId'
@@ -2372,6 +2507,26 @@ components:
                     default: s16le
             required:
                 - type
+        CreateRoomBridgeRequest:
+            type: object
+            properties:
+                id:
+                    type: string
+                    description: Custom bridge ID (auto-generated UUID if omitted)
+                room_id:
+                    type: string
+                    description: The other room to join. Must use the same sample rate as the room in the path.
+                direction:
+                    type: string
+                    description: 'Audio flow relative to the room in the path: bidirectional (both hear each other), send (path room → other only), receive (other → path room only), none (allocated but silent). Default: bidirectional.'
+                    enum:
+                        - bidirectional
+                        - send
+                        - receive
+                        - none
+                    default: bidirectional
+            required:
+                - room_id
         RoomCreateRequest:
             type: object
             properties:
@@ -2635,6 +2790,19 @@ components:
                     description: ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer.
             required:
                 - target
+        UpdateRoomBridgeRequest:
+            type: object
+            properties:
+                direction:
+                    type: string
+                    description: 'New audio flow relative to the room in the path: bidirectional, send, receive, or none.'
+                    enum:
+                        - bidirectional
+                        - send
+                        - receive
+                        - none
+            required:
+                - direction
         VAPIAgentRequest:
             type: object
             properties:
@@ -2699,6 +2867,31 @@ components:
                     type: integer
                     description: Max time (ms) to wait for the voicemail beep after machine detection. 0 or omitted = disabled.
                     default: 0
+        BridgeView:
+            type: object
+            properties:
+                id:
+                    type: string
+                    description: Bridge identifier
+                room_id:
+                    type: string
+                    description: The peer room joined to the room in the path
+                direction:
+                    type: string
+                    description: 'Audio flow relative to the room in the path: bidirectional, send, receive, or none.'
+                    enum:
+                        - bidirectional
+                        - send
+                        - receive
+                        - none
+                sample_rate:
+                    type: integer
+                    description: Shared mixer sample rate in Hz (both rooms must match).
+            required:
+                - id
+                - room_id
+                - direction
+                - sample_rate
         SIPAuth:
             type: object
             properties:
@@ -2784,6 +2977,9 @@ components:
                 - leg.transfer_failed
                 - room.created
                 - room.deleted
+                - room.bridged
+                - room.bridge_updated
+                - room.unbridged
                 - stt.text
                 - agent.connected
                 - agent.disconnected
@@ -3547,6 +3743,78 @@ x-webhooks:
                                         description: Room identifier
                                     app_id:
                                         type: string
+    room.bridged:
+        post:
+            summary: Two rooms' mixers were joined
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    bridge_id:
+                                        type: string
+                                        description: Bridge identifier
+                                    room_a_id:
+                                        type: string
+                                        description: First bridged room
+                                    room_b_id:
+                                        type: string
+                                        description: Second bridged room
+                                    app_id:
+                                        type: string
+                                    direction:
+                                        type: string
+                                        description: 'Canonical direction relative to room_a_id: "bidirectional", "a_to_b", "b_to_a", or "none"'
+    room.bridge_updated:
+        post:
+            summary: A bridge's audio flow direction changed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    bridge_id:
+                                        type: string
+                                        description: Bridge identifier
+                                    room_a_id:
+                                        type: string
+                                        description: First bridged room
+                                    room_b_id:
+                                        type: string
+                                        description: Second bridged room
+                                    app_id:
+                                        type: string
+                                    direction:
+                                        type: string
+                                        description: New canonical direction relative to room_a_id
+    room.unbridged:
+        post:
+            summary: A bridge was torn down
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    bridge_id:
+                                        type: string
+                                        description: Bridge identifier
+                                    room_a_id:
+                                        type: string
+                                        description: First bridged room
+                                    room_b_id:
+                                        type: string
+                                        description: Second bridged room
+                                    app_id:
+                                        type: string
+                                    reason:
+                                        type: string
+                                        description: Empty for an explicit delete, or "room_deleted" when a bridged room was deleted
     stt.text:
         post:
             summary: Speech-to-text transcript

@@ -51,6 +51,10 @@ const (
 	RoomCreated EventType = "room.created"
 	RoomDeleted EventType = "room.deleted"
 
+	RoomBridged       EventType = "room.bridged"
+	RoomBridgeUpdated EventType = "room.bridge_updated"
+	RoomUnbridged     EventType = "room.unbridged"
+
 	STTText EventType = "stt.text"
 
 	AgentConnected      EventType = "agent.connected"

@@ -118,6 +118,26 @@ channels:
                 $ref: '#/components/messages/remove_leg_from_room'
             remove_leg_from_room.result:
                 $ref: '#/components/messages/remove_leg_from_roomResult'
+            bridge_create:
+                $ref: '#/components/messages/bridge_create'
+            bridge_create.result:
+                $ref: '#/components/messages/bridge_createResult'
+            bridge_list:
+                $ref: '#/components/messages/bridge_list'
+            bridge_list.result:
+                $ref: '#/components/messages/bridge_listResult'
+            bridge_get:
+                $ref: '#/components/messages/bridge_get'
+            bridge_get.result:
+                $ref: '#/components/messages/bridge_getResult'
+            bridge_update:
+                $ref: '#/components/messages/bridge_update'
+            bridge_update.result:
+                $ref: '#/components/messages/bridge_updateResult'
+            bridge_delete:
+                $ref: '#/components/messages/bridge_delete'
+            bridge_delete.result:
+                $ref: '#/components/messages/bridge_deleteResult'
             leg_ring:
                 $ref: '#/components/messages/leg_ring'
             leg_ring.result:
@@ -330,6 +350,12 @@ channels:
                 $ref: '#/components/messages/evt_room_created'
             room.deleted:
                 $ref: '#/components/messages/evt_room_deleted'
+            room.bridged:
+                $ref: '#/components/messages/evt_room_bridged'
+            room.bridge_updated:
+                $ref: '#/components/messages/evt_room_bridge_updated'
+            room.unbridged:
+                $ref: '#/components/messages/evt_room_unbridged'
             stt.text:
                 $ref: '#/components/messages/evt_stt_text'
             agent.connected:
@@ -697,6 +723,71 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/remove_leg_from_room.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_bridge_create:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Join two rooms' mixers
+        messages:
+            - $ref: '#/channels/vsi/messages/bridge_create'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/bridge_create.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_bridge_list:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: List bridges involving a room
+        messages:
+            - $ref: '#/channels/vsi/messages/bridge_list'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/bridge_list.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_bridge_get:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Get a bridge involving a room
+        messages:
+            - $ref: '#/channels/vsi/messages/bridge_get'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/bridge_get.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_bridge_update:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Change a bridge's direction
+        messages:
+            - $ref: '#/channels/vsi/messages/bridge_update'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/bridge_update.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_bridge_delete:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Tear down a bridge
+        messages:
+            - $ref: '#/channels/vsi/messages/bridge_delete'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/bridge_delete.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_ring:
         action: receive
@@ -1404,6 +1495,27 @@ operations:
         summary: Room deleted
         messages:
             - $ref: '#/channels/vsi/messages/room.deleted'
+    send_room_bridged:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Two rooms' mixers were joined
+        messages:
+            - $ref: '#/channels/vsi/messages/room.bridged'
+    send_room_bridge_updated:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A bridge's audio flow direction changed
+        messages:
+            - $ref: '#/channels/vsi/messages/room.bridge_updated'
+    send_room_unbridged:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A bridge was torn down
+        messages:
+            - $ref: '#/channels/vsi/messages/room.unbridged'
     send_stt_text:
         action: send
         channel:
@@ -2277,6 +2389,158 @@ components:
                 properties:
                     type:
                         const: remove_leg_from_room.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        bridge_create:
+            name: bridge_create
+            title: Join two rooms' mixers
+            summary: Join two rooms' mixers
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_create
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/bridgeCreatePayload'
+                required:
+                    - type
+        bridge_createResult:
+            name: bridge_createResult
+            title: Join two rooms' mixers — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_create.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/BridgeView'
+                required:
+                    - type
+        bridge_list:
+            name: bridge_list
+            title: List bridges involving a room
+            summary: List bridges involving a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_list
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/bridgeListPayload'
+                required:
+                    - type
+        bridge_listResult:
+            name: bridge_listResult
+            title: List bridges involving a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_list.result
+                    request_id:
+                        type: string
+                    data:
+                        type: array
+                        items:
+                            $ref: '#/components/schemas/BridgeView'
+                required:
+                    - type
+        bridge_get:
+            name: bridge_get
+            title: Get a bridge involving a room
+            summary: Get a bridge involving a room
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_get
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/bridgeRefPayload'
+                required:
+                    - type
+        bridge_getResult:
+            name: bridge_getResult
+            title: Get a bridge involving a room — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_get.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/BridgeView'
+                required:
+                    - type
+        bridge_update:
+            name: bridge_update
+            title: Change a bridge's direction
+            summary: Change a bridge's direction
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_update
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/bridgeUpdatePayload'
+                required:
+                    - type
+        bridge_updateResult:
+            name: bridge_updateResult
+            title: Change a bridge's direction — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_update.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/BridgeView'
+                required:
+                    - type
+        bridge_delete:
+            name: bridge_delete
+            title: Tear down a bridge
+            summary: Tear down a bridge
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_delete
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/bridgeRefPayload'
+                required:
+                    - type
+        bridge_deleteResult:
+            name: bridge_deleteResult
+            title: Tear down a bridge — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: bridge_delete.result
                     request_id:
                         type: string
                     data:
@@ -3601,6 +3865,27 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.deleted. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/room.deleted/post/requestBody/content/application~1json/schema
+        evt_room_bridged:
+            name: evt_room_bridged
+            title: Two rooms' mixers were joined
+            summary: Two rooms' mixers were joined
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.bridged. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/room.bridged/post/requestBody/content/application~1json/schema
+        evt_room_bridge_updated:
+            name: evt_room_bridge_updated
+            title: A bridge's audio flow direction changed
+            summary: A bridge's audio flow direction changed
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.bridge_updated. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/room.bridge_updated/post/requestBody/content/application~1json/schema
+        evt_room_unbridged:
+            name: evt_room_unbridged
+            title: A bridge was torn down
+            summary: A bridge was torn down
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.unbridged. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/room.unbridged/post/requestBody/content/application~1json/schema
         evt_stt_text:
             name: evt_stt_text
             title: Speech-to-text transcript
@@ -3775,6 +4060,22 @@ components:
                     type: string
             required:
                 - status
+        BridgeView:
+            type: object
+            properties:
+                id:
+                    type: string
+                room_id:
+                    type: string
+                direction:
+                    type: string
+                sample_rate:
+                    type: integer
+            required:
+                - id
+                - room_id
+                - direction
+                - sample_rate
         ChannelInfo:
             type: object
             properties:
@@ -4043,6 +4344,50 @@ components:
                     type: string
             required:
                 - id
+        bridgeCreatePayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                bridge_id:
+                    type: string
+                peer_room_id:
+                    type: string
+                direction:
+                    type: string
+            required:
+                - room_id
+                - peer_room_id
+        bridgeListPayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+            required:
+                - room_id
+        bridgeRefPayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                bridge_id:
+                    type: string
+            required:
+                - room_id
+                - bridge_id
+        bridgeUpdatePayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                bridge_id:
+                    type: string
+                direction:
+                    type: string
+            required:
+                - room_id
+                - bridge_id
+                - direction
         deleteLegPayload:
             type: object
             properties:
