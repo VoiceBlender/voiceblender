@@ -228,6 +228,46 @@ var addLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf": {Description: "If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true)."},
 }
 
+// CreateRoomBridgeRequest is the request body for
+// POST /v1/rooms/{id}/bridges. Direction is relative to the room in the path.
+type CreateRoomBridgeRequest struct {
+	ID        string `json:"id,omitempty"`
+	RoomID    string `json:"room_id"`
+	Direction string `json:"direction,omitempty"`
+}
+
+var createRoomBridgeRequestFields = map[string]FieldEnrichment{
+	"id":        {Description: "Custom bridge ID (auto-generated UUID if omitted)"},
+	"room_id":   {Description: "The other room to join. Must use the same sample rate as the room in the path."},
+	"direction": {Description: "Audio flow relative to the room in the path: bidirectional (both hear each other), send (path room → other only), receive (other → path room only), none (allocated but silent). Default: bidirectional.", Enum: []string{"bidirectional", "send", "receive", "none"}, Default: "bidirectional"},
+}
+
+// UpdateRoomBridgeRequest is the request body for
+// PATCH /v1/rooms/{id}/bridges/{bridgeID}.
+type UpdateRoomBridgeRequest struct {
+	Direction string `json:"direction"`
+}
+
+var updateRoomBridgeRequestFields = map[string]FieldEnrichment{
+	"direction": {Description: "New audio flow relative to the room in the path: bidirectional, send, receive, or none.", Enum: []string{"bidirectional", "send", "receive", "none"}},
+}
+
+// BridgeView is the JSON representation of a bridge, relative to the room in
+// the request path.
+type BridgeView struct {
+	ID         string `json:"id"`
+	RoomID     string `json:"room_id"`
+	Direction  string `json:"direction"`
+	SampleRate int    `json:"sample_rate"`
+}
+
+var bridgeViewFields = map[string]FieldEnrichment{
+	"id":          {Description: "Bridge identifier"},
+	"room_id":     {Description: "The peer room joined to the room in the path"},
+	"direction":   {Description: "Audio flow relative to the room in the path: bidirectional, send, receive, or none.", Enum: []string{"bidirectional", "send", "receive", "none"}},
+	"sample_rate": {Description: "Shared mixer sample rate in Hz (both rooms must match)."},
+}
+
 // PlaybackRequest is the request body for POST /v1/legs/{id}/play and POST /v1/rooms/{id}/play.
 type PlaybackRequest struct {
 	URL      string `json:"url"`
@@ -433,6 +473,9 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("TransferRequest", transferRequestFields)
 	collect("CreateRoomRequest", createRoomRequestFields)
 	collect("AddLegRequest", addLegRequestFields)
+	collect("CreateRoomBridgeRequest", createRoomBridgeRequestFields)
+	collect("UpdateRoomBridgeRequest", updateRoomBridgeRequestFields)
+	collect("BridgeView", bridgeViewFields)
 	collect("PlaybackRequest", playbackRequestFields)
 	collect("VolumeRequest", volumeRequestFields)
 	collect("DTMFRequest", dtmfRequestFields)

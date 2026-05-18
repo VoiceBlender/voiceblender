@@ -144,6 +144,30 @@ type addLegPayload struct {
 	AcceptDTMF *bool  `json:"accept_dtmf,omitempty"`
 }
 
+// Bridge payloads. room_id is the path-equivalent room; direction is
+// relative to it (bidirectional|send|receive|none).
+type bridgeCreatePayload struct {
+	RoomID     string `json:"room_id"`
+	BridgeID   string `json:"bridge_id,omitempty"`
+	PeerRoomID string `json:"peer_room_id"`
+	Direction  string `json:"direction,omitempty"`
+}
+
+type bridgeListPayload struct {
+	RoomID string `json:"room_id"`
+}
+
+type bridgeRefPayload struct {
+	RoomID   string `json:"room_id"`
+	BridgeID string `json:"bridge_id"`
+}
+
+type bridgeUpdatePayload struct {
+	RoomID    string `json:"room_id"`
+	BridgeID  string `json:"bridge_id"`
+	Direction string `json:"direction"`
+}
+
 func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
@@ -390,6 +414,74 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			return
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "removed"})
+
+	// ── Bridges ─────────────────────────────────────────────────────
+	case "bridge_create":
+		var p bridgeCreatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doCreateRoomBridge(p.RoomID, CreateRoomBridgeRequest{
+			ID:        p.BridgeID,
+			RoomID:    p.PeerRoomID,
+			Direction: p.Direction,
+		})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "bridge_list":
+		var p bridgeListPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if _, ok := s.RoomMgr.Get(p.RoomID); !ok {
+			s.wsCommandError(lw, msg, newAPIError(404, "room not found"))
+			return
+		}
+		brs := s.RoomMgr.ListBridgesForRoom(p.RoomID)
+		views := make([]BridgeView, len(brs))
+		for i, br := range brs {
+			views[i] = s.bridgeView(p.RoomID, br)
+		}
+		s.wsCommandResult(lw, msg, views)
+
+	case "bridge_get":
+		var p bridgeRefPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		br, ok := s.bridgeForRoom(p.RoomID, p.BridgeID)
+		if !ok {
+			s.wsCommandError(lw, msg, newAPIError(404, "bridge not found"))
+			return
+		}
+		s.wsCommandResult(lw, msg, s.bridgeView(p.RoomID, br))
+
+	case "bridge_update":
+		var p bridgeUpdatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doUpdateRoomBridge(p.RoomID, p.BridgeID, UpdateRoomBridgeRequest{Direction: p.Direction})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "bridge_delete":
+		var p bridgeRefPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doDeleteRoomBridge(p.RoomID, p.BridgeID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "deleted"})
 
 	// ── Leg control gaps ────────────────────────────────────────────
 	case "leg_ring":

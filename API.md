@@ -1378,6 +1378,117 @@ Remove a leg from a room (without hanging it up).
 
 ---
 
+## Room Bridges
+
+A **bridge** joins two rooms' mixers so audio flows between them, without
+merging their participant sets. Both rooms must already exist and use the
+**same sample rate** (no resampling is performed on the bridge). Mixed-minus-self
+in each mixer prevents the other room's audio from echoing back across the
+bridge.
+
+`direction` is always **relative to the room in the request path** (`{id}`):
+
+| `direction` | Path room sends | Path room receives |
+|---|---|---|
+| `bidirectional` (default) | yes | yes |
+| `send` | yes | no |
+| `receive` | no | yes |
+| `none` | no | no |
+
+A room may hold several bridges (e.g. A↔B and A↔C). The mixer of a bridged
+room is kept running even when it has no legs, so a one-way `receive`/`send`
+bridge into an otherwise empty room works (e.g. a recorder/agent room).
+
+> **Cycle warning:** bridging rooms into a cycle (A→B→C→A) with feedback-enabled
+> directions causes audio feedback. Use one-way directions to break loops.
+
+> **Audio only:** a bridge relays mixed PCM audio between the two rooms. It does
+> **not** relay DTMF (RFC 4733 telephone-events) or RTT (T.140) — those are
+> broadcast only among the legs within a single room, so digits/text entered in
+> one bridged room are not delivered to participants of the other.
+
+The `room.bridged` / `room.bridge_updated` / `room.unbridged` webhook events
+report `room_a_id` (the room the bridge was created from) and `room_b_id`, and
+their `direction` is **canonical relative to `room_a_id`** (`bidirectional`,
+`a_to_b`, `b_to_a`, or `none`) — independent of which room you call the REST
+endpoint from.
+
+### POST /v1/rooms/{id}/bridges
+
+Bridge the room in the path to another room.
+
+**Request:**
+
+```json
+{ "room_id": "room-b", "direction": "bidirectional" }
+```
+
+| Field | Description |
+|---|---|
+| `id` | Optional custom bridge ID (auto-generated UUID if omitted) |
+| `room_id` | The other room to join (required) |
+| `direction` | `bidirectional` (default), `send`, `receive`, or `none` |
+
+```bash
+curl -X POST http://localhost:8080/v1/rooms/room-a/bridges \
+  -H 'Content-Type: application/json' \
+  -d '{"room_id":"room-b","direction":"bidirectional"}'
+```
+
+**Response:** `201 Created`
+
+```json
+{ "id": "b1f2…", "room_id": "room-b", "direction": "bidirectional", "sample_rate": 16000 }
+```
+
+**Errors:** `400` — invalid JSON, self-bridge, sample-rate mismatch, or invalid
+direction · `404` — path room or `room_id` not found · `409` — a bridge between
+these rooms already exists
+
+### GET /v1/rooms/{id}/bridges
+
+List every bridge involving this room. `direction` and `room_id` in each entry
+are relative to the room in the path.
+
+**Response:** `200 OK` — array of bridge objects. **Errors:** `404` — room not found
+
+### GET /v1/rooms/{id}/bridges/{bridgeID}
+
+**Response:** `200 OK` — bridge object. **Errors:** `404` — bridge not found for this room
+
+### PATCH /v1/rooms/{id}/bridges/{bridgeID}
+
+Change the bridge's audio flow live (no audio interruption, no participant churn).
+
+**Request:**
+
+```json
+{ "direction": "send" }
+```
+
+```bash
+curl -X PATCH http://localhost:8080/v1/rooms/room-a/bridges/b1f2 \
+  -H 'Content-Type: application/json' -d '{"direction":"send"}'
+```
+
+**Response:** `200 OK` — updated bridge object. **Errors:** `400` — invalid or
+missing direction · `404` — bridge not found for this room
+
+### DELETE /v1/rooms/{id}/bridges/{bridgeID}
+
+Tear the bridge down. Deleting either bridged room also tears down its bridges
+automatically (emitting `room.unbridged` with `reason: "room_deleted"`).
+
+**Response:** `200 OK`
+
+```json
+{ "status": "deleted" }
+```
+
+**Errors:** `404` — bridge not found for this room
+
+---
+
 ### POST /v1/rooms/{id}/play
 
 Play audio to a room. Accepts a URL or a built-in telephone tone (same tone names as leg playback).
@@ -2338,6 +2449,9 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `agent.agent_response` | Agent generated a response | `leg_id` or `room_id`, `text` |
 | `room.created` | Room created | `room_id` |
 | `room.deleted` | Room deleted | `room_id` |
+| `room.bridged` | Two rooms' mixers joined | `bridge_id`, `room_a_id`, `room_b_id`, `direction` |
+| `room.bridge_updated` | Bridge direction changed | `bridge_id`, `room_a_id`, `room_b_id`, `direction` |
+| `room.unbridged` | Bridge torn down | `bridge_id`, `room_a_id`, `room_b_id`, `reason` |
 | `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms` |
 | `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
 

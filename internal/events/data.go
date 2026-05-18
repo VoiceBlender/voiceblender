@@ -186,6 +186,39 @@ type RoomDeletedData struct {
 	RoomScope
 }
 
+// BridgeScope embeds in events scoped to a bridge joining two rooms.
+// GetRoomID returns RoomAID so existing room-scoped event filtering still
+// matches one side of the bridge; both room IDs are always present.
+type BridgeScope struct {
+	BridgeID string `json:"bridge_id"`
+	RoomAID  string `json:"room_a_id"`
+	RoomBID  string `json:"room_b_id"`
+	AppID    string `json:"app_id,omitempty"`
+}
+
+func (b BridgeScope) GetLegID() string  { return "" }
+func (b BridgeScope) GetRoomID() string { return b.RoomAID }
+func (b BridgeScope) GetAppID() string  { return b.AppID }
+
+// RoomBridgedData fires when two rooms' mixers are joined. Direction is
+// canonical relative to room_a_id: bidirectional | a_to_b | b_to_a | none.
+type RoomBridgedData struct {
+	BridgeScope
+	Direction string `json:"direction"`
+}
+
+type RoomBridgeUpdatedData struct {
+	BridgeScope
+	Direction string `json:"direction"`
+}
+
+// RoomUnbridgedData fires when a bridge is torn down. Reason is empty for an
+// explicit delete, or "room_deleted" when triggered by deleting a room.
+type RoomUnbridgedData struct {
+	BridgeScope
+	Reason string `json:"reason,omitempty"`
+}
+
 type LegJoinedRoomData struct {
 	LegRoomScope
 }

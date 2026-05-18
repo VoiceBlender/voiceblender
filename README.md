@@ -12,6 +12,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus 
 - **WebSocket legs** -- inbound (HTTP upgrade) and outbound (dial) PCM-over-WebSocket legs with binary or `json_base64` framing, configurable sample rate (8/16/24/48 kHz), bidirectional text, and caller-supplied X-/P- headers — designed to also back a future generic Agent API
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
+- **Room bridging** -- join two rooms' mixers (same sample rate) with live-configurable direction (bidirectional, one-way each way, or parked); echo-free via mixed-minus-self
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
@@ -147,6 +148,11 @@ GET    /v1/rooms/{id}              # Get room
 DELETE /v1/rooms/{id}              # Delete room (hangs up all legs)
 POST   /v1/rooms/{id}/legs         # Add or move leg to room
 DELETE /v1/rooms/{id}/legs/{legID}      # Remove leg from room
+POST   /v1/rooms/{id}/bridges      # Bridge this room's mixer to another room
+GET    /v1/rooms/{id}/bridges      # List bridges involving this room
+GET    /v1/rooms/{id}/bridges/{bridgeID}    # Get a bridge
+PATCH  /v1/rooms/{id}/bridges/{bridgeID}    # Change bridge direction
+DELETE /v1/rooms/{id}/bridges/{bridgeID}    # Tear down a bridge
 GET    /v1/rooms/{id}/ws           # Join room via WebSocket
 POST   /v1/rooms/{id}/play         # Play audio or tone to room
 DELETE /v1/rooms/{id}/play/{pbID}  # Stop room playback

@@ -6,25 +6,28 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/bridge"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/google/uuid"
 )
 
 type Manager struct {
-	mu     sync.RWMutex
-	rooms  map[string]*Room
-	legMgr *leg.Manager
-	bus    *events.Bus
-	log    *slog.Logger
+	mu      sync.RWMutex
+	rooms   map[string]*Room
+	bridges map[string]*Bridge
+	legMgr  *leg.Manager
+	bus     *events.Bus
+	log     *slog.Logger
 }
 
 func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager {
 	return &Manager{
-		rooms:  make(map[string]*Room),
-		legMgr: legMgr,
-		bus:    bus,
-		log:    log,
+		rooms:   make(map[string]*Room),
+		bridges: make(map[string]*Bridge),
+		legMgr:  legMgr,
+		bus:     bus,
+		log:     log,
 	}
 }
 
@@ -72,7 +75,20 @@ func (m *Manager) Delete(id string) error {
 		return fmt.Errorf("room %s not found", id)
 	}
 	delete(m.rooms, id)
+	torn := m.collectBridgesForRoomLocked(id)
+	appID := r.AppID
 	m.mu.Unlock()
+
+	// Tear down bridges referencing this room before hanging up legs, so the
+	// bridge readLoop/writeLoop exit via endpoint Close rather than racing
+	// the mixer Stop() inside r.Close().
+	for _, t := range torn {
+		m.teardownBridge(t.br, t.roomA, t.roomB)
+		m.bus.Publish(events.RoomUnbridged, &events.RoomUnbridgedData{
+			BridgeScope: events.BridgeScope{BridgeID: t.br.ID, RoomAID: t.br.RoomAID, RoomBID: t.br.RoomBID, AppID: appID},
+			Reason:      "room_deleted",
+		})
+	}
 
 	// Hangup all participants concurrently.
 	// Bye() blocks waiting for a SIP response, so sequential hangups
@@ -171,6 +187,193 @@ func (m *Manager) RemoveLeg(roomID, legID string) error {
 	}
 	m.bus.Publish(events.LegLeftRoom, &events.LegLeftRoomData{
 		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: legAppID},
+	})
+	return nil
+}
+
+// --- Bridges ---
+
+type bridgeTeardown struct {
+	br           *Bridge
+	roomA, roomB *Room
+}
+
+// collectBridgesForRoomLocked removes every bridge referencing roomID from
+// the registry and returns them with their (still-registered) room pointers.
+// Caller must hold m.mu.
+func (m *Manager) collectBridgesForRoomLocked(roomID string) []bridgeTeardown {
+	var torn []bridgeTeardown
+	for bid, br := range m.bridges {
+		if br.RoomAID == roomID || br.RoomBID == roomID {
+			delete(m.bridges, bid)
+			torn = append(torn, bridgeTeardown{br: br, roomA: m.rooms[br.RoomAID], roomB: m.rooms[br.RoomBID]})
+		}
+	}
+	return torn
+}
+
+// teardownBridge detaches the bridge participant from both mixers (skipping a
+// nil room, e.g. one being deleted) and closes the conduit. Must be called
+// without m.mu held — detachBridge takes the room lock.
+func (m *Manager) teardownBridge(br *Bridge, roomA, roomB *Room) {
+	if roomA != nil {
+		roomA.detachBridge(br.pid)
+	}
+	if roomB != nil {
+		roomB.detachBridge(br.pid)
+	}
+	br.epA.Close()
+	br.epB.Close()
+}
+
+// CreateBridge joins roomAID and roomBID so audio flows between their mixers
+// per dir. Both rooms must exist and share a sample rate; a room cannot be
+// bridged to itself or to a room it is already bridged with.
+func (m *Manager) CreateBridge(id, roomAID, roomBID string, dir Direction) (*Bridge, error) {
+	if !dir.Valid() {
+		return nil, fmt.Errorf("%w: %q", ErrBridgeDirection, dir)
+	}
+	if roomAID == roomBID {
+		return nil, ErrBridgeSelf
+	}
+	if id == "" {
+		id = uuid.New().String()
+	}
+
+	m.mu.Lock()
+	roomA, okA := m.rooms[roomAID]
+	if !okA {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrBridgeRoomMissing, roomAID)
+	}
+	roomB, okB := m.rooms[roomBID]
+	if !okB {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrBridgeRoomMissing, roomBID)
+	}
+	if roomA.SampleRate != roomB.SampleRate {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: room %s is %dHz, room %s is %dHz",
+			ErrBridgeSampleRate, roomAID, roomA.SampleRate, roomBID, roomB.SampleRate)
+	}
+	if _, exists := m.bridges[id]; exists {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: bridge id %s already exists", ErrBridgeExists, id)
+	}
+	for _, b := range m.bridges {
+		if (b.RoomAID == roomAID && b.RoomBID == roomBID) ||
+			(b.RoomAID == roomBID && b.RoomBID == roomAID) {
+			m.mu.Unlock()
+			return nil, ErrBridgeExists
+		}
+	}
+
+	epA, epB := bridge.NewPair(bridge.DefaultBufFrames)
+	pid := bridgeParticipantID(id)
+	br := &Bridge{ID: id, RoomAID: roomAID, RoomBID: roomBID, Direction: dir, epA: epA, epB: epB, pid: pid}
+	m.bridges[id] = br
+	appID := roomA.AppID
+	m.mu.Unlock()
+
+	aSends, bSends := dir.flags()
+	roomA.attachBridge(pid, epA)
+	roomB.attachBridge(pid, epB)
+	roomA.setBridgeDirection(pid, aSends)
+	roomB.setBridgeDirection(pid, bSends)
+
+	m.log.Info("bridge created", "bridge_id", id, "room_a", roomAID, "room_b", roomBID, "direction", dir)
+	m.bus.Publish(events.RoomBridged, &events.RoomBridgedData{
+		BridgeScope: events.BridgeScope{BridgeID: id, RoomAID: roomAID, RoomBID: roomBID, AppID: appID},
+		Direction:   string(dir),
+	})
+	return br, nil
+}
+
+func (m *Manager) GetBridge(id string) (*Bridge, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	b, ok := m.bridges[id]
+	return b, ok
+}
+
+func (m *Manager) ListBridges() []*Bridge {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Bridge, 0, len(m.bridges))
+	for _, b := range m.bridges {
+		out = append(out, b)
+	}
+	return out
+}
+
+// ListBridgesForRoom returns every bridge that has roomID as an endpoint.
+func (m *Manager) ListBridgesForRoom(roomID string) []*Bridge {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Bridge, 0)
+	for _, b := range m.bridges {
+		if b.RoomAID == roomID || b.RoomBID == roomID {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// SetBridgeDirection changes a bridge's audio flow live, without
+// interrupting audio or churning participants.
+func (m *Manager) SetBridgeDirection(id string, dir Direction) error {
+	if !dir.Valid() {
+		return fmt.Errorf("%w: %q", ErrBridgeDirection, dir)
+	}
+	m.mu.Lock()
+	br, ok := m.bridges[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrBridgeNotFound
+	}
+	roomA := m.rooms[br.RoomAID]
+	roomB := m.rooms[br.RoomBID]
+	br.Direction = dir
+	appID := ""
+	if roomA != nil {
+		appID = roomA.AppID
+	}
+	m.mu.Unlock()
+
+	aSends, bSends := dir.flags()
+	if roomA != nil {
+		roomA.setBridgeDirection(br.pid, aSends)
+	}
+	if roomB != nil {
+		roomB.setBridgeDirection(br.pid, bSends)
+	}
+
+	m.bus.Publish(events.RoomBridgeUpdated, &events.RoomBridgeUpdatedData{
+		BridgeScope: events.BridgeScope{BridgeID: id, RoomAID: br.RoomAID, RoomBID: br.RoomBID, AppID: appID},
+		Direction:   string(dir),
+	})
+	return nil
+}
+
+func (m *Manager) DeleteBridge(id string) error {
+	m.mu.Lock()
+	br, ok := m.bridges[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrBridgeNotFound
+	}
+	delete(m.bridges, id)
+	roomA := m.rooms[br.RoomAID]
+	roomB := m.rooms[br.RoomBID]
+	appID := ""
+	if roomA != nil {
+		appID = roomA.AppID
+	}
+	m.mu.Unlock()
+
+	m.teardownBridge(br, roomA, roomB)
+	m.bus.Publish(events.RoomUnbridged, &events.RoomUnbridgedData{
+		BridgeScope: events.BridgeScope{BridgeID: id, RoomAID: br.RoomAID, RoomBID: br.RoomBID, AppID: appID},
 	})
 	return nil
 }

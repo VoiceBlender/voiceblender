@@ -60,6 +60,8 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 |---------|-------|-------------|
 | `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
 | `internal/mixer` | 11 | Audio mixing, configurable sample rate (8/16/48 kHz), resampling, playback sources, tap recording |
+| `internal/bridge` | 9 | Duplex conduit: pair wiring, blocking Read, EOF/idempotent Close, drop-oldest backpressure, leftover handling, buffer-copy |
+| `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
 | `internal/codec` | 9 | G.722 encode/decode, silence/tone round-trips, up/downsample |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
@@ -117,6 +119,11 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestDisconnect_UnansweredDuration` | Unanswered call has `duration_answered=0` |
 | `TestOutboundInbound_CallerCancel` | Caller cancels before answer |
 | `TestOutboundInbound_RoomBridge` | Create room, add/remove leg, verify events |
+| `TestRoomBridge_AudioCrossesBidirectional` | Bridge two rooms; audio injected into either room reaches the other; `room.bridged` event |
+| `TestRoomBridge_DirectionOneWayAndPatch` | `direction:"send"` blocks the reverse path; live `PATCH` to `receive` re-enables it; `room.bridge_updated` event |
+| `TestRoomBridge_None` | Parked (`none`) bridge passes no audio but is still listed |
+| `TestRoomBridge_Validation` | Self-bridge/bad-direction → 400, missing room → 404, sample-rate mismatch → 400, duplicate pair → 409 |
+| `TestRoomBridge_KeepaliveAndRoomDeleteTeardown` | Bridge keeps a leg-less room's mixer alive; deleting a bridged room tears the bridge down with `room.unbridged` (`reason: room_deleted`) |
 | `TestOutboundInbound_RingTimeout` | Ring timeout expires, call fails |
 | `TestRecording_StandaloneSIPLeg` | Stereo recording of standalone SIP leg (left=in, right=out) |
 | `TestRecording_InRoomLeg` | Stereo recording of leg in a room (left=participant, right=mix) |
