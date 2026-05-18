@@ -11,6 +11,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WebRTC** -- browser-based voice via SDP offer/answer with trickle ICE
 - **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus 
 - **WebSocket legs** -- inbound (HTTP upgrade) and outbound (dial) PCM-over-WebSocket legs with binary or `json_base64` framing, configurable sample rate (8/16/24/48 kHz), bidirectional text, and caller-supplied X-/P- headers — designed to also back a future generic Agent API
+- **MoQ legs (experimental, PoC)** -- inbound Media-over-QUIC legs over WebTransport/HTTP/3 with Opus framed one frame per MoQ Object (LOC-style). Tracks `mengelbart/moqtransport` (IETF draft-11); browser interop with draft-16 clients (moqtail, moq.dev) is not expected to work out of the box. Disabled by default; enable with `MOQ_ENABLED=true` + `MOQ_TLS_CERT_FILE` / `MOQ_TLS_KEY_FILE`
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **Room bridging** -- join two rooms' mixers (same sample rate) with live-configurable direction (bidirectional, one-way each way, or parked); echo-free via mixed-minus-self
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
@@ -93,6 +94,11 @@ All configuration is via environment variables:
 | `SIP_USE_SOURCE_SOCKET` | `false` | When `true`, route SIP responses **and** in-dialog requests (BYE, re-INVITE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's `Contact` URI / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in `Contact` from behind NAT, or Via sent-by hosts that don't resolve). Equivalent to sipgo's `DialogUA.RewriteContact` plus per-response `SetDestination(req.Source())`. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
 | `VSI_EVENT_BUFFER_SIZE` | `256` | Per-client buffer (in events) on the `/v1/vsi` WebSocket. When the client consumes events slower than they're produced, the buffer fills and new events are dropped (with a warn log on the leading edge of each drop burst and at every 10× threshold; the next delivered event also includes an `events_dropped` notification to the client). Clamped to `[16, 1_000_000]`. **Tuning:** larger values absorb longer back-pressure spikes at the cost of higher peak memory per client (roughly the average JSON event size × buffer size, e.g. ~1 KB × 256 ≈ 256 KB per connection at the default) and longer end-to-end latency for buffered events when the client recovers. Increase only if you observe drops on legitimate slow-consumer scenarios you can't fix at the client. |
+| `MOQ_ENABLED` | `false` | Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at `CONNECT /v1/legs/moq` over WebTransport/HTTP/3. PoC quality: tracks IETF draft-11 via `mengelbart/moqtransport`, single MoQ session per leg, Opus framed one frame per MoQ Object (LOC-style). When enabled, both `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE` must be set. |
+| `MOQ_LISTEN_ADDR` | `:8443` | UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of `HTTP_ADDR` — TCP/`:8080` and UDP/`:8443` can run side-by-side. |
+| `MOQ_TLS_CERT_FILE` | _(none)_ | Path to the TLS certificate used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
+| `MOQ_TLS_KEY_FILE` | _(none)_ | Path to the TLS private key used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
+| `MOQ_OPUS_BITRATE` | `24000` | Target bitrate (bps) for the Opus encoder feeding the MoQ leg's `mix` track. Must be in `6000..510000`. |
 
 ## Links
 

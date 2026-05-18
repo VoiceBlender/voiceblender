@@ -12,6 +12,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"WEBHOOK_SECRET", "RTP_PORT_MIN", "RTP_PORT_MAX",
 		"TTS_CACHE_ENABLED", "TTS_CACHE_DIR", "TTS_CACHE_INCLUDE_API_KEY",
 		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEFAULT_SAMPLE_RATE",
+		"MOQ_ENABLED", "MOQ_LISTEN_ADDR", "MOQ_TLS_CERT_FILE", "MOQ_TLS_KEY_FILE",
+		"MOQ_OPUS_BITRATE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -53,6 +55,21 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.DefaultSampleRate != 16000 {
 		t.Errorf("DefaultSampleRate = %d, want 16000", cfg.DefaultSampleRate)
+	}
+	if cfg.MoQEnabled {
+		t.Error("MoQEnabled should default to false")
+	}
+	if cfg.MoQListenAddr != ":8443" {
+		t.Errorf("MoQListenAddr = %q, want :8443", cfg.MoQListenAddr)
+	}
+	if cfg.MoQTLSCertFile != "" {
+		t.Errorf("MoQTLSCertFile = %q, want empty", cfg.MoQTLSCertFile)
+	}
+	if cfg.MoQTLSKeyFile != "" {
+		t.Errorf("MoQTLSKeyFile = %q, want empty", cfg.MoQTLSKeyFile)
+	}
+	if cfg.MoQOpusBitrate != 24000 {
+		t.Errorf("MoQOpusBitrate = %d, want 24000", cfg.MoQOpusBitrate)
 	}
 }
 
@@ -115,6 +132,32 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.DefaultSampleRate != 48000 {
 		t.Errorf("DefaultSampleRate = %d, want 48000", cfg.DefaultSampleRate)
+	}
+}
+
+func TestLoad_MoQOverrides(t *testing.T) {
+	t.Setenv("MOQ_ENABLED", "true")
+	t.Setenv("MOQ_LISTEN_ADDR", ":9443")
+	t.Setenv("MOQ_TLS_CERT_FILE", "/etc/voiceblender/cert.pem")
+	t.Setenv("MOQ_TLS_KEY_FILE", "/etc/voiceblender/key.pem")
+	t.Setenv("MOQ_OPUS_BITRATE", "32000")
+
+	cfg := Load()
+
+	if !cfg.MoQEnabled {
+		t.Error("MoQEnabled should be true")
+	}
+	if cfg.MoQListenAddr != ":9443" {
+		t.Errorf("MoQListenAddr = %q, want :9443", cfg.MoQListenAddr)
+	}
+	if cfg.MoQTLSCertFile != "/etc/voiceblender/cert.pem" {
+		t.Errorf("MoQTLSCertFile = %q, want /etc/voiceblender/cert.pem", cfg.MoQTLSCertFile)
+	}
+	if cfg.MoQTLSKeyFile != "/etc/voiceblender/key.pem" {
+		t.Errorf("MoQTLSKeyFile = %q, want /etc/voiceblender/key.pem", cfg.MoQTLSKeyFile)
+	}
+	if cfg.MoQOpusBitrate != 32000 {
+		t.Errorf("MoQOpusBitrate = %d, want 32000", cfg.MoQOpusBitrate)
 	}
 }
 

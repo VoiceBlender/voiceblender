@@ -50,6 +50,12 @@ type Config struct {
 	VSIEventBufferSize     int
 	DefaultSampleRate      int
 	SpeechDetectionEnabled bool
+
+	MoQEnabled     bool
+	MoQListenAddr  string
+	MoQTLSCertFile string
+	MoQTLSKeyFile  string
+	MoQOpusBitrate int
 }
 
 func Load() Config {
@@ -99,6 +105,12 @@ func Load() Config {
 		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
 		DefaultSampleRate:      defaultRate,
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
+
+		MoQEnabled:     os.Getenv("MOQ_ENABLED") == "true",
+		MoQListenAddr:  envOr("MOQ_LISTEN_ADDR", ":8443"),
+		MoQTLSCertFile: os.Getenv("MOQ_TLS_CERT_FILE"),
+		MoQTLSKeyFile:  os.Getenv("MOQ_TLS_KEY_FILE"),
+		MoQOpusBitrate: envInt("MOQ_OPUS_BITRATE", 24000),
 	}
 }
 

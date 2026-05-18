@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>VoiceBlender MoQ demo (draft-11)</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+    .sub { color: #666; margin-bottom: 1.5rem; }
+    label { display: block; margin: 0.5rem 0 0.25rem; font-weight: 600; }
+    input { font: inherit; padding: 0.4rem 0.5rem; width: 100%; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+    .row { display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center; }
+    button { font: inherit; padding: 0.5rem 1rem; border: 0; border-radius: 4px; cursor: pointer; background: #1a73e8; color: #fff; }
+    button[disabled] { background: #aaa; cursor: not-allowed; }
+    button.stop { background: #b00020; }
+    .status { margin-left: auto; font-weight: 600; color: #888; }
+    .status.ok { color: #007a3d; }
+    .status.err { color: #b00020; }
+    pre.log { background: #f4f4f4; padding: 0.5rem; border-radius: 4px; height: 280px; overflow: auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; margin-top: 1rem; }
+    .legend { color: #666; font-size: 12px; margin-top: 0.25rem; }
+  </style>
+</head>
+<body>
+  <h1>VoiceBlender MoQ leg — browser demo</h1>
+  <p class="sub">Browser ↔ VoiceBlender over WebTransport + MoQ draft-11. See <code>README.md</code> for setup.</p>
+
+  <label for="endpoint">MoQ endpoint URL</label>
+  <input id="endpoint" type="text" value="https://localhost:8443/v1/legs/moq">
+  <div class="legend">Must be the <code>MOQ_LISTEN_ADDR</code> of a VoiceBlender with <code>MOQ_ENABLED=true</code>.</div>
+
+  <label for="room">Room ID</label>
+  <input id="room" type="text" value="moq-demo">
+  <div class="legend">Auto-created if it does not exist.</div>
+
+  <label for="certhash">Server cert SHA-256 (hex)</label>
+  <input id="certhash" type="text" value="840de31c499578f6ce54974d678df1742d046fc415eb9472f2a1139011c68470">
+  <div class="legend">DER fingerprint of the TLS cert the server presents. Leave blank if your cert is in the system trust store. Run <code>openssl x509 -in certs/moq-dev.crt -outform DER | openssl dgst -sha256</code> to recompute after regenerating.</div>
+
+  <div class="row">
+    <button id="connect">Connect</button>
+    <button id="disconnect" class="stop" disabled>Disconnect</button>
+    <span id="status" class="status">idle</span>
+  </div>
+
+  <div id="stats" class="legend" style="margin-top:0.75rem; font-family:ui-monospace,Menlo,Consolas,monospace;">rx: 0 obj &middot; 0 B/s &nbsp; | &nbsp; tx: 0 obj &middot; 0 B/s</div>
+
+  <pre id="log" class="log"></pre>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
