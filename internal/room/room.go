@@ -171,11 +171,15 @@ func (r *Room) syncMixerLocked() {
 }
 
 // attachBridge wires a synthetic bridge participant into this room's mixer
-// and keeps the mixer alive while the bridge exists.
+// and keeps the mixer alive while the bridge exists. Bridge audio is
+// room-wide and bypasses the per-listener routing matrix so any leg in
+// this room (even one with a whitelist that lists only specific roles)
+// still hears the bridged room.
 func (r *Room) attachBridge(participantID string, ep *bridge.Endpoint) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mix.AddParticipant(participantID, ep, ep)
+	r.mix.SetParticipantBypassRouting(participantID, true)
 	r.bridgeRefs++
 	r.syncMixerLocked()
 }

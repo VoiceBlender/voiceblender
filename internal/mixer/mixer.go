@@ -74,6 +74,13 @@ type Participant struct {
 	// Guarded by Mixer.mu; read inside the mixTick snapshot.
 	Hears map[string]struct{}
 
+	// BypassRouting marks this participant as a room-wide audio source that
+	// every listener hears regardless of their Hears whitelist. Used for
+	// playback sources and inter-room bridge endpoints — sources that are
+	// not legs and therefore never appear in the room's role-derived
+	// allow-sets. Listener-side filters (Deaf) still apply.
+	BypassRouting bool
+
 	// inject receives PCM frames that are mixed into this participant's
 	// output only (not heard by others). Used for per-leg playback while
 	// the leg is in a room — the playback audio is added to the
@@ -231,6 +238,18 @@ func (m *Mixer) ApplyHearsBatch(updates map[string]map[string]struct{}) {
 	}
 }
 
+// SetParticipantBypassRouting marks (or unmarks) a participant as a
+// room-wide source that bypasses every listener's routing whitelist. Use
+// for inter-room bridge endpoints and other non-leg sources added through
+// AddParticipant. (AddPlaybackSource sets this automatically.)
+func (m *Mixer) SetParticipantBypassRouting(id string, bypass bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p, ok := m.participants[id]; ok {
+		p.BypassRouting = bypass
+	}
+}
+
 // ParticipantHears returns a snapshot of a participant's source whitelist.
 // (nil, true) means full mesh; (nil, false) means the participant is not in
 // this mixer. Intended for introspection and tests.
@@ -347,13 +366,15 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) {
 
 // AddPlaybackSource adds a read-only source into the mix (e.g. audio file).
 // It is mixed into everyone's output but receives no mixed-minus-self back.
+// Playback is room-wide audio and bypasses the routing matrix.
 func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 	p := &Participant{
-		ID:        id,
-		Reader:    reader,
-		WriteOnly: true,
-		incoming:  make(chan []byte, 50),
-		done:      make(chan struct{}),
+		ID:            id,
+		Reader:        reader,
+		WriteOnly:     true,
+		BypassRouting: true,
+		incoming:      make(chan []byte, 50),
+		done:          make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -582,7 +603,9 @@ func (m *Mixer) mixTick() {
 	// Per-listener filtered mix. Self is excluded by skipping k == i, so no
 	// separate "minus-self" subtraction is needed. The routing matrix is
 	// applied by checking each listener's Hears whitelist; nil whitelist
-	// means full mesh (legacy behavior).
+	// means full mesh (legacy behavior). Sources with BypassRouting (room
+	// playback, inter-room bridges) are always heard regardless of the
+	// whitelist.
 	for i, p := range parts {
 		if p.WriteOnly || p.Writer == nil || p.Deaf.Load() {
 			continue
@@ -593,7 +616,7 @@ func (m *Mixer) mixTick() {
 			if k == i {
 				continue
 			}
-			if hears != nil {
+			if hears != nil && !src.BypassRouting {
 				if _, ok := hears[src.ID]; !ok {
 					continue
 				}

@@ -180,6 +180,88 @@ func TestMixer_Hears_EmptySetIsIsolated(t *testing.T) {
 	}
 }
 
+// TestMixer_Hears_PlaybackBypassesRouting verifies that a room-wide
+// playback source is heard by a listener even when the listener has a
+// restrictive Hears whitelist that does not list the playback ID.
+// Playback IDs are never inserted into a leg's routing-derived allow-set
+// (the room only resolves leg roles), so without the BypassRouting flag
+// roled legs would silently lose room playback.
+func TestMixer_Hears_PlaybackBypassesRouting(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := New(log, DefaultSampleRate)
+	m.Start()
+	t.Cleanup(m.Stop)
+
+	const (
+		toneAgent    int16 = 1000
+		tonePlayback int16 = 3000
+	)
+	capCustomer := &captureWriter{}
+	capAgent := &captureWriter{}
+
+	m.AddParticipant("customer", newConstantToneReader(0, m.samplesPerFrame), capCustomer)
+	m.AddParticipant("agent", newConstantToneReader(toneAgent, m.samplesPerFrame), capAgent)
+	m.AddPlaybackSource("hold-music", newConstantToneReader(tonePlayback, m.samplesPerFrame))
+
+	// Customer has a whitelist that only allows the agent. Playback source
+	// is NOT in the whitelist — but it has BypassRouting, so the customer
+	// must still hear it.
+	m.SetParticipantHears("customer", map[string]struct{}{"agent": {}})
+	m.SetParticipantHears("agent", map[string]struct{}{"customer": {}})
+
+	time.Sleep(120 * time.Millisecond)
+	capCustomer.mu.Lock()
+	capCustomer.data = nil
+	capCustomer.mu.Unlock()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Customer's mix should contain agent + playback = 1000 + 3000 = 4000.
+	if !containsValue(capCustomer.Bytes(), toneAgent+tonePlayback, 5) {
+		t.Errorf("customer should hear agent+playback=%d (playback must bypass routing); avg=%.1f",
+			toneAgent+tonePlayback, frameAvg(capCustomer.Bytes()))
+	}
+}
+
+// TestMixer_Hears_BypassRoutingFlag verifies that the same bypass applies
+// to a non-playback participant marked via SetParticipantBypassRouting —
+// the mechanism used by inter-room bridges.
+func TestMixer_Hears_BypassRoutingFlag(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := New(log, DefaultSampleRate)
+	m.Start()
+	t.Cleanup(m.Stop)
+
+	const (
+		toneAgent  int16 = 1000
+		toneBridge int16 = 2000
+	)
+	capCustomer := &captureWriter{}
+	capAgent := &captureWriter{}
+	capBridge := &captureWriter{}
+
+	m.AddParticipant("customer", newConstantToneReader(0, m.samplesPerFrame), capCustomer)
+	m.AddParticipant("agent", newConstantToneReader(toneAgent, m.samplesPerFrame), capAgent)
+	m.AddParticipant("bridge", newConstantToneReader(toneBridge, m.samplesPerFrame), capBridge)
+	m.SetParticipantBypassRouting("bridge", true)
+
+	// Customer's whitelist only allows the agent. The bridge participant is
+	// NOT in the whitelist; without BypassRouting it would be filtered out.
+	m.SetParticipantHears("customer", map[string]struct{}{"agent": {}})
+
+	time.Sleep(120 * time.Millisecond)
+	capCustomer.mu.Lock()
+	capCustomer.data = nil
+	capCustomer.mu.Unlock()
+
+	time.Sleep(300 * time.Millisecond)
+
+	if !containsValue(capCustomer.Bytes(), toneAgent+toneBridge, 5) {
+		t.Errorf("customer should hear agent+bridge=%d (bridge marked BypassRouting); avg=%.1f",
+			toneAgent+toneBridge, frameAvg(capCustomer.Bytes()))
+	}
+}
+
 func TestMixer_Hears_MuteAndDeafStillRespected(t *testing.T) {
 	m, capA, capB, _, _, _, _ := setupThreeParticipants(t)
 
