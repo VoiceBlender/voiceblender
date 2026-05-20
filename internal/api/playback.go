@@ -69,13 +69,6 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 	player := playback.NewPlayer(s.Log)
 	player.SetVolume(req.Volume)
 
-	writer := &legPlaybackWriter{
-		legID:        legID,
-		leg:          l,
-		directWriter: directWriter,
-		roomMgr:      s.RoomMgr,
-	}
-
 	legPlayers.Lock()
 	if legPlayers.m[legID] == nil {
 		legPlayers.m[legID] = make(map[string]*playback.Player)
@@ -88,6 +81,14 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 		if rm, ok := s.RoomMgr.Get(roomID); ok {
 			playRate = uint32(rm.Mixer().SampleRate())
 		}
+	}
+
+	writer := &legPlaybackWriter{
+		legID:        legID,
+		leg:          l,
+		directWriter: directWriter,
+		roomMgr:      s.RoomMgr,
+		srcRate:      playRate,
 	}
 
 	appID := l.AppID()
@@ -376,18 +377,23 @@ func (s *Server) volumePlayRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 // legPlaybackWriter routes playback PCM frames dynamically based on
-// whether the leg is currently in a room. Frames arrive at 16kHz (mixer
-// rate).
+// whether the leg is currently in a room. The producer writes frames at
+// srcRate; the writer resamples to the destination's rate on every
+// Write, which is what lets a leg join/leave a differently-rated room
+// mid-stream without pitch shift.
 //
-//   - In a room: writes to the mixer's per-participant inject channel so
-//     the playback audio is mixed with room audio.
-//   - Not in a room: resamples to the leg's native rate and writes
-//     directly to the leg's AudioWriter.
+//   - In a room: writes to the mixer's per-participant inject channel,
+//     resampling srcRate → room mixer rate. The mixer's inject path
+//     mixes raw samples without rate conversion, so the bytes must
+//     already be at the room's rate.
+//   - Not in a room: writes directly to the leg's AudioWriter,
+//     resampling srcRate → leg native rate.
 type legPlaybackWriter struct {
 	legID        string
 	leg          leg.Leg
 	directWriter io.Writer // leg.AudioWriter(), captured once
 	roomMgr      *room.Manager
+	srcRate      uint32 // rate of bytes arriving at Write()
 }
 
 func (w *legPlaybackWriter) Write(p []byte) (int, error) {
@@ -396,24 +402,45 @@ func (w *legPlaybackWriter) Write(p []byte) (int, error) {
 		if rm, ok := w.roomMgr.Get(roomID); ok {
 			injW := rm.Mixer().InjectWriter(w.legID)
 			if injW != nil {
-				return injW.Write(p)
+				dstRate := uint32(rm.Mixer().SampleRate())
+				if w.srcRate == dstRate {
+					return injW.Write(p)
+				}
+				if _, err := injW.Write(resamplePCM16(p, w.srcRate, dstRate)); err != nil {
+					return 0, err
+				}
+				return len(p), nil
 			}
 		}
 	}
-	// Not in a room — resample from 16kHz to leg's native rate and write.
 	legRate := uint32(w.leg.SampleRate())
-	mixRate := uint32(mixer.DefaultSampleRate)
-	if legRate == mixRate {
+	if w.srcRate == legRate {
 		return w.directWriter.Write(p)
 	}
-	// Resample: decode 16-bit LE samples, linear interpolation, re-encode.
+	if _, err := w.directWriter.Write(resamplePCM16(p, w.srcRate, legRate)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// resamplePCM16 resamples a mono 16-bit LE PCM buffer using linear
+// interpolation. Stateless: the input must be a whole number of samples
+// and is assumed to be a complete frame boundary (the player writes
+// one ptime frame per call), so no carry-over state is needed.
+func resamplePCM16(p []byte, srcRate, dstRate uint32) []byte {
+	if srcRate == dstRate || len(p) < 2 {
+		return p
+	}
 	srcSamples := len(p) / 2
 	src := make([]int16, srcSamples)
 	for i := 0; i < srcSamples; i++ {
 		src[i] = int16(binary.LittleEndian.Uint16(p[i*2:]))
 	}
-	ratio := float64(mixRate) / float64(legRate)
+	ratio := float64(srcRate) / float64(dstRate)
 	outLen := int(float64(srcSamples) / ratio)
+	if outLen < 1 {
+		outLen = 1
+	}
 	out := make([]byte, outLen*2)
 	for i := 0; i < outLen; i++ {
 		srcPos := float64(i) * ratio
@@ -429,5 +456,5 @@ func (w *legPlaybackWriter) Write(p []byte) (int, error) {
 		}
 		binary.LittleEndian.PutUint16(out[i*2:], uint16(s))
 	}
-	return w.directWriter.Write(out)
+	return out
 }

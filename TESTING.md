@@ -185,6 +185,7 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestWSLegAudioFlowsBidirectional` | Ingress + egress audio: two WS legs in the same room; client A streams a 1 kHz sine, client B reads PCM frames and asserts the sine survives the WS→mixer→WS round-trip (RMS above the silence floor) |
 | `TestRoomWSCompatibleWithLegWS` | Confirms `/v1/rooms/{id}/ws` and `/v1/legs/websocket` speak the same wire protocol after both endpoints share `wsmedia.Transport`: a leg WS writer and a room WS reader exchange JSON-base64 audio (`{"audio":"<b64>"}` shape) end-to-end, including the welcome `connected` frame and the `{"type":"stop"}` close verb |
 | `TestWSLegPing` | Inbound WS leg replies to a `{"type":"ping","event_id":N}` text frame with a matching pong |
+| `TestPlaybackCrossSampleRate` | Sweeps leg/room sample-rate combinations (8/16/48 kHz × 8/16/48 kHz) with a tone playback started before the leg joins a room. The captured WS egress must hold the original 425 Hz tone across the inject path even when room rate ≠ producer rate — regression guard for the high-pitched-TTS bug where `legPlaybackWriter` skipped resampling on the room inject path |
 
 ---
 

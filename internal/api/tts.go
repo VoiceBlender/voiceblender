@@ -48,16 +48,6 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 
 	id := legID
 
-	// Route through the mixer inject channel when the leg is in a room,
-	// identical to playLeg. This prevents contention on the leg's outFrames
-	// channel which the mixer writeLoop already owns.
-	writer := &legPlaybackWriter{
-		legID:        id,
-		leg:          l,
-		directWriter: directWriter,
-		roomMgr:      s.RoomMgr,
-	}
-
 	ttsID := "tts-" + uuid.New().String()[:8]
 	appID := l.AppID()
 	player := playback.NewPlayer(s.Log)
@@ -106,6 +96,16 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 			if rm, ok := s.RoomMgr.Get(roomID); ok {
 				ttsRate = uint32(rm.Mixer().SampleRate())
 			}
+		}
+		// Built here, not at command time, so srcRate reflects whichever
+		// rate the player will actually produce — the rate is decided
+		// after Synthesize, and the leg may have moved rooms in between.
+		writer := &legPlaybackWriter{
+			legID:        id,
+			leg:          l,
+			directWriter: directWriter,
+			roomMgr:      s.RoomMgr,
+			srcRate:      ttsRate,
 		}
 		playErr := player.PlayReaderAtRate(l.Context(), writer, result.Audio, result.MimeType, ttsRate)
 
