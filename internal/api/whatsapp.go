@@ -308,6 +308,7 @@ func legViewFrom(l leg.Leg) LegView {
 		Deaf:       l.IsDeaf(),
 		AcceptDTMF: l.AcceptDTMF(),
 		Held:       l.IsHeld(),
+		Role:       l.Role(),
 		SIPHeaders: l.SIPHeaders(),
 	}
 }

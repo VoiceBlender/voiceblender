@@ -48,6 +48,7 @@ type SIPLeg struct {
 	cancel        context.CancelFunc
 	roomID        string
 	appID         string
+	role          string
 	muted         atomic.Bool
 	deaf          atomic.Bool
 	acceptDTMF    atomic.Bool
@@ -425,6 +426,18 @@ func (l *SIPLeg) SetAppID(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.appID = id
+}
+
+func (l *SIPLeg) Role() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.role
+}
+
+func (l *SIPLeg) SetRole(r string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.role = r
 }
 
 func (l *SIPLeg) IsMuted() bool             { return l.muted.Load() }

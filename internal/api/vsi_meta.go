@@ -125,6 +125,12 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "bridge_update", Summary: "Change a bridge's direction", PayloadType: bridgeUpdatePayload{}, ResultType: BridgeView{}, ErrorCodes: []int{400, 404}},
 		{Name: "bridge_delete", Summary: "Tear down a bridge", PayloadType: bridgeRefPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
+		// ── Routing matrix ──────────────────────────────────────────────
+		{Name: "room_routing_get", Summary: "Get a room's audio routing matrix", PayloadType: idPayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{404}},
+		{Name: "room_routing_set", Summary: "Replace a room's audio routing matrix", PayloadType: roomRoutingSetPayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{400, 404}},
+		{Name: "room_routing_update", Summary: "Update selected rows of a room's audio routing matrix", PayloadType: roomRoutingUpdatePayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{400, 404}},
+		{Name: "set_leg_role", Summary: "Change a leg's routing role (recomputes the room matrix if the leg is in a room)", PayloadType: setLegRolePayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 404}},
+
 		// ── Leg control ─────────────────────────────────────────────────
 		// New commands use resource-first naming (leg_*, room_*) by design.
 		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
@@ -232,6 +238,8 @@ func EventsMetadata() []EventMeta {
 		{events.RoomBridged, "Two rooms' mixers were joined", reflect.TypeOf(events.RoomBridgedData{})},
 		{events.RoomBridgeUpdated, "A bridge's audio flow direction changed", reflect.TypeOf(events.RoomBridgeUpdatedData{})},
 		{events.RoomUnbridged, "A bridge was torn down", reflect.TypeOf(events.RoomUnbridgedData{})},
+		{events.RoomRoutingChanged, "The room's audio routing matrix changed", reflect.TypeOf(events.RoomRoutingChangedData{})},
+		{events.LegRoleChanged, "A leg's routing role changed", reflect.TypeOf(events.LegRoleChangedData{})},
 		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},
 		{events.AgentConnected, "Agent connected to provider", reflect.TypeOf(events.AgentConnectedData{})},
 		{events.AgentDisconnected, "Agent session ended", reflect.TypeOf(events.AgentDisconnectedData{})},

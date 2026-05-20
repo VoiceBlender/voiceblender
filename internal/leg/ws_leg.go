@@ -30,6 +30,7 @@ type WebSocketLeg struct {
 
 	roomID     string
 	appID      string
+	role       string
 	muted      atomic.Bool
 	deaf       atomic.Bool
 	acceptDTMF atomic.Bool
@@ -160,6 +161,18 @@ func (l *WebSocketLeg) SetAppID(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.appID = id
+}
+
+func (l *WebSocketLeg) Role() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.role
+}
+
+func (l *WebSocketLeg) SetRole(r string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.role = r
 }
 
 func (l *WebSocketLeg) IsMuted() bool        { return l.muted.Load() }

@@ -133,6 +133,13 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		l.SetAcceptDTMF(*req.AcceptDTMF)
 	}
 
+	addLeg := func(roomID string) error {
+		if req.Role != nil {
+			return s.RoomMgr.AddLegWithRole(roomID, req.LegID, *req.Role)
+		}
+		return s.RoomMgr.AddLeg(roomID, req.LegID)
+	}
+
 	// If the leg is already in a room, move it instead of adding.
 	if fromRoomID, inRoom := s.RoomMgr.FindLegRoom(req.LegID); inRoom {
 		if fromRoomID == roomID {
@@ -141,6 +148,11 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		s.onLegLeavingRoomRecording(fromRoomID, req.LegID)
 		if err := s.RoomMgr.MoveLeg(fromRoomID, roomID, req.LegID); err != nil {
 			return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+		}
+		if req.Role != nil {
+			if err := s.RoomMgr.SetLegRole(req.LegID, *req.Role); err != nil {
+				return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+			}
 		}
 		s.onLegJoinedRoom(roomID, req.LegID)
 		s.stopRoomAgentIfEmpty(fromRoomID)
@@ -164,7 +176,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 				s.publishCommandFailed(sipLeg, "add_to_room", fmt.Errorf("auto-answer failed: %w", err))
 				return
 			}
-			if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
+			if err := addLeg(roomID); err != nil {
 				s.publishCommandFailed(sipLeg, "add_to_room", err)
 				return
 			}
@@ -173,7 +185,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		return map[string]string{"status": "adding"}, nil
 	}
 
-	if err := s.RoomMgr.AddLeg(roomID, req.LegID); err != nil {
+	if err := addLeg(roomID); err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 	s.onLegJoinedRoom(roomID, req.LegID)

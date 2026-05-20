@@ -108,6 +108,17 @@ func (m *Manager) Delete(id string) error {
 }
 
 func (m *Manager) AddLeg(roomID, legID string) error {
+	return m.addLeg(roomID, legID, nil)
+}
+
+// AddLegWithRole behaves like AddLeg but additionally sets the leg's
+// routing role atomically so the room's routing matrix takes effect before
+// the first mix tick that includes this leg.
+func (m *Manager) AddLegWithRole(roomID, legID, role string) error {
+	return m.addLeg(roomID, legID, &role)
+}
+
+func (m *Manager) addLeg(roomID, legID string, role *string) error {
 	r, ok := m.Get(roomID)
 	if !ok {
 		return fmt.Errorf("room %s not found", roomID)
@@ -122,9 +133,109 @@ func (m *Manager) AddLeg(roomID, legID string) error {
 		return fmt.Errorf("leg %s is not connected (state: %s)", legID, l.State())
 	}
 
-	r.AddLeg(l)
+	if role != nil {
+		r.AddLegWithRole(l, *role)
+	} else {
+		r.AddLeg(l)
+	}
 	m.bus.Publish(events.LegJoinedRoom, &events.LegJoinedRoomData{
 		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: l.AppID()},
+	})
+	if role != nil {
+		m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+			RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+			Matrix:    r.RoutingMatrix(),
+			Reason:    "leg_joined",
+		})
+	}
+	return nil
+}
+
+// SetRoomRouting replaces the room's routing matrix and emits the
+// room.routing_changed event.
+func (m *Manager) SetRoomRouting(roomID string, matrix map[string][]string) error {
+	r, ok := m.Get(roomID)
+	if !ok {
+		return fmt.Errorf("room %s not found", roomID)
+	}
+	r.SetRoutingMatrix(matrix)
+	m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+		Matrix:    r.RoutingMatrix(),
+		Reason:    "set",
+	})
+	return nil
+}
+
+// UpdateRoomRoutingRow replaces a single listener-role row. sources == nil
+// clears the row (full mesh for that role).
+func (m *Manager) UpdateRoomRoutingRow(roomID, listenerRole string, sources []string) error {
+	r, ok := m.Get(roomID)
+	if !ok {
+		return fmt.Errorf("room %s not found", roomID)
+	}
+	r.UpdateRoutingRow(listenerRole, sources)
+	m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+		Matrix:    r.RoutingMatrix(),
+		Reason:    "update",
+	})
+	return nil
+}
+
+// GetRoomRouting returns a snapshot of the room's routing matrix.
+func (m *Manager) GetRoomRouting(roomID string) (map[string][]string, error) {
+	r, ok := m.Get(roomID)
+	if !ok {
+		return nil, fmt.Errorf("room %s not found", roomID)
+	}
+	return r.RoutingMatrix(), nil
+}
+
+// SetLegRole changes a leg's routing role. If the leg is in a room, the
+// room's routing-derived allow-sets are recomputed and a routing_changed
+// event is emitted alongside leg.role_changed.
+func (m *Manager) SetLegRole(legID, role string) error {
+	l, ok := m.legMgr.Get(legID)
+	if !ok {
+		return fmt.Errorf("leg %s not found", legID)
+	}
+	oldRole := l.Role()
+	if oldRole == role {
+		return nil
+	}
+	roomID := l.RoomID()
+	if roomID == "" {
+		l.SetRole(role)
+		m.bus.Publish(events.LegRoleChanged, &events.LegRoleChangedData{
+			LegRoomScope: events.LegRoomScope{LegID: legID, AppID: l.AppID()},
+			OldRole:      oldRole,
+			NewRole:      role,
+		})
+		return nil
+	}
+	r, ok := m.Get(roomID)
+	if !ok {
+		l.SetRole(role)
+		m.bus.Publish(events.LegRoleChanged, &events.LegRoleChangedData{
+			LegRoomScope: events.LegRoomScope{LegID: legID, AppID: l.AppID()},
+			OldRole:      oldRole,
+			NewRole:      role,
+		})
+		return nil
+	}
+	if _, found := r.SetLegRole(legID, role); !found {
+		return fmt.Errorf("leg %s not found in room %s", legID, roomID)
+	}
+	m.bus.Publish(events.LegRoleChanged, &events.LegRoleChangedData{
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: l.AppID()},
+		OldRole:      oldRole,
+		NewRole:      role,
+	})
+	m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+		Matrix:    r.RoutingMatrix(),
+		Reason:    "leg_role_changed",
 	})
 	return nil
 }

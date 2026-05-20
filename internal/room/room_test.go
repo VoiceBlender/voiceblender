@@ -18,9 +18,12 @@ type mockLeg struct {
 	legType        leg.LegType
 	state          leg.LegState
 	roomID         string
+	role           string
 	muted          bool
 	deaf           bool
 	acceptDTMF     bool
+	reader         io.Reader
+	writer         io.Writer
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 }
@@ -38,8 +41,8 @@ func (m *mockLeg) ID() string                                   { return m.id }
 func (m *mockLeg) Type() leg.LegType                            { return m.legType }
 func (m *mockLeg) State() leg.LegState                          { return m.state }
 func (m *mockLeg) SampleRate() int                              { return 16000 }
-func (m *mockLeg) AudioReader() io.Reader                       { return nil }
-func (m *mockLeg) AudioWriter() io.Writer                       { return nil }
+func (m *mockLeg) AudioReader() io.Reader                       { return m.reader }
+func (m *mockLeg) AudioWriter() io.Writer                       { return m.writer }
 func (m *mockLeg) OnDTMF(func(digit rune))                      {}
 func (m *mockLeg) SendDTMF(ctx context.Context, d string) error { return nil }
 func (m *mockLeg) Hangup(ctx context.Context) error             { m.state = leg.StateHungUp; return nil }
@@ -49,6 +52,8 @@ func (m *mockLeg) RoomID() string                               { return m.roomI
 func (m *mockLeg) SetRoomID(id string)                          { m.roomID = id }
 func (m *mockLeg) AppID() string                                { return "" }
 func (m *mockLeg) SetAppID(string)                              {}
+func (m *mockLeg) Role() string                                 { return m.role }
+func (m *mockLeg) SetRole(r string)                             { m.role = r }
 func (m *mockLeg) IsMuted() bool                                { return m.muted }
 func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }

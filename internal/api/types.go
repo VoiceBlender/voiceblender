@@ -162,6 +162,7 @@ type LegView struct {
 	Deaf       bool              `json:"deaf"`
 	AcceptDTMF bool              `json:"accept_dtmf"`
 	Held       bool              `json:"held"`
+	Role       string            `json:"role,omitempty"`
 	AppID      string            `json:"app_id,omitempty"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
@@ -176,6 +177,7 @@ var legViewFields = map[string]FieldEnrichment{
 	"deaf":        {Description: "Whether the leg is deaf (cannot hear others)"},
 	"accept_dtmf": {Description: "Whether the leg receives DTMF digits broadcast from other legs in the same room. Defaults to true."},
 	"held":        {Description: "Whether the call is on hold (SIP legs only)"},
+	"role":        {Description: "Routing role used by the room's audio routing matrix (e.g. \"customer\", \"agent\", \"supervisor\"). Empty string means unroled (full mesh)."},
 	"app_id":      {Description: "Application identifier for event stream filtering."},
 	"sip_headers": {Description: "Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
 	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time."},
@@ -215,10 +217,11 @@ var roomViewFields = map[string]FieldEnrichment{
 
 // AddLegRequest is the request body for POST /v1/rooms/{id}/legs.
 type AddLegRequest struct {
-	LegID      string `json:"leg_id"`
-	Mute       *bool  `json:"mute,omitempty"`
-	Deaf       *bool  `json:"deaf,omitempty"`
-	AcceptDTMF *bool  `json:"accept_dtmf,omitempty"`
+	LegID      string  `json:"leg_id"`
+	Mute       *bool   `json:"mute,omitempty"`
+	Deaf       *bool   `json:"deaf,omitempty"`
+	AcceptDTMF *bool   `json:"accept_dtmf,omitempty"`
+	Role       *string `json:"role,omitempty"`
 }
 
 var addLegRequestFields = map[string]FieldEnrichment{
@@ -226,6 +229,60 @@ var addLegRequestFields = map[string]FieldEnrichment{
 	"mute":        {Description: "If set, apply this mute state to the leg atomically before it joins the mixer (no race where un-muted audio enters the mix). Omit to leave current state untouched (useful when moving between rooms)."},
 	"deaf":        {Description: "If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched."},
 	"accept_dtmf": {Description: "If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true)."},
+	"role":        {Description: "If set, apply this routing role to the leg atomically before it joins the mixer. The room's routing matrix (see PUT /v1/rooms/{id}/routing) decides which other legs this leg hears and is heard by based on roles. Pass \"\" to clear the role (full mesh). Omit to leave the current role untouched."},
+}
+
+// SetLegRoleRequest is the request body for PATCH /v1/legs/{id}/role.
+// Empty string clears the role (full mesh for that leg).
+type SetLegRoleRequest struct {
+	Role string `json:"role"`
+}
+
+var setLegRoleRequestFields = map[string]FieldEnrichment{
+	"role": {Description: "New routing role for the leg. The room's routing matrix decides which other legs this leg hears and is heard by based on roles. Pass an empty string to clear the role (full mesh)."},
+}
+
+// RoomRoutingRequest is the request body for PUT /v1/rooms/{id}/routing.
+// Matrix maps a listener-role to the set of source roles that legs with
+// that role are allowed to hear. A listener role with no entry defaults
+// to full mesh (hears every other leg). An entry with an empty list is
+// an explicit "hear nothing" (isolated listener role).
+type RoomRoutingRequest struct {
+	Matrix map[string][]string `json:"matrix"`
+}
+
+var roomRoutingRequestFields = map[string]FieldEnrichment{
+	"matrix": {Description: "Listener-role → list of allowed source roles. Omitted listener roles default to full mesh. Empty list = hears nothing."},
+}
+
+// RoutingRowUpdate is one entry in RoomRoutingUpdateRequest.Updates. Sources
+// == nil clears the row (full mesh for that listener role).
+type RoutingRowUpdate struct {
+	ListenerRole string   `json:"listener_role"`
+	Sources      []string `json:"sources"`
+}
+
+var routingRowUpdateFields = map[string]FieldEnrichment{
+	"listener_role": {Description: "The role whose row is being replaced."},
+	"sources":       {Description: "New list of allowed source roles for this listener role. Pass null to clear the row (full mesh)."},
+}
+
+// RoomRoutingUpdateRequest is the request body for PATCH /v1/rooms/{id}/routing.
+type RoomRoutingUpdateRequest struct {
+	Updates []RoutingRowUpdate `json:"updates"`
+}
+
+var roomRoutingUpdateRequestFields = map[string]FieldEnrichment{
+	"updates": {Description: "Per-listener-role row replacements applied as a single atomic update."},
+}
+
+// RoomRoutingView is the response body for GET/PUT/PATCH /v1/rooms/{id}/routing.
+type RoomRoutingView struct {
+	Matrix map[string][]string `json:"matrix"`
+}
+
+var roomRoutingViewFields = map[string]FieldEnrichment{
+	"matrix": {Description: "Listener-role → list of allowed source roles. Roles absent from the matrix default to full mesh."},
 }
 
 // CreateRoomBridgeRequest is the request body for
@@ -489,5 +546,10 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("DeepgramAgentRequest", deepgramAgentRequestFields)
 	collect("AgentMessageRequest", agentMessageRequestFields)
 	collect("WebRTCOfferRequest", webRTCOfferRequestFields)
+	collect("SetLegRoleRequest", setLegRoleRequestFields)
+	collect("RoomRoutingRequest", roomRoutingRequestFields)
+	collect("RoomRoutingUpdateRequest", roomRoutingUpdateRequestFields)
+	collect("RoutingRowUpdate", routingRowUpdateFields)
+	collect("RoomRoutingView", roomRoutingViewFields)
 	return all
 }

@@ -138,6 +138,22 @@ channels:
                 $ref: '#/components/messages/bridge_delete'
             bridge_delete.result:
                 $ref: '#/components/messages/bridge_deleteResult'
+            room_routing_get:
+                $ref: '#/components/messages/room_routing_get'
+            room_routing_get.result:
+                $ref: '#/components/messages/room_routing_getResult'
+            room_routing_set:
+                $ref: '#/components/messages/room_routing_set'
+            room_routing_set.result:
+                $ref: '#/components/messages/room_routing_setResult'
+            room_routing_update:
+                $ref: '#/components/messages/room_routing_update'
+            room_routing_update.result:
+                $ref: '#/components/messages/room_routing_updateResult'
+            set_leg_role:
+                $ref: '#/components/messages/set_leg_role'
+            set_leg_role.result:
+                $ref: '#/components/messages/set_leg_roleResult'
             leg_ring:
                 $ref: '#/components/messages/leg_ring'
             leg_ring.result:
@@ -356,6 +372,10 @@ channels:
                 $ref: '#/components/messages/evt_room_bridge_updated'
             room.unbridged:
                 $ref: '#/components/messages/evt_room_unbridged'
+            room.routing_changed:
+                $ref: '#/components/messages/evt_room_routing_changed'
+            leg.role_changed:
+                $ref: '#/components/messages/evt_leg_role_changed'
             stt.text:
                 $ref: '#/components/messages/evt_stt_text'
             agent.connected:
@@ -788,6 +808,58 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/bridge_delete.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_routing_get:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Get a room's audio routing matrix
+        messages:
+            - $ref: '#/channels/vsi/messages/room_routing_get'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_routing_get.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_routing_set:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Replace a room's audio routing matrix
+        messages:
+            - $ref: '#/channels/vsi/messages/room_routing_set'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_routing_set.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_routing_update:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Update selected rows of a room's audio routing matrix
+        messages:
+            - $ref: '#/channels/vsi/messages/room_routing_update'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_routing_update.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_set_leg_role:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Change a leg's routing role (recomputes the room matrix if the leg is in a room)
+        messages:
+            - $ref: '#/channels/vsi/messages/set_leg_role'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/set_leg_role.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_ring:
         action: receive
@@ -1516,6 +1588,20 @@ operations:
         summary: A bridge was torn down
         messages:
             - $ref: '#/channels/vsi/messages/room.unbridged'
+    send_room_routing_changed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: The room's audio routing matrix changed
+        messages:
+            - $ref: '#/channels/vsi/messages/room.routing_changed'
+    send_leg_role_changed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A leg's routing role changed
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.role_changed'
     send_stt_text:
         action: send
         channel:
@@ -2545,6 +2631,126 @@ components:
                         type: string
                     data:
                         $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        room_routing_get:
+            name: room_routing_get
+            title: Get a room's audio routing matrix
+            summary: Get a room's audio routing matrix
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_get
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        room_routing_getResult:
+            name: room_routing_getResult
+            title: Get a room's audio routing matrix — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_get.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RoomRoutingView'
+                required:
+                    - type
+        room_routing_set:
+            name: room_routing_set
+            title: Replace a room's audio routing matrix
+            summary: Replace a room's audio routing matrix
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_set
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/roomRoutingSetPayload'
+                required:
+                    - type
+        room_routing_setResult:
+            name: room_routing_setResult
+            title: Replace a room's audio routing matrix — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_set.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RoomRoutingView'
+                required:
+                    - type
+        room_routing_update:
+            name: room_routing_update
+            title: Update selected rows of a room's audio routing matrix
+            summary: Update selected rows of a room's audio routing matrix
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_update
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/roomRoutingUpdatePayload'
+                required:
+                    - type
+        room_routing_updateResult:
+            name: room_routing_updateResult
+            title: Update selected rows of a room's audio routing matrix — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_routing_update.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RoomRoutingView'
+                required:
+                    - type
+        set_leg_role:
+            name: set_leg_role
+            title: Change a leg's routing role (recomputes the room matrix if the leg is in a room)
+            summary: Change a leg's routing role (recomputes the room matrix if the leg is in a room)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_role
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/setLegRolePayload'
+                required:
+                    - type
+        set_leg_roleResult:
+            name: set_leg_roleResult
+            title: Change a leg's routing role (recomputes the room matrix if the leg is in a room) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_role.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/LegView
                 required:
                     - type
         leg_ring:
@@ -3886,6 +4092,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.unbridged. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/room.unbridged/post/requestBody/content/application~1json/schema
+        evt_room_routing_changed:
+            name: evt_room_routing_changed
+            title: The room's audio routing matrix changed
+            summary: The room's audio routing matrix changed
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.routing_changed. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/room.routing_changed/post/requestBody/content/application~1json/schema
+        evt_leg_role_changed:
+            name: evt_leg_role_changed
+            title: A leg's routing role changed
+            summary: A leg's routing role changed
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.role_changed. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.role_changed/post/requestBody/content/application~1json/schema
         evt_stt_text:
             name: evt_stt_text
             title: Speech-to-text transcript
@@ -4165,6 +4385,29 @@ components:
             required:
                 - status
                 - file
+        RoomRoutingView:
+            type: object
+            properties:
+                matrix:
+                    type: object
+                    additionalProperties:
+                        type: array
+                        items:
+                            type: string
+            required:
+                - matrix
+        RoutingRowUpdate:
+            type: object
+            properties:
+                listener_role:
+                    type: string
+                sources:
+                    type: array
+                    items:
+                        type: string
+            required:
+                - listener_role
+                - sources
         STTStartLegResult:
             type: object
             properties:
@@ -4256,6 +4499,8 @@ components:
                     type: boolean
                 accept_dtmf:
                     type: boolean
+                role:
+                    type: string
             required:
                 - room_id
                 - leg_id
@@ -4528,6 +4773,32 @@ components:
             required:
                 - room_id
                 - leg_id
+        roomRoutingSetPayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                matrix:
+                    type: object
+                    additionalProperties:
+                        type: array
+                        items:
+                            type: string
+            required:
+                - room_id
+                - matrix
+        roomRoutingUpdatePayload:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                updates:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RoutingRowUpdate'
+            required:
+                - room_id
+                - updates
         rttPayload:
             type: object
             properties:
@@ -4538,6 +4809,16 @@ components:
             required:
                 - id
                 - text
+        setLegRolePayload:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                role:
+                    type: string
+            required:
+                - leg_id
+                - role
         sttStartPayload:
             type: object
             properties:

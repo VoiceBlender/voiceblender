@@ -44,6 +44,7 @@ type WhatsAppLeg struct {
 
 	roomID     string
 	appID      string
+	role       string
 	muted      atomic.Bool
 	deaf       atomic.Bool
 	acceptDTMF atomic.Bool
@@ -169,6 +170,18 @@ func (l *WhatsAppLeg) SetAppID(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.appID = id
+}
+
+func (l *WhatsAppLeg) Role() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.role
+}
+
+func (l *WhatsAppLeg) SetRole(r string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.role = r
 }
 
 func (l *WhatsAppLeg) IsMuted() bool              { return l.muted.Load() }

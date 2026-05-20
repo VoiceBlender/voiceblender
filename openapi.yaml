@@ -1525,6 +1525,124 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /rooms/{id}/routing:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        get:
+            operationId: getRoomRouting
+            summary: Get the room's audio routing matrix
+            description: Returns the per-listener-role source whitelist used by the room's audio mixer. A listener role absent from the matrix defaults to full mesh (hears every other leg). A role with an empty `[]` list is an isolated listener that hears nothing.
+            tags:
+                - Rooms
+            responses:
+                '200':
+                    description: Current matrix
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RoomRoutingView'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        put:
+            operationId: setRoomRouting
+            summary: Replace the room's audio routing matrix
+            description: Atomically replaces the room's audio routing matrix and recomputes every leg's per-listener source whitelist in one mixer-mutex acquisition. The next mix tick (≤ 20 ms) reflects the new routing. Roles are operator-supplied strings (e.g. "customer", "agent", "supervisor"). A leg with no role defaults to full mesh.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RoomRoutingRequest'
+            responses:
+                '200':
+                    description: Updated matrix
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RoomRoutingView'
+                '400':
+                    description: Invalid JSON
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        patch:
+            operationId: updateRoomRouting
+            summary: Replace selected rows of the room's audio routing matrix
+            description: 'Replaces the listed listener-role rows. Pass `"sources": null` on an update to clear that row back to full mesh.'
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RoomRoutingUpdateRequest'
+            responses:
+                '200':
+                    description: Updated matrix
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RoomRoutingView'
+                '400':
+                    description: Invalid JSON
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/role:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        patch:
+            operationId: setLegRole
+            summary: Change a leg's routing role
+            description: Updates the leg's routing role and, if the leg is currently in a room, recomputes the room's matrix-derived allow-sets atomically (single mixer-mutex acquisition). The next mix tick (≤ 20 ms) reflects the change.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SetLegRoleRequest'
+            responses:
+                '200':
+                    description: Updated leg view
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '400':
+                    description: Invalid JSON
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /rooms/{id}/play:
         parameters:
             - $ref: '#/components/parameters/RoomId'
@@ -2295,6 +2413,9 @@ components:
                 held:
                     type: boolean
                     description: Whether the call is on hold (SIP legs only)
+                role:
+                    type: string
+                    description: Routing role used by the room's audio routing matrix (e.g. "customer", "agent", "supervisor"). Empty string means unroled (full mesh).
                 app_id:
                     type: string
                     description: Application identifier for event stream filtering.
@@ -2376,6 +2497,9 @@ components:
                 accept_dtmf:
                     type: boolean
                     description: If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true).
+                role:
+                    type: string
+                    description: If set, apply this routing role to the leg atomically before it joins the mixer. The room's routing matrix (see PUT /v1/rooms/{id}/routing) decides which other legs this leg hears and is heard by based on roles. Pass "" to clear the role (full mesh). Omit to leave the current role untouched.
             required:
                 - leg_id
         AgentMessageRequest:
@@ -2717,6 +2841,28 @@ components:
                 - s3_prefix
                 - s3_access_key
                 - s3_secret_key
+        RoomRoutingRequest:
+            type: object
+            properties:
+                matrix:
+                    type: object
+                    additionalProperties:
+                        type: array
+                        items:
+                            type: string
+                    description: Listener-role → list of allowed source roles. Omitted listener roles default to full mesh. Empty list = hears nothing.
+            required:
+                - matrix
+        RoomRoutingUpdateRequest:
+            type: object
+            properties:
+                updates:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RoutingRowUpdate'
+                    description: Per-listener-role row replacements applied as a single atomic update.
+            required:
+                - updates
         STTRequest:
             type: object
             properties:
@@ -2739,6 +2885,14 @@ components:
             required:
                 - language
                 - partial
+        SetLegRoleRequest:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: New routing role for the leg. The room's routing matrix decides which other legs this leg hears and is heard by based on roles. Pass an empty string to clear the role (full mesh).
+            required:
+                - role
         TTSRequest:
             type: object
             properties:
@@ -2892,6 +3046,32 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        RoomRoutingView:
+            type: object
+            properties:
+                matrix:
+                    type: object
+                    additionalProperties:
+                        type: array
+                        items:
+                            type: string
+                    description: Listener-role → list of allowed source roles. Roles absent from the matrix default to full mesh.
+            required:
+                - matrix
+        RoutingRowUpdate:
+            type: object
+            properties:
+                listener_role:
+                    type: string
+                    description: The role whose row is being replaced.
+                sources:
+                    type: array
+                    items:
+                        type: string
+                    description: New list of allowed source roles for this listener role. Pass null to clear the row (full mesh).
+            required:
+                - listener_role
+                - sources
         SIPAuth:
             type: object
             properties:
@@ -2980,6 +3160,8 @@ components:
                 - room.bridged
                 - room.bridge_updated
                 - room.unbridged
+                - room.routing_changed
+                - leg.role_changed
                 - stt.text
                 - agent.connected
                 - agent.disconnected
@@ -3815,6 +3997,48 @@ x-webhooks:
                                     reason:
                                         type: string
                                         description: Empty for an explicit delete, or "room_deleted" when a bridged room was deleted
+    room.routing_changed:
+        post:
+            summary: The room's audio routing matrix changed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    room_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    matrix:
+                                        type: object
+                                        additionalProperties:
+                                            type: array
+                                            items:
+                                                type: string
+                                    reason:
+                                        type: string
+    leg.role_changed:
+        post:
+            summary: A leg's routing role changed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    old_role:
+                                        type: string
+                                    new_role:
+                                        type: string
     stt.text:
         post:
             summary: Speech-to-text transcript

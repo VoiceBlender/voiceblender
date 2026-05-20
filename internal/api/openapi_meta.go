@@ -826,6 +826,60 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "GET", Path: "/rooms/{id}/routing", OperationID: "getRoomRouting",
+			Summary: "Get the room's audio routing matrix",
+			Description: "Returns the per-listener-role source whitelist used by the room's audio mixer. " +
+				"A listener role absent from the matrix defaults to full mesh (hears every other leg). " +
+				"A role with an empty `[]` list is an isolated listener that hears nothing.",
+			Tags: []string{"Rooms"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Current matrix", Type: RoomRoutingView{}},
+				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "PUT", Path: "/rooms/{id}/routing", OperationID: "setRoomRouting",
+			Summary: "Replace the room's audio routing matrix",
+			Description: "Atomically replaces the room's audio routing matrix and recomputes every leg's " +
+				"per-listener source whitelist in one mixer-mutex acquisition. The next mix tick (≤ 20 ms) " +
+				"reflects the new routing. Roles are operator-supplied strings (e.g. \"customer\", \"agent\", " +
+				"\"supervisor\"). A leg with no role defaults to full mesh.",
+			Tags:        []string{"Rooms"},
+			RequestType: RoomRoutingRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
+				400: {Description: "Invalid JSON"},
+				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "PATCH", Path: "/rooms/{id}/routing", OperationID: "updateRoomRouting",
+			Summary: "Replace selected rows of the room's audio routing matrix",
+			Description: "Replaces the listed listener-role rows. Pass `\"sources\": null` on an update to " +
+				"clear that row back to full mesh.",
+			Tags:        []string{"Rooms"},
+			RequestType: RoomRoutingUpdateRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
+				400: {Description: "Invalid JSON"},
+				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "PATCH", Path: "/legs/{id}/role", OperationID: "setLegRole",
+			Summary: "Change a leg's routing role",
+			Description: "Updates the leg's routing role and, if the leg is currently in a room, recomputes " +
+				"the room's matrix-derived allow-sets atomically (single mixer-mutex acquisition). The next " +
+				"mix tick (≤ 20 ms) reflects the change.",
+			Tags:        []string{"Legs"},
+			RequestType: SetLegRoleRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated leg view", Type: LegView{}},
+				400: {Description: "Invalid JSON"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
 			Method: "POST", Path: "/rooms/{id}/play", OperationID: "playRoom",
 			Summary:     "Play audio to a room",
 			Tags:        []string{"Rooms"},

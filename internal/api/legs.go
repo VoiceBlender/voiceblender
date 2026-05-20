@@ -34,6 +34,7 @@ func toLegView(l leg.Leg) LegView {
 		Deaf:       l.IsDeaf(),
 		AcceptDTMF: l.AcceptDTMF(),
 		Held:       l.IsHeld(),
+		Role:       l.Role(),
 		AppID:      l.AppID(),
 		SIPHeaders: l.SIPHeaders(),
 		Headers:    l.Headers(),

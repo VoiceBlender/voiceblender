@@ -18,6 +18,7 @@ type apiMockLeg struct {
 	deaf           bool
 	acceptDTMF     bool
 	roomID         string
+	role           string
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 }
@@ -37,6 +38,8 @@ func (m *apiMockLeg) RoomID() string                         { return m.roomID }
 func (m *apiMockLeg) SetRoomID(id string)                    { m.roomID = id }
 func (m *apiMockLeg) AppID() string                          { return "" }
 func (m *apiMockLeg) SetAppID(string)                        {}
+func (m *apiMockLeg) Role() string                           { return m.role }
+func (m *apiMockLeg) SetRole(r string)                       { m.role = r }
 func (m *apiMockLeg) IsMuted() bool                          { return m.muted }
 func (m *apiMockLeg) SetMuted(v bool)                        { m.muted = v }
 func (m *apiMockLeg) IsDeaf() bool                           { return m.deaf }

@@ -34,6 +34,7 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
   "muted": false,
   "deaf": false,
   "held": false,
+  "role": "agent",
   "sip_headers": {
     "X-Correlation-ID": "abc-123"
   },
@@ -52,6 +53,7 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | `muted` | boolean | `true` if the leg is muted (cannot be heard by others) |
 | `deaf` | boolean | `true` if the leg is deaf (cannot hear others) |
 | `held` | boolean | `true` if the call is on hold (SIP legs only) |
+| `role` | string | Routing role used by the room's audio routing matrix (e.g. `"customer"`, `"agent"`, `"supervisor"`). Omitted/empty means full mesh. |
 | `sip_headers` | object | Deprecated — `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. Use `headers` for new code. |
 | `headers` | object | Custom protocol headers exposed by the leg's transport — `X-`/`P-` headers from a SIP INVITE, WebSocket handshake, or supplied at outbound dial time. |
 
@@ -1344,6 +1346,7 @@ Join already muted / deaf:
 | `leg_id` | string | yes | ID of the leg to add |
 | `mute` | bool | no | Apply this mute state to the leg atomically before it joins the mixer — prevents the race where one frame of un-muted audio leaks into the mix between add and `/mute`. Omit to leave current state untouched (useful on move). |
 | `deaf` | bool | no | Apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched. |
+| `role` | string | no | Apply a routing role atomically before the leg enters the mixer. The room's routing matrix (see `/v1/rooms/{id}/routing`) decides who hears whom based on roles, so passing `role` on join guarantees no audio bleed between the leg appearing in the mix and the matrix being applied. Pass an empty string to clear the role (full mesh). Omit to leave the current role untouched. |
 
 **Response (added):** `200 OK`
 
@@ -1486,6 +1489,153 @@ automatically (emitting `room.unbridged` with `reason: "room_deleted"`).
 ```
 
 **Errors:** `404` — bridge not found for this room
+
+---
+
+## Audio routing matrix
+
+Inside a single room, the **audio routing matrix** controls which participants
+hear which other participants. The default is full mesh — every leg hears every
+other leg. The matrix lets you express asymmetric audio (one-way listens,
+whisper, supervisor monitor) without spinning up extra bridges.
+
+The matrix is keyed by **role**, an operator-supplied string set on each leg
+(`"customer"`, `"agent"`, `"supervisor"`, or any other free-form value). Each
+row of the matrix lists the source roles a listener role is allowed to hear:
+
+```json
+{
+  "matrix": {
+    "customer":   ["agent"],
+    "agent":      ["customer", "supervisor"],
+    "supervisor": ["customer", "agent"]
+  }
+}
+```
+
+This is the **barge-in / whisper** pattern:
+
+- Customer and agent hear each other.
+- Supervisor hears both customer and agent.
+- Agent also hears the supervisor (whisper / coaching).
+- **Customer does NOT hear the supervisor.**
+
+**Semantics**
+
+For a listener `L` with role `R_L` and a source `S` with role `R_S` (and `L != S`):
+
+- `R_L == ""` (unroled listener) → hears everyone (full mesh).
+- `R_S == ""` (unroled source) → not heard by any matrix-routed listener.
+- `matrix[R_L]` unset → listener defaults to full mesh.
+- `matrix[R_L] == []` → listener hears nothing (isolated).
+- Otherwise → listener hears `S` iff `R_S` is in `matrix[R_L]`.
+
+`mute` (source contributes silence) and `deaf` (listener gets no output) still
+apply on top of the matrix.
+
+**Atomicity (no bleed)**
+
+To guarantee that a supervisor joining mid-call cannot momentarily be heard
+by the customer, pass `"role"` on `POST /v1/rooms/{id}/legs` — the role is
+set and the matrix is recomputed under the same mutex acquisition that adds
+the participant to the mixer, so the very first `mixTick` that sees the new
+leg already has the correct routing. Mid-call role changes via
+`PATCH /v1/legs/{id}/role` take effect on the next `mixTick` (≤ 20 ms) and
+are also atomic: either every leg's allow-set reflects the change or none of
+them do.
+
+---
+
+### GET /v1/rooms/{id}/routing
+
+Return the current routing matrix.
+
+**Response:** `200 OK`
+
+```json
+{
+  "matrix": {
+    "customer":   ["agent"],
+    "agent":      ["customer", "supervisor"],
+    "supervisor": ["customer", "agent"]
+  }
+}
+```
+
+Roles absent from `matrix` default to full mesh.
+
+**Errors:** `404` — room not found
+
+---
+
+### PUT /v1/rooms/{id}/routing
+
+Replace the full routing matrix. Recomputes every leg's per-listener source
+whitelist in one mixer-mutex acquisition; the next mix tick (≤ 20 ms)
+reflects the new routing.
+
+**Request:**
+
+```json
+{
+  "matrix": {
+    "customer":   ["agent"],
+    "agent":      ["customer", "supervisor"],
+    "supervisor": ["customer", "agent"]
+  }
+}
+```
+
+**Response:** `200 OK` — returns the updated matrix in the same shape as `GET`.
+
+Emits `room.routing_changed` with `reason: "set"`.
+
+**Errors:** `400` — invalid JSON; `404` — room not found
+
+---
+
+### PATCH /v1/rooms/{id}/routing
+
+Replace selected rows of the matrix. Useful for adjusting a single role's
+allow-list without restating the whole matrix. Pass `"sources": null` on an
+update to clear that row back to full mesh.
+
+**Request:**
+
+```json
+{
+  "updates": [
+    { "listener_role": "supervisor", "sources": ["customer", "agent", "trainee"] },
+    { "listener_role": "trainee",    "sources": null }
+  ]
+}
+```
+
+**Response:** `200 OK` — returns the updated matrix.
+
+Emits `room.routing_changed` with `reason: "update"`.
+
+**Errors:** `400` — invalid JSON; `404` — room not found
+
+---
+
+### PATCH /v1/legs/{id}/role
+
+Change a leg's routing role. If the leg is currently in a room, the room's
+matrix-derived allow-sets are recomputed atomically and `room.routing_changed`
+fires with `reason: "leg_role_changed"`. `leg.role_changed` is always emitted.
+
+**Request:**
+
+```json
+{ "role": "supervisor" }
+```
+
+Pass an empty string to clear the role (the leg falls back to full mesh).
+
+**Response:** `200 OK` — returns the updated `LegView`.
+
+**Errors:** `400` — invalid JSON; `404` — leg not found
 
 ---
 

@@ -68,6 +68,12 @@ type Participant struct {
 	// The participant can still speak (contribute audio) but cannot hear others.
 	Deaf atomic.Bool
 
+	// Hears, when non-nil, is a whitelist of source participant IDs whose
+	// audio is included in this participant's outgoing mix. nil means
+	// full-mesh: hear every other participant (legacy behavior).
+	// Guarded by Mixer.mu; read inside the mixTick snapshot.
+	Hears map[string]struct{}
+
 	// inject receives PCM frames that are mixed into this participant's
 	// output only (not heard by others). Used for per-leg playback while
 	// the leg is in a room — the playback audio is added to the
@@ -192,6 +198,57 @@ func (m *Mixer) SetParticipantDeaf(id string, deaf bool) {
 		return
 	}
 	p.Deaf.Store(deaf)
+}
+
+// SetParticipantHears sets the per-listener source whitelist. Passing nil
+// restores full-mesh behavior. Used by the room layer to materialize a
+// routing-matrix decision into a flat set of allowed source IDs.
+func (m *Mixer) SetParticipantHears(id string, hears map[string]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.participants[id]
+	if !ok {
+		return
+	}
+	p.Hears = hears
+}
+
+// ApplyHearsBatch applies whitelists to multiple participants under a single
+// mixer-mutex acquisition. mixTick snapshots Hears under the same mutex, so
+// no tick can observe a partially-updated routing matrix. A nil value
+// restores full mesh for that participant. Participants not present in
+// updates are untouched. IDs in updates that no longer exist are ignored.
+func (m *Mixer) ApplyHearsBatch(updates map[string]map[string]struct{}) {
+	if len(updates) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, hears := range updates {
+		if p, ok := m.participants[id]; ok {
+			p.Hears = hears
+		}
+	}
+}
+
+// ParticipantHears returns a snapshot of a participant's source whitelist.
+// (nil, true) means full mesh; (nil, false) means the participant is not in
+// this mixer. Intended for introspection and tests.
+func (m *Mixer) ParticipantHears(id string) (map[string]struct{}, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.participants[id]
+	if !ok {
+		return nil, false
+	}
+	if p.Hears == nil {
+		return nil, true
+	}
+	out := make(map[string]struct{}, len(p.Hears))
+	for k := range p.Hears {
+		out[k] = struct{}{}
+	}
+	return out, true
 }
 
 // InjectWriter returns an io.Writer that feeds PCM frames into the
@@ -433,19 +490,22 @@ func (m *Mixer) mixLoop() {
 	}
 }
 
-// mixTick reads one frame from each participant, computes the mix,
-// and enqueues mixed-minus-self output. Never blocks on IO.
+// mixTick reads one frame from each participant, computes per-listener
+// filtered mixes (honoring the routing matrix), and enqueues each output.
+// Never blocks on IO.
 func (m *Mixer) mixTick() {
 	m.mu.Lock()
 	parts := make([]*Participant, 0, len(m.participants))
 	taps := make([]io.Writer, 0, len(m.participants))
 	outTaps := make([]io.Writer, 0, len(m.participants))
 	recordTaps := make([]io.Writer, 0, len(m.participants))
+	hearsList := make([]map[string]struct{}, 0, len(m.participants))
 	for _, p := range m.participants {
 		parts = append(parts, p)
 		taps = append(taps, p.tap)
 		outTaps = append(outTaps, p.outTap)
 		recordTaps = append(recordTaps, p.recordTap)
+		hearsList = append(hearsList, p.Hears)
 	}
 	m.mu.Unlock()
 
@@ -480,58 +540,88 @@ func (m *Mixer) mixTick() {
 		}
 	}
 
-	// Compute sum of all samples
 	numSamples := m.samplesPerFrame
-	sum := make([]int32, numSamples)
-	for _, f := range frames {
-		for j := 0; j < numSamples && j < len(f); j++ {
-			sum[j] += int32(f[j])
-		}
-	}
 
-	// Inject comfort noise when all participants are silent.
-	if m.comfortNoise.IsEnabled() {
-		hasAudio := false
-		for j := 0; j < numSamples; j++ {
-			if sum[j] != 0 {
-				hasAudio = true
-				break
-			}
-		}
-		if !hasAudio {
-			cnFrame := m.comfortNoise.Generate(numSamples)
-			for j := 0; j < numSamples; j++ {
-				sum[j] += int32(cnFrame[j])
-			}
-		}
-	}
-
-	// Write to optional tap (full mix)
+	// Room-level full-mix tap is independent of per-listener routing: it
+	// captures everything happening in the room. Compute the global sum
+	// only when the tap is actually attached.
 	m.tapMu.Lock()
 	tap := m.tapOut
 	m.tapMu.Unlock()
+	cnEnabled := m.comfortNoise.IsEnabled()
 	if tap != nil {
+		globalSum := make([]int32, numSamples)
+		for _, f := range frames {
+			for j := 0; j < numSamples && j < len(f); j++ {
+				globalSum[j] += int32(f[j])
+			}
+		}
+		if cnEnabled {
+			hasAudio := false
+			for j := 0; j < numSamples; j++ {
+				if globalSum[j] != 0 {
+					hasAudio = true
+					break
+				}
+			}
+			if !hasAudio {
+				cnFrame := m.comfortNoise.Generate(numSamples)
+				for j := 0; j < numSamples; j++ {
+					globalSum[j] += int32(cnFrame[j])
+				}
+			}
+		}
 		fullMix := make([]byte, numSamples*2)
 		for j := 0; j < numSamples; j++ {
-			s := clamp16(sum[j])
+			s := clamp16(globalSum[j])
 			binary.LittleEndian.PutUint16(fullMix[j*2:], uint16(s))
 		}
 		tap.Write(fullMix)
 	}
 
-	// Enqueue mixed-minus-self for each participant (non-blocking).
-	// The dedicated writeLoop goroutine handles the actual IO.
+	// Per-listener filtered mix. Self is excluded by skipping k == i, so no
+	// separate "minus-self" subtraction is needed. The routing matrix is
+	// applied by checking each listener's Hears whitelist; nil whitelist
+	// means full mesh (legacy behavior).
 	for i, p := range parts {
 		if p.WriteOnly || p.Writer == nil || p.Deaf.Load() {
 			continue
 		}
+		hears := hearsList[i]
+		listenerSum := make([]int32, numSamples)
+		for k, src := range parts {
+			if k == i {
+				continue
+			}
+			if hears != nil {
+				if _, ok := hears[src.ID]; !ok {
+					continue
+				}
+			}
+			f := frames[k]
+			for j := 0; j < numSamples && j < len(f); j++ {
+				listenerSum[j] += int32(f[j])
+			}
+		}
+		// Comfort noise per listener when their personal mix is silent.
+		if cnEnabled {
+			hasAudio := false
+			for j := 0; j < numSamples; j++ {
+				if listenerSum[j] != 0 {
+					hasAudio = true
+					break
+				}
+			}
+			if !hasAudio {
+				cnFrame := m.comfortNoise.Generate(numSamples)
+				for j := 0; j < numSamples; j++ {
+					listenerSum[j] += int32(cnFrame[j])
+				}
+			}
+		}
 		out := make([]byte, numSamples*2)
 		for j := 0; j < numSamples; j++ {
-			self := int32(0)
-			if j < len(frames[i]) {
-				self = int32(frames[i][j])
-			}
-			s := clamp16(sum[j] - self)
+			s := clamp16(listenerSum[j])
 			binary.LittleEndian.PutUint16(out[j*2:], uint16(s))
 		}
 		// Mix in any privately-injected audio (per-leg playback).

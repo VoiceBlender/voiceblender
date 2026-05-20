@@ -55,6 +55,9 @@ const (
 	RoomBridgeUpdated EventType = "room.bridge_updated"
 	RoomUnbridged     EventType = "room.unbridged"
 
+	RoomRoutingChanged EventType = "room.routing_changed"
+	LegRoleChanged     EventType = "leg.role_changed"
+
 	STTText EventType = "stt.text"
 
 	AgentConnected      EventType = "agent.connected"

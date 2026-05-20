@@ -14,6 +14,7 @@ type mockLeg struct {
 	legType        LegType
 	state          LegState
 	roomID         string
+	role           string
 	muted          bool
 	deaf           bool
 	acceptDTMF     bool
@@ -46,6 +47,8 @@ func (m *mockLeg) RoomID() string                               { return m.roomI
 func (m *mockLeg) SetRoomID(id string)                          { m.roomID = id }
 func (m *mockLeg) AppID() string                                { return "" }
 func (m *mockLeg) SetAppID(string)                              {}
+func (m *mockLeg) Role() string                                 { return m.role }
+func (m *mockLeg) SetRole(r string)                             { m.role = r }
 func (m *mockLeg) IsMuted() bool                                { return m.muted }
 func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }

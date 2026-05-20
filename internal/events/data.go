@@ -219,6 +219,24 @@ type RoomUnbridgedData struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// RoomRoutingChangedData fires whenever the room's audio routing matrix
+// changes. Matrix is the full post-change matrix (listener role → source
+// roles). Reason narrows the trigger: "set", "update", "leg_joined",
+// "leg_left", "leg_role_changed".
+type RoomRoutingChangedData struct {
+	RoomScope
+	Matrix map[string][]string `json:"matrix"`
+	Reason string              `json:"reason"`
+}
+
+// LegRoleChangedData fires when a leg's routing role changes. RoomID is
+// empty when the leg is not in a room.
+type LegRoleChangedData struct {
+	LegRoomScope
+	OldRole string `json:"old_role"`
+	NewRole string `json:"new_role"`
+}
+
 type LegJoinedRoomData struct {
 	LegRoomScope
 }

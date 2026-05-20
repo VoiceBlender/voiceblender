@@ -59,9 +59,10 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | Package | Tests | Description |
 |---------|-------|-------------|
 | `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
-| `internal/mixer` | 11 | Audio mixing, configurable sample rate (8/16/48 kHz), resampling, playback sources, tap recording |
+| `internal/mixer` | 15 | Audio mixing, configurable sample rate (8/16/48 kHz), resampling, playback sources, tap recording, per-listener routing whitelist (full mesh / supervisor-whisper / isolated / mute+deaf interaction) |
 | `internal/bridge` | 9 | Duplex conduit: pair wiring, blocking Read, EOF/idempotent Close, drop-oldest backpressure, leftover handling, buffer-copy |
 | `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
+| `internal/room` (routing) | 6 | Role-based routing matrix: supervisor-whisper no-bleed at join, mid-call role change recomputes allow-sets, unroled legs default to full mesh, removing a leg prunes others' whitelists, `UpdateRoutingRow` with null clears row, matrix round-trip via `RoutingMatrix()` |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
 | `internal/codec` | 9 | G.722 encode/decode, silence/tone round-trips, up/downsample |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
@@ -124,6 +125,8 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestRoomBridge_None` | Parked (`none`) bridge passes no audio but is still listed |
 | `TestRoomBridge_Validation` | Self-bridge/bad-direction → 400, missing room → 404, sample-rate mismatch → 400, duplicate pair → 409 |
 | `TestRoomBridge_KeepaliveAndRoomDeleteTeardown` | Bridge keeps a leg-less room's mixer alive; deleting a bridged room tears the bridge down with `room.unbridged` (`reason: room_deleted`) |
+| `TestRoutingMatrix_HTTP_PutGetPatch` | `PUT /v1/rooms/{id}/routing` replaces the role-based audio routing matrix and emits `room.routing_changed` with `reason: set`; `GET` round-trips the matrix; `PATCH` with `"sources": null` clears a row (full mesh) and emits `reason: update` |
+| `TestRoutingMatrix_RoomMissing` | All three routing endpoints (`GET/PUT/PATCH`) return 404 for an unknown room ID |
 | `TestOutboundInbound_RingTimeout` | Ring timeout expires, call fails |
 | `TestRecording_StandaloneSIPLeg` | Stereo recording of standalone SIP leg (left=in, right=out) |
 | `TestRecording_InRoomLeg` | Stereo recording of leg in a room (left=participant, right=mix) |

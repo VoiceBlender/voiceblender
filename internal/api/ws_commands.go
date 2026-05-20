@@ -137,11 +137,12 @@ type vsiWebRTCAddCandidatePayload struct {
 
 // addLegPayload combines room_id with AddLegRequest fields.
 type addLegPayload struct {
-	RoomID     string `json:"room_id"`
-	LegID      string `json:"leg_id"`
-	Mute       *bool  `json:"mute,omitempty"`
-	Deaf       *bool  `json:"deaf,omitempty"`
-	AcceptDTMF *bool  `json:"accept_dtmf,omitempty"`
+	RoomID     string  `json:"room_id"`
+	LegID      string  `json:"leg_id"`
+	Mute       *bool   `json:"mute,omitempty"`
+	Deaf       *bool   `json:"deaf,omitempty"`
+	AcceptDTMF *bool   `json:"accept_dtmf,omitempty"`
+	Role       *string `json:"role,omitempty"`
 }
 
 // Bridge payloads. room_id is the path-equivalent room; direction is
@@ -166,6 +167,26 @@ type bridgeUpdatePayload struct {
 	RoomID    string `json:"room_id"`
 	BridgeID  string `json:"bridge_id"`
 	Direction string `json:"direction"`
+}
+
+// roomRoutingSetPayload combines room_id with the routing matrix for
+// the room_routing_set VSI command.
+type roomRoutingSetPayload struct {
+	RoomID string              `json:"room_id"`
+	Matrix map[string][]string `json:"matrix"`
+}
+
+// roomRoutingUpdatePayload combines room_id with selected row replacements
+// for the room_routing_update VSI command.
+type roomRoutingUpdatePayload struct {
+	RoomID  string             `json:"room_id"`
+	Updates []RoutingRowUpdate `json:"updates"`
+}
+
+// setLegRolePayload is the inbound payload for set_leg_role.
+type setLegRolePayload struct {
+	LegID string `json:"leg_id"`
+	Role  string `json:"role"`
 }
 
 func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
@@ -397,6 +418,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			Mute:       p.Mute,
 			Deaf:       p.Deaf,
 			AcceptDTMF: p.AcceptDTMF,
+			Role:       p.Role,
 		})
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
@@ -482,6 +504,55 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			return
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "deleted"})
+
+	// ── Routing matrix ──────────────────────────────────────────────
+	case "room_routing_get":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetRoomRouting(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "room_routing_set":
+		var p roomRoutingSetPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doSetRoomRouting(p.RoomID, RoomRoutingRequest{Matrix: p.Matrix})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "room_routing_update":
+		var p roomRoutingUpdatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doUpdateRoomRouting(p.RoomID, RoomRoutingUpdateRequest{Updates: p.Updates})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "set_leg_role":
+		var p setLegRolePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doSetLegRole(p.LegID, SetLegRoleRequest{Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
 
 	// ── Leg control gaps ────────────────────────────────────────────
 	case "leg_ring":

@@ -57,6 +57,8 @@ func (m *playbackTestLeg) SetRoomID(id string) {
 }
 func (m *playbackTestLeg) AppID() string                          { return "" }
 func (m *playbackTestLeg) SetAppID(string)                        {}
+func (m *playbackTestLeg) Role() string                           { return "" }
+func (m *playbackTestLeg) SetRole(string)                         {}
 func (m *playbackTestLeg) IsMuted() bool                          { return false }
 func (m *playbackTestLeg) SetMuted(bool)                          {}
 func (m *playbackTestLeg) IsDeaf() bool                           { return false }

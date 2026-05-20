@@ -31,6 +31,7 @@ type MoQLeg struct {
 
 	roomID     string
 	appID      string
+	role       string
 	muted      atomic.Bool
 	deaf       atomic.Bool
 	acceptDTMF atomic.Bool
@@ -112,6 +113,18 @@ func (l *MoQLeg) SetAppID(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.appID = id
+}
+
+func (l *MoQLeg) Role() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.role
+}
+
+func (l *MoQLeg) SetRole(r string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.role = r
 }
 
 func (l *MoQLeg) IsMuted() bool        { return l.muted.Load() }

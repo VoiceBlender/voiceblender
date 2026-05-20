@@ -85,6 +85,10 @@ type Leg interface {
 	SetMuted(muted bool)
 	IsDeaf() bool
 	SetDeaf(deaf bool)
+	// Role returns the routing role used by the room's audio routing matrix.
+	// Empty string means unroled (full mesh).
+	Role() string
+	SetRole(role string)
 	SetSpeakingTap(w io.Writer)
 	ClearSpeakingTap()
 	IsHeld() bool
