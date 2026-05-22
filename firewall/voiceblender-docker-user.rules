@@ -1,0 +1,35 @@
+# VoiceBlender Docker access-control rules — iptables-save / iptables-restore format.
+#
+# Loaded into the VB-FILTER chain (hung off Docker's DOCKER-USER chain) by
+# firewall/vb-firewall.sh. Edit the "allowed sources" lines below to manage the
+# allowlist, then re-run:  sudo firewall/vb-firewall.sh apply
+#
+# Notes:
+#   * __EXT_IF__ is a placeholder; vb-firewall.sh substitutes the host's external
+#     interface (auto-detected, or VB_EXT_IF / --iface). Inter-container traffic
+#     arrives on the docker bridge, not __EXT_IF__, so it is never matched.
+#   * Ports are matched container-side (post-DNAT): REST+VSI tcp/8080, SIP udp/5060,
+#     SIP-TLS tcp/5061. Cluster host ports 8081/8082 DNAT to 8080 and are covered.
+#   * RTP/media (udp 10000-20000) and MoQ (udp 8443) are intentionally NOT listed,
+#     so they stay open.
+#   * Host-local access (localhost) traverses OUTPUT, not FORWARD, so it is unaffected.
+#
+# Allowlist entries accept a single IP or a CIDR, e.g.:
+#   -A VB-FILTER -i __EXT_IF__ -p tcp --dport 8080 -s 198.51.100.0/24 -j RETURN
+
+*filter
+:VB-FILTER - [0:0]
+
+# ---- allowed sources (EDIT THESE) ----------------------------------------
+# REST API + VSI WebSocket (tcp/8080)
+-A VB-FILTER -i __EXT_IF__ -p tcp --dport 8080 -s 203.0.113.10 -j RETURN
+# SIP signalling (udp/5060)
+-A VB-FILTER -i __EXT_IF__ -p udp --dport 5060 -s 203.0.113.10 -j RETURN
+# SIP over TLS (tcp/5061)
+-A VB-FILTER -i __EXT_IF__ -p tcp --dport 5061 -s 203.0.113.10 -j RETURN
+
+# ---- default deny for protected ports (keep at the end) -------------------
+-A VB-FILTER -i __EXT_IF__ -p tcp --dport 8080 -j DROP
+-A VB-FILTER -i __EXT_IF__ -p udp --dport 5060 -j DROP
+-A VB-FILTER -i __EXT_IF__ -p tcp --dport 5061 -j DROP
+COMMIT

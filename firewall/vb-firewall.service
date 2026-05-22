@@ -1,0 +1,19 @@
+[Unit]
+Description=VoiceBlender Docker access-control rules (SIP/VSI/REST allowlist)
+# Run after Docker so the DOCKER-USER chain exists, and re-apply on every boot
+# (Docker recreates DOCKER-USER on start; this re-inserts the VB-FILTER jump+rules).
+After=docker.service
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Adjust the path if the repo lives elsewhere.
+ExecStart=/opt/voiceblender/firewall/vb-firewall.sh apply
+ExecStop=/opt/voiceblender/firewall/vb-firewall.sh remove
+# Optionally pin the external interface(s):
+# Environment=VB_EXT_IF=eth0
+
+[Install]
+WantedBy=multi-user.target
