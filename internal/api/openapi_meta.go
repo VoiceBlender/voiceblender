@@ -255,6 +255,29 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "CONNECT", Path: "/legs/moq", OperationID: "moqLeg",
+			Summary: "Connect a MoQ (Media over QUIC) leg (WebTransport extended-CONNECT, experimental)",
+			Description: "**Experimental / PoC.** Upgrades an HTTP/3 extended-CONNECT request to a WebTransport session " +
+				"and creates an inbound MoQ leg. Reachable only over HTTP/3 on the MoQ listener (not on the regular " +
+				"HTTP/1.1 chi listener). Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. " +
+				"Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 " +
+				"clients (moqtail, moq.dev) is not expected to work. Audio is Opus framed one frame per MoQ Object " +
+				"(LOC-style), single MoQ session per leg. Query parameters: `sample_rate` (8000/16000/24000/48000; " +
+				"default 48000); `room_id` to auto-add the leg to a room; `app_id` for event filtering; " +
+				"`webhook_url`/`webhook_secret` for per-leg event routing. X-* and P-* request headers (plus " +
+				"Authorization) are captured into the leg's `headers` map and surfaced on `LegView`. The leg goes " +
+				"straight to `connected` (no ringing/answer flow); no DTMF, no RTT, and event parity is limited to " +
+				"`leg.connected` / `leg.disconnected`. **Note:** OpenAPI 3.1 does not define `connect` as a path " +
+				"item method, so some tooling may not render this endpoint.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "WebTransport extended-CONNECT accepted; MoQ session established"},
+				400: {Description: "Invalid query parameters or config"},
+				500: {Description: "Room create failure"},
+				503: {Description: "MoQ endpoint is not enabled (`MOQ_ENABLED=false`)"},
+			},
+		},
+		{
 			Method: "GET", Path: "/legs/{id}", OperationID: "getLeg",
 			Summary: "Get a single leg",
 			Tags:    []string{"Legs"},
