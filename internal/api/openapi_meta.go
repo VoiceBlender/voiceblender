@@ -17,6 +17,11 @@ type RouteMeta struct {
 type ResponseMeta struct {
 	Description string
 	Type        interface{} // nil, or Go type instance
+	// NoBody suppresses the generator's default content schema for 2xx
+	// responses that have no payload (e.g. protocol upgrades like
+	// WebTransport extended-CONNECT, where the response is the upgraded
+	// session rather than a JSON document).
+	NoBody bool
 }
 
 // WebhookFieldDescriptions maps "event_type.field_name" → description for
@@ -257,7 +262,11 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "CONNECT", Path: "/legs/moq", OperationID: "moqLeg",
 			Summary: "Connect a MoQ (Media over QUIC) leg (WebTransport extended-CONNECT, experimental)",
-			Description: "**Experimental / PoC.** Upgrades an HTTP/3 extended-CONNECT request to a WebTransport session " +
+			Description: "**Actual HTTP method: `CONNECT`** (HTTP/3 extended-CONNECT for WebTransport). " +
+				"OpenAPI 3.1 does not define `connect` as a path-item method, so this operation is documented " +
+				"under `post` with an `x-actual-method: CONNECT` extension. Standard HTTP clients (e.g. `curl -X POST`) " +
+				"will receive `405 Method Not Allowed` — use a WebTransport-capable HTTP/3 client.\n\n" +
+				"**Experimental / PoC.** Upgrades an HTTP/3 extended-CONNECT request to a WebTransport session " +
 				"and creates an inbound MoQ leg. Reachable only over HTTP/3 on the MoQ listener (not on the regular " +
 				"HTTP/1.1 chi listener). Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. " +
 				"Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 " +
@@ -267,11 +276,10 @@ func RoutesMetadata() []RouteMeta {
 				"`webhook_url`/`webhook_secret` for per-leg event routing. X-* and P-* request headers (plus " +
 				"Authorization) are captured into the leg's `headers` map and surfaced on `LegView`. The leg goes " +
 				"straight to `connected` (no ringing/answer flow); no DTMF, no RTT, and event parity is limited to " +
-				"`leg.connected` / `leg.disconnected`. **Note:** OpenAPI 3.1 does not define `connect` as a path " +
-				"item method, so some tooling may not render this endpoint.",
+				"`leg.connected` / `leg.disconnected`.",
 			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{
-				200: {Description: "WebTransport extended-CONNECT accepted; MoQ session established"},
+				200: {Description: "WebTransport extended-CONNECT accepted; MoQ session established (no JSON body — the response is the upgraded WebTransport session)", NoBody: true},
 				400: {Description: "Invalid query parameters or config"},
 				500: {Description: "Room create failure"},
 				503: {Description: "MoQ endpoint is not enabled (`MOQ_ENABLED=false`)"},

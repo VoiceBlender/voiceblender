@@ -462,7 +462,11 @@ func buildPaths(routes []api.RouteMeta) *omap {
 
 		for _, r := range methods {
 			op := buildOperation(r)
-			pathItem.set(strings.ToLower(r.Method), op)
+			key, actual := openapiMethodKey(r.Method)
+			if actual != "" {
+				op.set("x-actual-method", actual)
+			}
+			pathItem.set(key, op)
 		}
 
 		paths.set(path, pathItem)
@@ -496,6 +500,23 @@ func extractPathParams(path string) []string {
 		}
 	}
 	return params
+}
+
+// openapiMethodKey maps a chi HTTP method to the path-item key emitted in
+// openapi.yaml. OpenAPI 3.1 only defines get/put/post/delete/options/head/
+// patch/trace. Non-standard methods (notably CONNECT, used by the MoQ
+// WebTransport endpoint) are emitted under "post" with an x-actual-method
+// extension so downstream tooling (the website docs generator,
+// Swagger UI, Redoc) still picks them up. Returns (key, actualMethod) —
+// actualMethod is non-empty only when a translation occurred.
+func openapiMethodKey(method string) (string, string) {
+	lower := strings.ToLower(method)
+	switch lower {
+	case "get", "put", "post", "delete", "options", "head", "patch", "trace":
+		return lower, ""
+	default:
+		return "post", strings.ToUpper(method)
+	}
 }
 
 func buildOperation(r *api.RouteMeta) *omap {
@@ -552,6 +573,8 @@ func buildOperation(r *api.RouteMeta) *omap {
 				respObj.set("content", newMap().set("application/json",
 					newMap().set("schema", schemaNode)))
 			}
+		} else if resp.NoBody {
+			// Caller explicitly opted out of a body (e.g. protocol upgrade).
 		} else if code >= 400 {
 			// Error responses.
 			respObj.set("content", newMap().set("application/json",
