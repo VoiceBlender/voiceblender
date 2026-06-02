@@ -83,13 +83,14 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	recDir := t.TempDir()
 
 	cfg := config.Config{
-		SIPBindIP:         "127.0.0.1",
-		SIPListenIP:       "127.0.0.1",
-		SIPPort:           fmt.Sprintf("%d", sipPort),
-		SIPHost:           name,
-		HTTPAddr:          "127.0.0.1:0",
-		RecordingDir:      recDir,
-		DefaultSampleRate: 16000,
+		SIPBindIP:                            "127.0.0.1",
+		SIPListenIP:                          "127.0.0.1",
+		SIPPort:                              fmt.Sprintf("%d", sipPort),
+		SIPHost:                              name,
+		HTTPAddr:                             "127.0.0.1:0",
+		RecordingDir:                         recDir,
+		DefaultSampleRate:                    16000,
+		SIPRegistrationAllowMultipleContacts: true,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -100,6 +101,13 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)
 
+	registrar := sipmod.NewRegistrar(bus, log, sipmod.RegistrarConfig{
+		DefaultExpiresSeconds: cfg.SIPRegistrationDefaultExpiresSeconds,
+		MaxExpiresSeconds:     cfg.SIPRegistrationMaxExpiresSeconds,
+		SweepInterval:         time.Duration(cfg.SIPRegistrationSweepIntervalMs) * time.Millisecond,
+		AllowMultipleContacts: cfg.SIPRegistrationAllowMultipleContacts,
+	})
+
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:          "127.0.0.1",
 		ListenIP:        "127.0.0.1",
@@ -109,6 +117,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		Codecs:          codecs,
 		Log:             log,
 		UseSourceSocket: cfg.SIPUseSourceSocket,
+		Registrar:       registrar,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)
@@ -121,6 +130,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	engine.OnNotify(apiSrv.HandleReferNotify)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	registrar.Start(ctx)
 
 	// Start SIP engine.
 	go func() {

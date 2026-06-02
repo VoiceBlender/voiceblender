@@ -181,6 +181,21 @@ func WebhookFieldDescriptions() map[string]string {
 
 		"amd.beep.leg_id":  "Leg identifier",
 		"amd.beep.beep_ms": "Milliseconds from machine detection to beep tone detection",
+
+		// sip.registration_active / expired
+		"sip.registration_active.aor":                     "Canonical Address of Record (e.g. sip:alice@vb.example)",
+		"sip.registration_active.contact":                 "Contact URI registered by the UA",
+		"sip.registration_active.socket":                  "Transport-layer socket (ip:port) the REGISTER arrived on",
+		"sip.registration_active.transport":               "Transport: udp | tcp | tls",
+		"sip.registration_active.user_agent":              "User-Agent header from the REGISTER, if present",
+		"sip.registration_active.call_id":                 "Call-ID of the most recent REGISTER",
+		"sip.registration_active.granted_expires_seconds": "Expiry granted to the binding (clamped to SIP_REGISTRATION_MAX_EXPIRES_SECONDS)",
+		"sip.registration_active.expires_at":              "Absolute expiry time (RFC 3339)",
+
+		"sip.registration_expired.aor":     "Canonical Address of Record",
+		"sip.registration_expired.contact": "Contact URI that was unbound",
+		"sip.registration_expired.socket":  "Transport-layer socket that held the binding",
+		"sip.registration_expired.reason":  "Why the binding was removed: ttl, unregistered, forced, or replaced",
 	}
 }
 
@@ -1116,6 +1131,33 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				101: {Description: "WebSocket upgrade successful. Server sends a `connected` message followed by mixed-minus-self audio frames."},
 				404: {Description: "Room not found"},
+			},
+		},
+
+		// ── SIP Registrations ───────────────────────────────────────────
+		{
+			Method: "GET", Path: "/sip/registrations", OperationID: "listSIPRegistrations",
+			Summary: "List active SIP AOR registrations",
+			Description: "Returns every currently bound AOR contact, with the UDP/TCP/TLS socket on which " +
+				"the binding's REGISTER arrived. Use this list to know which AORs are dialable via the " +
+				"`to` field of POST /v1/legs.",
+			Tags: []string{"SIP Registrations"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "List of bindings", Type: RegistrationsResponse{}},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/sip/registrations/{aor}", OperationID: "deleteSIPRegistration",
+			Summary: "Force-unbind an AOR (or a single contact within it)",
+			Description: "The AOR must be URL-encoded in the path (for example, " +
+				"`sip:alice@vb.example` is encoded as `sip%3Aalice%40vb.example`). " +
+				"Without query parameters, every Contact under the AOR is removed; with " +
+				"`?contact=<contact-uri>` only that single Contact is removed.",
+			Tags: []string{"SIP Registrations"},
+			Responses: map[int]ResponseMeta{
+				204: {Description: "Binding(s) removed"},
+				400: {Description: "Invalid AOR encoding"},
+				404: {Description: "AOR (or specified contact) not found"},
 			},
 		},
 

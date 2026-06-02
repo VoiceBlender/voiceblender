@@ -186,6 +186,10 @@ func (s *Server) routes() {
 		r.Delete("/rooms/{id}/agent", s.stopAgentRoom)
 		r.Get("/rooms/{id}/ws", s.wsRoom)
 
+		// SIP registrations (AOR registry)
+		r.Get("/sip/registrations", s.listRegistrations)
+		r.Delete("/sip/registrations/{aor}", s.deleteRegistration)
+
 		// Event stream
 		r.Get("/vsi", s.vsi)
 

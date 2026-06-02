@@ -95,6 +95,10 @@ All configuration is via environment variables:
 | `SIP_REFER_AUTO_DIAL` | `false` | Accept incoming SIP REFER requests and auto-dial the transferred call. **Default-deny** (toll-fraud risk). Outbound transfers via the REST API are unaffected. |
 | `SIP_AUTO_RINGING` | `false` | **Behavior change vs prior releases**: previously the server always sent `180 Ringing` after `100 Trying`. The new default sends only `100 Trying`; the API caller drives ringing explicitly via `POST /v1/legs/{id}/ring`, `/early-media`, or `/answer`. Set to `true` to restore the legacy auto-180 behavior. |
 | `SIP_USE_SOURCE_SOCKET` | `false` | When `true`, route SIP responses **and** in-dialog requests (BYE, re-INVITE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's `Contact` URI / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in `Contact` from behind NAT, or Via sent-by hosts that don't resolve). Equivalent to sipgo's `DialogUA.RewriteContact` plus per-response `SetDestination(req.Source())`. |
+| `SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Expiry used when an inbound `REGISTER` carries no `Expires` value. |
+| `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry. Requests above this value are honored at this maximum. |
+| `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | Sweeper period for evicting expired AOR bindings. |
+| `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `true`, the same AOR may be bound from multiple Contacts simultaneously (and `POST /v1/legs` parallel-forks to every bound contact). When `false`, each `REGISTER` replaces any prior Contacts for the AOR. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
 | `VSI_EVENT_BUFFER_SIZE` | `256` | Per-client buffer (in events) on the `/v1/vsi` WebSocket. When the client consumes events slower than they're produced, the buffer fills and new events are dropped (with a warn log on the leading edge of each drop burst and at every 10× threshold; the next delivered event also includes an `events_dropped` notification to the client). Clamped to `[16, 1_000_000]`. **Tuning:** larger values absorb longer back-pressure spikes at the cost of higher peak memory per client (roughly the average JSON event size × buffer size, e.g. ~1 KB × 256 ≈ 256 KB per connection at the default) and longer end-to-end latency for buffered events when the client recovers. Increase only if you observe drops on legitimate slow-consumer scenarios you can't fix at the client. |
 | `MOQ_ENABLED` | `false` | Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at `CONNECT /v1/legs/moq` over WebTransport/HTTP/3. PoC quality: tracks IETF draft-11 via `mengelbart/moqtransport`, single MoQ session per leg, Opus framed one frame per MoQ Object (LOC-style). When enabled, both `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE` must be set. |
@@ -189,6 +193,13 @@ GET    /v1/vsi                              # VoiceBlender Streaming Interface (
 POST   /v1/webrtc/offer                    # SDP offer/answer exchange
 POST   /v1/legs/{id}/ice-candidates        # Add trickle ICE candidate
 GET    /v1/legs/{id}/ice-candidates        # Get gathered ICE candidates
+```
+
+### SIP Registrations
+
+```
+GET    /v1/sip/registrations               # List current AOR bindings
+DELETE /v1/sip/registrations/{aor}         # Force-unbind an AOR (or one contact via ?contact=)
 ```
 
 ## WhatsApp Business Calling
@@ -293,6 +304,31 @@ The HTTP response returns immediately with the leg in `ringing`; subscribe to th
 - Call connects but Meta sends BYE after 20 s with `Reason: ... not receiving any media for a long time` — your audio path (RTP/UDP egress) is being dropped before reaching Meta. Check firewall rules for outbound UDP from the `RTP_PORT_MIN`–`RTP_PORT_MAX` range and that ICE-srflx candidates are correct.
 - DTLS handshake stalls — Meta's offer is `setup:actpass` + `ice-lite`, and they don't initiate DTLS. VoiceBlender forces `setup:active` automatically; if you see `pcmedia: DTLS state state=connecting` for >5 s, run with `LOG_LEVEL=debug` and inspect pion's DTLS scope for the actual error.
 - Set `SIP_DEBUG=true` to log the full RFC 3261 wire form of every SIP message, including the auth-bearing retry after the 401/407 challenge — that's the most useful diagnostic for any signalling-layer issue.
+
+## SIP Registrations (AOR)
+
+VoiceBlender accepts inbound SIP `REGISTER` requests on UDP, TCP, and TLS and
+maintains an in-memory map of canonical Address-of-Record (AOR) URIs to the
+exact transport sockets the REGISTERs arrived on. `POST /v1/legs` looks up the
+`to` value in this map: if there's a match, the outbound INVITE is routed to
+the bound socket(s) — reusing the persistent TCP/TLS connection from the
+REGISTER where applicable. When an AOR has multiple bound contacts (e.g. a
+softphone on desktop plus a mobile client) the INVITE is **parallel-forked**;
+the first contact to answer wins and the others are CANCELled (RFC 3261 §16).
+
+Bindings emit `sip.registration_active` / `sip.registration_expired` events
+over both webhooks and the `/v1/vsi` WebSocket. Tuning lives behind the
+`SIP_REGISTRATION_*` env vars (see [Configuration](#configuration)). Full
+endpoint and event reference is in [API.md](API.md#sip-registrations-aor).
+
+**No authentication.** VoiceBlender does *not* perform digest challenges or
+verify any `Authorization` header — every well-formed REGISTER from a supported
+transport is auto-accepted. Production deployments are expected to terminate
+authentication at a SIP proxy in front of VoiceBlender (e.g.
+[Kamailio](https://www.kamailio.org/) or [OpenSIPS](https://opensips.org/));
+the proxy enforces credentials and then forwards the authenticated REGISTER
+on. Exposing VoiceBlender's SIP port directly to the public internet without
+such a proxy is **not safe**.
 
 ## Typical Workflow
 

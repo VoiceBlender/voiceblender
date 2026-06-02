@@ -189,6 +189,14 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestRoomWSCompatibleWithLegWS` | Confirms `/v1/rooms/{id}/ws` and `/v1/legs/websocket` speak the same wire protocol after both endpoints share `wsmedia.Transport`: a leg WS writer and a room WS reader exchange JSON-base64 audio (`{"audio":"<b64>"}` shape) end-to-end, including the welcome `connected` frame and the `{"type":"stop"}` close verb |
 | `TestWSLegPing` | Inbound WS leg replies to a `{"type":"ping","event_id":N}` text frame with a matching pong |
 | `TestPlaybackCrossSampleRate` | Sweeps leg/room sample-rate combinations (8/16/48 kHz × 8/16/48 kHz) with a tone playback started before the leg joins a room. The captured WS egress must hold the original 425 Hz tone across the inject path even when room rate ≠ producer rate — regression guard for the high-pitched-TTS bug where `legPlaybackWriter` skipped resampling on the room inject path |
+| `TestSIPRegister_Basic` | Raw sipgo client REGISTERs; expects 200 OK echoing `Expires`, a `sip.registration_active` event, and the binding visible via `GET /v1/sip/registrations` with the client's actual source socket |
+| `TestSIPRegister_Refresh` | Same Contact re-registers from a different ephemeral source port; binding's `Socket` updates in-place; only one binding remains for the (AOR, Contact) pair |
+| `TestSIPRegister_MultiContact` | Same AOR registers from two distinct Contacts; both bindings are listed; per-contact unregister and the `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS=false` displacement path are also exercised |
+| `TestSIPRegister_Expiry` | Short-expires REGISTER → TTL sweeper removes the binding and emits `sip.registration_expired` with `reason:ttl` |
+| `TestSIPRegister_Unregister` | REGISTER with `Contact: *` and `Expires: 0` removes all bindings with `reason:unregistered` |
+| `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
+| `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket rather than the URI host |
+| `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
 
 ---
 

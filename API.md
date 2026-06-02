@@ -2604,6 +2604,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `room.unbridged` | Bridge torn down | `bridge_id`, `room_a_id`, `room_b_id`, `reason` |
 | `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms` |
 | `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
+| `sip.registration_active` | A SIP AOR binding was created or refreshed | `aor`, `contact`, `socket`, `transport`, `user_agent`, `call_id`, `granted_expires_seconds`, `expires_at` |
+| `sip.registration_expired` | A SIP AOR binding was removed | `aor`, `contact`, `socket`, `reason` (`ttl` / `unregistered` / `forced` / `replaced`) |
 
 #### `amd.result` — Answering Machine Detection
 
@@ -2776,6 +2778,127 @@ All errors return:
 - Supports both `refresher=uac` and `refresher=uas` roles
 - Re-INVITEs (including hold/unhold) reset the session timer
 - Expired sessions disconnect with reason `session_expired`
+
+---
+
+## SIP Registrations (AOR)
+
+VoiceBlender accepts inbound SIP `REGISTER` requests on UDP, TCP, and TLS
+(the latter on `SIP_TLS_PORT`). All REGISTERs are **auto-approved** —
+authentication is expected to be performed by a SIP proxy in front of
+VoiceBlender. The registrar maintains an in-memory map of canonicalised
+AORs to one or more bound contacts, each keyed by the exact transport
+socket the REGISTER arrived on. Bindings expire automatically when their
+TTL elapses (`Expires` header / `;expires=` Contact param, clamped to
+the configured maximum).
+
+### Registration lifecycle
+
+| Step | What happens | Event emitted |
+|------|--------------|---------------|
+| `REGISTER` with non-zero expires | Binding added/refreshed; 200 OK is returned with the granted expiry | `sip.registration_active` |
+| `REGISTER` with `Contact: *` and `Expires: 0` | Every contact under the AOR is removed | `sip.registration_expired` (`reason: unregistered`) |
+| `REGISTER` with `expires=0` on a specific Contact | That single contact is removed | `sip.registration_expired` (`reason: unregistered`) |
+| TTL elapses | Sweeper removes the binding | `sip.registration_expired` (`reason: ttl`) |
+| `DELETE /v1/sip/registrations/{aor}` | Operator force-unbinds the AOR (or a single contact via `?contact=`) | `sip.registration_expired` (`reason: forced`) |
+| New REGISTER while `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS=false` | Prior Contacts under the AOR are displaced | `sip.registration_expired` (`reason: replaced`) |
+
+When `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS=true` (default), the same
+AOR can be registered from multiple Contacts simultaneously (e.g. a user
+running a softphone on desktop and a SIP client on mobile). Each
+Contact's binding has its own socket and expires_at.
+
+### Dialing a registered AOR
+
+`POST /v1/legs` looks up the value of the `to` (or legacy `uri`) field
+in the registrar. When a match is found, the outbound INVITE is sent to
+the binding's transport socket — bypassing the URI's host:port — and
+reusing the persistent TCP/TLS connection from the original REGISTER
+where applicable. No change to the API call shape:
+
+```bash
+curl -X POST http://vb.local:8080/v1/legs \
+  -H "Content-Type: application/json" \
+  -d '{"type":"sip","to":"sip:alice@vb.example","from":"support"}'
+```
+
+When the AOR has **multiple bound contacts**, the INVITE is
+**parallel-forked**: every Contact rings simultaneously, the first to
+answer (2xx) wins, and the other branches are CANCELled (RFC 3261 §16).
+The leg's lifecycle events report the winning branch only.
+
+When the `to` value does not match any AOR, the leg is routed via the
+URI's host:port exactly as before.
+
+### GET /v1/sip/registrations
+
+List every currently bound AOR contact.
+
+```bash
+curl http://vb.local:8080/v1/sip/registrations
+```
+
+```json
+{
+  "instance_id": "abc-123",
+  "bindings": [
+    {
+      "aor": "sip:alice@vb.example",
+      "contact": "sip:alice@10.0.0.5:5060",
+      "socket": "203.0.113.7:51020",
+      "transport": "udp",
+      "user_agent": "PJSUA/2.13",
+      "call_id": "c8f6...",
+      "created_at": "2026-06-01T11:30:00Z",
+      "last_refresh": "2026-06-01T11:45:00Z",
+      "expires_at": "2026-06-01T12:15:00Z",
+      "granted_expires_seconds": 1800
+    }
+  ]
+}
+```
+
+### DELETE /v1/sip/registrations/{aor}
+
+Force-unbind every contact under an AOR. The AOR must be URL-encoded in
+the path.
+
+```bash
+curl -X DELETE "http://vb.local:8080/v1/sip/registrations/sip%3Aalice%40vb.example"
+```
+
+Add `?contact=<contact-uri>` to remove only one Contact (the contact URI
+must also be URL-encoded).
+
+Responses: `204 No Content` on success; `404 Not Found` when the AOR (or
+the specified contact) does not exist.
+
+### VSI command
+
+The same listing is available over the VSI WebSocket:
+
+```json
+{"type": "list_sip_registrations", "request_id": "1"}
+```
+
+Server replies:
+
+```json
+{"type": "list_sip_registrations.result", "request_id": "1",
+ "data": {"bindings": [...]}}
+```
+
+The `sip.registration_active` / `sip.registration_expired` events flow
+through the standard webhook and VSI channels — see Event Types above.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Used when the REGISTER carries no `Expires` value |
+| `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry |
+| `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | How often the expiry sweeper runs |
+| `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `false`, every REGISTER replaces any prior Contacts for the AOR |
 
 ---
 

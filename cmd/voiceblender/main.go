@@ -86,6 +86,15 @@ func main() {
 		log.Info("RTP port range configured", "min", cfg.RTPPortMin, "max", cfg.RTPPortMax)
 	}
 
+	// AOR registrar (in-memory).
+	registrar := sipmod.NewRegistrar(bus, log, sipmod.RegistrarConfig{
+		DefaultExpiresSeconds: cfg.SIPRegistrationDefaultExpiresSeconds,
+		MaxExpiresSeconds:     cfg.SIPRegistrationMaxExpiresSeconds,
+		SweepInterval:         time.Duration(cfg.SIPRegistrationSweepIntervalMs) * time.Millisecond,
+		AllowMultipleContacts: cfg.SIPRegistrationAllowMultipleContacts,
+	})
+	registrar.Start(ctx)
+
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:          cfg.SIPBindIP,
@@ -104,6 +113,7 @@ func main() {
 		Codecs:          []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
 		Log:             log,
 		PortAllocator:   portAlloc,
+		Registrar:       registrar,
 	})
 	if err != nil {
 		log.Error("failed to create SIP engine", "error", err)

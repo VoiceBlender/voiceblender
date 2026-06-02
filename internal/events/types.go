@@ -67,6 +67,9 @@ const (
 
 	AMDResult EventType = "amd.result"
 	AMDBeep   EventType = "amd.beep"
+
+	SIPRegistrationActive  EventType = "sip.registration_active"
+	SIPRegistrationExpired EventType = "sip.registration_expired"
 )
 
 type Event struct {

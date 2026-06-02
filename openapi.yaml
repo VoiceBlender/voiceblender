@@ -2238,6 +2238,48 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /sip/registrations:
+        get:
+            operationId: listSIPRegistrations
+            summary: List active SIP AOR registrations
+            description: Returns every currently bound AOR contact, with the UDP/TCP/TLS socket on which the binding's REGISTER arrived. Use this list to know which AORs are dialable via the `to` field of POST /v1/legs.
+            tags:
+                - SIP Registrations
+            responses:
+                '200':
+                    description: List of bindings
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RegistrationsResponse'
+    /sip/registrations/{aor}:
+        parameters:
+            - name: aor
+              in: path
+              required: true
+              schema:
+                type: string
+        delete:
+            operationId: deleteSIPRegistration
+            summary: Force-unbind an AOR (or a single contact within it)
+            description: The AOR must be URL-encoded in the path (for example, `sip:alice@vb.example` is encoded as `sip%3Aalice%40vb.example`). Without query parameters, every Contact under the AOR is removed; with `?contact=<contact-uri>` only that single Contact is removed.
+            tags:
+                - SIP Registrations
+            responses:
+                '204':
+                    description: Binding(s) removed
+                '400':
+                    description: Invalid AOR encoding
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: AOR (or specified contact) not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /vsi:
         get:
             operationId: vsi
@@ -3078,6 +3120,49 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        RegistrationView:
+            type: object
+            properties:
+                aor:
+                    type: string
+                contact:
+                    type: string
+                socket:
+                    type: string
+                transport:
+                    type: string
+                user_agent:
+                    type: string
+                call_id:
+                    type: string
+                app_id:
+                    type: string
+                created_at:
+                    type: string
+                last_refresh:
+                    type: string
+                expires_at:
+                    type: string
+                granted_expires_seconds:
+                    type: integer
+            required:
+                - aor
+                - contact
+                - socket
+                - transport
+                - created_at
+                - last_refresh
+                - expires_at
+                - granted_expires_seconds
+        RegistrationsResponse:
+            type: object
+            properties:
+                bindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RegistrationView'
+            required:
+                - bindings
         RoomRoutingView:
             type: object
             properties:
@@ -3201,6 +3286,8 @@ components:
                 - agent.agent_response
                 - amd.result
                 - amd.beep
+                - sip.registration_active
+                - sip.registration_expired
         ICECandidateInit:
             type: object
             properties:
@@ -4221,3 +4308,63 @@ x-webhooks:
                                     beep_ms:
                                         type: integer
                                         description: Milliseconds from machine detection to beep tone detection
+    sip.registration_active:
+        post:
+            summary: SIP AOR registration created or refreshed (one event per Contact)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                        description: Canonical Address of Record (e.g. sip:alice@vb.example)
+                                    contact:
+                                        type: string
+                                        description: Contact URI registered by the UA
+                                    socket:
+                                        type: string
+                                        description: Transport-layer socket (ip:port) the REGISTER arrived on
+                                    transport:
+                                        type: string
+                                        description: 'Transport: udp | tcp | tls'
+                                    user_agent:
+                                        type: string
+                                        description: User-Agent header from the REGISTER, if present
+                                    call_id:
+                                        type: string
+                                        description: Call-ID of the most recent REGISTER
+                                    granted_expires_seconds:
+                                        type: integer
+                                        description: Expiry granted to the binding (clamped to SIP_REGISTRATION_MAX_EXPIRES_SECONDS)
+                                    expires_at:
+                                        type: string
+                                        description: Absolute expiry time (RFC 3339)
+    sip.registration_expired:
+        post:
+            summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                        description: Canonical Address of Record
+                                    contact:
+                                        type: string
+                                        description: Contact URI that was unbound
+                                    socket:
+                                        type: string
+                                        description: Transport-layer socket that held the binding
+                                    reason:
+                                        type: string
+                                        description: 'Why the binding was removed: ttl, unregistered, forced, or replaced'

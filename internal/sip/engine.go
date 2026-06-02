@@ -50,6 +50,10 @@ type EngineConfig struct {
 	Codecs          []codec.CodecType
 	Log             *slog.Logger
 	PortAllocator   *PortAllocator // nil = OS-assigned ports
+
+	// Registrar, when non-nil, enables inbound REGISTER handling and AOR
+	// resolution for outbound INVITEs.
+	Registrar *Registrar
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -80,6 +84,7 @@ type Engine struct {
 	sipDebug        bool
 	useSourceSocket bool
 	destPinned      atomic.Uint64 // count of res.Destination overrides applied
+	registrar       *Registrar
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -415,6 +420,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		log:             cfg.Log,
 		sipDebug:        cfg.SIPDebug,
 		useSourceSocket: cfg.UseSourceSocket,
+		registrar:       cfg.Registrar,
 	}
 
 	if cfg.Log != nil {
@@ -711,7 +717,12 @@ func (e *Engine) registerHandlers() {
 
 	e.server.OnRefer(wrap(e.handleRefer))
 	e.server.OnNotify(wrap(e.handleNotify))
+	e.server.OnRegister(wrap(e.handleRegister))
 }
+
+// Registrar returns the engine's AOR registry (may be nil when the engine
+// was created without one).
+func (e *Engine) Registrar() *Registrar { return e.registrar }
 
 // RespondFromSource pins the response destination to the request's UDP
 // source so peers with unroutable Via headers still get our reply.
@@ -887,6 +898,15 @@ func (e *Engine) Serve(ctx context.Context) error {
 // TLSPort returns the configured SIP TLS port (0 = disabled).
 func (e *Engine) TLSPort() int { return e.tlsPort }
 
+// ForkTarget identifies one branch of a parallel-forked INVITE: an explicit
+// transport-layer destination (ip:port) that overrides the routing implied
+// by the Request-URI's host. Used when dialing a registered AOR with one or
+// more bound contacts; one ForkTarget per bound contact.
+type ForkTarget struct {
+	Socket    string // "ip:port"
+	Transport string // "udp" | "tcp" | "tls"
+}
+
 // InviteOptions holds optional parameters for outbound INVITE.
 type InviteOptions struct {
 	Codecs       []codec.CodecType                              // Override engine codecs for this call; nil = use engine default
@@ -896,6 +916,12 @@ type InviteOptions struct {
 	AuthUsername string                                         // SIP digest auth username (optional)
 	AuthPassword string                                         // SIP digest auth password (optional)
 
+	// ForkTargets, when non-empty, routes the INVITE to the listed transport
+	// addresses. A single target overrides the destination for a single
+	// outbound dialog; multiple targets parallel-fork the INVITE and race
+	// for the first 2xx (RFC 3261 §16).
+	ForkTargets []ForkTarget
+
 	// RTT (T.140 / RFC 4103) parameters. RTTEnabled offers m=text alongside
 	// audio in the INVITE. RTTRedundancy controls the RFC 2198 RED depth
 	// (0 = plain T.140, no RED).
@@ -904,7 +930,14 @@ type InviteOptions struct {
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
+// When opts.ForkTargets has more than one entry the INVITE is parallel-forked
+// (RFC 3261 §16); the first branch to reach a 2xx response wins and the others
+// are CANCELled.
 func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptions) (*OutboundCall, error) {
+	if len(opts.ForkTargets) > 1 {
+		return e.inviteFork(ctx, recipient, opts)
+	}
+
 	// Create RTP session for media
 	rtpSess, err := NewRTPSessionFromAllocator(e.portAlloc)
 	if err != nil {
@@ -983,6 +1016,19 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	for _, h := range opts.Headers {
 		req.AppendHeader(h)
+	}
+
+	// Optional single-destination override (e.g. a single-contact AOR lookup
+	// produced one ForkTarget). Sets the transport-layer destination without
+	// touching the Request-URI.
+	if len(opts.ForkTargets) == 1 {
+		t := opts.ForkTargets[0]
+		if t.Transport != "" {
+			req.SetTransport(strings.ToUpper(t.Transport))
+		}
+		if t.Socket != "" {
+			req.SetDestination(t.Socket)
+		}
 	}
 
 	e.logSIPMessage("outbound", req)

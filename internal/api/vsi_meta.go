@@ -183,6 +183,9 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "room_agent_stop", Summary: "Detach the agent attached to a room", PayloadType: idPayload{}, ResultType: AgentStopResult{}, ErrorCodes: []int{404}},
 		{Name: "leg_agent_message", Summary: "Inject a text message into a leg agent session", PayloadType: agentMessagePayload{}, ResultType: AgentMessageResult{}, ErrorCodes: []int{400, 404, 409, 500, 501}},
 		{Name: "room_agent_message", Summary: "Inject a text message into a room agent session", PayloadType: agentMessagePayload{}, ResultType: AgentMessageResult{}, ErrorCodes: []int{400, 404, 409, 500, 501}},
+
+		// ── SIP Registrations ───────────────────────────────────────────
+		{Name: "list_sip_registrations", Summary: "List active SIP AOR registrations", ResultType: RegistrationsResponse{}},
 	}
 }
 
@@ -247,6 +250,8 @@ func EventsMetadata() []EventMeta {
 		{events.AgentAgentResponse, "Agent generated a response", reflect.TypeOf(events.AgentResponseData{})},
 		{events.AMDResult, "Answering machine detection completed", reflect.TypeOf(events.AMDResultData{})},
 		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
+		{events.SIPRegistrationActive, "SIP AOR registration created or refreshed (one event per Contact)", reflect.TypeOf(events.SIPRegistrationActiveData{})},
+		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{})},
 	}
 }
 

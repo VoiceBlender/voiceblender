@@ -795,6 +795,24 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	if req.RTT {
 		inviteOpts.RTTEnabled = true
 	}
+
+	// AOR auto-resolve: if the recipient URI matches a known registration,
+	// route the INVITE to the bound socket(s) instead of letting sipgo
+	// resolve the URI's host:port. Multi-contact AORs parallel-fork.
+	if reg := s.SIPEngine.Registrar(); reg != nil {
+		aor := sipmod.CanonicalizeAOR(recipient)
+		if bindings := reg.LookupAll(aor); len(bindings) > 0 {
+			targets := make([]sipmod.ForkTarget, 0, len(bindings))
+			for _, b := range bindings {
+				targets = append(targets, sipmod.ForkTarget{
+					Socket:    b.Socket,
+					Transport: b.Transport,
+				})
+			}
+			inviteOpts.ForkTargets = targets
+			s.Log.Info("AOR resolved", "aor", aor, "bindings", len(bindings))
+		}
+	}
 	inviteOpts.OnEarlyMedia = func(remoteSDP *sipmod.SDPMedia, rtpSess *sipmod.RTPSession) {
 		if err := l.SetupEarlyMediaOutbound(remoteSDP, rtpSess); err != nil {
 			s.Log.Warn("outbound early media failed", "leg_id", l.ID(), "error", err)

@@ -376,3 +376,42 @@ type AMDBeepData struct {
 	LegScope
 	BeepMs int `json:"beep_ms"` // ms from machine detection to beep
 }
+
+// --- SIP registrations ---
+
+// SIPRegistrationScope embeds in SIP registration events. Registrations are
+// not scoped to a leg or room; AppID is optional and propagated from the
+// most recent REGISTER context.
+type SIPRegistrationScope struct {
+	AppID string `json:"app_id,omitempty"`
+}
+
+func (s SIPRegistrationScope) GetLegID() string  { return "" }
+func (s SIPRegistrationScope) GetRoomID() string { return "" }
+func (s SIPRegistrationScope) GetAppID() string  { return s.AppID }
+
+// SIPRegistrationActiveData fires when a new AOR binding is added or an
+// existing one is refreshed by a REGISTER request.
+type SIPRegistrationActiveData struct {
+	SIPRegistrationScope
+	AOR                   string `json:"aor"`
+	Contact               string `json:"contact"`
+	Socket                string `json:"socket"`
+	Transport             string `json:"transport"`
+	UserAgent             string `json:"user_agent,omitempty"`
+	CallID                string `json:"call_id,omitempty"`
+	GrantedExpiresSeconds int    `json:"granted_expires_seconds"`
+	ExpiresAt             string `json:"expires_at"`
+}
+
+// SIPRegistrationExpiredData fires when an AOR binding is removed. Reason
+// is one of: "ttl" (TTL sweep), "unregistered" (explicit de-register from
+// the UA), "forced" (operator DELETE), "replaced" (single-binding mode
+// replaced a prior Contact).
+type SIPRegistrationExpiredData struct {
+	SIPRegistrationScope
+	AOR     string `json:"aor"`
+	Contact string `json:"contact"`
+	Socket  string `json:"socket,omitempty"`
+	Reason  string `json:"reason"`
+}

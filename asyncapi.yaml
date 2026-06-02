@@ -298,6 +298,10 @@ channels:
                 $ref: '#/components/messages/room_agent_message'
             room_agent_message.result:
                 $ref: '#/components/messages/room_agent_messageResult'
+            list_sip_registrations:
+                $ref: '#/components/messages/list_sip_registrations'
+            list_sip_registrations.result:
+                $ref: '#/components/messages/list_sip_registrationsResult'
             leg.ringing:
                 $ref: '#/components/messages/evt_leg_ringing'
             leg.early_media:
@@ -390,6 +394,10 @@ channels:
                 $ref: '#/components/messages/evt_amd_result'
             amd.beep:
                 $ref: '#/components/messages/evt_amd_beep'
+            sip.registration_active:
+                $ref: '#/components/messages/evt_sip_registration_active'
+            sip.registration_expired:
+                $ref: '#/components/messages/evt_sip_registration_expired'
             connected:
                 $ref: '#/components/messages/frame_connected'
             ping:
@@ -1329,6 +1337,19 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/room_agent_message.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_list_sip_registrations:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: List active SIP AOR registrations
+        messages:
+            - $ref: '#/channels/vsi/messages/list_sip_registrations'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/list_sip_registrations.result'
+                - $ref: '#/channels/vsi/messages/error'
     send_leg_ringing:
         action: send
         channel:
@@ -1651,6 +1672,20 @@ operations:
         summary: Voicemail beep tone detected after machine classification
         messages:
             - $ref: '#/channels/vsi/messages/amd.beep'
+    send_sip_registration_active:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SIP AOR registration created or refreshed (one event per Contact)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.registration_active'
+    send_sip_registration_expired:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.registration_expired'
     send_connected:
         action: send
         channel:
@@ -3833,6 +3868,37 @@ components:
                         $ref: '#/components/schemas/AgentMessageResult'
                 required:
                     - type
+        list_sip_registrations:
+            name: list_sip_registrations
+            title: List active SIP AOR registrations
+            summary: List active SIP AOR registrations
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: list_sip_registrations
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        type: "null"
+                        description: No payload.
+                required:
+                    - type
+        list_sip_registrationsResult:
+            name: list_sip_registrationsResult
+            title: List active SIP AOR registrations — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: list_sip_registrations.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/RegistrationsResponse'
+                required:
+                    - type
         evt_leg_ringing:
             name: evt_leg_ringing
             title: SIP call ringing (inbound or outbound)
@@ -4155,6 +4221,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/amd.beep. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/amd.beep/post/requestBody/content/application~1json/schema
+        evt_sip_registration_active:
+            name: evt_sip_registration_active
+            title: SIP AOR registration created or refreshed (one event per Contact)
+            summary: SIP AOR registration created or refreshed (one event per Contact)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_active. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.registration_active/post/requestBody/content/application~1json/schema
+        evt_sip_registration_expired:
+            name: evt_sip_registration_expired
+            title: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
+            summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_expired. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.registration_expired/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.
@@ -4385,6 +4465,49 @@ components:
             required:
                 - status
                 - file
+        RegistrationView:
+            type: object
+            properties:
+                aor:
+                    type: string
+                contact:
+                    type: string
+                socket:
+                    type: string
+                transport:
+                    type: string
+                user_agent:
+                    type: string
+                call_id:
+                    type: string
+                app_id:
+                    type: string
+                created_at:
+                    type: string
+                last_refresh:
+                    type: string
+                expires_at:
+                    type: string
+                granted_expires_seconds:
+                    type: integer
+            required:
+                - aor
+                - contact
+                - socket
+                - transport
+                - created_at
+                - last_refresh
+                - expires_at
+                - granted_expires_seconds
+        RegistrationsResponse:
+            type: object
+            properties:
+                bindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RegistrationView'
+            required:
+                - bindings
         RoomRoutingView:
             type: object
             properties:

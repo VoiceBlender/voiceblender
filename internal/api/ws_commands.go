@@ -928,6 +928,17 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		}
 		s.wsCommandResult(lw, msg, res)
 
+	// ── SIP Registrations ───────────────────────────────────────────
+	case "list_sip_registrations":
+		reg := s.SIPEngine.Registrar()
+		views := []RegistrationView{}
+		if reg != nil {
+			for _, b := range reg.List() {
+				views = append(views, toRegistrationView(b))
+			}
+		}
+		s.wsCommandResult(lw, msg, RegistrationsResponse{Bindings: views})
+
 	default:
 		s.vsiSendResponse(lw, msg.RequestID, "error",
 			map[string]interface{}{"code": 400, "message": "unknown command: " + msg.Type})
