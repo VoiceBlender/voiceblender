@@ -552,6 +552,12 @@ func (t *Transport) Close(reason livekit.DisconnectReason) error {
 	return nil
 }
 
+// CloseClient is a convenience for callers that don't want to depend on
+// the livekit protocol enums — equivalent to Close(CLIENT_INITIATED).
+func (t *Transport) CloseClient() error {
+	return t.Close(livekit.DisconnectReason_CLIENT_INITIATED)
+}
+
 // cleanup is the one-shot teardown path: cancels the context, closes
 // PCs, closes mixer, marks Done(). Idempotent.
 func (t *Transport) cleanup(err error, reason string) {
