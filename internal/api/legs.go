@@ -181,8 +181,16 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 			return newAPIError(http.StatusConflict, "%s", err.Error())
 		}
 		return nil
+	case *leg.MatrixLeg:
+		if codecName != "" {
+			return newAPIError(http.StatusBadRequest, "codec selection is not supported for Matrix legs")
+		}
+		if err := tl.RequestAnswer(); err != nil {
+			return newAPIError(http.StatusConflict, "%s", err.Error())
+		}
+		return nil
 	default:
-		return newAPIError(http.StatusBadRequest, "only SIP and WhatsApp inbound legs can be answered")
+		return newAPIError(http.StatusBadRequest, "only SIP, WhatsApp, and Matrix inbound legs can be answered")
 	}
 }
 
@@ -704,6 +712,8 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 		s.createWhatsAppOutboundLeg(w, r, req)
 	case "websocket":
 		s.createWebSocketOutboundLeg(w, r, req)
+	case "matrix":
+		s.createMatrixOutboundLeg(w, r, req)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported leg type: %s", req.Type))
 	}

@@ -22,7 +22,7 @@ var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus"}
 
 // CreateLegRequest is the request body for POST /v1/legs.
 type CreateLegRequest struct {
-	Type            string            `json:"type"`                       // "sip", "whatsapp", or "websocket"
+	Type            string            `json:"type"`                       // "sip", "whatsapp", "websocket", or "matrix"
 	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID (user part of the SIP From header, e.g. "+15551234567")
@@ -46,11 +46,23 @@ type CreateLegRequest struct {
 	SampleRate   int    `json:"sample_rate,omitempty"`   // 8000/16000/24000/48000; default 16000
 	WireFormat   string `json:"wire_format,omitempty"`   // "binary" (default) or "json_base64"
 	SampleFormat string `json:"sample_format,omitempty"` // "s16le" (default; only format in v1)
+
+	// Matrix leg fields (only used when Type == "matrix"). The Matrix
+	// destination (room) is carried in the existing To field — accepted
+	// forms: "!abc:server" (raw room id), "#alias:server" (room alias,
+	// resolved against the homeserver), or "matrix:roomid/abc:server" /
+	// "matrix:r/alias:server" (MSC2312 Matrix URI).
+	HomeserverURL    string `json:"homeserver_url,omitempty"`     // e.g. "https://matrix.example.org"
+	AccessToken      string `json:"access_token,omitempty"`       // Matrix access token for the dialling user
+	MatrixUserID     string `json:"matrix_user_id,omitempty"`     // owner of access_token, e.g. "@bot:example.org"
+	MatrixDeviceID   string `json:"matrix_device_id,omitempty"`   // optional device id
+	PartyID          string `json:"party_id,omitempty"`           // ours; auto-generated when empty
+	MatrixLifetimeMs int    `json:"matrix_lifetime_ms,omitempty"` // m.call.invite "lifetime"; default 60000
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket"}},
-	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
+	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket", "matrix"}},
+	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+'). For matrix legs, a Matrix room — accepted forms: raw room id (\"!abc:server\"), room alias (\"#name:server\", resolved against the homeserver), or MSC2312 Matrix URI (\"matrix:roomid/abc:server\" or \"matrix:r/name:server\")."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
@@ -71,6 +83,13 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"sample_rate":      {Description: "PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.", Enum: []string{"8000", "16000", "24000", "48000"}, Default: 16000},
 	"wire_format":      {Description: "Audio framing for websocket legs. `binary` ships raw PCM as WebSocket binary frames; `json_base64` wraps PCM as `{\"type\":\"audio\",\"audio\":\"<base64>\"}` text frames (browser-friendly).", Enum: []string{"binary", "json_base64"}, Default: "binary"},
 	"sample_format":    {Description: "On-the-wire PCM sample encoding for websocket legs. v1 only supports `s16le`.", Enum: []string{"s16le"}, Default: "s16le"},
+
+	"homeserver_url":     {Description: "Matrix homeserver base URL (e.g. \"https://matrix.example.org\"). Required for matrix legs; falls back to MATRIX_HOMESERVER_URL env var when omitted.", Format: "uri"},
+	"access_token":       {Description: "Matrix access token authorising the dialling user. Required for matrix legs; falls back to MATRIX_ACCESS_TOKEN env var when omitted."},
+	"matrix_user_id":     {Description: "Owner of `access_token` (e.g. \"@bot:example.org\"). Required for matrix legs; falls back to MATRIX_USER_ID env var when omitted."},
+	"matrix_device_id":   {Description: "Matrix device ID for the dialling user. Optional; falls back to MATRIX_DEVICE_ID env var when omitted."},
+	"party_id":           {Description: "Our MSC2746 party identifier. Auto-generated UUID when omitted."},
+	"matrix_lifetime_ms": {Description: "Lifetime (ms) of the m.call.invite per MSC2746. Default 60000.", Default: 60000},
 }
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
@@ -170,7 +189,7 @@ type LegView struct {
 
 var legViewFields = map[string]FieldEnrichment{
 	"id":          {Description: "Unique leg identifier (UUID)"},
-	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out", "websocket_in", "websocket_out"}},
+	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out", "websocket_in", "websocket_out", "matrix_in", "matrix_out"}},
 	"state":       {Description: "Leg state", Enum: []string{"ringing", "early_media", "connected", "held", "hung_up"}},
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},

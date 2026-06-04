@@ -47,7 +47,7 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | Field | Type | Values |
 |-------|------|--------|
 | `id` | string | UUID |
-| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out` |
+| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out`, `matrix_in`, `matrix_out` |
 | `state` | string | `ringing`, `early_media`, `connected`, `held`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted (cannot be heard by others) |
@@ -290,6 +290,65 @@ P-Asserted-Identity: alice@example.com
 Query parameters: `sample_rate`, `wire_format`, `sample_format`, `room_id`, `app_id`, `rtt`, `webhook_url`, `webhook_secret`. `X-*` and `P-*` request headers (plus `Authorization`) are captured into the leg's `headers` map and exposed on `leg.ringing` (as `sip_headers` for back-compat) and in `LegView.headers`.
 
 Both `leg.ringing` and `leg.connected` are emitted back-to-back on upgrade. `leg.disconnected` fires when the WS closes — reasons: `hangup`, `timeout`, `connection_reset`, `peer_slow`, `ws_error`.
+
+---
+
+### Matrix (matrix.org) Legs
+
+A **matrix leg** carries voice over MSC3401 1:1 VoIP signalled through `m.call.invite` / `m.call.answer` / `m.call.candidates` / `m.call.hangup` events in a Matrix room. The media layer is Opus over ICE + DTLS-SRTP (pion); Matrix is the signalling channel only. Multi-party calls are mixed by VoiceBlender — each Matrix participant connects as a separate 1:1 leg, so no SFU (LiveKit / MatrixRTC) is needed.
+
+Both directions are supported:
+
+- **Outbound** (`matrix_out`) — VoiceBlender sends `m.call.invite` into a Matrix room. Per-leg credentials in the request body. Created via `POST /v1/legs` with `type: "matrix"`.
+- **Inbound** (`matrix_in`) — a remote Matrix user calls a configured VoiceBlender service account. Requires `MATRIX_ACCESS_TOKEN` (+ `MATRIX_HOMESERVER_URL`, `MATRIX_USER_ID`) env vars. VoiceBlender auto-creates a ringing leg on every `m.call.invite` and emits `leg.ringing`; answer with `POST /v1/legs/{id}/answer` (empty body — codec selection returns 400, Opus only).
+
+Hold, transfer, RTT, DTMF send, and `m.call.negotiate` (ICE restart) are not supported in v1.
+
+**End-to-end encryption (megolm)** is supported when VoiceBlender is built with the `goolm` build tag (`make build-encrypted`). State (Olm sessions, megolm in/out sessions, device tracking) lives in an ephemeral SQLite `:memory:` store, so the bot's Matrix device identity is regenerated on every process restart and peers see a "new device" each boot. Default builds without the tag still work in unencrypted rooms; encrypted-room invites/answers are then dropped on the floor with a `WARN` log pointing at the build flag.
+
+#### Outbound: POST /v1/legs (type=matrix)
+
+```json
+{
+  "type": "matrix",
+  "to": "!abc:example.org",
+  "homeserver_url": "https://matrix.example.org",
+  "access_token": "syt_...",
+  "matrix_user_id": "@bot:example.org",
+  "matrix_device_id": "BOTDEVICE",
+  "matrix_lifetime_ms": 60000,
+  "room_id": "voiceblender-room-1"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | yes | `"matrix"` |
+| `to` | string | yes | Destination Matrix room. Accepted forms: raw room id (`"!abc:server"`), room alias (`"#name:server"`, resolved against the homeserver — one extra HTTP round-trip), or MSC2312 Matrix URI (`"matrix:roomid/abc:server"` / `"matrix:r/name:server"`). Any query string on the URI form is ignored. |
+| `homeserver_url` | string | yes¹ | Matrix homeserver base URL (e.g. `https://matrix.example.org`). |
+| `access_token` | string | yes¹ | Matrix access token authorising the dialling user. |
+| `matrix_user_id` | string | yes¹ | MXID owning `access_token` (e.g. `@bot:example.org`). |
+| `matrix_device_id` | string | no¹ | Matrix device id. |
+| `party_id` | string | no | Our MSC2746 party identifier. Auto-generated UUID when omitted. |
+| `matrix_lifetime_ms` | int | no | Invite lifetime in ms. Default 60000. |
+| `room_id` | string | no | VoiceBlender mixer room to auto-add the leg to on connect. Distinct from `to` (the Matrix room receiving the invite). |
+| `app_id`, `webhook_url`, `webhook_secret`, `accept_dtmf`, `speech_detection` | — | no | Same semantics as SIP legs. |
+
+¹ Account-level credential. When omitted from the request body, falls back to the matching `MATRIX_HOMESERVER_URL` / `MATRIX_ACCESS_TOKEN` / `MATRIX_USER_ID` / `MATRIX_DEVICE_ID` env var. Body value wins when both are set. At least one source (body or env) must supply the field. `to` is always read from the body.
+
+With env-var defaults set, a minimal outbound dial is:
+
+```json
+{ "type": "matrix", "to": "matrix:roomid/abc:example.org" }
+```
+
+**Response:** `201 Created` — Leg object in `ringing` state with `type: "matrix_out"`. The invite is sent asynchronously. On answer, the leg transitions to `connected` and emits `leg.connected`. On invite lifetime expiry, the leg sends `m.call.hangup{reason:"invite_timeout"}` and emits `leg.disconnected{cdr.reason:"ring_timeout"}`.
+
+#### Inbound
+
+When the configured listener receives `m.call.invite`, VoiceBlender creates a leg in `ringing` state, emits `leg.ringing` (with `to` = service account MXID, `from` = caller MXID), and waits for the application to call `POST /v1/legs/{id}/answer` (empty body). The application can refuse with `DELETE /v1/legs/{id}`, which sends `m.call.hangup{reason:"user_hangup"}`. If the answer does not arrive within the invite's `lifetime`, the leg emits `leg.disconnected{cdr.reason:"invite_timeout"}` without sending an answer.
+
+`leg.disconnected` reasons specific to matrix legs include: `invite_failed`, `ring_timeout`, `bad_answer`, `remote_hangup_<reason>`, `caller_cancel`, `invite_timeout`, `ice_failed`.
 
 ---
 

@@ -197,6 +197,11 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
 | `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket rather than the URI host |
 | `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
+| `TestMatrixOutbound_BadCredentials` | `POST /v1/legs type=matrix` without required fields returns 400 without hitting any homeserver |
+| `TestMatrixOutbound_InviteAndHangup` | Drives the outbound path against the in-process mock homeserver (`matrix_helpers_test.go`): leg starts in `ringing`, the mock receives `m.call.invite` with Opus SDP and the requested `lifetime`, and `DELETE /v1/legs/{id}` sends `m.call.hangup{reason:"user_hangup"}` |
+| `TestMatrixOutbound_AnswerReachesConnected` | A sibling `PCMedia` acts as the Matrix test peer: parse the invite offer, build a real answer SDP, inject `m.call.answer` into the mock `/sync` stream, assert `leg.connected` event with `leg_type=matrix_out` |
+
+The Matrix tests do not require a real homeserver. `matrix_helpers_test.go` ships an `httptest.Server` implementing only the endpoints mautrix actually hits (`/_matrix/client/versions`, `/sync`, `/rooms/{id}/send/{type}/{txn}`, `POST /user/{id}/filter`).
 
 ---
 

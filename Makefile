@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
+.PHONY: build build-encrypted run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -7,6 +7,14 @@ TAG      = $(shell git describe --tags --always)
 
 build:
 	go build -o $(BINARY) ./cmd/voiceblender
+
+# Build with Matrix end-to-end encryption support compiled in. Adds mautrix's
+# pure-Go goolm (libolm replacement) plus an ephemeral SQLite :memory: crypto
+# store via modernc.org/sqlite. Use this when VoiceBlender's matrix legs
+# need to place or answer calls in E2EE Matrix rooms. Calls in unencrypted
+# rooms work in both build modes.
+build-encrypted:
+	go build -tags goolm -o $(BINARY) ./cmd/voiceblender
 
 run: build
 	env $$(cat $(ENV_FILE) | grep -v '^\s*\#' | xargs) ./$(BINARY)

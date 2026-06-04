@@ -61,6 +61,14 @@ type Config struct {
 	MoQTLSCertFile string
 	MoQTLSKeyFile  string
 	MoQOpusBitrate int
+
+	MatrixEnabled        bool   // implicit: MATRIX_ACCESS_TOKEN != ""
+	MatrixHomeserverURL  string // MATRIX_HOMESERVER_URL
+	MatrixAccessToken    string // MATRIX_ACCESS_TOKEN
+	MatrixUserID         string // MATRIX_USER_ID (e.g. "@bot:example.org")
+	MatrixDeviceID       string // MATRIX_DEVICE_ID (optional)
+	MatrixSyncTimeoutMs  int    // MATRIX_SYNC_TIMEOUT_MS, default 30000
+	MatrixCallLifetimeMs int    // MATRIX_CALL_LIFETIME_MS, default 60000
 }
 
 func Load() Config {
@@ -121,6 +129,14 @@ func Load() Config {
 		MoQTLSCertFile: os.Getenv("MOQ_TLS_CERT_FILE"),
 		MoQTLSKeyFile:  os.Getenv("MOQ_TLS_KEY_FILE"),
 		MoQOpusBitrate: envInt("MOQ_OPUS_BITRATE", 24000),
+
+		MatrixEnabled:        os.Getenv("MATRIX_ACCESS_TOKEN") != "",
+		MatrixHomeserverURL:  os.Getenv("MATRIX_HOMESERVER_URL"),
+		MatrixAccessToken:    os.Getenv("MATRIX_ACCESS_TOKEN"),
+		MatrixUserID:         os.Getenv("MATRIX_USER_ID"),
+		MatrixDeviceID:       os.Getenv("MATRIX_DEVICE_ID"),
+		MatrixSyncTimeoutMs:  envInt("MATRIX_SYNC_TIMEOUT_MS", 30000),
+		MatrixCallLifetimeMs: envInt("MATRIX_CALL_LIFETIME_MS", 60000),
 	}
 }
 

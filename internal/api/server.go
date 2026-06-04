@@ -11,6 +11,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/matrix"
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -40,6 +41,11 @@ type Server struct {
 	// MoQWebTransport is set by main.go when MoQ is enabled. The MoQ leg
 	// handler (s.moqLeg) returns 503 if this is nil.
 	MoQWebTransport *webtransport.Server
+
+	// MatrixListener is set by main.go when MATRIX_ACCESS_TOKEN is
+	// configured. It runs one global /sync loop for inbound Matrix calls
+	// and is reused by inbound MatrixLeg instances as their EventSender.
+	MatrixListener *matrix.Listener
 
 	speakMu   sync.Mutex
 	speakDets map[string]*speaking.Detector

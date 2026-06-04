@@ -2463,6 +2463,8 @@ components:
                         - whatsapp_out
                         - websocket_in
                         - websocket_out
+                        - matrix_in
+                        - matrix_out
                 state:
                     type: string
                     description: Leg state
@@ -2608,9 +2610,10 @@ components:
                         - sip
                         - whatsapp
                         - websocket
+                        - matrix
                 to:
                     type: string
-                    description: Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"). For whatsapp legs, an E.164 phone number (with or without '+').
+                    description: 'Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"). For whatsapp legs, an E.164 phone number (with or without ''+''). For matrix legs, a Matrix room — accepted forms: raw room id ("!abc:server"), room alias ("#name:server", resolved against the homeserver), or MSC2312 Matrix URI ("matrix:roomid/abc:server" or "matrix:r/name:server").'
                 uri:
                     type: string
                     description: Deprecated alias for `to` (sip legs only). Prefer `to`.
@@ -2703,6 +2706,26 @@ components:
                     enum:
                         - s16le
                     default: s16le
+                homeserver_url:
+                    type: string
+                    description: Matrix homeserver base URL (e.g. "https://matrix.example.org"). Required for matrix legs; falls back to MATRIX_HOMESERVER_URL env var when omitted.
+                    format: uri
+                access_token:
+                    type: string
+                    description: Matrix access token authorising the dialling user. Required for matrix legs; falls back to MATRIX_ACCESS_TOKEN env var when omitted.
+                matrix_user_id:
+                    type: string
+                    description: Owner of `access_token` (e.g. "@bot:example.org"). Required for matrix legs; falls back to MATRIX_USER_ID env var when omitted.
+                matrix_device_id:
+                    type: string
+                    description: Matrix device ID for the dialling user. Optional; falls back to MATRIX_DEVICE_ID env var when omitted.
+                party_id:
+                    type: string
+                    description: Our MSC2746 party identifier. Auto-generated UUID when omitted.
+                matrix_lifetime_ms:
+                    type: integer
+                    description: Lifetime (ms) of the m.call.invite per MSC2746. Default 60000.
+                    default: 60000
             required:
                 - type
         CreateRoomBridgeRequest:

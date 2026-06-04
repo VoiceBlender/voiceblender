@@ -20,6 +20,8 @@ const (
 	TypeWebSocketInbound  LegType = "websocket_in"
 	TypeWebSocketOutbound LegType = "websocket_out"
 	TypeMoQInbound        LegType = "moq_in"
+	TypeMatrixInbound     LegType = "matrix_in"
+	TypeMatrixOutbound    LegType = "matrix_out"
 )
 
 type LegState string

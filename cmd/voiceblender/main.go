@@ -16,6 +16,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/matrix"
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -24,6 +25,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 	"golang.org/x/sync/errgroup"
+	mxid "maunium.net/go/mautrix/id"
 )
 
 func main() {
@@ -202,6 +204,27 @@ func main() {
 	// Register inbound call handler
 	engine.OnInvite(apiSrv.HandleInboundCall)
 
+	// Matrix global listener for inbound m.call.invite events.
+	if cfg.MatrixEnabled {
+		if cfg.MatrixHomeserverURL == "" || cfg.MatrixUserID == "" {
+			log.Error("MATRIX_ACCESS_TOKEN requires MATRIX_HOMESERVER_URL and MATRIX_USER_ID")
+			os.Exit(1)
+		}
+		matrixListener, err := matrix.NewListener(matrix.ListenerConfig{
+			HomeserverURL: cfg.MatrixHomeserverURL,
+			AccessToken:   cfg.MatrixAccessToken,
+			UserID:        mxid.UserID(cfg.MatrixUserID),
+			DeviceID:      mxid.DeviceID(cfg.MatrixDeviceID),
+			SyncTimeoutMs: cfg.MatrixSyncTimeoutMs,
+		}, apiSrv.HandleMatrixInbound, log)
+		if err != nil {
+			log.Error("failed to create Matrix listener", "error", err)
+			os.Exit(1)
+		}
+		apiSrv.MatrixListener = matrixListener
+		log.Info("starting Matrix listener", "user_id", cfg.MatrixUserID, "homeserver", cfg.MatrixHomeserverURL)
+	}
+
 	// Register re-INVITE handler for hold/unhold detection
 	engine.OnReInvite(apiSrv.HandleReInvite)
 
@@ -232,6 +255,17 @@ func main() {
 		log.Info("starting HTTP server", "addr", cfg.HTTPAddr)
 		return httpSrv.ListenAndServe()
 	})
+
+	// Matrix listener sync loop.
+	if apiSrv.MatrixListener != nil {
+		g.Go(func() error {
+			err := apiSrv.MatrixListener.Run(gCtx)
+			if err != nil && err != context.Canceled {
+				return err
+			}
+			return nil
+		})
+	}
 
 	// MoQ-over-WebTransport server (HTTP/3 over UDP). Listens on
 	// MoQ_LISTEN_ADDR (UDP) with the same chi router as the TCP HTTP

@@ -14,6 +14,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WhatsApp Business Calling** -- inbound and outbound calls over SIP-TLS + ICE/DTLS-SRTP + Opus 
 - **WebSocket legs** -- inbound (HTTP upgrade) and outbound (dial) PCM-over-WebSocket legs with binary or `json_base64` framing, configurable sample rate (8/16/24/48 kHz), bidirectional text, and caller-supplied X-/P- headers — designed to also back a future generic Agent API
 - **MoQ legs (experimental, PoC)** -- inbound Media-over-QUIC legs over WebTransport/HTTP/3 with Opus framed one frame per MoQ Object (LOC-style). Tracks `mengelbart/moqtransport` (IETF draft-11); browser interop with draft-16 clients (moqtail, moq.dev) is not expected to work out of the box. Disabled by default; enable with `MOQ_ENABLED=true` + `MOQ_TLS_CERT_FILE` / `MOQ_TLS_KEY_FILE`
+- **Matrix (matrix.org) legs** -- inbound and outbound MSC3401 1:1 VoIP calls signalled via `m.call.*` events. Media is Opus over ICE + DTLS-SRTP (pion); Matrix is the signalling channel only. Outbound legs supply per-leg homeserver credentials in `POST /v1/legs`; inbound legs auto-create on incoming invites delivered to a configured service account (`MATRIX_ACCESS_TOKEN`). Multi-party calls are mixed by VoiceBlender — no SFU (LiveKit / MatrixRTC) is needed. **End-to-end encrypted rooms** are supported when built with `make build-encrypted` (`-tags goolm`) — VoiceBlender then participates in megolm key sharing via an ephemeral in-memory crypto store; identity keys regenerate per restart, so peers see a new device each boot.
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **Room bridging** -- join two rooms' mixers (same sample rate) with live-configurable direction (bidirectional, one-way each way, or parked); echo-free via mixed-minus-self
 - **Audio routing matrix** -- per-room role-based routing for asymmetric audio (barge-in / whisper / supervisor monitor). Tag legs with a free-form `role` and declare a matrix of who-hears-whom by role. Applied atomically at leg-join time so a supervisor cannot momentarily bleed into the customer's audio. See [API.md](API.md#audio-routing-matrix).
@@ -106,6 +107,12 @@ All configuration is via environment variables:
 | `MOQ_TLS_CERT_FILE` | _(none)_ | Path to the TLS certificate used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
 | `MOQ_TLS_KEY_FILE` | _(none)_ | Path to the TLS private key used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
 | `MOQ_OPUS_BITRATE` | `24000` | Target bitrate (bps) for the Opus encoder feeding the MoQ leg's `mix` track. Must be in `6000..510000`. |
+| `MATRIX_HOMESERVER_URL` | _(none)_ | Matrix homeserver URL for the inbound listener (e.g. `https://matrix.example.org`). Required when `MATRIX_ACCESS_TOKEN` is set. |
+| `MATRIX_ACCESS_TOKEN` | _(empty = inbound disabled)_ | Access token authenticating the inbound service account. When set, VoiceBlender runs one `/sync` loop that auto-creates a `matrix_in` leg on every incoming `m.call.invite`. Outbound matrix legs supply their own credentials per request and work without this env var. |
+| `MATRIX_USER_ID` | _(none)_ | MXID owning `MATRIX_ACCESS_TOKEN` (e.g. `@bot:example.org`). Required when `MATRIX_ACCESS_TOKEN` is set. |
+| `MATRIX_DEVICE_ID` | _(none)_ | Matrix device id for the inbound service account. Optional. |
+| `MATRIX_SYNC_TIMEOUT_MS` | `30000` | `/sync` long-poll timeout in ms. |
+| `MATRIX_CALL_LIFETIME_MS` | `60000` | Default `m.call.invite` lifetime (ms) when neither the inbound peer nor the outbound request body specifies one. |
 
 ## Links
 
