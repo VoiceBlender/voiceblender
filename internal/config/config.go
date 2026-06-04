@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -61,6 +62,14 @@ type Config struct {
 	MoQTLSCertFile string
 	MoQTLSKeyFile  string
 	MoQOpusBitrate int
+
+	LiveKitEnabled             bool
+	LiveKitURL                 string // wss:// endpoint of the LiveKit server
+	LiveKitOpusBitrate         int
+	LiveKitTokenSigningEnabled bool   // opt-in: when true, VB can mint JWTs from API key/secret
+	LiveKitAPIKey              string // required when LiveKitTokenSigningEnabled=true
+	LiveKitAPISecret           string // required when LiveKitTokenSigningEnabled=true; redact in logs
+	LiveKitDefaultTokenTTL     time.Duration
 }
 
 func Load() Config {
@@ -121,7 +130,26 @@ func Load() Config {
 		MoQTLSCertFile: os.Getenv("MOQ_TLS_CERT_FILE"),
 		MoQTLSKeyFile:  os.Getenv("MOQ_TLS_KEY_FILE"),
 		MoQOpusBitrate: envInt("MOQ_OPUS_BITRATE", 24000),
+
+		LiveKitEnabled:             os.Getenv("LIVEKIT_ENABLED") == "true",
+		LiveKitURL:                 os.Getenv("LIVEKIT_URL"),
+		LiveKitOpusBitrate:         envInt("LIVEKIT_OPUS_BITRATE", 24000),
+		LiveKitTokenSigningEnabled: os.Getenv("LIVEKIT_TOKEN_SIGNING_ENABLED") == "true",
+		LiveKitAPIKey:              os.Getenv("LIVEKIT_API_KEY"),
+		LiveKitAPISecret:           os.Getenv("LIVEKIT_API_SECRET"),
+		LiveKitDefaultTokenTTL:     envDuration("LIVEKIT_DEFAULT_TOKEN_TTL", 6*time.Hour),
 	}
+}
+
+// envDuration parses a duration from the environment (Go duration string
+// syntax, e.g. "30m", "6h"). Falls back to def on missing or unparseable.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
 }
 
 // vsiBufferSize clamps the VSI per-client event buffer to a sane range.

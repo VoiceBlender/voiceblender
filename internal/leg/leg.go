@@ -20,6 +20,7 @@ const (
 	TypeWebSocketInbound  LegType = "websocket_in"
 	TypeWebSocketOutbound LegType = "websocket_out"
 	TypeMoQInbound        LegType = "moq_in"
+	TypeLiveKitRoom       LegType = "livekit_room"
 )
 
 type LegState string
