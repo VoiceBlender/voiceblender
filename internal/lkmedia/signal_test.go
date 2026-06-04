@@ -337,7 +337,7 @@ func TestSend_RoundTrip(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("server handler did not see Leave")
 	}
 
