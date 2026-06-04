@@ -12,15 +12,16 @@ import (
 type LegType string
 
 const (
-	TypeSIPInbound        LegType = "sip_inbound"
-	TypeSIPOutbound       LegType = "sip_outbound"
-	TypeWebRTC            LegType = "webrtc"
-	TypeWhatsAppInbound   LegType = "whatsapp_in"
-	TypeWhatsAppOutbound  LegType = "whatsapp_out"
-	TypeWebSocketInbound  LegType = "websocket_in"
-	TypeWebSocketOutbound LegType = "websocket_out"
-	TypeMoQInbound        LegType = "moq_in"
-	TypeLiveKitRoom       LegType = "livekit_room"
+	TypeSIPInbound         LegType = "sip_inbound"
+	TypeSIPOutbound        LegType = "sip_outbound"
+	TypeWebRTC             LegType = "webrtc"
+	TypeWhatsAppInbound    LegType = "whatsapp_in"
+	TypeWhatsAppOutbound   LegType = "whatsapp_out"
+	TypeWebSocketInbound   LegType = "websocket_in"
+	TypeWebSocketOutbound  LegType = "websocket_out"
+	TypeMoQInbound         LegType = "moq_in"
+	TypeLiveKitPublish     LegType = "livekit_publish"
+	TypeLiveKitParticipant LegType = "livekit_participant"
 )
 
 type LegState string

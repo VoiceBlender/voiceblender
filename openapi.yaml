@@ -1290,6 +1290,63 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/livekit/participants:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        get:
+            operationId: listLiveKitParticipants
+            summary: List LiveKit participants visible to a livekit_room leg
+            description: 'Returns a snapshot of the remote LiveKit participants currently in the room of a `livekit_room` leg. Model C: the LK room is one VoiceBlender participant; this endpoint exposes the LK-internal participant list for observability.'
+            tags:
+                - LiveKit
+            responses:
+                '200':
+                    description: Current LK participants
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Leg is not a livekit_room leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/livekit/participants/{identity}/mute:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+            - name: identity
+              in: path
+              required: true
+              schema:
+                type: string
+        post:
+            operationId: muteLiveKitParticipant
+            summary: Server-side mute a remote LiveKit participant's audio
+            description: Sends a LiveKit admin MuteTrack signal for the named participant's audio track. Requires the leg's JWT to carry `roomAdmin=true`; otherwise the LiveKit server silently rejects the request.
+            tags:
+                - LiveKit
+            responses:
+                '202':
+                    description: Mute request sent
+                '400':
+                    description: Leg is not a livekit_room leg, unknown identity, or participant has no audio track
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /rooms:
         post:
             operationId: createRoom
@@ -2463,6 +2520,8 @@ components:
                         - whatsapp_out
                         - websocket_in
                         - websocket_out
+                        - moq_in
+                        - livekit_room
                 state:
                     type: string
                     description: Leg state
@@ -2608,6 +2667,7 @@ components:
                         - sip
                         - whatsapp
                         - websocket
+                        - livekit_room
                 to:
                     type: string
                     description: Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"). For whatsapp legs, an E.164 phone number (with or without '+').
@@ -2703,6 +2763,11 @@ components:
                     enum:
                         - s16le
                     default: s16le
+                livekit:
+                    description: LiveKit room join parameters (only used when type=livekit_room).
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/LiveKitParams'
             required:
                 - type
         CreateRoomBridgeRequest:
@@ -3120,6 +3185,53 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        LiveKitParams:
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: LiveKit server endpoint (wss://...). Overrides LIVEKIT_URL.
+                    format: uri
+                token:
+                    type: string
+                    description: Pre-signed LiveKit JWT. Mutually exclusive with `room`/`identity` (mint mode); if both are present the token wins.
+                room:
+                    type: string
+                    description: LiveKit room name. Required when minting (i.e. `token` is empty AND LIVEKIT_TOKEN_SIGNING_ENABLED=true).
+                identity:
+                    type: string
+                    description: LiveKit participant identity. Required when minting.
+                participant_name:
+                    type: string
+                    description: Display name for the participant; surfaces in LK Room UIs.
+                permissions:
+                    description: LiveKit grant flags. Nil pointers default to publish=true, subscribe=true, data=false, admin=false.
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/LiveKitPermissions'
+                token_ttl:
+                    type: string
+                    description: Go duration string (e.g. "30m", "6h"). Used only when minting. Defaults to LIVEKIT_DEFAULT_TOKEN_TTL (6h).
+                opus_bitrate:
+                    type: integer
+                    description: Override LIVEKIT_OPUS_BITRATE for this leg. 6000..510000.
+                    minimum: 6000
+                    maximum: 510000
+        LiveKitPermissions:
+            type: object
+            properties:
+                can_publish:
+                    type: boolean
+                    description: Allow publishing tracks. Default true.
+                can_subscribe:
+                    type: boolean
+                    description: Allow subscribing to remote tracks. Default true.
+                can_publish_data:
+                    type: boolean
+                    description: Allow publishing data channel messages. Default false (audio bridge does not use data).
+                room_admin:
+                    type: boolean
+                    description: Grant admin actions on the room (e.g., server-side MuteTrack of remote participants). Default false.
         RegistrationView:
             type: object
             properties:
@@ -3288,6 +3400,12 @@ components:
                 - amd.beep
                 - sip.registration_active
                 - sip.registration_expired
+                - livekit.participant_joined
+                - livekit.participant_left
+                - livekit.participant_speaking_started
+                - livekit.participant_speaking_stopped
+                - livekit.track_published
+                - livekit.track_unpublished
         ICECandidateInit:
             type: object
             properties:
@@ -4368,3 +4486,121 @@ x-webhooks:
                                     reason:
                                         type: string
                                         description: 'Why the binding was removed: ttl, unregistered, forced, or replaced'
+    livekit.participant_joined:
+        post:
+            summary: Remote LiveKit participant joined the room of a livekit_room leg
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    identity:
+                                        type: string
+                                    name:
+                                        type: string
+                                    sid:
+                                        type: string
+    livekit.participant_left:
+        post:
+            summary: Remote LiveKit participant left the room of a livekit_room leg
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    identity:
+                                        type: string
+                                    sid:
+                                        type: string
+    livekit.participant_speaking_started:
+        post:
+            summary: Remote LiveKit participant started speaking
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    identity:
+                                        type: string
+                                    sid:
+                                        type: string
+                                    level:
+                                        type: number
+    livekit.participant_speaking_stopped:
+        post:
+            summary: Remote LiveKit participant stopped speaking
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    identity:
+                                        type: string
+                                    sid:
+                                        type: string
+                                    level:
+                                        type: number
+    livekit.track_published:
+        post:
+            summary: A remote LiveKit participant published a track
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    participant_identity:
+                                        type: string
+                                    participant_sid:
+                                        type: string
+                                    track_sid:
+                                        type: string
+                                    track_name:
+                                        type: string
+                                    track_kind:
+                                        type: string
+    livekit.track_unpublished:
+        post:
+            summary: A remote LiveKit participant's track was removed
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    track_sid:
+                                        type: string

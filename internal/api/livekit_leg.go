@@ -87,7 +87,7 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	l := leg.NewLiveKitLeg(tr, headers, cfg.SampleRate, s.Log)
+	l := leg.NewLiveKitPublishLeg(tr, headers, cfg.SampleRate, s.Log)
 	if req.AppID != "" {
 		l.SetAppID(req.AppID)
 	}
@@ -176,7 +176,7 @@ func (s *Server) resolveLiveKitToken(p *LiveKitParams) (string, error) {
 // watchLiveKitTransport blocks on the transport's Done channel and, when
 // it closes, publishes leg.disconnected (single-flight via the leg's
 // ClaimDisconnect) and runs cleanup.
-func (s *Server) watchLiveKitTransport(l *leg.LiveKitLeg, tr *lkmedia.Transport) {
+func (s *Server) watchLiveKitTransport(l *leg.LiveKitPublishLeg, tr *lkmedia.Transport) {
 	<-tr.Done()
 	reason := tr.CloseReason()
 	if reason == "" {
@@ -230,14 +230,14 @@ func (s *Server) muteLiveKitParticipant(w http.ResponseWriter, r *http.Request) 
 // lookupLiveKitLeg fetches the leg by URL param, narrows it to
 // LiveKitLeg, and returns both the leg and its transport. Writes the
 // appropriate error response and returns ok=false on any failure.
-func (s *Server) lookupLiveKitLeg(w http.ResponseWriter, r *http.Request) (*leg.LiveKitLeg, *lkmedia.Transport, bool) {
+func (s *Server) lookupLiveKitLeg(w http.ResponseWriter, r *http.Request) (*leg.LiveKitPublishLeg, *lkmedia.Transport, bool) {
 	id := chi.URLParam(r, "id")
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "leg not found")
 		return nil, nil, false
 	}
-	lkl, ok := l.(*leg.LiveKitLeg)
+	lkl, ok := l.(*leg.LiveKitPublishLeg)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "leg is not a livekit_room leg")
 		return nil, nil, false
@@ -290,7 +290,7 @@ func toLiveKitParticipantView(p *livekit.ParticipantInfo) liveKitParticipantView
 // to the event bus, scoped to the given leg's ID. Diffs participant
 // updates against the prior snapshot to emit synthetic joined/left
 // events (LiveKit's ParticipantUpdate carries snapshots, not deltas).
-func wireLiveKitCallbacks(tr *lkmedia.Transport, l *leg.LiveKitLeg, bus eventPublisher) {
+func wireLiveKitCallbacks(tr *lkmedia.Transport, l *leg.LiveKitPublishLeg, bus eventPublisher) {
 	prevParticipants := map[string]struct{}{}
 	prevSpeakers := map[string]struct{}{}
 

@@ -398,6 +398,18 @@ channels:
                 $ref: '#/components/messages/evt_sip_registration_active'
             sip.registration_expired:
                 $ref: '#/components/messages/evt_sip_registration_expired'
+            livekit.participant_joined:
+                $ref: '#/components/messages/evt_livekit_participant_joined'
+            livekit.participant_left:
+                $ref: '#/components/messages/evt_livekit_participant_left'
+            livekit.participant_speaking_started:
+                $ref: '#/components/messages/evt_livekit_participant_speaking_started'
+            livekit.participant_speaking_stopped:
+                $ref: '#/components/messages/evt_livekit_participant_speaking_stopped'
+            livekit.track_published:
+                $ref: '#/components/messages/evt_livekit_track_published'
+            livekit.track_unpublished:
+                $ref: '#/components/messages/evt_livekit_track_unpublished'
             connected:
                 $ref: '#/components/messages/frame_connected'
             ping:
@@ -1686,6 +1698,48 @@ operations:
         summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
         messages:
             - $ref: '#/channels/vsi/messages/sip.registration_expired'
+    send_livekit_participant_joined:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Remote LiveKit participant joined the room of a livekit_room leg
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.participant_joined'
+    send_livekit_participant_left:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Remote LiveKit participant left the room of a livekit_room leg
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.participant_left'
+    send_livekit_participant_speaking_started:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Remote LiveKit participant started speaking
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.participant_speaking_started'
+    send_livekit_participant_speaking_stopped:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Remote LiveKit participant stopped speaking
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.participant_speaking_stopped'
+    send_livekit_track_published:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A remote LiveKit participant published a track
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.track_published'
+    send_livekit_track_unpublished:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A remote LiveKit participant's track was removed
+        messages:
+            - $ref: '#/channels/vsi/messages/livekit.track_unpublished'
     send_connected:
         action: send
         channel:
@@ -4235,6 +4289,48 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_expired. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/sip.registration_expired/post/requestBody/content/application~1json/schema
+        evt_livekit_participant_joined:
+            name: evt_livekit_participant_joined
+            title: Remote LiveKit participant joined the room of a livekit_room leg
+            summary: Remote LiveKit participant joined the room of a livekit_room leg
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.participant_joined. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.participant_joined/post/requestBody/content/application~1json/schema
+        evt_livekit_participant_left:
+            name: evt_livekit_participant_left
+            title: Remote LiveKit participant left the room of a livekit_room leg
+            summary: Remote LiveKit participant left the room of a livekit_room leg
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.participant_left. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.participant_left/post/requestBody/content/application~1json/schema
+        evt_livekit_participant_speaking_started:
+            name: evt_livekit_participant_speaking_started
+            title: Remote LiveKit participant started speaking
+            summary: Remote LiveKit participant started speaking
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.participant_speaking_started. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.participant_speaking_started/post/requestBody/content/application~1json/schema
+        evt_livekit_participant_speaking_stopped:
+            name: evt_livekit_participant_speaking_stopped
+            title: Remote LiveKit participant stopped speaking
+            summary: Remote LiveKit participant stopped speaking
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.participant_speaking_stopped. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.participant_speaking_stopped/post/requestBody/content/application~1json/schema
+        evt_livekit_track_published:
+            name: evt_livekit_track_published
+            title: A remote LiveKit participant published a track
+            summary: A remote LiveKit participant published a track
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.track_published. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.track_published/post/requestBody/content/application~1json/schema
+        evt_livekit_track_unpublished:
+            name: evt_livekit_track_unpublished
+            title: A remote LiveKit participant's track was removed
+            summary: A remote LiveKit participant's track was removed
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/livekit.track_unpublished. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/livekit.track_unpublished/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.

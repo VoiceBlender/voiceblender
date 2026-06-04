@@ -13,14 +13,14 @@ func lkTestLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// newBareLiveKitLeg builds a LiveKitLeg with no transport, suitable for
+// newBareLiveKitPublishLeg builds a LiveKitPublishLeg with no transport, suitable for
 // exercising state/metadata behavior without spinning up signaling.
-func newBareLiveKitLeg(t *testing.T) *LiveKitLeg {
+func newBareLiveKitPublishLeg(t *testing.T) *LiveKitPublishLeg {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	return &LiveKitLeg{
+	return &LiveKitPublishLeg{
 		id:         "lk-test",
-		legType:    TypeLiveKitRoom,
+		legType:    TypeLiveKitPublish,
 		state:      StateConnected,
 		sampleRate: 48000,
 		createdAt:  time.Now(),
@@ -31,10 +31,10 @@ func newBareLiveKitLeg(t *testing.T) *LiveKitLeg {
 	}
 }
 
-func TestLiveKitLeg_Identity(t *testing.T) {
-	l := newBareLiveKitLeg(t)
-	if l.Type() != TypeLiveKitRoom {
-		t.Errorf("Type = %s, want %s", l.Type(), TypeLiveKitRoom)
+func TestLiveKitPublishLeg_Identity(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if l.Type() != TypeLiveKitPublish {
+		t.Errorf("Type = %s, want %s", l.Type(), TypeLiveKitPublish)
 	}
 	if l.SampleRate() != 48000 {
 		t.Errorf("SampleRate = %d, want 48000", l.SampleRate())
@@ -50,8 +50,8 @@ func TestLiveKitLeg_Identity(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_MuteDeafState(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_MuteDeafState(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if l.IsMuted() {
 		t.Error("default IsMuted should be false")
 	}
@@ -73,8 +73,8 @@ func TestLiveKitLeg_MuteDeafState(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_RoomAppRoleMetadata(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_RoomAppRoleMetadata(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	l.SetRoomID("room-7")
 	l.SetAppID("app-9")
 	l.SetRole("agent")
@@ -84,8 +84,8 @@ func TestLiveKitLeg_RoomAppRoleMetadata(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_HangupTransitions(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_HangupTransitions(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if l.State() != StateConnected {
 		t.Fatalf("expected StateConnected, got %s", l.State())
 	}
@@ -107,8 +107,8 @@ func TestLiveKitLeg_HangupTransitions(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_ClaimDisconnectSingleFlight(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_ClaimDisconnectSingleFlight(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if !l.ClaimDisconnect() {
 		t.Fatal("first ClaimDisconnect should return true")
 	}
@@ -117,8 +117,8 @@ func TestLiveKitLeg_ClaimDisconnectSingleFlight(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_DTMFAndTextUnsupported(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_DTMFAndTextUnsupported(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if err := l.SendDTMF(context.Background(), "1234"); err == nil {
 		t.Error("SendDTMF should return an error")
 	}
@@ -127,8 +127,8 @@ func TestLiveKitLeg_DTMFAndTextUnsupported(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_AudioReaderNilTransport(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_AudioReaderNilTransport(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	r := l.AudioReader()
 	if r == nil {
 		t.Fatal("AudioReader returned nil")
@@ -139,8 +139,8 @@ func TestLiveKitLeg_AudioReaderNilTransport(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_AudioWriterNilTransportDiscards(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_AudioWriterNilTransportDiscards(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	w := l.AudioWriter()
 	if w == nil {
 		t.Fatal("AudioWriter returned nil")
@@ -151,14 +151,14 @@ func TestLiveKitLeg_AudioWriterNilTransportDiscards(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_Headers_MergesAndDefensiveCopy(t *testing.T) {
+func TestLiveKitPublishLeg_Headers_MergesAndDefensiveCopy(t *testing.T) {
 	in := map[string]string{
 		"livekit_name": "Alice",
 		"x_custom":     "v",
 	}
-	// Construct via NewLiveKitLeg with nil transport (skips transport-derived
+	// Construct via NewLiveKitPublishLeg with nil transport (skips transport-derived
 	// header merge but still honors caller-supplied headers).
-	l := NewLiveKitLeg(nil, in, 48000, lkTestLog())
+	l := NewLiveKitPublishLeg(nil, in, 48000, lkTestLog())
 	out := l.Headers()
 	if got := out["livekit_name"]; got != "Alice" {
 		t.Errorf("livekit_name = %q, want Alice", got)
@@ -173,8 +173,8 @@ func TestLiveKitLeg_Headers_MergesAndDefensiveCopy(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_AcceptDTMFAndText(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_AcceptDTMFAndText(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if l.AcceptDTMF() {
 		t.Error("default AcceptDTMF should be false")
 	}
@@ -188,15 +188,15 @@ func TestLiveKitLeg_AcceptDTMFAndText(t *testing.T) {
 	}
 }
 
-func TestLiveKitLeg_RTPStatsEmpty(t *testing.T) {
-	l := newBareLiveKitLeg(t)
+func TestLiveKitPublishLeg_RTPStatsEmpty(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
 	if got := l.RTPStats(); (got != RTPStats{}) {
 		t.Errorf("RTPStats = %+v, want zero", got)
 	}
 }
 
 // Sanity check that the atomic.Bool zero value behaves as expected.
-func TestLiveKitLeg_AtomicBoolDefaults(t *testing.T) {
+func TestLiveKitPublishLeg_AtomicBoolDefaults(t *testing.T) {
 	var b atomic.Bool
 	if b.Load() {
 		t.Fatal("atomic.Bool zero value should be false")
