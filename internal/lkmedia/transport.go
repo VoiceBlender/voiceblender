@@ -49,7 +49,7 @@ type Transport struct {
 	peer   PeerConfig
 	log    *slog.Logger
 	signal *SignalClient
-	cb     Callbacks
+	cb     atomic.Pointer[Callbacks]
 
 	publisher  *webrtc.PeerConnection
 	subscriber *webrtc.PeerConnection
@@ -74,6 +74,13 @@ type Transport struct {
 
 	mu                   sync.Mutex
 	publisherNegotiating bool
+
+	// participants tracks the LK room's current participants, indexed by
+	// identity (preferred over SID because identity is durable across the
+	// participant's lifecycle). Updated when the server sends
+	// ParticipantUpdate; the API surface (GET .../participants) reads
+	// from this snapshot.
+	participants map[string]*livekit.ParticipantInfo
 }
 
 // NewTransport dials LiveKit, completes signaling JOIN, sets up both pion
@@ -117,18 +124,19 @@ func NewTransport(ctx context.Context, cfg Config, signalCfg SignalConfig, peer 
 
 	tctx, cancel := context.WithCancel(context.Background())
 	t := &Transport{
-		cfg:     cfg,
-		peer:    peer,
-		log:     log,
-		signal:  sc,
-		cb:      cb,
-		mixer:   mixer,
-		outPCM:  newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs),
-		encoder: enc,
-		ctx:     tctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		cfg:          cfg,
+		peer:         peer,
+		log:          log,
+		signal:       sc,
+		mixer:        mixer,
+		outPCM:       newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs),
+		encoder:      enc,
+		ctx:          tctx,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		participants: map[string]*livekit.ParticipantInfo{},
 	}
+	t.cb.Store(&cb)
 
 	pub, sub, localTrack, err := t.buildPeerConnections(join.IceServers)
 	if err != nil {
@@ -332,28 +340,29 @@ func (t *Transport) dispatchSignal(ev SignalEvent) {
 
 	case SignalEventTrackUnpublished:
 		t.mixer.RemoveLane(e.TrackSID)
-		if t.cb.OnTrackUnpublishedSID != nil {
-			t.cb.OnTrackUnpublishedSID(e.TrackSID)
+		if cb := t.callbacks(); cb != nil && cb.OnTrackUnpublishedSID != nil {
+			cb.OnTrackUnpublishedSID(e.TrackSID)
 		}
 
 	case SignalEventParticipantUpdate:
-		if t.cb.OnParticipantsUpdated != nil {
-			t.cb.OnParticipantsUpdated(e.Participants)
+		t.mergeParticipantUpdate(e.Participants)
+		if cb := t.callbacks(); cb != nil && cb.OnParticipantsUpdated != nil {
+			cb.OnParticipantsUpdated(e.Participants)
 		}
 
 	case SignalEventSpeakersChanged:
-		if t.cb.OnSpeakersChanged != nil {
-			t.cb.OnSpeakersChanged(e.Speakers)
+		if cb := t.callbacks(); cb != nil && cb.OnSpeakersChanged != nil {
+			cb.OnSpeakersChanged(e.Speakers)
 		}
 
 	case SignalEventConnectionQuality:
-		if t.cb.OnConnectionQuality != nil {
-			t.cb.OnConnectionQuality(e.Updates)
+		if cb := t.callbacks(); cb != nil && cb.OnConnectionQuality != nil {
+			cb.OnConnectionQuality(e.Updates)
 		}
 
 	case SignalEventRefreshToken:
-		if t.cb.OnRefreshToken != nil {
-			t.cb.OnRefreshToken(e.Token)
+		if cb := t.callbacks(); cb != nil && cb.OnRefreshToken != nil {
+			cb.OnRefreshToken(e.Token)
 		}
 
 	case SignalEventLeave:
@@ -556,6 +565,79 @@ func (t *Transport) Close(reason livekit.DisconnectReason) error {
 // the livekit protocol enums — equivalent to Close(CLIENT_INITIATED).
 func (t *Transport) CloseClient() error {
 	return t.Close(livekit.DisconnectReason_CLIENT_INITIATED)
+}
+
+// SetCallbacks replaces the observability callbacks. Used by callers
+// that need the leg's ID inside the callbacks but only have it after
+// NewTransport returns. Thread-safe.
+func (t *Transport) SetCallbacks(cb Callbacks) {
+	t.cb.Store(&cb)
+}
+
+// callbacks loads the current callbacks pointer. Never nil — NewTransport
+// stores a zero-value Callbacks at construction.
+func (t *Transport) callbacks() *Callbacks {
+	return t.cb.Load()
+}
+
+// Participants returns a snapshot of the current LK participants
+// (excluding any with State == DISCONNECTED). Map keyed by identity.
+// The returned values are pointer-copies; mutating fields is not safe.
+func (t *Transport) Participants() []*livekit.ParticipantInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]*livekit.ParticipantInfo, 0, len(t.participants))
+	for _, p := range t.participants {
+		out = append(out, p)
+	}
+	return out
+}
+
+// ParticipantByIdentity returns the cached ParticipantInfo for an
+// identity, or nil if unknown.
+func (t *Transport) ParticipantByIdentity(identity string) *livekit.ParticipantInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.participants[identity]
+}
+
+// MuteRemoteTrackByIdentity asks the LiveKit server to mute the audio
+// track of a remote participant. Requires the leg's JWT to carry
+// roomAdmin=true; otherwise the server silently no-ops the request and
+// the participant remains unmuted.
+func (t *Transport) MuteRemoteTrackByIdentity(identity string, muted bool) error {
+	p := t.ParticipantByIdentity(identity)
+	if p == nil {
+		return fmt.Errorf("livekit: no participant with identity %q", identity)
+	}
+	var sid string
+	for _, tr := range p.GetTracks() {
+		if tr.GetType() == livekit.TrackType_AUDIO {
+			sid = tr.GetSid()
+			break
+		}
+	}
+	if sid == "" {
+		return fmt.Errorf("livekit: participant %q has no audio track", identity)
+	}
+	return t.signal.MuteTrack(sid, muted)
+}
+
+// mergeParticipantUpdate folds an incoming ParticipantUpdate into the
+// per-leg cache. Disconnect entries are removed; active entries replace.
+func (t *Transport) mergeParticipantUpdate(updates []*livekit.ParticipantInfo) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, p := range updates {
+		if p == nil || p.GetIdentity() == "" {
+			continue
+		}
+		if p.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			delete(t.participants, p.GetIdentity())
+			continue
+		}
+		t.participants[p.GetIdentity()] = p
+	}
 }
 
 // cleanup is the one-shot teardown path: cancels the context, closes

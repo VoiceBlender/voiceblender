@@ -151,6 +151,8 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/amd", s.startAMDLeg)
 		r.Post("/legs/{id}/ice-candidates", s.webrtcAddCandidate)
 		r.Get("/legs/{id}/ice-candidates", s.webrtcGetCandidates)
+		r.Get("/legs/{id}/livekit/participants", s.listLiveKitParticipants)
+		r.Post("/legs/{id}/livekit/participants/{identity}/mute", s.muteLiveKitParticipant)
 
 		// Rooms
 		r.Post("/rooms", s.createRoom)

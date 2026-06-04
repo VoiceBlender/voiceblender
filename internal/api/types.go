@@ -46,6 +46,33 @@ type CreateLegRequest struct {
 	SampleRate   int    `json:"sample_rate,omitempty"`   // 8000/16000/24000/48000; default 16000
 	WireFormat   string `json:"wire_format,omitempty"`   // "binary" (default) or "json_base64"
 	SampleFormat string `json:"sample_format,omitempty"` // "s16le" (default; only format in v1)
+
+	// LiveKit leg fields (only used when Type == "livekit_room"):
+	LiveKit *LiveKitParams `json:"livekit,omitempty"`
+}
+
+// LiveKitParams configures a livekit_room leg. Provide either Token (a
+// pre-signed JWT) OR Room+Identity (the leg-create handler will mint a
+// JWT when LIVEKIT_TOKEN_SIGNING_ENABLED=true). If both are provided, the
+// explicit Token wins.
+type LiveKitParams struct {
+	URL             string              `json:"url,omitempty"`              // overrides LIVEKIT_URL
+	Token           string              `json:"token,omitempty"`            // pre-signed JWT
+	Room            string              `json:"room,omitempty"`             // required when minting
+	Identity        string              `json:"identity,omitempty"`         // required when minting
+	ParticipantName string              `json:"participant_name,omitempty"` // optional display name
+	Permissions     *LiveKitPermissions `json:"permissions,omitempty"`      // defaults: publish+subscribe true, data false
+	TokenTTL        string              `json:"token_ttl,omitempty"`        // Go duration string; default 6h
+	OpusBitrate     int                 `json:"opus_bitrate,omitempty"`     // override LIVEKIT_OPUS_BITRATE
+}
+
+// LiveKitPermissions mirrors the LiveKit video grant flags. Nil pointers
+// fall back to defaults (publish=true, subscribe=true, data=false).
+type LiveKitPermissions struct {
+	CanPublish     *bool `json:"can_publish,omitempty"`
+	CanSubscribe   *bool `json:"can_subscribe,omitempty"`
+	CanPublishData *bool `json:"can_publish_data,omitempty"`
+	RoomAdmin      *bool `json:"room_admin,omitempty"` // grants admin actions like server-side MuteTrack on remote participants
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
@@ -71,6 +98,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"sample_rate":      {Description: "PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.", Enum: []string{"8000", "16000", "24000", "48000"}, Default: 16000},
 	"wire_format":      {Description: "Audio framing for websocket legs. `binary` ships raw PCM as WebSocket binary frames; `json_base64` wraps PCM as `{\"type\":\"audio\",\"audio\":\"<base64>\"}` text frames (browser-friendly).", Enum: []string{"binary", "json_base64"}, Default: "binary"},
 	"sample_format":    {Description: "On-the-wire PCM sample encoding for websocket legs. v1 only supports `s16le`.", Enum: []string{"s16le"}, Default: "s16le"},
+	"livekit":          {Description: "LiveKit room join parameters (only used when type=livekit_room)."},
 }
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
@@ -141,6 +169,24 @@ type AMDParams struct {
 	TotalAnalysisTime     int `json:"total_analysis_time,omitempty"`     // ms — hard analysis deadline
 	MinimumWordLength     int `json:"minimum_word_length,omitempty"`     // ms — min speech burst to count
 	BeepTimeout           int `json:"beep_timeout,omitempty"`            // ms — time to wait for beep after machine (0=disabled)
+}
+
+var liveKitParamsFields = map[string]FieldEnrichment{
+	"url":              {Description: "LiveKit server endpoint (wss://...). Overrides LIVEKIT_URL.", Format: "uri"},
+	"token":            {Description: "Pre-signed LiveKit JWT. Mutually exclusive with `room`/`identity` (mint mode); if both are present the token wins."},
+	"room":             {Description: "LiveKit room name. Required when minting (i.e. `token` is empty AND LIVEKIT_TOKEN_SIGNING_ENABLED=true)."},
+	"identity":         {Description: "LiveKit participant identity. Required when minting."},
+	"participant_name": {Description: "Display name for the participant; surfaces in LK Room UIs."},
+	"permissions":      {Description: "LiveKit grant flags. Nil pointers default to publish=true, subscribe=true, data=false, admin=false."},
+	"token_ttl":        {Description: "Go duration string (e.g. \"30m\", \"6h\"). Used only when minting. Defaults to LIVEKIT_DEFAULT_TOKEN_TTL (6h)."},
+	"opus_bitrate":     {Description: "Override LIVEKIT_OPUS_BITRATE for this leg. 6000..510000.", Minimum: intPtr(6000), Maximum: intPtr(510000)},
+}
+
+var liveKitPermissionsFields = map[string]FieldEnrichment{
+	"can_publish":      {Description: "Allow publishing tracks. Default true."},
+	"can_subscribe":    {Description: "Allow subscribing to remote tracks. Default true."},
+	"can_publish_data": {Description: "Allow publishing data channel messages. Default false (audio bridge does not use data)."},
+	"room_admin":       {Description: "Grant admin actions on the room (e.g., server-side MuteTrack of remote participants). Default false."},
 }
 
 var amdParamsFields = map[string]FieldEnrichment{
@@ -527,6 +573,8 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("DeleteLegRequest", deleteLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)
+	collect("LiveKitParams", liveKitParamsFields)
+	collect("LiveKitPermissions", liveKitPermissionsFields)
 	collect("TransferRequest", transferRequestFields)
 	collect("CreateRoomRequest", createRoomRequestFields)
 	collect("AddLegRequest", addLegRequestFields)

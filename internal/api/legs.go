@@ -704,6 +704,8 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 		s.createWhatsAppOutboundLeg(w, r, req)
 	case "websocket":
 		s.createWebSocketOutboundLeg(w, r, req)
+	case "livekit_room":
+		s.createLiveKitRoomLeg(w, r, req)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported leg type: %s", req.Type))
 	}

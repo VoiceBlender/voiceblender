@@ -252,6 +252,12 @@ func EventsMetadata() []EventMeta {
 		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
 		{events.SIPRegistrationActive, "SIP AOR registration created or refreshed (one event per Contact)", reflect.TypeOf(events.SIPRegistrationActiveData{})},
 		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{})},
+		{events.LiveKitParticipantJoined, "Remote LiveKit participant joined the room of a livekit_room leg", reflect.TypeOf(events.LiveKitParticipantJoinedData{})},
+		{events.LiveKitParticipantLeft, "Remote LiveKit participant left the room of a livekit_room leg", reflect.TypeOf(events.LiveKitParticipantLeftData{})},
+		{events.LiveKitParticipantSpeakingStarted, "Remote LiveKit participant started speaking", reflect.TypeOf(events.LiveKitParticipantSpeakingData{})},
+		{events.LiveKitParticipantSpeakingStopped, "Remote LiveKit participant stopped speaking", reflect.TypeOf(events.LiveKitParticipantSpeakingData{})},
+		{events.LiveKitTrackPublished, "A remote LiveKit participant published a track", reflect.TypeOf(events.LiveKitTrackPublishedData{})},
+		{events.LiveKitTrackUnpublished, "A remote LiveKit participant's track was removed", reflect.TypeOf(events.LiveKitTrackUnpublishedData{})},
 	}
 }
 
