@@ -235,14 +235,10 @@ func (l *LiveKitPublishLeg) AcceptText() bool     { return l.acceptText.Load() }
 func (l *LiveKitPublishLeg) SetAcceptText(a bool) { l.acceptText.Store(a) }
 func (l *LiveKitPublishLeg) RTTNegotiated() bool  { return false }
 
-func (l *LiveKitPublishLeg) AudioReader() io.Reader {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if l.transport == nil {
-		return emptyReader{}
-	}
-	return l.transport.AudioReader()
-}
+// AudioReader returns emptyReader{} — the publish leg has no upstream
+// audio of its own. Remote LK participants' audio arrives via separate
+// LiveKitParticipantLeg entries managed by the API layer.
+func (l *LiveKitPublishLeg) AudioReader() io.Reader { return emptyReader{} }
 
 func (l *LiveKitPublishLeg) AudioWriter() io.Writer {
 	l.mu.RLock()

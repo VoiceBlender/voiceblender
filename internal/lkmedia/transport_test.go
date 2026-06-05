@@ -202,6 +202,150 @@ func TestTransport_AudioWriterAcceptsAndDoesNotBlock(t *testing.T) {
 	}
 }
 
+// newBareTransportForUnitTests builds a Transport struct directly
+// (bypassing NewTransport/signaling) so we can exercise the
+// participant cache and pending-tracks race-handling logic in isolation.
+func newBareTransportForUnitTests() *Transport {
+	tctx, cancel := context.WithCancel(context.Background())
+	t := &Transport{
+		log:           slog.Default(),
+		ctx:           tctx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+		participants:  map[string]*livekit.ParticipantInfo{},
+		pendingTracks: map[string]pendingTrack{},
+	}
+	t.cb.Store(&Callbacks{})
+	return t
+}
+
+func TestIdentityForSID_LookupAndMiss(t *testing.T) {
+	tr := newBareTransportForUnitTests()
+	tr.participants["alice"] = &livekit.ParticipantInfo{Identity: "alice", Sid: "PA_a"}
+	tr.participants["bob"] = &livekit.ParticipantInfo{Identity: "bob", Sid: "PA_b"}
+
+	if got := tr.identityForSID("PA_a"); got != "alice" {
+		t.Errorf("identityForSID(PA_a) = %q, want alice", got)
+	}
+	if got := tr.identityForSID("PA_unknown"); got != "" {
+		t.Errorf("identityForSID(PA_unknown) = %q, want empty", got)
+	}
+}
+
+func TestFireRemoteAudioTrack_FiresCallback(t *testing.T) {
+	tr := newBareTransportForUnitTests()
+	got := make(chan struct {
+		ident, psid, tsid string
+		pcm               io.Reader
+	}, 1)
+	tr.SetCallbacks(Callbacks{
+		OnRemoteAudioTrack: func(identity, participantSID, trackSID string, pcm io.Reader) {
+			got <- struct {
+				ident, psid, tsid string
+				pcm               io.Reader
+			}{identity, participantSID, trackSID, pcm}
+		},
+	})
+	tr.fireRemoteAudioTrack("alice", "PA_a", "TR_a", bytes.NewReader([]byte{1, 2, 3}))
+	select {
+	case g := <-got:
+		if g.ident != "alice" || g.psid != "PA_a" || g.tsid != "TR_a" {
+			t.Errorf("got %+v", g)
+		}
+		if g.pcm == nil {
+			t.Error("pcm reader nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnRemoteAudioTrack did not fire")
+	}
+}
+
+func TestFireRemoteAudioTrack_DrainsPCMWhenNoCallback(t *testing.T) {
+	// When no callback is registered the transport must still drain the
+	// PCM reader to avoid stalling the decoder pipe.
+	tr := newBareTransportForUnitTests()
+	tr.SetCallbacks(Callbacks{})
+	r, w := io.Pipe()
+	tr.fireRemoteAudioTrack("alice", "PA_a", "TR_a", r)
+	// Writing must succeed even though no consumer registered — the
+	// transport spawns a goroutine to discard.
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Write([]byte("payload"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("write blocked or failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("write did not complete — drain goroutine did not run")
+	}
+	_ = w.Close()
+}
+
+func TestDrainPendingTracksFor_FiresPendingTracks(t *testing.T) {
+	tr := newBareTransportForUnitTests()
+	got := make(chan string, 2)
+	tr.SetCallbacks(Callbacks{
+		OnRemoteAudioTrack: func(identity, participantSID, trackSID string, pcm io.Reader) {
+			got <- identity
+		},
+	})
+
+	// OnTrack-equivalent: stash two pending tracks before any ParticipantUpdate.
+	tr.mu.Lock()
+	tr.pendingTracks["PA_a"] = pendingTrack{pcm: bytes.NewReader(nil), trackSID: "TR_a"}
+	tr.pendingTracks["PA_b"] = pendingTrack{pcm: bytes.NewReader(nil), trackSID: "TR_b"}
+	tr.mu.Unlock()
+
+	// A ParticipantUpdate that names both SIDs should drain both.
+	tr.drainPendingTracksFor([]*livekit.ParticipantInfo{
+		{Identity: "alice", Sid: "PA_a", State: livekit.ParticipantInfo_ACTIVE},
+		{Identity: "bob", Sid: "PA_b", State: livekit.ParticipantInfo_ACTIVE},
+	})
+
+	identities := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case id := <-got:
+			identities[id] = true
+		case <-time.After(time.Second):
+			t.Fatalf("only %d callbacks fired", i)
+		}
+	}
+	if !identities["alice"] || !identities["bob"] {
+		t.Errorf("expected alice+bob, got %+v", identities)
+	}
+	// Pending queue must be drained.
+	tr.mu.Lock()
+	if len(tr.pendingTracks) != 0 {
+		t.Errorf("pendingTracks not drained: %+v", tr.pendingTracks)
+	}
+	tr.mu.Unlock()
+}
+
+func TestDrainPendingTracksFor_NoMatchLeavesPending(t *testing.T) {
+	tr := newBareTransportForUnitTests()
+	tr.SetCallbacks(Callbacks{
+		OnRemoteAudioTrack: func(string, string, string, io.Reader) {
+			t.Error("OnRemoteAudioTrack should not fire when SIDs do not match")
+		},
+	})
+	tr.mu.Lock()
+	tr.pendingTracks["PA_a"] = pendingTrack{pcm: bytes.NewReader(nil), trackSID: "TR_a"}
+	tr.mu.Unlock()
+	tr.drainPendingTracksFor([]*livekit.ParticipantInfo{
+		{Identity: "carol", Sid: "PA_other", State: livekit.ParticipantInfo_ACTIVE},
+	})
+	tr.mu.Lock()
+	if _, ok := tr.pendingTracks["PA_a"]; !ok {
+		t.Error("unrelated participant drained PA_a")
+	}
+	tr.mu.Unlock()
+}
+
 func TestTransport_CloseIsIdempotent(t *testing.T) {
 	join := canonicalJoin()
 	join.SubscriberPrimary = true

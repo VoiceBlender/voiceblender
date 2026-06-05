@@ -19,6 +19,14 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 )
 
+// pendingTrack records a remote audio track whose participant identity
+// is not yet known. Once a ParticipantUpdate carries the matching SID we
+// fire OnRemoteAudioTrack with the cached pcm reader.
+type pendingTrack struct {
+	pcm      io.Reader
+	trackSID string
+}
+
 // PeerConfig configures the pion PeerConnections used by the transport.
 type PeerConfig struct {
 	// ICEServers overrides the STUN/TURN list from JoinResponse. When non-empty,
@@ -29,10 +37,29 @@ type PeerConfig struct {
 	RTPPortMin, RTPPortMax int
 }
 
-// Callbacks bundles optional observability hooks the leg layer wires up to
-// VoiceBlender's event bus (Model C: LK-internal state surfaces as scoped
-// events on the leg, not as VB room participants).
+// Callbacks bundles the hooks the API layer wires up to bridge LK
+// signaling state into VoiceBlender's leg/room model. Model B: each
+// subscribed remote audio track becomes a LiveKitParticipantLeg via
+// OnRemoteAudioTrack; the rest are observability events.
 type Callbacks struct {
+	// OnRemoteAudioTrack is the central callback for Model B. Fires once
+	// per remote audio track the subscriber PC subscribes to. The API
+	// layer is expected to spawn a LiveKitParticipantLeg using `pcm` as
+	// the leg's AudioReader and add it to the umbrella's VB room. The
+	// reader yields PCM16-LE at 48 kHz; reads return io.EOF when the
+	// track ends or the transport closes.
+	//
+	// `identity` may be empty if pion fires OnTrack before the
+	// corresponding ParticipantUpdate arrives. In that case the callback
+	// also receives `participantSID` so callers can map it later.
+	OnRemoteAudioTrack func(identity, participantSID, trackSID string, pcm io.Reader)
+
+	// OnRemoteAudioTrackEnded fires when a previously-published track is
+	// torn down (TrackUnpublished, ParticipantUpdate DISCONNECTED, or the
+	// underlying RTP stream stops). The API layer cleans up the matching
+	// participant leg.
+	OnRemoteAudioTrackEnded func(trackSID string)
+
 	OnParticipantsUpdated  func(participants []*livekit.ParticipantInfo)
 	OnSpeakersChanged      func(speakers []*livekit.SpeakerInfo)
 	OnTrackPublishedRemote func(participantSID string, track *livekit.TrackInfo)
@@ -58,8 +85,13 @@ type Transport struct {
 	localCID   string
 	localSID   atomic.Value // string; set when server confirms via TrackPublished
 
-	mixer  *remoteMixer
-	outPCM *streamBuffer // PCM bytes the leg writes (sendLoop reads)
+	outPCM *streamBuffer // PCM the publish leg writes; sendLoop drains it.
+
+	// pendingTracks holds remote audio tracks that arrived before we
+	// learned their participant identity. Keyed by participantSID; the
+	// value is the pcmReader passed to OnRemoteAudioTrack once the
+	// matching ParticipantUpdate arrives. Guarded by mu.
+	pendingTracks map[string]pendingTrack
 
 	encoder *codec.OpusEncoder
 
@@ -119,22 +151,19 @@ func NewTransport(ctx context.Context, cfg Config, signalCfg SignalConfig, peer 
 		log.Warn("opus SetBitrate failed; using library default", "error", err, "bitrate", cfg.OpusBitrate)
 	}
 
-	mixer := newRemoteMixer(cfg, log)
-	mixer.Start()
-
 	tctx, cancel := context.WithCancel(context.Background())
 	t := &Transport{
-		cfg:          cfg,
-		peer:         peer,
-		log:          log,
-		signal:       sc,
-		mixer:        mixer,
-		outPCM:       newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs),
-		encoder:      enc,
-		ctx:          tctx,
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		participants: map[string]*livekit.ParticipantInfo{},
+		cfg:           cfg,
+		peer:          peer,
+		log:           log,
+		signal:        sc,
+		outPCM:        newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs),
+		encoder:       enc,
+		ctx:           tctx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+		pendingTracks: map[string]pendingTrack{},
+		participants:  map[string]*livekit.ParticipantInfo{},
 	}
 	t.cb.Store(&cb)
 
@@ -339,13 +368,18 @@ func (t *Transport) dispatchSignal(ev SignalEvent) {
 		}
 
 	case SignalEventTrackUnpublished:
-		t.mixer.RemoveLane(e.TrackSID)
-		if cb := t.callbacks(); cb != nil && cb.OnTrackUnpublishedSID != nil {
-			cb.OnTrackUnpublishedSID(e.TrackSID)
+		if cb := t.callbacks(); cb != nil {
+			if cb.OnRemoteAudioTrackEnded != nil {
+				cb.OnRemoteAudioTrackEnded(e.TrackSID)
+			}
+			if cb.OnTrackUnpublishedSID != nil {
+				cb.OnTrackUnpublishedSID(e.TrackSID)
+			}
 		}
 
 	case SignalEventParticipantUpdate:
 		t.mergeParticipantUpdate(e.Participants)
+		t.drainPendingTracksFor(e.Participants)
 		if cb := t.callbacks(); cb != nil && cb.OnParticipantsUpdated != nil {
 			cb.OnParticipantsUpdated(e.Participants)
 		}
@@ -402,9 +436,15 @@ func (t *Transport) onPublisherNegotiationNeeded() {
 	}
 }
 
-// handleRemoteTrack is invoked by pion when the subscriber PC discovers a
-// new remote audio track. Spawns a decoder goroutine that feeds the
-// per-track lane in the remote sum-mixer.
+// handleRemoteTrack is invoked by pion when the subscriber PC discovers
+// a new remote audio track. Spawns a decoder goroutine that produces
+// PCM16-LE bytes on an io.Pipe, then either fires OnRemoteAudioTrack
+// immediately (if we already know the participant) or stashes the reader
+// in pendingTracks (drained by the next matching ParticipantUpdate).
+//
+// Model B: each remote audio track becomes its own LiveKitParticipantLeg
+// in the umbrella's VB room. This handler only owns the decode loop; the
+// API layer constructs and registers the leg from the callback.
 func (t *Transport) handleRemoteTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 	mime := track.Codec().MimeType
 	if mime != webrtc.MimeTypeOpus {
@@ -416,12 +456,12 @@ func (t *Transport) handleRemoteTrack(track *webrtc.TrackRemote, _ *webrtc.RTPRe
 		t.log.Error("opus decoder", "error", err)
 		return
 	}
-	sid := track.ID() // pion exposes the LiveKit track SID here
-	writer := t.mixer.AddLane(sid, track.StreamID())
-	t.log.Debug("remote audio track subscribed", "sid", sid)
+	trackSID := track.ID()             // pion exposes the LiveKit track SID here
+	participantSID := track.StreamID() // pion's stream ID = LK participant SID (PA_*)
 
+	pcmReader, pcmWriter := io.Pipe()
 	go func() {
-		defer t.mixer.RemoveLane(sid)
+		defer pcmWriter.Close()
 		buf := make([]byte, 1500)
 		for {
 			if t.ctx.Err() != nil {
@@ -439,10 +479,82 @@ func (t *Transport) handleRemoteTrack(track *webrtc.TrackRemote, _ *webrtc.RTPRe
 			if derr != nil || len(samples) == 0 {
 				continue
 			}
-			pcm := int16ToBytes(samples)
-			_, _ = writer.Write(pcm)
+			if _, werr := pcmWriter.Write(int16ToBytes(samples)); werr != nil {
+				return
+			}
 		}
 	}()
+
+	// Best-effort identity lookup: scan the cached participants for a
+	// match on participantSID. If the participant arrived first we can
+	// fire the callback immediately; otherwise stash for later.
+	identity := t.identityForSID(participantSID)
+	if identity != "" {
+		t.fireRemoteAudioTrack(identity, participantSID, trackSID, pcmReader)
+		return
+	}
+	t.mu.Lock()
+	t.pendingTracks[participantSID] = pendingTrack{pcm: pcmReader, trackSID: trackSID}
+	t.mu.Unlock()
+	t.log.Debug("remote audio track buffered pending ParticipantUpdate",
+		"participant_sid", participantSID, "track_sid", trackSID)
+}
+
+// identityForSID is a snapshot lookup of the participants cache.
+func (t *Transport) identityForSID(sid string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for ident, p := range t.participants {
+		if p.GetSid() == sid {
+			return ident
+		}
+	}
+	return ""
+}
+
+// fireRemoteAudioTrack delivers a (identity, participantSID, trackSID, pcm)
+// tuple to the OnRemoteAudioTrack callback if one is registered.
+func (t *Transport) fireRemoteAudioTrack(identity, participantSID, trackSID string, pcm io.Reader) {
+	if cb := t.callbacks(); cb != nil && cb.OnRemoteAudioTrack != nil {
+		cb.OnRemoteAudioTrack(identity, participantSID, trackSID, pcm)
+		return
+	}
+	// Without a callback the PCM has nowhere to go — drain to avoid
+	// stalling the decoder pipe.
+	go io.Copy(io.Discard, pcm)
+}
+
+// drainPendingTracksFor scans the participants cache for SIDs we have
+// pending tracks for and fires the callback. Called whenever the
+// participants map is updated.
+func (t *Transport) drainPendingTracksFor(participants []*livekit.ParticipantInfo) {
+	if len(participants) == 0 {
+		return
+	}
+	type fired struct {
+		identity, participantSID, trackSID string
+		pcm                                io.Reader
+	}
+	var ready []fired
+	t.mu.Lock()
+	for _, p := range participants {
+		if p == nil {
+			continue
+		}
+		sid := p.GetSid()
+		ident := p.GetIdentity()
+		if sid == "" || ident == "" {
+			continue
+		}
+		if pt, ok := t.pendingTracks[sid]; ok {
+			ready = append(ready, fired{ident, sid, pt.trackSID, pt.pcm})
+			delete(t.pendingTracks, sid)
+		}
+	}
+	t.mu.Unlock()
+	for _, f := range ready {
+		t.fireRemoteAudioTrack(f.identity, f.participantSID, f.trackSID, f.pcm)
+	}
 }
 
 // sendLoop reads PCM16-LE bytes from the leg's AudioWriter (via outPCM),
@@ -506,13 +618,12 @@ func readFull(r io.Reader, p []byte) (int, error) {
 	return r.Read(p)
 }
 
-// AudioReader is the sum-mixed PCM16-LE stream from all LiveKit remote
-// participants, paced at FrameMs cadence. Returned reader is owned by
-// the transport; do not close it from the caller.
-func (t *Transport) AudioReader() io.Reader { return t.mixer.Output() }
-
-// AudioWriter accepts PCM16-LE bytes at 48 kHz. Bytes are chunked, Opus
-// encoded, and published to LiveKit.
+// AudioWriter accepts PCM16-LE bytes at 48 kHz. The publish leg's
+// AudioWriter calls land here; sendLoop drains them, Opus-encodes, and
+// publishes to the local LiveKit track. Model B: remote audio is no
+// longer sum-mixed by the transport — each remote LK participant is its
+// own VB leg via OnRemoteAudioTrack, so there is no transport-level
+// AudioReader anymore.
 func (t *Transport) AudioWriter() io.Writer { return t.outPCM }
 
 // Done is closed when the transport disconnects.
@@ -656,9 +767,6 @@ func (t *Transport) cleanup(err error, reason string) {
 		}
 		if t.subscriber != nil {
 			_ = t.subscriber.Close()
-		}
-		if t.mixer != nil {
-			t.mixer.Close()
 		}
 		if t.outPCM != nil {
 			t.outPCM.Close()

@@ -127,7 +127,10 @@ func TestLiveKitPublishLeg_DTMFAndTextUnsupported(t *testing.T) {
 	}
 }
 
-func TestLiveKitPublishLeg_AudioReaderNilTransport(t *testing.T) {
+// The publish leg has no upstream audio in Model B (remote LK
+// participants surface as separate participant legs). AudioReader always
+// returns emptyReader{} regardless of transport state.
+func TestLiveKitPublishLeg_AudioReaderAlwaysEmpty(t *testing.T) {
 	l := newBareLiveKitPublishLeg(t)
 	r := l.AudioReader()
 	if r == nil {
@@ -135,7 +138,7 @@ func TestLiveKitPublishLeg_AudioReaderNilTransport(t *testing.T) {
 	}
 	buf := make([]byte, 4)
 	if _, err := r.Read(buf); err != io.EOF {
-		t.Errorf("expected EOF from nil-transport reader, got %v", err)
+		t.Errorf("expected EOF, got %v", err)
 	}
 }
 
