@@ -1290,63 +1290,6 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
-    /legs/{id}/livekit/participants:
-        parameters:
-            - $ref: '#/components/parameters/LegId'
-        get:
-            operationId: listLiveKitParticipants
-            summary: List LiveKit participants visible to a livekit_room leg
-            description: 'Returns a snapshot of the remote LiveKit participants currently in the room of a `livekit_room` leg. Model C: the LK room is one VoiceBlender participant; this endpoint exposes the LK-internal participant list for observability.'
-            tags:
-                - LiveKit
-            responses:
-                '200':
-                    description: Current LK participants
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/StatusResponse'
-                '400':
-                    description: Leg is not a livekit_room leg
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-                '404':
-                    description: Leg not found
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-    /legs/{id}/livekit/participants/{identity}/mute:
-        parameters:
-            - $ref: '#/components/parameters/LegId'
-            - name: identity
-              in: path
-              required: true
-              schema:
-                type: string
-        post:
-            operationId: muteLiveKitParticipant
-            summary: Server-side mute a remote LiveKit participant's audio
-            description: Sends a LiveKit admin MuteTrack signal for the named participant's audio track. Requires the leg's JWT to carry `roomAdmin=true`; otherwise the LiveKit server silently rejects the request.
-            tags:
-                - LiveKit
-            responses:
-                '202':
-                    description: Mute request sent
-                '400':
-                    description: Leg is not a livekit_room leg, unknown identity, or participant has no audio track
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-                '404':
-                    description: Leg not found
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
     /rooms:
         post:
             operationId: createRoom
@@ -2521,7 +2464,8 @@ components:
                         - websocket_in
                         - websocket_out
                         - moq_in
-                        - livekit_room
+                        - livekit_publish
+                        - livekit_participant
                 state:
                     type: string
                     description: Leg state
@@ -3400,12 +3344,6 @@ components:
                 - amd.beep
                 - sip.registration_active
                 - sip.registration_expired
-                - livekit.participant_joined
-                - livekit.participant_left
-                - livekit.participant_speaking_started
-                - livekit.participant_speaking_stopped
-                - livekit.track_published
-                - livekit.track_unpublished
         ICECandidateInit:
             type: object
             properties:
@@ -4486,121 +4424,3 @@ x-webhooks:
                                     reason:
                                         type: string
                                         description: 'Why the binding was removed: ttl, unregistered, forced, or replaced'
-    livekit.participant_joined:
-        post:
-            summary: Remote LiveKit participant joined the room of a livekit_room leg
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    identity:
-                                        type: string
-                                    name:
-                                        type: string
-                                    sid:
-                                        type: string
-    livekit.participant_left:
-        post:
-            summary: Remote LiveKit participant left the room of a livekit_room leg
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    identity:
-                                        type: string
-                                    sid:
-                                        type: string
-    livekit.participant_speaking_started:
-        post:
-            summary: Remote LiveKit participant started speaking
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    identity:
-                                        type: string
-                                    sid:
-                                        type: string
-                                    level:
-                                        type: number
-    livekit.participant_speaking_stopped:
-        post:
-            summary: Remote LiveKit participant stopped speaking
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    identity:
-                                        type: string
-                                    sid:
-                                        type: string
-                                    level:
-                                        type: number
-    livekit.track_published:
-        post:
-            summary: A remote LiveKit participant published a track
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    participant_identity:
-                                        type: string
-                                    participant_sid:
-                                        type: string
-                                    track_sid:
-                                        type: string
-                                    track_name:
-                                        type: string
-                                    track_kind:
-                                        type: string
-    livekit.track_unpublished:
-        post:
-            summary: A remote LiveKit participant's track was removed
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            allOf:
-                                - $ref: '#/components/schemas/WebhookEvent'
-                                - properties:
-                                    leg_id:
-                                        type: string
-                                    app_id:
-                                        type: string
-                                    track_sid:
-                                        type: string

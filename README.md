@@ -157,8 +157,8 @@ POST   /v1/legs/{id}/amd            # Start answering machine detection
 POST   /v1/legs/{id}/agent         # Attach AI agent
 POST   /v1/legs/{id}/agent/message # Inject message into agent
 DELETE /v1/legs/{id}/agent         # Detach AI agent
-GET    /v1/legs/{id}/livekit/participants                  # List LK participants on a livekit_room leg
-POST   /v1/legs/{id}/livekit/participants/{identity}/mute  # Admin-mute an LK participant (requires roomAdmin JWT)
+                                   # LiveKit: each remote LK participant becomes its own `livekit_participant` leg in the same VB room.
+                                   # Per-LK operations (mute, recording, role, hangup) use the standard /v1/legs/{id}/* endpoints.
 ```
 
 ### Rooms
