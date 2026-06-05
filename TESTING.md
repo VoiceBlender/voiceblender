@@ -197,6 +197,37 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
 | `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket rather than the URI host |
 | `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
+| `TestLiveKit_PublishLegLifecycle` | Gated on `LIVEKIT_TEST_*` env vars. `POST /v1/legs type=livekit_room` creates a `livekit_publish` leg with the correct `livekit_identity` / `livekit_room` headers; `DELETE` tears it down with `leg.disconnected`. |
+| `TestLiveKit_RemoteParticipantBecomesLeg` | Gated on `LIVEKIT_TEST_*` env vars. VB joins the LK room via the API; a second LK client (driven by `lkmedia.NewTransport`) joins the same room; VB auto-registers a `livekit_participant` leg with role `livekit_listen`. Disconnecting the second client triggers `leg.disconnected` for the participant leg. |
+| `TestLiveKit_BadTokenReturns502` | Gated on `LIVEKIT_TEST_*` env vars. A JWT signed with the wrong secret causes the LK server to reject the JOIN; VB returns 502 with no leg registered. |
+
+---
+
+### LiveKit integration tests — env-var setup
+
+The three `TestLiveKit_*` tests above are skipped unless **all** of these env vars are set:
+
+| Variable | Description |
+|----------|-------------|
+| `LIVEKIT_TEST_URL` | LiveKit server endpoint (e.g. `ws://localhost:7880` or `wss://lk.example.com`) |
+| `LIVEKIT_TEST_KEY` | LiveKit API key used to mint test JWTs |
+| `LIVEKIT_TEST_SECRET` | LiveKit API secret used to mint test JWTs |
+
+Quick local setup with `livekit-server` in Docker:
+
+```bash
+docker run --rm -p 7880:7880 \
+  -e LIVEKIT_KEYS="devkey: secret" \
+  livekit/livekit-server --dev
+
+export LIVEKIT_TEST_URL=ws://localhost:7880
+export LIVEKIT_TEST_KEY=devkey
+export LIVEKIT_TEST_SECRET=secret
+
+go test -tags integration -v -timeout 120s -run TestLiveKit_ ./tests/integration/
+```
+
+The tests use `lkmedia.NewTransport` directly to act as a second LK client joining the same room — no separate LK client SDK or browser is required.
 
 ---
 
