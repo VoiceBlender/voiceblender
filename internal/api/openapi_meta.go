@@ -748,29 +748,6 @@ func RoutesMetadata() []RouteMeta {
 				404: {Description: "Leg not found"},
 			},
 		},
-		{
-			Method: "GET", Path: "/legs/{id}/livekit/participants", OperationID: "listLiveKitParticipants",
-			Summary:     "List LiveKit participants visible to a livekit_room leg",
-			Description: "Returns a snapshot of the remote LiveKit participants currently in the room of a `livekit_room` leg. Model C: the LK room is one VoiceBlender participant; this endpoint exposes the LK-internal participant list for observability.",
-			Tags:        []string{"LiveKit"},
-			Responses: map[int]ResponseMeta{
-				200: {Description: "Current LK participants"},
-				400: {Description: "Leg is not a livekit_room leg"},
-				404: {Description: "Leg not found"},
-			},
-		},
-		{
-			Method: "POST", Path: "/legs/{id}/livekit/participants/{identity}/mute", OperationID: "muteLiveKitParticipant",
-			Summary:     "Server-side mute a remote LiveKit participant's audio",
-			Description: "Sends a LiveKit admin MuteTrack signal for the named participant's audio track. Requires the leg's JWT to carry `roomAdmin=true`; otherwise the LiveKit server silently rejects the request.",
-			Tags:        []string{"LiveKit"},
-			Responses: map[int]ResponseMeta{
-				202: {Description: "Mute request sent"},
-				400: {Description: "Leg is not a livekit_room leg, unknown identity, or participant has no audio track"},
-				404: {Description: "Leg not found"},
-			},
-		},
-
 		// ── Rooms ───────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/rooms", OperationID: "createRoom",

@@ -4,21 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/lkmedia"
-	"github.com/go-chi/chi/v5"
-	"github.com/livekit/protocol/livekit"
+)
+
+// Role labels used by the LiveKit integration. The publish leg only hears
+// VB legs whose role is NOT roleLiveKitListen — that's how we keep LK
+// participants' audio from being looped back to LiveKit.
+const (
+	roleLiveKitPublish = "livekit_publish"
+	roleLiveKitListen  = "livekit_listen"
 )
 
 // createLiveKitRoomLeg handles POST /v1/legs with type=livekit_room. It
-// resolves the JWT (either passed by the caller or minted from
-// LIVEKIT_API_KEY/SECRET when LIVEKIT_TOKEN_SIGNING_ENABLED=true), opens
-// the LK transport, registers the leg, and spawns a watcher that publishes
-// leg.disconnected when the LK session ends.
+// opens the LK signaling + WebRTC connection, registers a publish leg
+// (the outbound audio direction), and wires callbacks so each remote LK
+// participant becomes its own VB LiveKitParticipantLeg in the same VB
+// room. Model B: the VB room mixer drives audio for everyone; there is no
+// bespoke sum-mixer.
 func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
 	if !s.Config.LiveKitEnabled {
 		writeError(w, http.StatusServiceUnavailable, "LiveKit is not enabled (set LIVEKIT_ENABLED=true)")
@@ -69,8 +78,12 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 
 	headers := captureCustomHeaders(r.Header)
 
-	// Connect synchronously: errors here surface as a clean HTTP response
-	// (no events emitted, no leg registered).
+	// NewTransport is synchronous: any failure here returns a clean HTTP
+	// response with no events emitted and no leg registered. We pass
+	// empty callbacks first; SetCallbacks runs once we have the publish
+	// leg to close over. The brief window where OnTrack may fire before
+	// callbacks are set is handled by Transport.fireRemoteAudioTrack —
+	// it drains the pcm reader rather than blocking.
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	tr, err := lkmedia.NewTransport(ctx, cfg,
@@ -87,37 +100,51 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	l := leg.NewLiveKitPublishLeg(tr, headers, cfg.SampleRate, s.Log)
+	publishLeg := leg.NewLiveKitPublishLeg(tr, headers, cfg.SampleRate, s.Log)
+	publishLeg.SetRole(roleLiveKitPublish)
 	if req.AppID != "" {
-		l.SetAppID(req.AppID)
+		publishLeg.SetAppID(req.AppID)
 	}
-	// Wire callbacks to bridge LK observability into the event bus, scoped
-	// to this leg. Done after the leg has an ID we can scope events to.
-	wireLiveKitCallbacks(tr, l, s.Bus)
 
-	s.LegMgr.Add(l)
+	conn := &liveKitConn{
+		server:     s,
+		publishLeg: publishLeg,
+		transport:  tr,
+		tracks:     map[string]string{},
+	}
+	tr.SetCallbacks(lkmedia.Callbacks{
+		OnRemoteAudioTrack:      conn.handleRemoteAudioTrack,
+		OnRemoteAudioTrackEnded: conn.handleRemoteAudioTrackEnded,
+	})
+
+	s.LegMgr.Add(publishLeg)
 	if req.WebhookURL != "" {
-		s.Webhooks.SetLegWebhook(l.ID(), req.WebhookURL, req.WebhookSecret)
+		s.Webhooks.SetLegWebhook(publishLeg.ID(), req.WebhookURL, req.WebhookSecret)
 	}
 
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-		LegType:  string(l.Type()),
+		LegScope: events.LegScope{LegID: publishLeg.ID(), AppID: publishLeg.AppID()},
+		LegType:  string(publishLeg.Type()),
 	})
 
 	if req.RoomID != "" {
-		if err := s.RoomMgr.AddLeg(req.RoomID, l.ID()); err != nil {
-			s.Log.Warn("auto-add livekit leg to room failed", "leg_id", l.ID(), "room_id", req.RoomID, "error", err)
+		if err := s.RoomMgr.AddLeg(req.RoomID, publishLeg.ID()); err != nil {
+			s.Log.Warn("auto-add livekit publish leg to room failed",
+				"leg_id", publishLeg.ID(), "room_id", req.RoomID, "error", err)
 		} else {
-			s.onLegJoinedRoom(req.RoomID, l.ID())
+			s.onLegJoinedRoom(req.RoomID, publishLeg.ID())
 		}
 	}
 
-	// Watcher: when the transport closes (server-side leave, signaling
-	// failure, etc.) we publish leg.disconnected once.
-	go s.watchLiveKitTransport(l, tr)
+	// Bus subscription that recomputes the publish leg's Hears whitelist
+	// whenever a leg joins or leaves its room. Prevents audio feedback by
+	// excluding any leg whose role is roleLiveKitListen.
+	unsubHears := s.subscribeLKPublishHears(publishLeg)
+	s.recomputeLKPublishHears(publishLeg)
 
-	writeJSON(w, http.StatusCreated, toLegView(l))
+	go conn.watch(unsubHears)
+
+	writeJSON(w, http.StatusCreated, toLegView(publishLeg))
 }
 
 // resolveLiveKitToken returns the JWT to use for this leg-create request.
@@ -173,200 +200,155 @@ func (s *Server) resolveLiveKitToken(p *LiveKitParams) (string, error) {
 	})
 }
 
-// watchLiveKitTransport blocks on the transport's Done channel and, when
-// it closes, publishes leg.disconnected (single-flight via the leg's
-// ClaimDisconnect) and runs cleanup.
-func (s *Server) watchLiveKitTransport(l *leg.LiveKitPublishLeg, tr *lkmedia.Transport) {
-	<-tr.Done()
-	reason := tr.CloseReason()
+// liveKitConn owns one umbrella LiveKit connection: the publish leg, the
+// transport, and the live trackSID→participant-leg-ID index. Created in
+// createLiveKitRoomLeg; lives as long as the transport.
+type liveKitConn struct {
+	server     *Server
+	publishLeg *leg.LiveKitPublishLeg
+	transport  *lkmedia.Transport
+
+	tracksMu sync.Mutex
+	tracks   map[string]string // trackSID → participant leg ID
+}
+
+// handleRemoteAudioTrack auto-creates a LiveKitParticipantLeg when the
+// transport surfaces a subscribed remote audio track. Adds it to the
+// publish leg's VB room so the VB room mixer wires it in automatically.
+func (c *liveKitConn) handleRemoteAudioTrack(identity, _, trackSID string, pcm io.Reader) {
+	// Defensive: if a track arrives with no identity (e.g. ParticipantUpdate
+	// raced behind OnTrack and we somehow still made it here) just drain.
+	if identity == "" {
+		go io.Copy(io.Discard, pcm)
+		return
+	}
+
+	pl := leg.NewLiveKitParticipantLeg(identity, trackSID, pcm, c.publishLeg.SampleRate(), c.server.Log)
+	pl.SetRole(roleLiveKitListen)
+	if appID := c.publishLeg.AppID(); appID != "" {
+		pl.SetAppID(appID)
+	}
+
+	c.server.LegMgr.Add(pl)
+	c.server.Bus.Publish(events.LegConnected, &events.LegConnectedData{
+		LegScope: events.LegScope{LegID: pl.ID(), AppID: pl.AppID()},
+		LegType:  string(pl.Type()),
+	})
+
+	c.tracksMu.Lock()
+	c.tracks[trackSID] = pl.ID()
+	c.tracksMu.Unlock()
+
+	if roomID := c.publishLeg.RoomID(); roomID != "" {
+		if err := c.server.RoomMgr.AddLeg(roomID, pl.ID()); err != nil {
+			c.server.Log.Warn("auto-add LK participant leg to room failed",
+				"leg_id", pl.ID(), "room_id", roomID, "error", err)
+		} else {
+			c.server.onLegJoinedRoom(roomID, pl.ID())
+		}
+	}
+}
+
+// handleRemoteAudioTrackEnded tears down the participant leg matching a
+// trackSID. Idempotent.
+func (c *liveKitConn) handleRemoteAudioTrackEnded(trackSID string) {
+	c.tracksMu.Lock()
+	legID, ok := c.tracks[trackSID]
+	delete(c.tracks, trackSID)
+	c.tracksMu.Unlock()
+	if !ok {
+		return
+	}
+	c.disconnectParticipantLeg(legID, "livekit_participant_left")
+}
+
+func (c *liveKitConn) disconnectParticipantLeg(legID, reason string) {
+	l, ok := c.server.LegMgr.Get(legID)
+	if !ok {
+		return
+	}
+	pl, ok := l.(*leg.LiveKitParticipantLeg)
+	if !ok {
+		return
+	}
+	// publishDisconnect runs ClaimDisconnect internally; calling it here
+	// would double-claim and silently swallow the event.
+	c.server.cleanupLeg(pl)
+	c.server.publishDisconnect(pl, reason)
+}
+
+// cleanupAllParticipants is called when the umbrella tears down to ensure
+// no participant leg is leaked.
+func (c *liveKitConn) cleanupAllParticipants(reason string) {
+	c.tracksMu.Lock()
+	legIDs := make([]string, 0, len(c.tracks))
+	for _, id := range c.tracks {
+		legIDs = append(legIDs, id)
+	}
+	c.tracks = map[string]string{}
+	c.tracksMu.Unlock()
+	for _, id := range legIDs {
+		c.disconnectParticipantLeg(id, reason)
+	}
+}
+
+// watch blocks on the transport's Done channel, then drives the umbrella
+// shutdown: participant legs first, then the publish leg.
+func (c *liveKitConn) watch(unsubHears func()) {
+	<-c.transport.Done()
+	if unsubHears != nil {
+		unsubHears()
+	}
+	reason := c.transport.CloseReason()
 	if reason == "" {
 		reason = "livekit_disconnected"
 	}
-	if !l.ClaimDisconnect() {
-		return
-	}
-	s.cleanupLeg(l)
-	s.publishDisconnect(l, reason)
+	c.cleanupAllParticipants(reason)
+	c.server.cleanupLeg(c.publishLeg)
+	c.server.publishDisconnect(c.publishLeg, reason)
 }
 
-// listLiveKitParticipants handles GET /v1/legs/{id}/livekit/participants.
-// Returns the current snapshot of LK participants the leg is connected to.
-func (s *Server) listLiveKitParticipants(w http.ResponseWriter, r *http.Request) {
-	l, tr, ok := s.lookupLiveKitLeg(w, r)
-	if !ok {
-		return
-	}
-	parts := tr.Participants()
-	out := make([]liveKitParticipantView, 0, len(parts))
-	for _, p := range parts {
-		out = append(out, toLiveKitParticipantView(p))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"leg_id":       l.ID(),
-		"participants": out,
+// subscribeLKPublishHears wires a bus subscription that recomputes the
+// publish leg's Hears whitelist on every leg join/leave in its room.
+// Returns the unsubscribe function.
+func (s *Server) subscribeLKPublishHears(publishLeg *leg.LiveKitPublishLeg) func() {
+	return s.Bus.Subscribe(func(ev events.Event) {
+		if ev.Type != events.LegJoinedRoom && ev.Type != events.LegLeftRoom {
+			return
+		}
+		if ev.Data == nil {
+			return
+		}
+		// Only react to changes in the publish leg's room.
+		if ev.Data.GetRoomID() != publishLeg.RoomID() {
+			return
+		}
+		s.recomputeLKPublishHears(publishLeg)
 	})
 }
 
-// muteLiveKitParticipant handles POST /v1/legs/{id}/livekit/participants/{identity}/mute.
-// Sends a server-side MuteTrack signal for the participant's audio
-// track. Requires the leg's JWT to carry roomAdmin=true.
-func (s *Server) muteLiveKitParticipant(w http.ResponseWriter, r *http.Request) {
-	_, tr, ok := s.lookupLiveKitLeg(w, r)
+// recomputeLKPublishHears rewrites the publish leg's Hears whitelist to
+// include every leg in its room EXCEPT participant legs (role =
+// roleLiveKitListen) and the publish leg itself. This is what keeps LK
+// participants' audio from being re-published to LiveKit (audio feedback).
+func (s *Server) recomputeLKPublishHears(publishLeg *leg.LiveKitPublishLeg) {
+	roomID := publishLeg.RoomID()
+	if roomID == "" {
+		return
+	}
+	room, ok := s.RoomMgr.Get(roomID)
 	if !ok {
 		return
 	}
-	identity := chi.URLParam(r, "identity")
-	if identity == "" {
-		writeError(w, http.StatusBadRequest, "identity is required")
-		return
+	hears := map[string]struct{}{}
+	for _, l := range room.Participants() {
+		if l.ID() == publishLeg.ID() {
+			continue
+		}
+		if l.Role() == roleLiveKitListen {
+			continue
+		}
+		hears[l.ID()] = struct{}{}
 	}
-	if err := tr.MuteRemoteTrackByIdentity(identity, true); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "mute_requested"})
-}
-
-// lookupLiveKitLeg fetches the leg by URL param, narrows it to
-// LiveKitLeg, and returns both the leg and its transport. Writes the
-// appropriate error response and returns ok=false on any failure.
-func (s *Server) lookupLiveKitLeg(w http.ResponseWriter, r *http.Request) (*leg.LiveKitPublishLeg, *lkmedia.Transport, bool) {
-	id := chi.URLParam(r, "id")
-	l, ok := s.LegMgr.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "leg not found")
-		return nil, nil, false
-	}
-	lkl, ok := l.(*leg.LiveKitPublishLeg)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "leg is not a livekit_room leg")
-		return nil, nil, false
-	}
-	tr := lkl.Transport()
-	if tr == nil {
-		writeError(w, http.StatusInternalServerError, "leg has no transport")
-		return nil, nil, false
-	}
-	return lkl, tr, true
-}
-
-// liveKitParticipantView is the JSON shape returned by GET
-// .../livekit/participants. Subset of the LK ParticipantInfo proto
-// surfaced for observability.
-type liveKitParticipantView struct {
-	Identity string                       `json:"identity"`
-	Name     string                       `json:"name,omitempty"`
-	SID      string                       `json:"sid,omitempty"`
-	State    string                       `json:"state,omitempty"`
-	Tracks   []liveKitParticipantTrackRef `json:"tracks,omitempty"`
-}
-
-type liveKitParticipantTrackRef struct {
-	SID   string `json:"sid"`
-	Name  string `json:"name,omitempty"`
-	Kind  string `json:"kind"` // "audio" | "video"
-	Muted bool   `json:"muted,omitempty"`
-}
-
-func toLiveKitParticipantView(p *livekit.ParticipantInfo) liveKitParticipantView {
-	out := liveKitParticipantView{
-		Identity: p.GetIdentity(),
-		Name:     p.GetName(),
-		SID:      p.GetSid(),
-		State:    p.GetState().String(),
-	}
-	for _, t := range p.GetTracks() {
-		out.Tracks = append(out.Tracks, liveKitParticipantTrackRef{
-			SID:   t.GetSid(),
-			Name:  t.GetName(),
-			Kind:  t.GetType().String(),
-			Muted: t.GetMuted(),
-		})
-	}
-	return out
-}
-
-// wireLiveKitCallbacks attaches lkmedia.Transport observability callbacks
-// to the event bus, scoped to the given leg's ID. Diffs participant
-// updates against the prior snapshot to emit synthetic joined/left
-// events (LiveKit's ParticipantUpdate carries snapshots, not deltas).
-func wireLiveKitCallbacks(tr *lkmedia.Transport, l *leg.LiveKitPublishLeg, bus eventPublisher) {
-	prevParticipants := map[string]struct{}{}
-	prevSpeakers := map[string]struct{}{}
-
-	cb := lkmedia.Callbacks{
-		OnParticipantsUpdated: func(updates []*livekit.ParticipantInfo) {
-			scope := events.LegScope{LegID: l.ID(), AppID: l.AppID()}
-			for _, p := range updates {
-				if p == nil || p.GetIdentity() == "" {
-					continue
-				}
-				id := p.GetIdentity()
-				if p.GetState() == livekit.ParticipantInfo_DISCONNECTED {
-					if _, was := prevParticipants[id]; was {
-						bus.Publish(events.LiveKitParticipantLeft, &events.LiveKitParticipantLeftData{
-							LegScope: scope, Identity: id, SID: p.GetSid(),
-						})
-					}
-					delete(prevParticipants, id)
-					continue
-				}
-				if _, was := prevParticipants[id]; !was {
-					bus.Publish(events.LiveKitParticipantJoined, &events.LiveKitParticipantJoinedData{
-						LegScope: scope, Identity: id, Name: p.GetName(), SID: p.GetSid(),
-					})
-					prevParticipants[id] = struct{}{}
-				}
-			}
-		},
-		OnSpeakersChanged: func(speakers []*livekit.SpeakerInfo) {
-			scope := events.LegScope{LegID: l.ID(), AppID: l.AppID()}
-			now := map[string]float64{}
-			for _, sp := range speakers {
-				if sp.GetActive() {
-					now[sp.GetSid()] = float64(sp.GetLevel())
-				}
-			}
-			for sid, lvl := range now {
-				if _, was := prevSpeakers[sid]; !was {
-					bus.Publish(events.LiveKitParticipantSpeakingStarted, &events.LiveKitParticipantSpeakingData{
-						LegScope: scope, SID: sid, Level: lvl,
-					})
-				}
-			}
-			for sid := range prevSpeakers {
-				if _, still := now[sid]; !still {
-					bus.Publish(events.LiveKitParticipantSpeakingStopped, &events.LiveKitParticipantSpeakingData{
-						LegScope: scope, SID: sid,
-					})
-				}
-			}
-			prevSpeakers = map[string]struct{}{}
-			for sid := range now {
-				prevSpeakers[sid] = struct{}{}
-			}
-		},
-		OnTrackPublishedRemote: func(participantSID string, ti *livekit.TrackInfo) {
-			bus.Publish(events.LiveKitTrackPublished, &events.LiveKitTrackPublishedData{
-				LegScope:       events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-				ParticipantSID: participantSID,
-				TrackSID:       ti.GetSid(),
-				TrackName:      ti.GetName(),
-				TrackKind:      ti.GetType().String(),
-			})
-		},
-		OnTrackUnpublishedSID: func(trackSID string) {
-			bus.Publish(events.LiveKitTrackUnpublished, &events.LiveKitTrackUnpublishedData{
-				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-				TrackSID: trackSID,
-			})
-		},
-	}
-	tr.SetCallbacks(cb)
-}
-
-// eventPublisher narrows the bus to the one method this file uses, which
-// also makes it trivial to substitute in tests.
-type eventPublisher interface {
-	Publish(events.EventType, events.EventData)
+	room.Mixer().SetParticipantHears(publishLeg.ID(), hears)
 }

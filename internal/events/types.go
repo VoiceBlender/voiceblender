@@ -70,17 +70,6 @@ const (
 
 	SIPRegistrationActive  EventType = "sip.registration_active"
 	SIPRegistrationExpired EventType = "sip.registration_expired"
-
-	// LiveKit observability events (Model C). Scoped to the livekit_room
-	// leg, NOT to individual VoiceBlender participants: the LK room shows
-	// up as one VB participant, and these events surface LK-internal
-	// activity (joins/leaves/speaking/track changes) for the leg.
-	LiveKitParticipantJoined          EventType = "livekit.participant_joined"
-	LiveKitParticipantLeft            EventType = "livekit.participant_left"
-	LiveKitParticipantSpeakingStarted EventType = "livekit.participant_speaking_started"
-	LiveKitParticipantSpeakingStopped EventType = "livekit.participant_speaking_stopped"
-	LiveKitTrackPublished             EventType = "livekit.track_published"
-	LiveKitTrackUnpublished           EventType = "livekit.track_unpublished"
 )
 
 type Event struct {

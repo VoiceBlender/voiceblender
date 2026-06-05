@@ -416,49 +416,7 @@ type SIPRegistrationExpiredData struct {
 	Reason  string `json:"reason"`
 }
 
-// --- LiveKit observability events (Model C) ---
-//
-// All scoped to the livekit_room leg. The Identity/Name/SID fields
-// reproduce the LK ParticipantInfo data so app code does not need to query
-// the LK SDK to associate events with participants.
-
-// LiveKitParticipantJoinedData fires when a new LK participant becomes
-// visible to the livekit_room leg.
-type LiveKitParticipantJoinedData struct {
-	LegScope
-	Identity string `json:"identity"`
-	Name     string `json:"name,omitempty"`
-	SID      string `json:"sid,omitempty"`
-}
-
-// LiveKitParticipantLeftData fires when an LK participant disconnects.
-type LiveKitParticipantLeftData struct {
-	LegScope
-	Identity string `json:"identity"`
-	SID      string `json:"sid,omitempty"`
-}
-
-// LiveKitParticipantSpeakingData fires on speaking state transitions.
-type LiveKitParticipantSpeakingData struct {
-	LegScope
-	Identity string  `json:"identity"`
-	SID      string  `json:"sid,omitempty"`
-	Level    float64 `json:"level,omitempty"`
-}
-
-// LiveKitTrackPublishedData fires when a remote LK participant publishes
-// a track. The livekit_room leg auto-subscribes only to audio.
-type LiveKitTrackPublishedData struct {
-	LegScope
-	ParticipantIdentity string `json:"participant_identity,omitempty"`
-	ParticipantSID      string `json:"participant_sid,omitempty"`
-	TrackSID            string `json:"track_sid"`
-	TrackName           string `json:"track_name,omitempty"`
-	TrackKind           string `json:"track_kind,omitempty"` // "audio" | "video"
-}
-
-// LiveKitTrackUnpublishedData fires when a remote track goes away.
-type LiveKitTrackUnpublishedData struct {
-	LegScope
-	TrackSID string `json:"track_sid"`
-}
+// LiveKit (Model B): no special event types. Remote LK participants
+// surface as LiveKitParticipantLeg entries in the umbrella's VB room, so
+// their lifecycle is reported via the standard leg.connected /
+// leg.disconnected / speaking.started / speaking.stopped events.

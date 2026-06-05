@@ -513,15 +513,18 @@ func (t *Transport) identityForSID(sid string) string {
 }
 
 // fireRemoteAudioTrack delivers a (identity, participantSID, trackSID, pcm)
-// tuple to the OnRemoteAudioTrack callback if one is registered.
+// tuple to the OnRemoteAudioTrack callback if one is registered. The
+// callback runs on its own goroutine so a slow callback cannot block
+// pion's OnTrack handler or the signaling loop.
 func (t *Transport) fireRemoteAudioTrack(identity, participantSID, trackSID string, pcm io.Reader) {
-	if cb := t.callbacks(); cb != nil && cb.OnRemoteAudioTrack != nil {
-		cb.OnRemoteAudioTrack(identity, participantSID, trackSID, pcm)
+	cb := t.callbacks()
+	if cb == nil || cb.OnRemoteAudioTrack == nil {
+		// Without a callback the PCM has nowhere to go — drain to avoid
+		// stalling the decoder pipe.
+		go io.Copy(io.Discard, pcm)
 		return
 	}
-	// Without a callback the PCM has nowhere to go — drain to avoid
-	// stalling the decoder pipe.
-	go io.Copy(io.Discard, pcm)
+	go cb.OnRemoteAudioTrack(identity, participantSID, trackSID, pcm)
 }
 
 // drainPendingTracksFor scans the participants cache for SIDs we have
@@ -689,49 +692,6 @@ func (t *Transport) SetCallbacks(cb Callbacks) {
 // stores a zero-value Callbacks at construction.
 func (t *Transport) callbacks() *Callbacks {
 	return t.cb.Load()
-}
-
-// Participants returns a snapshot of the current LK participants
-// (excluding any with State == DISCONNECTED). Map keyed by identity.
-// The returned values are pointer-copies; mutating fields is not safe.
-func (t *Transport) Participants() []*livekit.ParticipantInfo {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	out := make([]*livekit.ParticipantInfo, 0, len(t.participants))
-	for _, p := range t.participants {
-		out = append(out, p)
-	}
-	return out
-}
-
-// ParticipantByIdentity returns the cached ParticipantInfo for an
-// identity, or nil if unknown.
-func (t *Transport) ParticipantByIdentity(identity string) *livekit.ParticipantInfo {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.participants[identity]
-}
-
-// MuteRemoteTrackByIdentity asks the LiveKit server to mute the audio
-// track of a remote participant. Requires the leg's JWT to carry
-// roomAdmin=true; otherwise the server silently no-ops the request and
-// the participant remains unmuted.
-func (t *Transport) MuteRemoteTrackByIdentity(identity string, muted bool) error {
-	p := t.ParticipantByIdentity(identity)
-	if p == nil {
-		return fmt.Errorf("livekit: no participant with identity %q", identity)
-	}
-	var sid string
-	for _, tr := range p.GetTracks() {
-		if tr.GetType() == livekit.TrackType_AUDIO {
-			sid = tr.GetSid()
-			break
-		}
-	}
-	if sid == "" {
-		return fmt.Errorf("livekit: participant %q has no audio track", identity)
-	}
-	return t.signal.MuteTrack(sid, muted)
 }
 
 // mergeParticipantUpdate folds an incoming ParticipantUpdate into the

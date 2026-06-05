@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -152,11 +153,227 @@ func TestResolveLiveKitToken_MintingRejectsInvalidTTL(t *testing.T) {
 	}
 }
 
-func TestListLiveKitParticipants_LegNotFound(t *testing.T) {
+// TestLiveKitParticipantsRouteGone confirms the Model-C-era listing
+// endpoint is no longer mounted (each LK participant is its own VB leg
+// in Model B; GET /v1/legs filters do the job).
+func TestLiveKitParticipantsRouteGone(t *testing.T) {
 	s := newLiveKitTestServer(t, false)
-	w := doRequest(s, http.MethodGet, "/v1/legs/nonexistent/livekit/participants", "")
+	w := doRequest(s, http.MethodGet, "/v1/legs/any/livekit/participants", "")
 	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404; body=%s", w.Code, w.Body.String())
+		t.Errorf("status = %d, want 404 (route removed)", w.Code)
+	}
+}
+
+func TestLiveKitMuteRouteGone(t *testing.T) {
+	s := newLiveKitTestServer(t, false)
+	w := doRequest(s, http.MethodPost, "/v1/legs/any/livekit/participants/alice/mute", "")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (route removed)", w.Code)
+	}
+}
+
+// liveKitConn unit tests — drive the callbacks directly without a real
+// transport. We can leave conn.transport nil because the handlers
+// exercised here don't dereference it.
+
+func newTestLKConn(t *testing.T, s *Server, roomID, appID string) *liveKitConn {
+	t.Helper()
+	pl := leg.NewLiveKitPublishLeg(nil, nil, 48000, s.Log)
+	pl.SetRole(roleLiveKitPublish)
+	if appID != "" {
+		pl.SetAppID(appID)
+	}
+	if roomID != "" {
+		pl.SetRoomID(roomID)
+	}
+	s.LegMgr.Add(pl)
+	return &liveKitConn{
+		server:     s,
+		publishLeg: pl,
+		tracks:     map[string]string{},
+	}
+}
+
+func TestHandleRemoteAudioTrack_CreatesParticipantLeg(t *testing.T) {
+	s := newLiveKitTestServer(t, false)
+	roomID := "r1"
+	if _, err := s.RoomMgr.Create(roomID, "app", s.Config.DefaultSampleRate); err != nil {
+		t.Fatal(err)
+	}
+	conn := newTestLKConn(t, s, roomID, "app")
+	if err := s.RoomMgr.AddLeg(roomID, conn.publishLeg.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Subscribe to bus to capture leg.connected for the participant.
+	gotConnected := make(chan string, 4)
+	unsub := s.Bus.Subscribe(func(ev events.Event) {
+		if ev.Type == events.LegConnected {
+			gotConnected <- ev.Data.GetLegID()
+		}
+	})
+	defer unsub()
+
+	conn.handleRemoteAudioTrack("alice", "PA_a", "TR_a", bytes.NewReader(nil))
+
+	// Find the participant leg in the manager.
+	var partLeg *leg.LiveKitParticipantLeg
+	for _, l := range s.LegMgr.List() {
+		if pl, ok := l.(*leg.LiveKitParticipantLeg); ok {
+			partLeg = pl
+		}
+	}
+	if partLeg == nil {
+		t.Fatal("no LiveKitParticipantLeg created")
+	}
+	if partLeg.Identity() != "alice" {
+		t.Errorf("identity = %q, want alice", partLeg.Identity())
+	}
+	if partLeg.TrackSID() != "TR_a" {
+		t.Errorf("trackSID = %q, want TR_a", partLeg.TrackSID())
+	}
+	if partLeg.Role() != roleLiveKitListen {
+		t.Errorf("role = %q, want %s", partLeg.Role(), roleLiveKitListen)
+	}
+	if partLeg.AppID() != "app" {
+		t.Errorf("appID = %q, want app", partLeg.AppID())
+	}
+	if partLeg.RoomID() != roomID {
+		t.Errorf("roomID = %q, want %s", partLeg.RoomID(), roomID)
+	}
+
+	// trackSID → legID index populated.
+	conn.tracksMu.Lock()
+	indexedID, ok := conn.tracks["TR_a"]
+	conn.tracksMu.Unlock()
+	if !ok || indexedID != partLeg.ID() {
+		t.Errorf("tracks[TR_a] = (%q, %v); want (%q, true)", indexedID, ok, partLeg.ID())
+	}
+
+	// leg.connected fires for the participant (we sent two — publish leg
+	// was added directly via LegMgr.Add without Bus.Publish, so just one
+	// LegConnected is expected here, for the participant).
+	select {
+	case id := <-gotConnected:
+		if id != partLeg.ID() {
+			t.Errorf("leg.connected for %q, want %q", id, partLeg.ID())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leg.connected not emitted for participant")
+	}
+}
+
+func TestHandleRemoteAudioTrack_DropsWhenIdentityEmpty(t *testing.T) {
+	s := newLiveKitTestServer(t, false)
+	conn := newTestLKConn(t, s, "", "")
+	conn.handleRemoteAudioTrack("", "PA_a", "TR_a", bytes.NewReader([]byte{1, 2, 3}))
+	// No participant leg should have been created.
+	for _, l := range s.LegMgr.List() {
+		if _, ok := l.(*leg.LiveKitParticipantLeg); ok {
+			t.Errorf("unexpected participant leg created for empty identity")
+		}
+	}
+}
+
+func TestHandleRemoteAudioTrackEnded_CleansUpLeg(t *testing.T) {
+	s := newLiveKitTestServer(t, false)
+	roomID := "r1"
+	if _, err := s.RoomMgr.Create(roomID, "app", s.Config.DefaultSampleRate); err != nil {
+		t.Fatal(err)
+	}
+	conn := newTestLKConn(t, s, roomID, "app")
+	if err := s.RoomMgr.AddLeg(roomID, conn.publishLeg.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	conn.handleRemoteAudioTrack("alice", "PA_a", "TR_a", bytes.NewReader(nil))
+
+	var partLegID string
+	for _, l := range s.LegMgr.List() {
+		if pl, ok := l.(*leg.LiveKitParticipantLeg); ok {
+			partLegID = pl.ID()
+		}
+	}
+	if partLegID == "" {
+		t.Fatal("setup: participant leg not created")
+	}
+
+	gotDisconnect := make(chan string, 2)
+	unsub := s.Bus.Subscribe(func(ev events.Event) {
+		if ev.Type == events.LegDisconnected {
+			gotDisconnect <- ev.Data.GetLegID()
+		}
+	})
+	defer unsub()
+
+	conn.handleRemoteAudioTrackEnded("TR_a")
+
+	select {
+	case id := <-gotDisconnect:
+		if id != partLegID {
+			t.Errorf("leg.disconnected for %q, want %q", id, partLegID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leg.disconnected not emitted")
+	}
+	if _, ok := s.LegMgr.Get(partLegID); ok {
+		t.Error("participant leg still in LegMgr after Ended")
+	}
+
+	// Idempotent: second Ended call is a no-op.
+	conn.handleRemoteAudioTrackEnded("TR_a")
+}
+
+func TestRecomputeLKPublishHears_ExcludesListenersAndSelf(t *testing.T) {
+	s := newLiveKitTestServer(t, false)
+	roomID := "r-hears"
+	if _, err := s.RoomMgr.Create(roomID, "", s.Config.DefaultSampleRate); err != nil {
+		t.Fatal(err)
+	}
+	conn := newTestLKConn(t, s, roomID, "")
+	if err := s.RoomMgr.AddLeg(roomID, conn.publishLeg.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two participant legs and one fake "SIP" leg (just another
+	// LiveKitParticipantLeg with a non-listen role so it qualifies as a
+	// non-LK source from Hears' perspective).
+	alice := leg.NewLiveKitParticipantLeg("alice", "TR_a", nil, 48000, s.Log)
+	alice.SetRole(roleLiveKitListen)
+	s.LegMgr.Add(alice)
+	if err := s.RoomMgr.AddLeg(roomID, alice.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	bob := leg.NewLiveKitParticipantLeg("bob", "TR_b", nil, 48000, s.Log)
+	bob.SetRole(roleLiveKitListen)
+	s.LegMgr.Add(bob)
+	if err := s.RoomMgr.AddLeg(roomID, bob.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeSip := leg.NewLiveKitParticipantLeg("sip", "TR_s", nil, 48000, s.Log)
+	fakeSip.SetRole("sip_inbound") // pretend
+	s.LegMgr.Add(fakeSip)
+	if err := s.RoomMgr.AddLeg(roomID, fakeSip.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	s.recomputeLKPublishHears(conn.publishLeg)
+
+	room, _ := s.RoomMgr.Get(roomID)
+	hears, ok := room.Mixer().ParticipantHears(conn.publishLeg.ID())
+	if !ok {
+		t.Fatal("publish leg not in mixer")
+	}
+	// Hears should include fakeSip only.
+	if _, ok := hears[fakeSip.ID()]; !ok {
+		t.Errorf("Hears missing SIP-role leg %q", fakeSip.ID())
+	}
+	for _, listener := range []string{alice.ID(), bob.ID(), conn.publishLeg.ID()} {
+		if _, ok := hears[listener]; ok {
+			t.Errorf("Hears unexpectedly contained %q", listener)
+		}
 	}
 }
 
