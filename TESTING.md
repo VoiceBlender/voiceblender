@@ -229,24 +229,6 @@ go test -tags integration -v -timeout 120s -run TestLiveKit_ ./tests/integration
 
 The tests use `lkmedia.NewTransport` directly to act as a second LK client joining the same room — no separate LK client SDK or browser is required.
 
-### Real LiveKit deployment testing (browser + softphone)
-
-For end-to-end validation with real microphone audio, a browser LK client, and the user's own SIP softphone, a turnkey Docker stack lives at [`livekit-test/`](livekit-test/) and at the root [`docker-compose.livekit.yml`](docker-compose.livekit.yml).
-
-Quick start:
-
-```bash
-docker compose -f docker-compose.livekit.yml up --build -d   # livekit-server + voiceblender + admin frontend + lk-demo
-# follow livekit-test/README.md from "Mint two JWTs" onwards
-docker compose -f docker-compose.livekit.yml down -v         # tear down
-```
-
-The README walks through seven canonical validation scenarios: solo browser join, VB join, browser→VB→SIP, SIP→VB→browser, multi-browser, dynamic add/remove, and per-LK-participant operations (mute, recording, cascading hangup). Run these after non-trivial changes to `internal/lkmedia/` or `internal/api/livekit_leg.go`.
-
-The same stack also serves as the target for the `TestLiveKit_*` integration tests above — once it's up, the `LIVEKIT_TEST_URL`/`KEY`/`SECRET` env vars match the dev config, so `go test -tags integration -run TestLiveKit_ ./tests/integration/` runs against it with no extra setup.
-
----
-
 ## AMD Accuracy Tests
 
 The accuracy tests run the AMD analyzer directly against real audio files (no SIP transport) to measure classification accuracy at scale. They require test data to be downloaded or generated first.
