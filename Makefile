@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push livekit-stack-up livekit-stack-down livekit-stack-logs
+.PHONY: build run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -61,18 +61,6 @@ docker-master:
 
 docker-push-master: docker
 	docker push vpbx/$(IMAGE):master
-
-# Bring up the local LiveKit validation stack: livekit-server + voiceblender
-# + a static frontend that joins LK rooms with the livekit-client SDK.
-# See livekit-test/README.md for the full quick-start guide and scenarios.
-livekit-stack-up:
-	docker compose -f docker-compose.livekit.yml up --build -d
-
-livekit-stack-down:
-	docker compose -f docker-compose.livekit.yml down -v
-
-livekit-stack-logs:
-	docker compose -f docker-compose.livekit.yml logs -f
 
 
 clean:

@@ -236,9 +236,9 @@ For end-to-end validation with real microphone audio, a browser LK client, and t
 Quick start:
 
 ```bash
-make livekit-stack-up    # brings up livekit-server + voiceblender + a frontend
+docker compose -f docker-compose.livekit.yml up --build -d   # livekit-server + voiceblender + admin frontend + lk-demo
 # follow livekit-test/README.md from "Mint two JWTs" onwards
-make livekit-stack-down  # tears it down
+docker compose -f docker-compose.livekit.yml down -v         # tear down
 ```
 
 The README walks through seven canonical validation scenarios: solo browser join, VB join, browser→VB→SIP, SIP→VB→browser, multi-browser, dynamic add/remove, and per-LK-participant operations (mute, recording, cascading hangup). Run these after non-trivial changes to `internal/lkmedia/` or `internal/api/livekit_leg.go`.
