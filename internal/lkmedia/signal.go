@@ -8,6 +8,7 @@
 package lkmedia
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -158,6 +159,11 @@ type SignalClient struct {
 	closeErr     atomic.Pointer[error]
 	closeReason  atomic.Pointer[string]
 	lastPingTSNs atomic.Int64 // for RTT calculation on next Ping
+
+	// preJoin buffers signaling frames that arrive before the JoinResponse
+	// (LK can send Offer / RefreshToken / TrickleICE first). recvLoop
+	// dispatches these before reading the WS.
+	preJoin []*livekit.SignalResponse
 }
 
 // Connect dials the LiveKit signaling WebSocket and completes the JOIN
@@ -183,9 +189,18 @@ func Connect(ctx context.Context, cfg SignalConfig) (*SignalClient, error) {
 	}
 
 	dialer := ws.Dialer{}
-	conn, _, _, err := dialer.Dial(ctx, dialURL)
+	conn, br, _, err := dialer.Dial(ctx, dialURL)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", redactToken(dialURL), err)
+	}
+	// gobwas may have buffered bytes BEYOND the HTTP handshake into br
+	// (LiveKit sends JoinResponse immediately after the 101 response, in
+	// the same TCP segment). If we ignore br, those bytes are gone — and
+	// the next wsutil.ReadServerData(conn) blocks forever waiting for
+	// data the server already sent. Wrap conn so reads go through br
+	// first, then fall through to the raw socket.
+	if br != nil && br.Buffered() > 0 {
+		conn = &bufferedConn{Conn: conn, r: br}
 	}
 
 	c := &SignalClient{
@@ -255,11 +270,16 @@ func buildConnectURL(cfg SignalConfig) (string, error) {
 	return u.String(), nil
 }
 
-// readJoin reads the first frame from the WebSocket and expects it to be
-// a SignalResponse{Join}. Anything else is a hard error.
+// readJoin reads frames from the WebSocket until a SignalResponse{Join}
+// arrives. LiveKit does not guarantee Join is the first frame on the WS:
+// in subscriber-primary mode the server starts the subscriber-PC SDP
+// offer immediately after participant admission, so Offer / RefreshToken
+// / Trickle may interleave with — and occasionally precede — Join.
+// Any non-Join frame is buffered into c.preJoin so the recv loop can
+// dispatch it after the handshake completes.
 func (c *SignalClient) readJoin(ctx context.Context) (*livekit.JoinResponse, error) {
-	// Bound the wait — a server that accepts the TCP handshake but never
-	// sends Join would otherwise hang us indefinitely.
+	// Bound the total wait so a server that accepts the TCP handshake but
+	// never sends Join cannot hang us indefinitely.
 	deadline := time.Now().Add(15 * time.Second)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
@@ -267,20 +287,23 @@ func (c *SignalClient) readJoin(ctx context.Context) (*livekit.JoinResponse, err
 	_ = c.conn.SetReadDeadline(deadline)
 	defer func() { _ = c.conn.SetReadDeadline(time.Time{}) }()
 
-	resp, err := c.readMessage()
-	if err != nil {
-		return nil, fmt.Errorf("read JoinResponse: %w", err)
-	}
-	switch m := resp.Message.(type) {
-	case *livekit.SignalResponse_Join:
-		if m.Join == nil || m.Join.Participant == nil {
-			return nil, errors.New("JoinResponse missing participant")
+	for {
+		resp, err := c.readMessage()
+		if err != nil {
+			return nil, fmt.Errorf("read JoinResponse: %w", err)
 		}
-		return m.Join, nil
-	case *livekit.SignalResponse_Leave:
-		return nil, fmt.Errorf("server sent Leave before Join: reason=%s", m.Leave.GetReason())
-	default:
-		return nil, fmt.Errorf("first frame was %T, expected JoinResponse", resp.Message)
+		switch m := resp.Message.(type) {
+		case *livekit.SignalResponse_Join:
+			if m.Join == nil || m.Join.Participant == nil {
+				return nil, errors.New("JoinResponse missing participant")
+			}
+			return m.Join, nil
+		case *livekit.SignalResponse_Leave:
+			return nil, fmt.Errorf("server sent Leave before Join: reason=%s", m.Leave.GetReason())
+		default:
+			// Buffer for the recv loop to dispatch after Join.
+			c.preJoin = append(c.preJoin, resp)
+		}
 	}
 }
 
@@ -309,6 +332,16 @@ func (c *SignalClient) readMessage() (*livekit.SignalResponse, error) {
 func (c *SignalClient) recvLoop(ctx context.Context, stopWatch func()) {
 	defer stopWatch()
 	defer c.shutdown()
+
+	// Dispatch any pre-Join frames the handshake buffered (Offer/Trickle
+	// /RefreshToken from LK that arrived before JoinResponse). Drain in
+	// order so the publisher/subscriber PCs see a coherent stream.
+	for _, resp := range c.preJoin {
+		if !c.dispatch(ctx, resp) {
+			return
+		}
+	}
+	c.preJoin = nil
 
 	for {
 		wsutilx.SetReadDeadline(c.conn, wsutilx.DefaultReadTimeout.Load())
@@ -641,3 +674,15 @@ func redactToken(rawURL string) string {
 	}
 	return u.String()
 }
+
+// bufferedConn wraps a net.Conn so reads come through a bufio.Reader
+// first. Used to preserve bytes the WebSocket dialer buffered alongside
+// the HTTP 101 response (LiveKit sends the JoinResponse in the same TCP
+// segment as the upgrade reply). Writes and connection control still go
+// to the raw conn.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }

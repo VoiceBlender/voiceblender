@@ -14,7 +14,9 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -94,6 +96,11 @@ type Transport struct {
 	pendingTracks map[string]pendingTrack
 
 	encoder *codec.OpusEncoder
+
+	// outAudioLevel packs the most-recently-encoded outgoing frame's
+	// RFC 6464 level (low 7 bits) plus a voice-activity flag (bit 7).
+	// sendLoop writes; the audioLevelInterceptor reads on every packet.
+	outAudioLevel atomic.Uint32
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -221,19 +228,36 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 	}
 
 	me := &webrtc.MediaEngine{}
-	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:    webrtc.MimeTypeOpus,
-			ClockRate:   48000,
-			Channels:    2,
-			SDPFmtpLine: "minptime=10;useinbandfec=1",
-		},
-		PayloadType: 111,
-	}, webrtc.RTPCodecTypeAudio); err != nil {
-		return nil, nil, nil, fmt.Errorf("register opus: %w", err)
+	// RegisterDefaultCodecs registers Opus (PT 111, same shape we used
+	// to register inline) plus VP8/VP9/H264/AV1/H265 + RTX. Video codecs
+	// must be present even though VoiceBlender only consumes audio:
+	// LiveKit auto-subscribes participants to every published track, so
+	// when the browser publishes a webcam track our subscriber PC has to
+	// negotiate it. Without a matching video codec the transceiver
+	// rejects, LK's SFU fails "unable to start track, codec is not
+	// supported by remote", retries CreateOffer in a tight loop, and
+	// finally kicks the participant with NEGOTIATE_FAILED. The OnTrack
+	// handler still discards anything non-Opus.
+	if err := me.RegisterDefaultCodecs(); err != nil {
+		return nil, nil, nil, fmt.Errorf("register default codecs: %w", err)
+	}
+	// Negotiate the RFC 6464 audio-level extension on the publisher side
+	// so LK's ActiveSpeakerUpdate has data to work from.
+	if err := me.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: sdp.AudioLevelURI},
+		webrtc.RTPCodecTypeAudio,
+	); err != nil {
+		return nil, nil, nil, fmt.Errorf("register audio-level extension: %w", err)
 	}
 
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se))
+	ir := &interceptor.Registry{}
+	ir.Add(newAudioLevelInterceptor(t))
+
+	api := webrtc.NewAPI(
+		webrtc.WithMediaEngine(me),
+		webrtc.WithSettingEngine(se),
+		webrtc.WithInterceptorRegistry(ir),
+	)
 
 	publisher, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
@@ -331,7 +355,16 @@ func (t *Transport) dispatchSignal(ev SignalEvent) {
 			t.cleanup(err, "livekit_set_local_desc_failed")
 			return
 		}
-		if err := t.signal.SendAnswer(answer); err != nil {
+		// Patch the on-the-wire SDP only; pion's SetLocalDescription
+		// rejects any modification (InvalidModificationError), but LK's
+		// server-side pion needs mids on rejected m-sections.
+		sendAnswer := answer
+		if fixed, ferr := fixRejectedMids(e.SDP.SDP, answer.SDP); ferr != nil {
+			t.log.Warn("fix rejected mids", "error", ferr)
+		} else {
+			sendAnswer.SDP = fixed
+		}
+		if err := t.signal.SendAnswer(sendAnswer); err != nil {
 			t.log.Error("send answer", "error", err)
 			t.cleanup(err, "livekit_signal_send_failed")
 			return
@@ -594,6 +627,12 @@ func (t *Transport) sendLoop() {
 			frame = silence
 		}
 		samples := bytesToInt16(frame)
+		level, voice := audioLevelFromPCM(samples)
+		packed := uint32(level)
+		if voice {
+			packed |= 1 << 7
+		}
+		t.outAudioLevel.Store(packed)
 		encoded, err := t.encoder.Encode(samples)
 		if err != nil {
 			t.log.Warn("opus encode", "error", err)
@@ -605,6 +644,14 @@ func (t *Transport) sendLoop() {
 			// is connected; keep going until ctx cancels.
 		}
 	}
+}
+
+// AudioLevel reports the level + voice-activity flag of the most
+// recently encoded outgoing frame. Satisfies audioLevelProvider for the
+// audioLevelInterceptor.
+func (t *Transport) AudioLevel() (uint8, bool) {
+	packed := t.outAudioLevel.Load()
+	return uint8(packed & 0x7f), packed&(1<<7) != 0
 }
 
 // readFull tries to drain n bytes from r non-blockingly. Returns however

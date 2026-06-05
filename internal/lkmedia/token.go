@@ -21,6 +21,14 @@ type JoinClaims struct {
 	CanSubscribe   bool
 	CanPublishData bool
 	RoomAdmin      bool
+	// Kind sets the participant kind reported by the LiveKit server
+	// (ParticipantInfo.Kind). Empty defaults to STANDARD. Valid values
+	// match the lower-case spelling LiveKit uses on the wire:
+	// "agent", "ingress", "egress", "sip", "standard". Used to make
+	// VoiceBlender show up as an AI-agent participant for clients like
+	// livekit-examples/agent-starter-react that wait for a participant
+	// of kind=agent before considering the session ready.
+	Kind string
 }
 
 // videoGrant matches LiveKit's `video` claim object.
@@ -37,6 +45,10 @@ type videoGrant struct {
 type livekitClaims struct {
 	Video videoGrant `json:"video,omitempty"`
 	Name  string     `json:"name,omitempty"`
+	// Kind is a top-level claim that LiveKit propagates to
+	// ParticipantInfo.Kind. Empty omits the claim (server defaults to
+	// STANDARD).
+	Kind string `json:"kind,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -86,6 +98,7 @@ func MintJoinToken(apiKey, apiSecret string, c JoinClaims) (string, error) {
 	payload := livekitClaims{
 		Video: v,
 		Name:  c.Name,
+		Kind:  c.Kind,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    apiKey,
 			Subject:   c.Identity,
