@@ -157,12 +157,3 @@ your mic.
 - Multi-stream subgroup framing is not coalesced: every published Opus
   frame opens a fresh unidirectional stream. Cheap on QUIC but wasteful
   vs. a sustained group.
-
-## Where to go next
-
-- Bump VoiceBlender to a draft-16-capable Go MoQ library when one
-  exists, then this client can be retired in favour of moq.dev /
-  moqtail's TypeScript clients.
-- Until then, this file is the working reference for the wire format.
-  `moq-wire.js` is small enough to step through with the network panel
-  open and a hex viewer.

@@ -293,6 +293,54 @@ Both `leg.ringing` and `leg.connected` are emitted back-to-back on upgrade. `leg
 
 ---
 
+### MoQ Legs (experimental, PoC)
+
+A **MoQ leg** (`moq_in`) carries **bidirectional** Opus audio over a single Media-over-QUIC session inside a WebTransport/HTTP/3 connection. Only the connection direction is fixed (client-initiated, hence `moq_in`); media flows both ways. The leg goes straight to `connected` (no ringing/answer flow), and event parity is limited to `leg.connected` / `leg.disconnected` — no DTMF, no RTT, no hold/transfer.
+
+Reachable only on the HTTP/3 MoQ listener (`MOQ_LISTEN_ADDR`, default `:8443`), not on the regular HTTP/1.1 listener. Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 clients (moqtail, moq.dev) is not expected to work.
+
+#### Wire format
+
+One MoQ session per leg, with two fixed tracks:
+
+- **Downlink** (server → client): server publishes namespace `mix`, track `audio` — the room mix sent to the leg.
+- **Uplink** (client → server): server subscribes to namespace `mic`, track `audio` — the leg's mic into the room.
+
+Audio is Opus, one frame per MoQ Object (LOC-style), at 48 kHz mono with a 20 ms frame size. The encoder/decoder are hard-wired to 48 kHz — the `sample_rate` query param exists but only `48000` is accepted; the room mixer handles any rate conversion. The Opus bitrate is server-controlled via the `MOQ_OPUS_BITRATE` env var (default 24000 bps).
+
+#### Inbound: CONNECT /v1/legs/moq (WebTransport extended-CONNECT)
+
+```
+CONNECT /v1/legs/moq?sample_rate=48000&room_id=room-789 HTTP/3
+:protocol: webtransport
+X-Tenant: tenant-a
+P-Asserted-Identity: alice@example.com
+```
+
+Use a WebTransport-capable HTTP/3 client. Standard HTTP/1.1 clients (e.g. `curl -X POST`) cannot reach this endpoint.
+
+| Query param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sample_rate` | int | no | `48000` only (encoder/decoder are 48 kHz). Default 48000. |
+| `room_id` | string | no | Room to auto-add the leg to once connected. Created on demand if it does not exist. |
+| `app_id` | string | no | Tag the leg for event filtering. |
+| `webhook_url` | string | no | Per-leg webhook URL. |
+| `webhook_secret` | string | no | HMAC secret for per-leg webhook signing. |
+
+`X-*` and `P-*` request headers (plus `Authorization`) are captured into the leg's `headers` map and surfaced on `LegView`.
+
+**Response:**
+- `200 OK` — WebTransport extended-CONNECT accepted; MoQ session established. No JSON body — the response is the upgraded WebTransport session.
+- `400` — Invalid query parameters or config.
+- `500` — Room create failure.
+- `503` — MoQ endpoint is not enabled (`MOQ_ENABLED=false`).
+
+`leg.connected` fires on session establishment. `leg.disconnected` fires when the MoQ session closes — reasons: `hangup`, `moq_error`.
+
+> **OpenAPI note:** OpenAPI 3.1 does not define `connect` as a path-item method, so this operation is documented in `openapi.yaml` under `post` with an `x-actual-method: CONNECT` extension. The actual wire method is HTTP/3 extended-CONNECT.
+
+---
+
 ### LiveKit Room Legs
 
 VoiceBlender bridges SIP and LiveKit by joining an external LiveKit room as a participant, then mapping the LiveKit room's other participants onto VoiceBlender legs **one-to-one**. Each remote LK participant becomes its own `livekit_participant` leg in the same VoiceBlender room. The VB room mixer drives audio for everyone; there is no bespoke sum-mixer. No LiveKit SDK is used — the signaling protocol is spoken directly over WebSocket against pion's WebRTC stack.
