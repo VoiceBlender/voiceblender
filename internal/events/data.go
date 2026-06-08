@@ -415,3 +415,8 @@ type SIPRegistrationExpiredData struct {
 	Socket  string `json:"socket,omitempty"`
 	Reason  string `json:"reason"`
 }
+
+// LiveKit (Model B): no special event types. Remote LK participants
+// surface as LiveKitParticipantLeg entries in the umbrella's VB room, so
+// their lifecycle is reported via the standard leg.connected /
+// leg.disconnected / speaking.started / speaking.stopped events.

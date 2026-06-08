@@ -47,7 +47,7 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | Field | Type | Values |
 |-------|------|--------|
 | `id` | string | UUID |
-| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out`, `moq_in` |
+| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out`, `moq_in`, `livekit_publish`, `livekit_participant` |
 | `state` | string | `ringing`, `early_media`, `connected`, `held`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted (cannot be heard by others) |
@@ -96,7 +96,7 @@ Originate an outbound SIP call.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | string | yes | `"sip"` or `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below) |
+| `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
 | `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
@@ -338,6 +338,116 @@ Use a WebTransport-capable HTTP/3 client. Standard HTTP/1.1 clients (e.g. `curl 
 `leg.connected` fires on session establishment. `leg.disconnected` fires when the MoQ session closes — reasons: `hangup`, `moq_error`.
 
 > **OpenAPI note:** OpenAPI 3.1 does not define `connect` as a path-item method, so this operation is documented in `openapi.yaml` under `post` with an `x-actual-method: CONNECT` extension. The actual wire method is HTTP/3 extended-CONNECT.
+
+---
+
+### LiveKit Room Legs
+
+VoiceBlender bridges SIP and LiveKit by joining an external LiveKit room as a participant, then mapping the LiveKit room's other participants onto VoiceBlender legs **one-to-one**. Each remote LK participant becomes its own `livekit_participant` leg in the same VoiceBlender room. The VB room mixer drives audio for everyone; there is no bespoke sum-mixer. No LiveKit SDK is used — the signaling protocol is spoken directly over WebSocket against pion's WebRTC stack.
+
+**Participant model (Model B).** A `POST /v1/legs type=livekit_room` call creates one umbrella **publish leg** (`type: "livekit_publish"`) that owns the outbound audio direction. As remote LK participants are discovered, each becomes a **participant leg** (`type: "livekit_participant"`) registered in `LegMgr` and added to the publish leg's VoiceBlender room. Per-LK-participant operations — recording, role routing, mute/deaf, AI agents, STT, `DELETE /v1/legs/{id}` — all work natively because each LK participant *is* a real VB leg.
+
+**Why two leg types instead of one:**
+
+- `livekit_publish` represents what VoiceBlender publishes **to** LiveKit (mixed audio of all non-LK participants in the same VB room). Its `AudioReader` is empty (no upstream of its own); its `AudioWriter` is fed by the VB room mixer's mixed-minus-self output.
+- `livekit_participant` represents one remote LK participant's audio coming **from** LiveKit. Its `AudioReader` yields decoded PCM from the LK participant's audio track; its `AudioWriter` is a discard sink (the LK side already handles outbound mixing for that participant).
+
+**Audio feedback prevention.** The publish leg's mixer whitelist (`Hears`) is automatically maintained to include every leg in its room **except** participant legs (role `livekit_listen`). This means LK participants' audio never gets re-published to LiveKit. The whitelist is recomputed on every `leg.joined_room` / `leg.left_room` event for the publish leg's room.
+
+**Server prerequisites:**
+- `LIVEKIT_ENABLED=true`
+- `LIVEKIT_URL=wss://your.livekit.server` (overridable per-request)
+- *(optional)* `LIVEKIT_TOKEN_SIGNING_ENABLED=true` + `LIVEKIT_API_KEY` + `LIVEKIT_API_SECRET` to let VoiceBlender mint JWTs. **Security note:** enabling minting puts a high-privilege secret (the LiveKit API secret can mint tokens for any room/identity) inside VoiceBlender. Default is OFF — callers pass a pre-signed JWT.
+
+#### POST /v1/legs (type=livekit_room)
+
+Two token modes, mutually exclusive per-request. If both are present, the explicit `token` wins.
+
+**Mode 1: caller-supplied JWT (default, no VB-side secrets):**
+
+```json
+{
+  "type": "livekit_room",
+  "livekit": {
+    "url": "wss://lk.example.com",
+    "token": "eyJhbGciOiJIUzI1NiIs..."
+  },
+  "room_id": "vb-room-7",
+  "webhook_url": "https://app.example.com/lk-hook"
+}
+```
+
+**Mode 2: VoiceBlender mints (requires `LIVEKIT_TOKEN_SIGNING_ENABLED=true`):**
+
+```json
+{
+  "type": "livekit_room",
+  "livekit": {
+    "room": "support-call-123",
+    "identity": "voiceblender-bridge",
+    "participant_name": "VoiceBlender",
+    "token_ttl": "30m",
+    "permissions": {
+      "can_publish": true,
+      "can_subscribe": true
+    }
+  },
+  "room_id": "vb-room-7"
+}
+```
+
+**Top-level fields:** same `room_id`, `webhook_url`, `webhook_secret`, `app_id`, `headers` semantics as other leg types. `app_id` is inherited by every auto-created participant leg; `webhook_url` is set on the publish leg only.
+
+**`livekit` parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | no | LiveKit server endpoint (`wss://...`). Overrides `LIVEKIT_URL`. |
+| `token` | string | yes (mode 1) | Pre-signed LiveKit JWT. When set, all other minting fields are ignored. |
+| `room` | string | yes (mode 2) | LiveKit room name. Required when minting. |
+| `identity` | string | yes (mode 2) | LiveKit participant identity. Required when minting. |
+| `participant_name` | string | no | Display name surfaced in LK Room UIs. |
+| `permissions` | object | no | LK grant flags. See below. Defaults: publish=true, subscribe=true, data=false, admin=false. |
+| `token_ttl` | string | no | Go duration string (e.g. `"30m"`, `"6h"`). Used only when minting. Defaults to `LIVEKIT_DEFAULT_TOKEN_TTL` (6h). |
+| `opus_bitrate` | int | no | Override `LIVEKIT_OPUS_BITRATE` for this leg. Must be 6000..510000. |
+
+**`permissions` fields** (each optional; nil → default):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `can_publish` | `true` | Publishing local audio. |
+| `can_subscribe` | `true` | Subscribing to remote tracks. |
+| `can_publish_data` | `false` | Data channel. Not used by the audio bridge. |
+| `room_admin` | `false` | Required for server-side admin actions on the LK room. |
+
+**Response:** `201 Created` — Leg object for the **publish leg** (`type: "livekit_publish"`, state `connected`). Connect completes (or fails) before the HTTP response is sent. Use `GET /v1/legs?type=livekit_participant` or filter by `room_id` to enumerate the participant legs that get auto-created as LK participants join.
+
+**Headers surfaced** in the publish leg's `LegView.headers`:
+- `livekit_identity` — participant identity reported by `JoinResponse`
+- `livekit_room` — LK room name
+
+Each `livekit_participant` leg's `LegView.headers` carries:
+- `livekit_identity` — the remote LK participant's identity
+- `livekit_track_sid` — the LiveKit track SID that backs this leg's audio
+
+**Lifecycle.**
+- The umbrella connection is created synchronously inside `createLiveKitRoomLeg`.
+- As LK ParticipantUpdate + OnTrack events arrive, the API layer auto-creates a `livekit_participant` leg per audio track, registers it in `LegMgr`, emits `leg.connected`, and adds it to the publish leg's VB room (which fires `leg.joined_room`).
+- When a track is unpublished (or the LK participant disconnects), the matching participant leg is cleaned up; `leg.disconnected` fires with reason `livekit_participant_left`.
+- When the umbrella signaling closes (LK leave, server shutdown, network error), participant legs are torn down first, then the publish leg; the publish leg's `leg.disconnected.reason` maps from the LiveKit `DisconnectReason` (e.g. `livekit_kicked`, `livekit_server_shutdown`, `livekit_token_expired`, `livekit_room_deleted`).
+
+**Mute / Deaf semantics (per leg).**
+- `POST /v1/legs/{publish_id}/mute` — VB stops contributing to the LK publish track. LK participants stop hearing the rest of the VB room.
+- `POST /v1/legs/{participant_id}/mute` — that LK participant's audio is excluded from the VB room mix. Other VB participants stop hearing them; the LK participant itself continues to receive audio normally.
+- `DELETE /v1/legs/{participant_id}` — drops the VB-side leg only. The LK participant remains in the LiveKit room (VoiceBlender just stops representing them).
+- `DELETE /v1/legs/{publish_id}` — tears down the entire umbrella: every participant leg is removed first, then the publish leg, then the LK signaling Leave is sent.
+
+**Mid-call JWT expiry.** When VoiceBlender mints, default TTL is 6h; tune via `token_ttl`. When the caller supplies the JWT, the call ends when the JWT expires (no auto-refresh in v1). Long calls should use long-lived tokens.
+
+**Errors:**
+- `400` — missing `livekit` block, missing token + signing disabled, missing room/identity in mint mode, invalid `token_ttl`, missing LiveKit URL.
+- `502` — LiveKit signaling failed (bad token, server unreachable, protocol error). No events emitted; no leg registered.
+- `503` — `LIVEKIT_ENABLED=false`.
 
 ---
 
@@ -2654,6 +2764,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
 | `sip.registration_active` | A SIP AOR binding was created or refreshed | `aor`, `contact`, `socket`, `transport`, `user_agent`, `call_id`, `granted_expires_seconds`, `expires_at` |
 | `sip.registration_expired` | A SIP AOR binding was removed | `aor`, `contact`, `socket`, `reason` (`ttl` / `unregistered` / `forced` / `replaced`) |
+> **LiveKit participants.** Remote LK participants do not get their own special event types. Each appears as a regular `leg.connected` / `leg.disconnected` for a `livekit_participant` leg (Model B). `speaking.started` / `speaking.stopped` apply per-leg as usual. The `leg.disconnected.reason` for an LK participant leg is `livekit_participant_left`.
 
 #### `amd.result` — Answering Machine Detection
 

@@ -47,12 +47,12 @@ func (lw *wsLockedWriter) writeControl(op ws.OpCode, payload []byte) error {
 // in WireJSONBase64 mode):
 //
 //   - Welcome:           {"type":"connected","participant_id":"...",
-//                         "sample_rate":N,"format":"pcm_s16le"}
+//     "sample_rate":N,"format":"pcm_s16le"}
 //   - Inbound audio:     {"audio":"<base64-pcm>"} or
-//                        {"type":"audio","audio":"<base64-pcm>"}
+//     {"type":"audio","audio":"<base64-pcm>"}
 //   - Outbound audio:    {"audio":"<base64-pcm>"}
 //   - Heartbeat:         server →{"type":"ping","event_id":N};
-//                        client →{"type":"pong","event_id":N}
+//     client →{"type":"pong","event_id":N}
 //   - Client close:      {"type":"stop"} (alias: {"type":"hangup"})
 //   - Bidi text:         {"type":"text","text":"..."}
 //

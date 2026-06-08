@@ -1,0 +1,207 @@
+package leg
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func lkTestLog() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// newBareLiveKitPublishLeg builds a LiveKitPublishLeg with no transport, suitable for
+// exercising state/metadata behavior without spinning up signaling.
+func newBareLiveKitPublishLeg(t *testing.T) *LiveKitPublishLeg {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	return &LiveKitPublishLeg{
+		id:         "lk-test",
+		legType:    TypeLiveKitPublish,
+		state:      StateConnected,
+		sampleRate: 48000,
+		createdAt:  time.Now(),
+		answeredAt: time.Now(),
+		ctx:        ctx,
+		cancel:     cancel,
+		log:        lkTestLog(),
+	}
+}
+
+func TestLiveKitPublishLeg_Identity(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if l.Type() != TypeLiveKitPublish {
+		t.Errorf("Type = %s, want %s", l.Type(), TypeLiveKitPublish)
+	}
+	if l.SampleRate() != 48000 {
+		t.Errorf("SampleRate = %d, want 48000", l.SampleRate())
+	}
+	if l.RTTNegotiated() {
+		t.Error("RTTNegotiated should be false for LiveKit leg")
+	}
+	if l.IsHeld() {
+		t.Error("IsHeld should be false")
+	}
+	if l.SIPHeaders() != nil {
+		t.Error("SIPHeaders should be nil for LiveKit leg")
+	}
+}
+
+func TestLiveKitPublishLeg_MuteDeafState(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if l.IsMuted() {
+		t.Error("default IsMuted should be false")
+	}
+	l.SetMuted(true)
+	if !l.IsMuted() {
+		t.Error("SetMuted(true) didn't take effect")
+	}
+	l.SetMuted(false)
+	if l.IsMuted() {
+		t.Error("SetMuted(false) didn't take effect")
+	}
+
+	if l.IsDeaf() {
+		t.Error("default IsDeaf should be false")
+	}
+	l.SetDeaf(true)
+	if !l.IsDeaf() {
+		t.Error("SetDeaf(true) didn't take effect")
+	}
+}
+
+func TestLiveKitPublishLeg_RoomAppRoleMetadata(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	l.SetRoomID("room-7")
+	l.SetAppID("app-9")
+	l.SetRole("agent")
+	if l.RoomID() != "room-7" || l.AppID() != "app-9" || l.Role() != "agent" {
+		t.Errorf("metadata round-trip: room=%q app=%q role=%q",
+			l.RoomID(), l.AppID(), l.Role())
+	}
+}
+
+func TestLiveKitPublishLeg_HangupTransitions(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if l.State() != StateConnected {
+		t.Fatalf("expected StateConnected, got %s", l.State())
+	}
+	if err := l.Hangup(context.Background()); err != nil {
+		t.Fatalf("Hangup: %v", err)
+	}
+	if l.State() != StateHungUp {
+		t.Errorf("after Hangup State = %s, want %s", l.State(), StateHungUp)
+	}
+	// Idempotent.
+	if err := l.Hangup(context.Background()); err != nil {
+		t.Fatalf("second Hangup: %v", err)
+	}
+	// Context is cancelled.
+	select {
+	case <-l.Context().Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Context should be done after Hangup")
+	}
+}
+
+func TestLiveKitPublishLeg_ClaimDisconnectSingleFlight(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if !l.ClaimDisconnect() {
+		t.Fatal("first ClaimDisconnect should return true")
+	}
+	if l.ClaimDisconnect() {
+		t.Fatal("second ClaimDisconnect should return false")
+	}
+}
+
+func TestLiveKitPublishLeg_DTMFAndTextUnsupported(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if err := l.SendDTMF(context.Background(), "1234"); err == nil {
+		t.Error("SendDTMF should return an error")
+	}
+	if err := l.SendText(context.Background(), "hello"); err != ErrRTTNotNegotiated {
+		t.Errorf("SendText err = %v, want ErrRTTNotNegotiated", err)
+	}
+}
+
+// The publish leg has no upstream audio in Model B (remote LK
+// participants surface as separate participant legs). AudioReader always
+// returns emptyReader{} regardless of transport state.
+func TestLiveKitPublishLeg_AudioReaderAlwaysEmpty(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	r := l.AudioReader()
+	if r == nil {
+		t.Fatal("AudioReader returned nil")
+	}
+	buf := make([]byte, 4)
+	if _, err := r.Read(buf); err != io.EOF {
+		t.Errorf("expected EOF, got %v", err)
+	}
+}
+
+func TestLiveKitPublishLeg_AudioWriterNilTransportDiscards(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	w := l.AudioWriter()
+	if w == nil {
+		t.Fatal("AudioWriter returned nil")
+	}
+	n, err := w.Write([]byte{1, 2, 3})
+	if err != nil || n != 3 {
+		t.Errorf("Write to nil-transport writer = (%d, %v), want (3, nil)", n, err)
+	}
+}
+
+func TestLiveKitPublishLeg_Headers_MergesAndDefensiveCopy(t *testing.T) {
+	in := map[string]string{
+		"livekit_name": "Alice",
+		"x_custom":     "v",
+	}
+	// Construct via NewLiveKitPublishLeg with nil transport (skips transport-derived
+	// header merge but still honors caller-supplied headers).
+	l := NewLiveKitPublishLeg(nil, in, 48000, lkTestLog())
+	out := l.Headers()
+	if got := out["livekit_name"]; got != "Alice" {
+		t.Errorf("livekit_name = %q, want Alice", got)
+	}
+	if got := out["x_custom"]; got != "v" {
+		t.Errorf("x_custom = %q, want v", got)
+	}
+	// Mutating the returned map must not affect the leg.
+	out["x_custom"] = "MUTATED"
+	if got := l.Headers()["x_custom"]; got != "v" {
+		t.Errorf("internal headers mutated through returned map: %q", got)
+	}
+}
+
+func TestLiveKitPublishLeg_AcceptDTMFAndText(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if l.AcceptDTMF() {
+		t.Error("default AcceptDTMF should be false")
+	}
+	l.SetAcceptDTMF(true)
+	if !l.AcceptDTMF() {
+		t.Error("SetAcceptDTMF(true) didn't take effect")
+	}
+	l.SetAcceptText(true)
+	if !l.AcceptText() {
+		t.Error("SetAcceptText(true) didn't take effect")
+	}
+}
+
+func TestLiveKitPublishLeg_RTPStatsEmpty(t *testing.T) {
+	l := newBareLiveKitPublishLeg(t)
+	if got := l.RTPStats(); (got != RTPStats{}) {
+		t.Errorf("RTPStats = %+v, want zero", got)
+	}
+}
+
+// Sanity check that the atomic.Bool zero value behaves as expected.
+func TestLiveKitPublishLeg_AtomicBoolDefaults(t *testing.T) {
+	var b atomic.Bool
+	if b.Load() {
+		t.Fatal("atomic.Bool zero value should be false")
+	}
+}

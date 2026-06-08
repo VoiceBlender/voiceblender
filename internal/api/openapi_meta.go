@@ -751,7 +751,6 @@ func RoutesMetadata() []RouteMeta {
 				404: {Description: "Leg not found"},
 			},
 		},
-
 		// ── Rooms ───────────────────────────────────────────────────────
 		{
 			Method: "POST", Path: "/rooms", OperationID: "createRoom",

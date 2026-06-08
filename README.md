@@ -106,6 +106,13 @@ All configuration is via environment variables:
 | `MOQ_TLS_CERT_FILE` | _(none)_ | Path to the TLS certificate used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
 | `MOQ_TLS_KEY_FILE` | _(none)_ | Path to the TLS private key used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
 | `MOQ_OPUS_BITRATE` | `24000` | Target bitrate (bps) for the Opus encoder feeding the MoQ leg's `mix` track. Must be in `6000..510000`. |
+| `LIVEKIT_ENABLED` | `false` | Enable the `livekit_room` leg type at `POST /v1/legs` (`type=livekit_room`). Lets VoiceBlender join a LiveKit room as a participant and bridge audio between SIP and LiveKit. No LiveKit SDK is used — the signaling protocol is spoken directly via `github.com/livekit/protocol` protobufs over the existing pion stack. |
+| `LIVEKIT_URL` | _(none)_ | Default LiveKit server endpoint (`wss://...`). Required when `LIVEKIT_ENABLED=true` unless every request supplies `livekit.url`. Overridable per-request. |
+| `LIVEKIT_OPUS_BITRATE` | `24000` | Target bitrate (bps) for the Opus encoder publishing audio into LiveKit. Must be in `6000..510000`. Overridable per-request via `livekit.opus_bitrate`. |
+| `LIVEKIT_TOKEN_SIGNING_ENABLED` | `false` | Opt-in: when `true`, callers may omit `livekit.token` and instead pass `{room,identity,permissions}`; VoiceBlender mints the JWT itself. **Security caveat:** enabling this stores the LiveKit API secret (a high-privilege credential that can mint tokens for any room/identity on the LiveKit deployment) in VoiceBlender. Keep off in multi-tenant deployments. |
+| `LIVEKIT_API_KEY` | _(none)_ | LiveKit API key used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. |
+| `LIVEKIT_API_SECRET` | _(none)_ | LiveKit API secret used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. Treat as a high-value secret; redact in logs. |
+| `LIVEKIT_DEFAULT_TOKEN_TTL` | `6h` | Default TTL applied to minted JWTs when the request omits `livekit.token_ttl`. Go duration string. LiveKit recommends ≤ 6 hours. |
 
 ## Links
 
@@ -119,7 +126,7 @@ Full reference: [API.md](API.md)
 ### Legs
 
 ```
-POST   /v1/legs                    # Originate outbound leg (sip / whatsapp / websocket)
+POST   /v1/legs                    # Originate outbound leg (sip / whatsapp / websocket / livekit_room)
 GET    /v1/legs                    # List all legs
 GET    /v1/legs/websocket          # Connect a WebSocket leg (HTTP upgrade)
 GET    /v1/legs/{id}               # Get leg details
@@ -150,6 +157,8 @@ POST   /v1/legs/{id}/amd            # Start answering machine detection
 POST   /v1/legs/{id}/agent         # Attach AI agent
 POST   /v1/legs/{id}/agent/message # Inject message into agent
 DELETE /v1/legs/{id}/agent         # Detach AI agent
+                                   # LiveKit: each remote LK participant becomes its own `livekit_participant` leg in the same VB room.
+                                   # Per-LK operations (mute, recording, role, hangup) use the standard /v1/legs/{id}/* endpoints.
 ```
 
 ### Rooms

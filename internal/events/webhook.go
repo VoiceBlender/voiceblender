@@ -21,16 +21,16 @@ type Webhook struct {
 }
 
 type WebhookRegistry struct {
-	mu             sync.RWMutex
-	globalWebhook  *Webhook // from WEBHOOK_URL + WEBHOOK_SECRET env vars
-	legWebhooks    map[string]*Webhook // leg_id → Webhook
-	roomWebhooks   map[string]*Webhook // room_id → Webhook
-	bus            *Bus
-	log            *slog.Logger
-	client         *http.Client
-	workCh         chan deliveryJob
-	stopOnce       sync.Once
-	stopCh         chan struct{}
+	mu            sync.RWMutex
+	globalWebhook *Webhook            // from WEBHOOK_URL + WEBHOOK_SECRET env vars
+	legWebhooks   map[string]*Webhook // leg_id → Webhook
+	roomWebhooks  map[string]*Webhook // room_id → Webhook
+	bus           *Bus
+	log           *slog.Logger
+	client        *http.Client
+	workCh        chan deliveryJob
+	stopOnce      sync.Once
+	stopCh        chan struct{}
 }
 
 type deliveryJob struct {
