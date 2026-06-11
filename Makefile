@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs clean test test-integration test-all download-greetings gen-human-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs clean vet test test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -17,7 +17,10 @@ run: build
 openapi asyncapi specs:
 	go generate ./internal/api/
 
-test:
+vet:
+	go vet ./...
+
+test: vet
 	go test ./internal/... -count=1 -timeout=60s
 
 test-integration:

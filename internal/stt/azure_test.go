@@ -19,9 +19,6 @@ import (
 )
 
 func TestAzure_StartAndReceiveTranscripts(t *testing.T) {
-	var mu sync.Mutex
-	_ = mu
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
