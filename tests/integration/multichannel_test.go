@@ -19,9 +19,9 @@ import (
 
 // multiChannelRecordingResponse extends recordingResponse with multi-channel fields.
 type multiChannelRecordingResponse struct {
-	Status           string                          `json:"status"`
-	File             string                          `json:"file"`
-	MultiChannelFile string                          `json:"multi_channel_file"`
+	Status           string                           `json:"status"`
+	File             string                           `json:"file"`
+	MultiChannelFile string                           `json:"multi_channel_file"`
 	Channels         map[string]recording.ChannelInfo `json:"channels"`
 }
 

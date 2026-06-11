@@ -63,7 +63,9 @@ func TestPlaybackVolume_Leg(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("volume change: unexpected status %d", resp.StatusCode)
 	}
-	var statusResp struct{ Status string `json:"status"` }
+	var statusResp struct {
+		Status string `json:"status"`
+	}
 	decodeJSON(t, resp, &statusResp)
 	if statusResp.Status != "ok" {
 		t.Fatalf("expected status ok, got %q", statusResp.Status)
@@ -162,7 +164,9 @@ func TestPlaybackVolume_Room(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("room volume change: unexpected status %d", resp.StatusCode)
 	}
-	var statusResp struct{ Status string `json:"status"` }
+	var statusResp struct {
+		Status string `json:"status"`
+	}
 	decodeJSON(t, resp, &statusResp)
 	if statusResp.Status != "ok" {
 		t.Fatalf("expected status ok, got %q", statusResp.Status)

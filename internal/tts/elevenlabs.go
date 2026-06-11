@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	elevenLabsBaseURL    = "https://api.elevenlabs.io/v1/text-to-speech"
+	elevenLabsBaseURL      = "https://api.elevenlabs.io/v1/text-to-speech"
 	elevenLabsDefaultModel = "eleven_multilingual_v2"
 )
 

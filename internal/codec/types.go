@@ -10,10 +10,10 @@ type CodecType int
 
 const (
 	CodecUnknown CodecType = iota
-	CodecPCMU                       // PT=0, 8kHz
-	CodecPCMA                       // PT=8, 8kHz
-	CodecG722                       // PT=9, 16kHz internal / 8kHz SDP clock (RFC 3551)
-	CodecOpus                       // PT=111 (dynamic), 48kHz
+	CodecPCMU              // PT=0, 8kHz
+	CodecPCMA              // PT=8, 8kHz
+	CodecG722              // PT=9, 16kHz internal / 8kHz SDP clock (RFC 3551)
+	CodecOpus              // PT=111 (dynamic), 48kHz
 )
 
 func (c CodecType) String() string {

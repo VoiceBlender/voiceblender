@@ -9,7 +9,7 @@ import (
 
 // DTMFEvent represents an RFC 4733 telephone-event payload.
 type DTMFEvent struct {
-	Event      uint8  // 0-9, 10=*, 11=#, 12-15=A-D
+	Event      uint8 // 0-9, 10=*, 11=#, 12-15=A-D
 	EndOfEvent bool
 	Volume     uint8  // 0-63
 	Duration   uint16 // in timestamp units

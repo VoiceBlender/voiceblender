@@ -275,8 +275,8 @@ func TestWSLegAudioFlows(t *testing.T) {
 	//  - accumulate enough audio to compute a meaningful RMS, or
 	//  - run out of time.
 	const (
-		frameBytes = 640                     // 16kHz × 20ms × 2 bytes/sample
-		minFrames  = 25                      // ~500 ms of audio
+		frameBytes = 640 // 16kHz × 20ms × 2 bytes/sample
+		minFrames  = 25  // ~500 ms of audio
 		readBudget = 5 * time.Second
 	)
 

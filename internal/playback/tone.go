@@ -29,19 +29,19 @@ type ToneReader struct {
 	amplitude  float64 // peak amplitude (~0.7 * MaxInt16)
 
 	// Phase accumulators (radians), one per frequency + modulation.
-	phases    []float64
-	modPhase  float64
+	phases   []float64
+	modPhase float64
 
 	// Cadence tracking.
-	cadenceIdx    int // current segment index
-	cadenceSample int // samples elapsed in current segment
+	cadenceIdx    int   // current segment index
+	cadenceSample int   // samples elapsed in current segment
 	cadenceLens   []int // pre-computed segment lengths in samples
 
 	// Fade ramp at cadence transitions to avoid clicks.
-	fadeLen     int     // ramp length in samples (e.g. 2ms worth)
-	fadeGain    float64 // current envelope gain (0..1)
-	fadeTarget  float64 // target gain (1 for on, 0 for off)
-	fadeDelta   float64 // gain change per sample during ramp
+	fadeLen    int     // ramp length in samples (e.g. 2ms worth)
+	fadeGain   float64 // current envelope gain (0..1)
+	fadeTarget float64 // target gain (1 for on, 0 for off)
+	fadeDelta  float64 // gain change per sample during ramp
 }
 
 // NewToneReader creates a ToneReader for the given spec at the given sample rate.
@@ -211,7 +211,7 @@ var toneRegistry = map[string]ToneSpec{
 	"br_congestion": {Frequencies: []float64{425}, Cadence: onOff(250, 250)},
 
 	// --- Poland ---
-	"pl_ringback":   {Frequencies: []float64{425}, Cadence: onOff(1000, 4000)},
+	"pl_ringback": {Frequencies: []float64{425}, Cadence: onOff(1000, 4000)},
 
 	// --- Russia ---
 	"ru_ringback":   {Frequencies: []float64{425}, Cadence: onOff(800, 3200)},

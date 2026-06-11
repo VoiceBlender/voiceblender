@@ -180,4 +180,3 @@ func MergeMultiChannel(dir string, inputs []MultiChannelInput, totalDuration tim
 		Channels: channels,
 	}, nil
 }
-

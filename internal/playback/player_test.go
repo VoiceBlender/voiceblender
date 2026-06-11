@@ -164,7 +164,7 @@ func TestDecodeToMono_PCM_Mono(t *testing.T) {
 }
 
 func TestDecodeToMono_PCM_Stereo(t *testing.T) {
-	data := make([]byte, 8) // 2 stereo frames
+	data := make([]byte, 8)  // 2 stereo frames
 	putSample(data, 0, 100)  // L
 	putSample(data, 2, 200)  // R
 	putSample(data, 4, -100) // L
