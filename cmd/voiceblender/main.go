@@ -26,6 +26,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var version = "dev"
+
 func main() {
 	cfg := config.Load()
 
@@ -53,6 +55,7 @@ func main() {
 	webhookReg := events.NewWebhookRegistry(bus, log, cfg.WebhookURL, cfg.WebhookSecret)
 	defer webhookReg.Stop()
 
+	log.Info("starting voiceblender", "version", version)
 	log.Info("config loaded", "default_sample_rate", cfg.DefaultSampleRate)
 
 	// Leg and room managers
