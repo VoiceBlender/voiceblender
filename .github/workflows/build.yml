@@ -66,7 +66,6 @@ jobs:
 
   binaries:
     needs: test
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -109,7 +108,18 @@ jobs:
             tar -czf "${base}.tar.gz" voiceblender LICENSE README.md
             sha256sum "${base}.tar.gz" > "${base}.tar.gz.sha256"
           fi
+      - name: upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceblender_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          retention-days: 14
       - name: release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
