@@ -145,3 +145,46 @@ func TestAMRWB_EndToEndAudio(t *testing.T) {
 		})
 	}
 }
+
+// TestAMRWB_DTMF places an AMR-WB call and verifies out-of-band DTMF (RFC 4733)
+// flows over the 16 kHz telephone-event negotiated alongside AMR-WB. Regression
+// guard for the bug where the answer advertised telephone-event/8000 and digit
+// durations were encoded at 8 kHz, breaking DTMF under AMR-WB.
+func TestAMRWB_DTMF(t *testing.T) {
+	instA := newAMRWBInstance(t, "amrwb-dtmf-a", true)
+	instB := newAMRWBInstance(t, "amrwb-dtmf-b", true)
+
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"AMR-WB"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: status %d", createResp.StatusCode)
+	}
+	var outbound legView
+	decodeJSON(t, createResp, &outbound)
+
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	answerResp := httpPost(t,
+		fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID),
+		map[string]interface{}{"codec": "AMR-WB"},
+	)
+	if answerResp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(answerResp.Body)
+		answerResp.Body.Close()
+		t.Fatalf("answer with codec=AMR-WB: status %d, body=%s", answerResp.StatusCode, body)
+	}
+	answerResp.Body.Close()
+
+	waitForLegState(t, instA.baseURL(), outbound.ID, "connected", 5*time.Second)
+	waitForLegState(t, instB.baseURL(), inbound.ID, "connected", 5*time.Second)
+
+	// Caller emits DTMF over the AMR-WB leg; the far end must receive it.
+	sendDTMFFrom(t, instA, outbound.ID, "5")
+	waitForDTMF(t, instB, inbound.ID, "5")
+
+	// And the reverse direction.
+	sendDTMFFrom(t, instB, inbound.ID, "7")
+	waitForDTMF(t, instA, outbound.ID, "7")
+}

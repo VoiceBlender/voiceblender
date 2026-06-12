@@ -78,23 +78,27 @@ func DTMFEventToDigit(event uint8) (rune, bool) {
 // GenerateDTMFPackets builds the sequence of RTP packets for one DTMF digit.
 // Returns 7 packets: 4 normal (80ms) + 3 end-of-event, each 20ms apart.
 // The timestamp remains fixed for the entire event per RFC 4733.
-func GenerateDTMFPackets(digit rune, pt uint8, ssrc uint32, baseSeq uint16, baseTS uint32) []*rtp.Packet {
+// samplesPerPkt is the telephone-event clock rate per 20ms (e.g. 160 at 8kHz,
+// 320 at AMR-WB's 16kHz); it sets the units of the encoded event duration and
+// must match the negotiated telephone-event clock rate or strict peers drop
+// the digit as too short.
+func GenerateDTMFPackets(digit rune, pt uint8, ssrc uint32, baseSeq uint16, baseTS uint32, samplesPerPkt uint16) []*rtp.Packet {
 	event, ok := DTMFDigitToEvent(digit)
 	if !ok {
 		return nil
 	}
-
-	const (
-		volume        = 10
+	if samplesPerPkt == 0 {
 		samplesPerPkt = 160 // 20ms at 8kHz clock rate
-	)
+	}
+
+	const volume = 10
 
 	pkts := make([]*rtp.Packet, 0, 7)
 	seq := baseSeq
 
-	// 4 normal event packets (duration increases by 160 each)
+	// 4 normal event packets (duration increases by samplesPerPkt each)
 	for i := 0; i < 4; i++ {
-		duration := uint16((i + 1) * samplesPerPkt)
+		duration := uint16(i+1) * samplesPerPkt
 		pkts = append(pkts, &rtp.Packet{
 			Header: rtp.Header{
 				Version:        2,
@@ -114,7 +118,7 @@ func GenerateDTMFPackets(digit rune, pt uint8, ssrc uint32, baseSeq uint16, base
 	}
 
 	// 3 end-of-event packets (same duration, end flag set)
-	finalDuration := uint16(4 * samplesPerPkt)
+	finalDuration := uint16(4) * samplesPerPkt
 	for i := 0; i < 3; i++ {
 		pkts = append(pkts, &rtp.Packet{
 			Header: rtp.Header{

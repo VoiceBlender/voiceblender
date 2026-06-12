@@ -81,6 +81,14 @@ type SIPLeg struct {
 	// peer picks its own PT (AMR-WB), this is the remote PT and differs from
 	// rtpPT; 0 means "use rtpPT" (the symmetric case for all other codecs).
 	rtpSendPT uint8
+	// DTMF (RFC 4733 telephone-event) send parameters, derived from the remote
+	// SDP after negotiation. dtmfSendPT is the telephone-event PT to transmit
+	// on (the PT the remote advertised at the matching clock rate); 0 means the
+	// default 101. dtmfClockRate must equal the negotiated audio codec's clock
+	// rate (16kHz for AMR-WB, 8kHz otherwise) so digit durations are encoded in
+	// the right units; 0 means the default 8kHz.
+	dtmfSendPT    uint8
+	dtmfClockRate int
 	// AMR-WB negotiated parameters (only meaningful when codecType is AMR-WB).
 	amrwbOctetAligned bool
 	amrwbMode         int    // transmit mode (config ceiling clamped to peer mode-set)
@@ -279,6 +287,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 	// the remote answer by configureAMRWB.
 	l.rtpPT = negotiated.PayloadType()
 	l.configureAMRWB(call.RemoteSDP, remotePT)
+	l.configureDTMF(call.RemoteSDP)
 	l.setupMedia()
 	l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
 	l.setupTextMedia()
@@ -333,6 +342,7 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 	l.codecType = negotiated
 	l.rtpPT = negotiated.PayloadType()
 	l.configureAMRWB(remoteSDP, remotePT)
+	l.configureDTMF(remoteSDP)
 	l.mu.Unlock()
 
 	l.setupMedia()
@@ -370,6 +380,7 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 		l.codecType = negotiated
 		l.rtpPT = negotiated.PayloadType()
 		l.configureAMRWB(call.RemoteSDP, remotePT)
+		l.configureDTMF(call.RemoteSDP)
 		l.setupMedia()
 		l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
 		l.setupTextMedia()
@@ -619,6 +630,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 	l.codecType = negotiated
 	l.rtpPT = pt
 	l.configureAMRWB(l.inbound.RemoteSDP, pt)
+	l.configureDTMF(l.inbound.RemoteSDP)
 
 	// Create RTP session
 	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
@@ -725,6 +737,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	l.codecType = negotiated
 	l.rtpPT = pt
 	l.configureAMRWB(l.inbound.RemoteSDP, pt)
+	l.configureDTMF(l.inbound.RemoteSDP)
 
 	// Create RTP session
 	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
@@ -812,6 +825,22 @@ func (l *SIPLeg) configureAMRWB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
 		if modeSet := sipmod.AMRWBModeSet(fmtp); len(modeSet) > 0 {
 			l.amrwbMode = sipmod.ClampAMRWBMode(l.amrwbMode, modeSet)
 			l.amrwbModeSet = sipmod.FormatAMRWBModeSet(modeSet)
+		}
+	}
+}
+
+// configureDTMF picks the telephone-event PT and clock rate for outbound DTMF
+// from the negotiated codec and the remote SDP. The clock rate must match the
+// audio codec (RFC 4733): AMR-WB runs telephone-event at 16kHz, so encoding
+// digit durations at the legacy 8kHz would halve their apparent length and
+// strict peers (e.g. MicroSIP) drop them. The send PT is the one the remote
+// advertised at that rate, falling back to the conventional 101.
+func (l *SIPLeg) configureDTMF(remoteSDP *sipmod.SDPMedia) {
+	l.dtmfSendPT = 101
+	l.dtmfClockRate = sipmod.TelephoneEventClockRate(l.codecType)
+	if remoteSDP != nil {
+		if pt, ok := remoteSDP.DTMFPTForRate(l.dtmfClockRate); ok {
+			l.dtmfSendPT = pt
 		}
 	}
 }
@@ -1131,16 +1160,24 @@ func (l *SIPLeg) RTPStats() RTPStats {
 func (l *SIPLeg) writeLoop() {
 	defer l.recoverLoopAndHangup("writeLoop")
 
-	const (
-		ptime            = 20 * time.Millisecond
-		telephoneEventPT = uint8(101)
-	)
+	const ptime = 20 * time.Millisecond
 
 	// PCM frame size at codec's native sample rate: samples per 20ms × 2 bytes
 	pcmFrameBytes := l.codecType.SampleRate() / 50 * 2
 
 	// RTP timestamp increment is codec-dependent: clockRate * 20ms
 	samplesPerFrame := uint32(l.codecType.ClockRate() / 50)
+
+	// DTMF (RFC 4733) send PT and per-packet duration units, at the negotiated
+	// telephone-event clock rate (16kHz for AMR-WB, else 8kHz).
+	telephoneEventPT := l.dtmfSendPT
+	if telephoneEventPT == 0 {
+		telephoneEventPT = 101
+	}
+	dtmfSamplesPerPkt := uint16(l.dtmfClockRate / 50)
+	if dtmfSamplesPerPkt == 0 {
+		dtmfSamplesPerPkt = 160
+	}
 
 	ticker := time.NewTicker(ptime)
 	defer ticker.Stop()
@@ -1184,7 +1221,7 @@ func (l *SIPLeg) writeLoop() {
 
 		if dtmfDigits != "" {
 			for _, ch := range dtmfDigits {
-				pkts := sipmod.GenerateDTMFPackets(ch, telephoneEventPT, ssrc, seqNum, timestamp)
+				pkts := sipmod.GenerateDTMFPackets(ch, telephoneEventPT, ssrc, seqNum, timestamp, dtmfSamplesPerPkt)
 				for i, pkt := range pkts {
 					if err := l.rtpSess.WriteRTP(pkt); err != nil {
 						l.log.Error("writeLoop: DTMF WriteRTP failed", "error", err)

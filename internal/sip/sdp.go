@@ -48,6 +48,7 @@ type SDPMedia struct {
 	CodecFmtp     map[codec.CodecType]string // Raw a=fmtp params for each codec (e.g. AMR-WB "octet-align=1; mode-set=...")
 	Ptime         int                        // ms, default 20
 	Direction     string                     // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
+	DTMFEventPTs  map[uint8]int              // telephone-event (RFC 4733) PT -> clock rate, as advertised by the remote
 
 	// Text (RTT, T.140 / RFC 4103). Non-nil when the remote SDP carried an
 	// m=text line with a non-zero port. A port of zero (peer rejecting the
@@ -207,6 +208,28 @@ func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecTyp
 	}
 }
 
+// TelephoneEventClockRate returns the RTP clock rate to pair with the
+// telephone-event (RFC 4733) format for codec c. RFC 4733 requires the
+// telephone-event clock rate to match the audio codec's RTP clock rate, so
+// AMR-WB uses 16 kHz; all other codecs use the conventional 8 kHz.
+func TelephoneEventClockRate(c codec.CodecType) int {
+	if c == codec.CodecAMRWB {
+		return 16000
+	}
+	return 8000
+}
+
+// DTMFPTForRate returns the remote telephone-event payload type advertised at
+// the given clock rate, if any.
+func (m *SDPMedia) DTMFPTForRate(rate int) (uint8, bool) {
+	for pt, r := range m.DTMFEventPTs {
+		if r == rate {
+			return pt, true
+		}
+	}
+	return 0, false
+}
+
 // addTelephoneEvent appends telephone-event rtpmap and fmtp for the given PT and clock rate.
 func addTelephoneEvent(md *pionsdp.MediaDescription, pt uint8, clockRate int) {
 	md.Attributes = append(md.Attributes,
@@ -304,7 +327,14 @@ func GenerateOffer(cfg SDPConfig) []byte {
 	if hasOpus {
 		formats = append(formats, "100") // telephone-event/48000
 	}
-	formats = append(formats, "101") // telephone-event/8000
+	formats = append(formats, "101") // telephone-event
+
+	// PT 101 telephone-event clock rate follows the preferred codec so it
+	// matches the codec the peer is most likely to select (AMR-WB needs 16kHz).
+	teRate := 8000
+	if len(cfg.Codecs) > 0 {
+		teRate = TelephoneEventClockRate(cfg.Codecs[0])
+	}
 
 	md := &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
@@ -322,7 +352,7 @@ func GenerateOffer(cfg SDPConfig) []byte {
 	if hasOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
-	addTelephoneEvent(md, 101, 8000)
+	addTelephoneEvent(md, 101, teRate)
 
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("ptime", "20"),
@@ -351,7 +381,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 	if selected == codec.CodecOpus {
 		formats = append(formats, "100") // telephone-event/48000
 	}
-	formats = append(formats, "101") // telephone-event/8000
+	formats = append(formats, "101") // telephone-event
 
 	md := &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
@@ -366,7 +396,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
-	addTelephoneEvent(md, 101, 8000)
+	addTelephoneEvent(md, 101, TelephoneEventClockRate(selected))
 
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("ptime", "20"),
@@ -396,10 +426,11 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 	}
 
 	m := &SDPMedia{
-		Ptime:      20,
-		CodecPTs:   make(map[codec.CodecType]uint8),
-		CodecRates: make(map[codec.CodecType]int),
-		CodecFmtp:  make(map[codec.CodecType]string),
+		Ptime:        20,
+		CodecPTs:     make(map[codec.CodecType]uint8),
+		CodecRates:   make(map[codec.CodecType]int),
+		CodecFmtp:    make(map[codec.CodecType]string),
+		DTMFEventPTs: make(map[uint8]int),
 	}
 
 	// Session-level c= line.
@@ -475,6 +506,13 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 				}
 			}
 			rtpmap[uint8(pt)] = name
+			if strings.EqualFold(name, "telephone-event") {
+				rate := rtpmapRate[uint8(pt)]
+				if rate == 0 {
+					rate = 8000
+				}
+				m.DTMFEventPTs[uint8(pt)] = rate
+			}
 		}
 		if a.Key == "ptime" {
 			if v, err := strconv.Atoi(a.Value); err == nil {
@@ -581,7 +619,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 	if selected == codec.CodecOpus {
 		formats = append(formats, "100") // telephone-event/48000
 	}
-	formats = append(formats, "101") // telephone-event/8000
+	formats = append(formats, "101") // telephone-event
 
 	md := &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
@@ -596,7 +634,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
-	addTelephoneEvent(md, 101, 8000)
+	addTelephoneEvent(md, 101, TelephoneEventClockRate(selected))
 
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("ptime", "20"),

@@ -73,6 +73,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
 | `internal/sip` (whatsapp) | 12 | `IsWhatsAppInvite` host matching (exact/subdomain/lookalike/case-insensitive), `WhatsAppRecipientURI` E.164 normalisation, `InviteWhatsApp` precondition checks (TLS configured, required fields) |
 | `internal/sip` (tls) | 4 | `EngineConfig` TLS validation, concurrent UDP+TLS listener startup, self-signed cert handshake loopback |
+| `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
 | `internal/leg` (websocket) | 4 | Outbound lifecycle (ringing → connected via `AttachTransport`, audio + text round-trip, ClaimDisconnect single-flight, Hangup); inbound auto-connect with header capture (X-/P- filter); SendText returns `ErrRTTNotNegotiated` when RTT is disabled; SendDTMF returns "not supported" |
@@ -221,6 +222,8 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestCodecSelect_AnswerRejectsCodecNotInOffer` | Answer with a codec not in the remote offer returns 400 |
 | `TestAMRWB_NegotiateAndConnect` | AMR-WB-only offer exposed in `leg.ringing` (16 kHz clock, dynamic PT), `/answer` with `AMR-WB` connects both legs |
 | `TestAMRWB_EndToEndAudio` | AMR-WB call recovers non-silent audio through encode → RTP → decode, for both octet-aligned and bandwidth-efficient framing |
+| `TestAMRWB_DTMF` | Out-of-band DTMF (RFC 4733) flows in both directions over the 16 kHz telephone-event negotiated alongside AMR-WB |
+| `TestG722_DTMF` | Out-of-band DTMF (RFC 4733) flows in both directions over a G.722 call (telephone-event stays at G.722's 8 kHz RTP clock despite 16 kHz sampling) |
 | `TestRing_ExplicitRingingThenAnswer` | Default `SIP_AUTO_RINGING=false`; multiple `/ring` calls send 180s, then `/answer` connects |
 | `TestRing_AutoRingingPreservesLegacyFlow` | `SIP_AUTO_RINGING=true` restores auto-180 behavior; no explicit `/ring` needed |
 | `TestRing_RejectsAfterAnswer` | `/ring` on a connected leg returns 409 |
