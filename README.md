@@ -359,6 +359,7 @@ such a proxy is **not safe**.
 | Example | Description |
 |---------|-------------|
 | [`examples/call_handler.py`](examples/call_handler.py) | Python webhook listener for inbound SIP calls with room conferencing |
+| [`examples/voice-agent-testops/`](examples/voice-agent-testops/) | Public-safe regression test sketch for VoiceBlender-backed voice agents |
 | [`examples/webrtc-client/`](examples/webrtc-client/) | Browser-based WebRTC voice client with room management and DTMF |
 | [`examples/gen_test_wav.py`](examples/gen_test_wav.py) | Generate test WAV files for playback testing |
 
