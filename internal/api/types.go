@@ -16,7 +16,7 @@ type FieldEnrichment struct {
 func intPtr(v int) *int { return &v }
 
 // CodecsItemEnum provides the enum for CreateLegRequest.codecs array items.
-var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus"}
+var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus", "AMR-WB"}
 
 // ── Request types ───────────────────────────────────────────────────────
 

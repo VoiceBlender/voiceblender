@@ -25,18 +25,29 @@ type SDPConfig struct {
 	TextT140PT    uint8
 	TextREDPT     uint8
 	RTTRedundancy int
+
+	// AMRWBOctetAligned controls the AMR-WB fmtp emitted for an offer/answer:
+	// true emits "octet-align=1", false emits no octet-align (RFC 4867 default,
+	// bandwidth-efficient). On answers it must echo the peer's negotiated format.
+	AMRWBOctetAligned bool
+
+	// AMRWBModeSet, when non-empty (e.g. "0,1,2"), adds a "mode-set=..." AMR-WB
+	// fmtp param. Used on answers to echo the peer's negotiated mode-set per
+	// RFC 4867; left empty on offers (we accept all modes on receive).
+	AMRWBModeSet string
 }
 
 // SDPMedia holds parsed remote media parameters.
 type SDPMedia struct {
 	RemoteIP      string
 	RemotePort    int
-	AddressFamily string                    // "IP4" or "IP6" (from c= line); empty if not present
-	Codecs        []codec.CodecType         // Codecs from m= line, in offer order
-	CodecPTs      map[codec.CodecType]uint8 // Actual PT for each codec from remote SDP
-	CodecRates    map[codec.CodecType]int   // Clock rate (Hz) for each codec, from a=rtpmap; falls back to codec default
-	Ptime         int                       // ms, default 20
-	Direction     string                    // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
+	AddressFamily string                     // "IP4" or "IP6" (from c= line); empty if not present
+	Codecs        []codec.CodecType          // Codecs from m= line, in offer order
+	CodecPTs      map[codec.CodecType]uint8  // Actual PT for each codec from remote SDP
+	CodecRates    map[codec.CodecType]int    // Clock rate (Hz) for each codec, from a=rtpmap; falls back to codec default
+	CodecFmtp     map[codec.CodecType]string // Raw a=fmtp params for each codec (e.g. AMR-WB "octet-align=1; mode-set=...")
+	Ptime         int                        // ms, default 20
+	Direction     string                     // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
 
 	// Text (RTT, T.140 / RFC 4103). Non-nil when the remote SDP carried an
 	// m=text line with a non-zero port. A port of zero (peer rejecting the
@@ -55,18 +66,104 @@ type SDPTextMedia struct {
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
 func codecRtpmap(c codec.CodecType) string {
-	if c == codec.CodecOpus {
+	switch c {
+	case codec.CodecOpus:
 		return "opus/48000/2"
+	case codec.CodecAMRWB:
+		return "AMR-WB/16000/1"
+	default:
+		return fmt.Sprintf("%s/%d", c.String(), c.ClockRate())
 	}
-	return fmt.Sprintf("%s/%d", c.String(), c.ClockRate())
 }
 
 // codecFmtp returns the fmtp parameters for a codec, or "" if none.
-func codecFmtp(c codec.CodecType) string {
-	if c == codec.CodecOpus {
+// amrwbOctetAligned selects the AMR-WB framing parameter and amrwbModeSet (e.g.
+// "0,1,2"), when non-empty, adds a mode-set param (both ignored for others).
+func codecFmtp(c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string) string {
+	switch c {
+	case codec.CodecOpus:
 		return "minptime=20; useinbandfec=1; stereo=0; sprop-stereo=0"
+	case codec.CodecAMRWB:
+		var parts []string
+		if amrwbOctetAligned {
+			parts = append(parts, "octet-align=1") // else bandwidth-efficient (RFC 4867 default)
+		}
+		if amrwbModeSet != "" {
+			parts = append(parts, "mode-set="+amrwbModeSet)
+		}
+		return strings.Join(parts, "; ")
+	default:
+		return ""
 	}
-	return ""
+}
+
+// AMRWBOctetAligned reports whether the AMR-WB fmtp params select octet-aligned
+// framing. Per RFC 4867 the default (no octet-align) is bandwidth-efficient, so
+// an absent or "octet-align=0" parameter means bandwidth-efficient.
+func AMRWBOctetAligned(fmtp string) bool {
+	for _, p := range strings.Split(fmtp, ";") {
+		p = strings.TrimSpace(p)
+		if strings.EqualFold(p, "octet-align=1") {
+			return true
+		}
+	}
+	return false
+}
+
+// AMRWBModeSet parses an AMR-WB "mode-set=a,b,c" fmtp parameter into the set of
+// allowed speech modes (0..8). Returns nil when no valid mode-set is present
+// (RFC 4867: absence means all modes are permitted). Modes outside 0..8 are
+// dropped.
+func AMRWBModeSet(fmtp string) []int {
+	for _, p := range strings.Split(fmtp, ";") {
+		p = strings.TrimSpace(p)
+		v, ok := strings.CutPrefix(strings.ToLower(p), "mode-set=")
+		if !ok {
+			continue
+		}
+		var modes []int
+		for _, tok := range strings.Split(v, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(tok))
+			if err == nil && n >= 0 && n <= 8 {
+				modes = append(modes, n)
+			}
+		}
+		return modes
+	}
+	return nil
+}
+
+// FormatAMRWBModeSet renders modes as a "0,1,2" mode-set value (the inverse of
+// AMRWBModeSet); returns "" for an empty set.
+func FormatAMRWBModeSet(modes []int) string {
+	parts := make([]string, len(modes))
+	for i, m := range modes {
+		parts[i] = strconv.Itoa(m)
+	}
+	return strings.Join(parts, ",")
+}
+
+// ClampAMRWBMode constrains a desired ceiling mode to the peer's negotiated
+// mode-set: it returns the highest set member <= ceiling, or — when the ceiling
+// is below every member — the lowest member (so the result always stays inside
+// the set). A nil/empty set means no restriction, so the ceiling is returned.
+func ClampAMRWBMode(ceiling int, modeSet []int) int {
+	if len(modeSet) == 0 {
+		return ceiling
+	}
+	best, min := -1, modeSet[0]
+	for _, m := range modeSet {
+		if m < min {
+			min = m
+		}
+		if m <= ceiling && m > best {
+			best = m
+		}
+	}
+	if best < 0 {
+		return min
+	}
+	return best
 }
 
 // buildSessionDescription creates the common session-level SDP fields. The
@@ -101,10 +198,10 @@ func buildSessionDescription(localIP string) *pionsdp.SessionDescription {
 }
 
 // addCodecAttributes appends rtpmap and fmtp attributes for a codec.
-func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecType) {
+func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string) {
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d %s", pt, codecRtpmap(c))))
-	if fmtp := codecFmtp(c); fmtp != "" {
+	if fmtp := codecFmtp(c, amrwbOctetAligned, amrwbModeSet); fmtp != "" {
 		md.Attributes = append(md.Attributes,
 			pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", pt, fmtp)))
 	}
@@ -220,7 +317,7 @@ func GenerateOffer(cfg SDPConfig) []byte {
 
 	// Add codec attributes.
 	for _, c := range cfg.Codecs {
-		addCodecAttributes(md, c.PayloadType(), c)
+		addCodecAttributes(md, c.PayloadType(), c, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
 	}
 	if hasOpus {
 		addTelephoneEvent(md, 100, 48000)
@@ -265,7 +362,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 		},
 	}
 
-	addCodecAttributes(md, selectedPT, selected)
+	addCodecAttributes(md, selectedPT, selected, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
@@ -302,6 +399,7 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 		Ptime:      20,
 		CodecPTs:   make(map[codec.CodecType]uint8),
 		CodecRates: make(map[codec.CodecType]int),
+		CodecFmtp:  make(map[codec.CodecType]string),
 	}
 
 	// Session-level c= line.
@@ -345,7 +443,16 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 
 	rtpmap := make(map[uint8]string)
 	rtpmapRate := make(map[uint8]int)
+	fmtpByPT := make(map[uint8]string)
 	for _, a := range md.Attributes {
+		if a.Key == "fmtp" {
+			parts := strings.SplitN(a.Value, " ", 2)
+			if len(parts) == 2 {
+				if pt, err := strconv.Atoi(parts[0]); err == nil {
+					fmtpByPT[uint8(pt)] = parts[1]
+				}
+			}
+		}
 		if a.Key == "rtpmap" {
 			parts := strings.SplitN(a.Value, " ", 2)
 			if len(parts) != 2 {
@@ -396,6 +503,9 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 			} else {
 				m.CodecRates[ct] = ct.ClockRate()
 			}
+			if fmtp, ok := fmtpByPT[upt]; ok {
+				m.CodecFmtp[ct] = fmtp
+			}
 			continue
 		}
 		if name, ok := rtpmap[upt]; ok {
@@ -407,6 +517,9 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 					m.CodecRates[ct] = rate
 				} else {
 					m.CodecRates[ct] = ct.ClockRate()
+				}
+				if fmtp, ok := fmtpByPT[upt]; ok {
+					m.CodecFmtp[ct] = fmtp
 				}
 			}
 		}
@@ -479,7 +592,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 		},
 	}
 
-	addCodecAttributes(md, selectedPT, selected)
+	addCodecAttributes(md, selectedPT, selected, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}

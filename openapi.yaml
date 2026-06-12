@@ -2601,6 +2601,7 @@ components:
                         - PCMA
                         - G722
                         - opus
+                        - AMR-WB
         CreateLegRequest:
             type: object
             properties:
@@ -2641,6 +2642,7 @@ components:
                             - PCMA
                             - G722
                             - opus
+                            - AMR-WB
                     description: Codec preference order (sip legs only)
                 headers:
                     type: object
@@ -2810,6 +2812,7 @@ components:
                         - PCMA
                         - G722
                         - opus
+                        - AMR-WB
         ElevenLabsAgentRequest:
             type: object
             properties:

@@ -6,7 +6,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 
 ## Features
 
-- **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus), digest auth, session timers (RFC 4028)
+- **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus, AMR-WB), digest auth, session timers (RFC 4028)
 - **SIP over TLS** -- optional TLS transport on a second port alongside UDP, reusable by classic SIP trunks and required by WhatsApp
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
@@ -100,6 +100,8 @@ All configuration is via environment variables:
 | `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | Sweeper period for evicting expired AOR bindings. |
 | `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `true`, the same AOR may be bound from multiple Contacts simultaneously (and `POST /v1/legs` parallel-forks to every bound contact). When `false`, each `REGISTER` replaces any prior Contacts for the AOR. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
+| `AMRWB_MODE` | `2` | AMR-WB (G.722.2) encoder speech-mode **ceiling** `0..8`: `0`=6.60, `1`=8.85, `2`=12.65, `3`=14.25, `4`=15.85, `5`=18.25, `6`=19.85, `7`=23.05, `8`=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set` (so e.g. `8` yields HD 23.85 only when the peer allows it, falling back automatically). Default `2` (12.65) matches the GSMA IR.92 / VoLTE common rate. Out-of-range values clamp to `0..8`. |
+| `AMRWB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
 | `VSI_EVENT_BUFFER_SIZE` | `256` | Per-client buffer (in events) on the `/v1/vsi` WebSocket. When the client consumes events slower than they're produced, the buffer fills and new events are dropped (with a warn log on the leading edge of each drop burst and at every 10× threshold; the next delivered event also includes an `events_dropped` notification to the client). Clamped to `[16, 1_000_000]`. **Tuning:** larger values absorb longer back-pressure spikes at the cost of higher peak memory per client (roughly the average JSON event size × buffer size, e.g. ~1 KB × 256 ≈ 256 KB per connection at the default) and longer end-to-end latency for buffered events when the client recovers. Increase only if you observe drops on legitimate slow-consumer scenarios you can't fix at the client. |
 | `MOQ_ENABLED` | `false` | Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at `CONNECT /v1/legs/moq` over WebTransport/HTTP/3. PoC quality: tracks IETF draft-11 via `mengelbart/moqtransport`, single MoQ session per leg, Opus framed one frame per MoQ Object (LOC-style). When enabled, both `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE` must be set. |
 | `MOQ_LISTEN_ADDR` | `:8443` | UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of `HTTP_ADDR` — TCP/`:8080` and UDP/`:8443` can run side-by-side. |
@@ -370,7 +372,7 @@ internal/
   leg/                  Leg interface, SIPLeg, WebRTCLeg
   room/                 Room + Manager
   mixer/                Multi-party audio mixer (mixed-minus-self)
-  codec/                Codec adapters (PCMU, PCMA, G.722, Opus)
+  codec/                Codec adapters (PCMU, PCMA, G.722, Opus, AMR-WB)
   amd/                  Answering machine detection (Goertzel beep detector)
   events/               Event bus + webhook delivery
   playback/             Audio file playback

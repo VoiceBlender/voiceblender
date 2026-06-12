@@ -76,12 +76,20 @@ type SIPLeg struct {
 	// Media
 	rtpSess   *sipmod.RTPSession
 	codecType codec.CodecType
-	rtpPT     uint8 // negotiated RTP payload type (may differ from codec default for dynamic PTs)
-	encoder   codec.Encoder
-	decoder   codec.Decoder
-	inFrames  chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
-	outFrames chan []byte // native-rate PCM to encode in writeLoop
-	dtmfCh    chan string // DTMF digits to send in writeLoop
+	rtpPT     uint8 // RTP payload type we receive on (echoed in our SDP)
+	// rtpSendPT is the PT used when sending RTP. For dynamic codecs where the
+	// peer picks its own PT (AMR-WB), this is the remote PT and differs from
+	// rtpPT; 0 means "use rtpPT" (the symmetric case for all other codecs).
+	rtpSendPT uint8
+	// AMR-WB negotiated parameters (only meaningful when codecType is AMR-WB).
+	amrwbOctetAligned bool
+	amrwbMode         int    // transmit mode (config ceiling clamped to peer mode-set)
+	amrwbModeSet      string // peer's negotiated mode-set, echoed in our answer ("" = none)
+	encoder           codec.Encoder
+	decoder           codec.Decoder
+	inFrames          chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
+	outFrames         chan []byte // native-rate PCM to encode in writeLoop
+	dtmfCh            chan string // DTMF digits to send in writeLoop
 
 	// Optional ingress jitter buffer. When non-nil, readLoop pushes decoded
 	// PCM into jb keyed by RTP sequence number, and popLoop drains jb at a
@@ -252,6 +260,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 		answeredAt: now,
 		outbound:   call,
 		rtpSess:    call.RTPSess,
+		engine:     engine,
 		ctx:        ctx,
 		cancel:     cancel,
 		log:        log,
@@ -259,15 +268,17 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 	l.acceptDTMF.Store(true)
 
 	// Negotiate codec from the remote answer SDP
-	negotiated, _, ok := sipmod.NegotiateCodec(call.RemoteSDP, engine.Codecs())
+	negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, engine.Codecs())
 	if !ok {
 		log.Error("no common codec with remote for outbound leg")
 		return l
 	}
 	l.codecType = negotiated
-	// As the offerer we send with OUR payload type (from the offer SDP),
-	// not the answerer's PT which may differ for dynamic codecs.
+	// As the offerer we receive on OUR payload type (from the offer SDP); for
+	// dynamic codecs whose answerer PT differs (AMR-WB) the send PT is set from
+	// the remote answer by configureAMRWB.
 	l.rtpPT = negotiated.PayloadType()
+	l.configureAMRWB(call.RemoteSDP, remotePT)
 	l.setupMedia()
 	l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
 	l.setupTextMedia()
@@ -312,7 +323,7 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 	}
 	l.mu.Unlock()
 
-	negotiated, _, ok := sipmod.NegotiateCodec(remoteSDP, l.supportedCodecs)
+	negotiated, remotePT, ok := sipmod.NegotiateCodec(remoteSDP, l.supportedCodecs)
 	if !ok {
 		return fmt.Errorf("no common codec with remote")
 	}
@@ -321,6 +332,7 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 	l.rtpSess = rtpSess
 	l.codecType = negotiated
 	l.rtpPT = negotiated.PayloadType()
+	l.configureAMRWB(remoteSDP, remotePT)
 	l.mu.Unlock()
 
 	l.setupMedia()
@@ -351,12 +363,13 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	l.mu.Unlock()
 
 	if st == StateRinging {
-		negotiated, _, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
+		negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
 		if !ok {
 			return fmt.Errorf("no common codec with remote")
 		}
 		l.codecType = negotiated
 		l.rtpPT = negotiated.PayloadType()
+		l.configureAMRWB(call.RemoteSDP, remotePT)
 		l.setupMedia()
 		l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
 		l.setupTextMedia()
@@ -605,6 +618,7 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 	}
 	l.codecType = negotiated
 	l.rtpPT = pt
+	l.configureAMRWB(l.inbound.RemoteSDP, pt)
 
 	// Create RTP session
 	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
@@ -622,15 +636,17 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 	// Optionally negotiate RTT (m=text) alongside audio.
 	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
 
-	// Generate answer SDP — echo the remote's PT for dynamic codecs.
+	// Generate answer SDP — echo the remote's PT and AMR-WB framing.
 	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
-		LocalIP:       l.localIP,
-		RTPPort:       rtpSess.LocalPort(),
-		Codecs:        l.supportedCodecs,
-		TextRTPPort:   textPort,
-		TextT140PT:    t140PT,
-		TextREDPT:     redPT,
-		RTTRedundancy: l.rttRedundancy,
+		LocalIP:           l.localIP,
+		RTPPort:           rtpSess.LocalPort(),
+		Codecs:            l.supportedCodecs,
+		TextRTPPort:       textPort,
+		TextT140PT:        t140PT,
+		TextREDPT:         redPT,
+		RTTRedundancy:     l.rttRedundancy,
+		AMRWBOctetAligned: l.amrwbOctetAligned,
+		AMRWBModeSet:      l.amrwbModeSet,
 	}, negotiated, pt, textRejected)
 
 	// Store SDP for reuse in Answer()
@@ -708,6 +724,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	}
 	l.codecType = negotiated
 	l.rtpPT = pt
+	l.configureAMRWB(l.inbound.RemoteSDP, pt)
 
 	// Create RTP session
 	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
@@ -725,15 +742,17 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	// Optionally negotiate RTT (m=text) alongside audio.
 	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
 
-	// Generate answer SDP — echo the remote's PT for dynamic codecs.
+	// Generate answer SDP — echo the remote's PT and AMR-WB framing.
 	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
-		LocalIP:       l.localIP,
-		RTPPort:       rtpSess.LocalPort(),
-		Codecs:        l.supportedCodecs,
-		TextRTPPort:   textPort,
-		TextT140PT:    t140PT,
-		TextREDPT:     redPT,
-		RTTRedundancy: l.rttRedundancy,
+		LocalIP:           l.localIP,
+		RTPPort:           rtpSess.LocalPort(),
+		Codecs:            l.supportedCodecs,
+		TextRTPPort:       textPort,
+		TextT140PT:        t140PT,
+		TextREDPT:         redPT,
+		RTTRedundancy:     l.rttRedundancy,
+		AMRWBOctetAligned: l.amrwbOctetAligned,
+		AMRWBModeSet:      l.amrwbModeSet,
 	}, negotiated, pt, textRejected)
 
 	// Send 200 OK with SDP answer
@@ -768,17 +787,55 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	return nil
 }
 
-func (l *SIPLeg) setupMedia() {
-	var err error
-	l.encoder, err = codec.NewEncoder(l.codecType)
-	if err != nil {
-		l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+// defaultAMRWBEncoderMode is the AMR-WB speech mode used when the engine does
+// not supply one (e.g. legs built without an engine in tests). 8 = 23.85 kbit/s.
+const defaultAMRWBEncoderMode = 8
+
+// configureAMRWB records AMR-WB-specific negotiation results: the remote send
+// PT and the payload framing (octet-aligned vs bandwidth-efficient) read from
+// the peer's fmtp, plus the configured encoder mode. No-op for other codecs.
+func (l *SIPLeg) configureAMRWB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
+	if l.codecType != codec.CodecAMRWB {
 		return
 	}
-	l.decoder, err = codec.NewDecoder(l.codecType)
-	if err != nil {
-		l.log.Error("create decoder failed", "codec", l.codecType, "error", err)
-		return
+	l.rtpSendPT = remotePT
+	l.amrwbMode = defaultAMRWBEncoderMode
+	if l.engine != nil {
+		l.amrwbMode = l.engine.AMRWBMode()
+	}
+	l.amrwbModeSet = ""
+	if remoteSDP != nil {
+		fmtp := remoteSDP.CodecFmtp[codec.CodecAMRWB]
+		l.amrwbOctetAligned = sipmod.AMRWBOctetAligned(fmtp)
+		// Honor the peer's mode-set: clamp our (ceiling) transmit mode to it and
+		// echo it back in our answer per RFC 4867.
+		if modeSet := sipmod.AMRWBModeSet(fmtp); len(modeSet) > 0 {
+			l.amrwbMode = sipmod.ClampAMRWBMode(l.amrwbMode, modeSet)
+			l.amrwbModeSet = sipmod.FormatAMRWBModeSet(modeSet)
+		}
+	}
+}
+
+func (l *SIPLeg) setupMedia() {
+	var err error
+	if l.codecType == codec.CodecAMRWB {
+		l.encoder, err = codec.NewAMRWBEncoder(l.amrwbMode, l.amrwbOctetAligned)
+		if err != nil {
+			l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+			return
+		}
+		l.decoder = codec.NewAMRWBDecoder(l.amrwbOctetAligned)
+	} else {
+		l.encoder, err = codec.NewEncoder(l.codecType)
+		if err != nil {
+			l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+			return
+		}
+		l.decoder, err = codec.NewDecoder(l.codecType)
+		if err != nil {
+			l.log.Error("create decoder failed", "codec", l.codecType, "error", err)
+			return
+		}
 	}
 
 	l.inFrames = make(chan []byte, 5)
@@ -1093,6 +1150,9 @@ func (l *SIPLeg) writeLoop() {
 	var timestamp uint32
 	silenceFrame := make([]byte, pcmFrameBytes)
 	pt := l.rtpPT
+	if l.rtpSendPT != 0 {
+		pt = l.rtpSendPT
+	}
 
 	for {
 		select {
@@ -1398,9 +1458,11 @@ func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
 // media state (audio + optional text). Assumes l.rtpSess is non-nil.
 func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 	cfg := sipmod.SDPConfig{
-		LocalIP: l.localIP,
-		RTPPort: l.rtpSess.LocalPort(),
-		Codecs:  l.supportedCodecs,
+		LocalIP:           l.localIP,
+		RTPPort:           l.rtpSess.LocalPort(),
+		Codecs:            l.supportedCodecs,
+		AMRWBOctetAligned: l.amrwbOctetAligned,
+		AMRWBModeSet:      l.amrwbModeSet,
 	}
 	if l.textRtpSess != nil {
 		cfg.TextRTPPort = l.textRtpSess.LocalPort()

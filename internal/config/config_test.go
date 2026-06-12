@@ -13,7 +13,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"TTS_CACHE_ENABLED", "TTS_CACHE_DIR", "TTS_CACHE_INCLUDE_API_KEY",
 		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEFAULT_SAMPLE_RATE",
 		"MOQ_ENABLED", "MOQ_LISTEN_ADDR", "MOQ_TLS_CERT_FILE", "MOQ_TLS_KEY_FILE",
-		"MOQ_OPUS_BITRATE",
+		"MOQ_OPUS_BITRATE", "AMRWB_MODE", "AMRWB_OCTET_ALIGNED",
 	} {
 		t.Setenv(key, "")
 	}
@@ -70,6 +70,34 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.MoQOpusBitrate != 24000 {
 		t.Errorf("MoQOpusBitrate = %d, want 24000", cfg.MoQOpusBitrate)
+	}
+	if cfg.AMRWBMode != 2 {
+		t.Errorf("AMRWBMode = %d, want 2", cfg.AMRWBMode)
+	}
+	if !cfg.AMRWBOctetAligned {
+		t.Error("AMRWBOctetAligned should default to true")
+	}
+}
+
+func TestLoad_AMRWB(t *testing.T) {
+	t.Setenv("AMRWB_MODE", "2")
+	t.Setenv("AMRWB_OCTET_ALIGNED", "false")
+	cfg := Load()
+	if cfg.AMRWBMode != 2 {
+		t.Errorf("AMRWBMode = %d, want 2", cfg.AMRWBMode)
+	}
+	if cfg.AMRWBOctetAligned {
+		t.Error("AMRWBOctetAligned = true, want false")
+	}
+
+	// Out-of-range modes clamp to the valid 0..8 range.
+	t.Setenv("AMRWB_MODE", "42")
+	if got := Load().AMRWBMode; got != 8 {
+		t.Errorf("AMRWBMode(42) = %d, want clamped 8", got)
+	}
+	t.Setenv("AMRWB_MODE", "-3")
+	if got := Load().AMRWBMode; got != 0 {
+		t.Errorf("AMRWBMode(-3) = %d, want clamped 0", got)
 	}
 }
 

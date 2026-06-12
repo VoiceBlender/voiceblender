@@ -52,9 +52,10 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	}
 	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
 	sdpOffer := GenerateOffer(SDPConfig{
-		LocalIP: localIP,
-		RTPPort: rtpSess.LocalPort(),
-		Codecs:  codecs,
+		LocalIP:           localIP,
+		RTPPort:           rtpSess.LocalPort(),
+		Codecs:            codecs,
+		AMRWBOctetAligned: e.amrwbOctetAligned,
 	})
 
 	e.log.Info("outbound INVITE (forked)", "recipient", recipient.String(),

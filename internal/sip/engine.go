@@ -48,8 +48,13 @@ type EngineConfig struct {
 	// NAT and advertise unroutable addresses.
 	UseSourceSocket bool
 	Codecs          []codec.CodecType
-	Log             *slog.Logger
-	PortAllocator   *PortAllocator // nil = OS-assigned ports
+	// AMRWBMode is the AMR-WB encoder speech mode (0..8) offered/transmitted.
+	AMRWBMode int
+	// AMRWBOctetAligned selects octet-aligned (true) vs bandwidth-efficient
+	// (false) AMR-WB framing in generated offers.
+	AMRWBOctetAligned bool
+	Log               *slog.Logger
+	PortAllocator     *PortAllocator // nil = OS-assigned ports
 
 	// Registrar, when non-nil, enables inbound REGISTER handling and AOR
 	// resolution for outbound INVITEs.
@@ -64,27 +69,29 @@ type Engine struct {
 	dsCache *dialogServerCache
 	dcCache *dialogClientCache
 
-	onInvite        func(call *InboundCall)
-	onReInvite      func(callID string, direction string) []byte // returns SDP answer for 200 OK
-	onRefer         func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
-	onNotify        func(callID string, statusCode int, reason string, terminated bool)
-	codecs          []codec.CodecType
-	bindIP          string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
-	bindIPV6        string // IPv6 advertised address; empty if v4-only
-	publicHost      string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
-	listenIP        string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
-	listenIPV6      string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
-	bindPort        int
-	tlsPort         int // 0 = TLS disabled
-	tlsCert         string
-	tlsKey          string
-	sipHost         string
-	portAlloc       *PortAllocator
-	log             *slog.Logger
-	sipDebug        bool
-	useSourceSocket bool
-	destPinned      atomic.Uint64 // count of res.Destination overrides applied
-	registrar       *Registrar
+	onInvite          func(call *InboundCall)
+	onReInvite        func(callID string, direction string) []byte // returns SDP answer for 200 OK
+	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
+	onNotify          func(callID string, statusCode int, reason string, terminated bool)
+	codecs            []codec.CodecType
+	amrwbMode         int
+	amrwbOctetAligned bool
+	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
+	bindIPV6          string // IPv6 advertised address; empty if v4-only
+	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
+	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
+	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
+	bindPort          int
+	tlsPort           int // 0 = TLS disabled
+	tlsCert           string
+	tlsKey            string
+	sipHost           string
+	portAlloc         *PortAllocator
+	log               *slog.Logger
+	sipDebug          bool
+	useSourceSocket   bool
+	destPinned        atomic.Uint64 // count of res.Destination overrides applied
+	registrar         *Registrar
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -400,27 +407,29 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		ua:              ua,
-		server:          server,
-		client:          client,
-		dsCache:         newDialogServerCache(serverUA),
-		dcCache:         newDialogClientCache(clientUA),
-		codecs:          cfg.Codecs,
-		bindIP:          advertiseIP,
-		bindIPV6:        advertiseIPV6,
-		publicHost:      publicHost,
-		listenIP:        listenIP,
-		listenIPV6:      listenIPV6,
-		bindPort:        cfg.BindPort,
-		tlsPort:         cfg.TLSBindPort,
-		tlsCert:         cfg.TLSCertPath,
-		tlsKey:          cfg.TLSKeyPath,
-		sipHost:         cfg.SIPHost,
-		portAlloc:       cfg.PortAllocator,
-		log:             cfg.Log,
-		sipDebug:        cfg.SIPDebug,
-		useSourceSocket: cfg.UseSourceSocket,
-		registrar:       cfg.Registrar,
+		ua:                ua,
+		server:            server,
+		client:            client,
+		dsCache:           newDialogServerCache(serverUA),
+		dcCache:           newDialogClientCache(clientUA),
+		codecs:            cfg.Codecs,
+		amrwbMode:         cfg.AMRWBMode,
+		amrwbOctetAligned: cfg.AMRWBOctetAligned,
+		bindIP:            advertiseIP,
+		bindIPV6:          advertiseIPV6,
+		publicHost:        publicHost,
+		listenIP:          listenIP,
+		listenIPV6:        listenIPV6,
+		bindPort:          cfg.BindPort,
+		tlsPort:           cfg.TLSBindPort,
+		tlsCert:           cfg.TLSCertPath,
+		tlsKey:            cfg.TLSKeyPath,
+		sipHost:           cfg.SIPHost,
+		portAlloc:         cfg.PortAllocator,
+		log:               cfg.Log,
+		sipDebug:          cfg.SIPDebug,
+		useSourceSocket:   cfg.UseSourceSocket,
+		registrar:         cfg.Registrar,
 	}
 
 	if cfg.Log != nil {
@@ -976,9 +985,10 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	// Optionally allocate a second RTP session for RTT (m=text).
 	cfg := SDPConfig{
-		LocalIP: localIP,
-		RTPPort: rtpSess.LocalPort(),
-		Codecs:  codecs,
+		LocalIP:           localIP,
+		RTPPort:           rtpSess.LocalPort(),
+		Codecs:            codecs,
+		AMRWBOctetAligned: e.amrwbOctetAligned,
 	}
 	if opts.RTTEnabled {
 		ts, terr := NewRTPSessionFromAllocator(e.portAlloc)
@@ -1156,6 +1166,12 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 func (e *Engine) Codecs() []codec.CodecType {
 	return e.codecs
 }
+
+// AMRWBMode returns the configured AMR-WB encoder speech mode (0..8).
+func (e *Engine) AMRWBMode() int { return e.amrwbMode }
+
+// AMRWBOctetAligned reports whether AMR-WB offers advertise octet-aligned framing.
+func (e *Engine) AMRWBOctetAligned() bool { return e.amrwbOctetAligned }
 
 // BindIP returns the engine's IPv4 advertised address. May be empty in
 // IPv6-only deployments.

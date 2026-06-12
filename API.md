@@ -103,7 +103,7 @@ Originate an outbound SIP call.
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
-| `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`. Defaults to engine config. |
+| `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
 | `auth` | object | no for sip, **yes for whatsapp** | Digest auth credentials. Contains `username` (string, optional for whatsapp — defaults to `from` with `+` stripped) and `password` (string). For sip legs, retried on 401/407 challenge. |
 | `room_id` | string | no | Room ID to auto-add the leg to once media is ready. The leg joins the room on `early_media` (183+SDP) or `connected` (200 OK), whichever comes first. If the room does not exist, it is automatically created. |
@@ -510,7 +510,7 @@ SIP-level send failures surface as `leg.command_failed` with `command="ring"`.
 | Field | Type | Description |
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
-| `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
+| `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
 
 **Response:** `202 Accepted`
 
@@ -539,7 +539,7 @@ SIP-level send failures surface as `leg.command_failed` with `command="ring"`.
 
 | Field | Type | Description |
 |---|---|---|
-| `codec` | string (optional) | Force a specific codec for the 183 Session Progress SDP. One of `PCMU`, `PCMA`, `G722`, `opus`. Must appear in the remote offer's `offered_codecs` list. The codec chosen here is locked in for the subsequent `/answer`. When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. |
+| `codec` | string (optional) | Force a specific codec for the 183 Session Progress SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`. Must appear in the remote offer's `offered_codecs` list. The codec chosen here is locked in for the subsequent `/answer`. When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. |
 
 **Response:** `202 Accepted`
 

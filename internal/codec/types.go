@@ -3,6 +3,8 @@ package codec
 import (
 	"fmt"
 	"strings"
+
+	amrwb "github.com/VoiceBlender/goamr-wb"
 )
 
 // CodecType identifies a supported audio codec.
@@ -14,7 +16,13 @@ const (
 	CodecPCMA              // PT=8, 8kHz
 	CodecG722              // PT=9, 16kHz internal / 8kHz SDP clock (RFC 3551)
 	CodecOpus              // PT=111 (dynamic), 48kHz
+	CodecAMRWB             // PT=96 (dynamic), 16kHz (G.722.2, RFC 4867)
 )
+
+// amrwbDefaultPT is the dynamic payload type used when VoiceBlender offers
+// AMR-WB. The peer may answer with a different dynamic PT; the negotiated PT
+// from the remote SDP takes precedence on the send path.
+const amrwbDefaultPT = 96
 
 func (c CodecType) String() string {
 	switch c {
@@ -26,6 +34,8 @@ func (c CodecType) String() string {
 		return "G722"
 	case CodecOpus:
 		return "opus"
+	case CodecAMRWB:
+		return "AMR-WB"
 	default:
 		return "unknown"
 	}
@@ -42,6 +52,8 @@ func (c CodecType) PayloadType() uint8 {
 		return 9
 	case CodecOpus:
 		return 111
+	case CodecAMRWB:
+		return amrwbDefaultPT
 	default:
 		return 0
 	}
@@ -55,6 +67,8 @@ func (c CodecType) ClockRate() int {
 		return 8000
 	case CodecOpus:
 		return 48000
+	case CodecAMRWB:
+		return 16000
 	default:
 		return 8000
 	}
@@ -65,7 +79,7 @@ func (c CodecType) SampleRate() int {
 	switch c {
 	case CodecPCMU, CodecPCMA:
 		return 8000
-	case CodecG722:
+	case CodecG722, CodecAMRWB:
 		return 16000
 	case CodecOpus:
 		return 48000
@@ -101,6 +115,8 @@ func CodecTypeFromName(name string) CodecType {
 		return CodecG722
 	case "OPUS":
 		return CodecOpus
+	case "AMR-WB", "AMRWB":
+		return CodecAMRWB
 	default:
 		return CodecUnknown
 	}
@@ -129,9 +145,22 @@ func NewEncoder(ct CodecType) (Encoder, error) {
 		return NewG722Encoder(), nil
 	case CodecOpus:
 		return NewOpusEncoder()
+	case CodecAMRWB:
+		return NewAMRWBEncoder(int(amrwb.Mode2385), true)
 	default:
 		return nil, fmt.Errorf("unsupported encoder codec: %s", ct)
 	}
+}
+
+// NewAMRWBEncoder creates an AMR-WB encoder for the given speech mode (0..8)
+// and payload format (octetAligned=false selects bandwidth-efficient framing).
+func NewAMRWBEncoder(mode int, octetAligned bool) (Encoder, error) {
+	return amrwb.NewEncoder(amrwb.EncoderConfig{Mode: amrwb.Mode(mode), OctetAligned: octetAligned})
+}
+
+// NewAMRWBDecoder creates an AMR-WB decoder for the given payload format.
+func NewAMRWBDecoder(octetAligned bool) Decoder {
+	return amrwb.NewDecoder(amrwb.DecoderConfig{OctetAligned: octetAligned})
 }
 
 // NewDecoder creates a Decoder for the given codec type.
@@ -145,6 +174,8 @@ func NewDecoder(ct CodecType) (Decoder, error) {
 		return NewG722Decoder(), nil
 	case CodecOpus:
 		return NewOpusDecoder()
+	case CodecAMRWB:
+		return NewAMRWBDecoder(true), nil
 	default:
 		return nil, fmt.Errorf("unsupported decoder codec: %s", ct)
 	}

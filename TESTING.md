@@ -64,7 +64,8 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
 | `internal/room` (routing) | 6 | Role-based routing matrix: supervisor-whisper no-bleed at join, mid-call role change recomputes allow-sets, unroled legs default to full mesh, removing a leg prunes others' whitelists, `UpdateRoutingRow` with null clears row, matrix round-trip via `RoutingMatrix()` |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
-| `internal/codec` | 9 | G.722 encode/decode, silence/tone round-trips, up/downsample |
+| `internal/codec` | 13 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB type registration + factory + RFC 4867 round-trip (both payload formats) |
+| `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
@@ -76,6 +77,46 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
 | `internal/leg` (websocket) | 4 | Outbound lifecycle (ringing → connected via `AttachTransport`, audio + text round-trip, ClaimDisconnect single-flight, Hangup); inbound auto-connect with header capture (X-/P- filter); SendText returns `ErrRTTNotNegotiated` when RTT is disabled; SendDTMF returns "not supported" |
 | `internal/wsmedia` | 11 | Framing (binary s16le and json_base64 round-trips), streamBuffer drop-on-overflow + paced read + Close, Transport echo loopback for both wire formats, text round-trip, hangup frame closes peer, context cancel exits loops, ingress overflow drops increment counters, SendStructured for vendor control messages, write deadline trips after `WriteTimeout` |
+
+---
+
+### AMR-WB codec tests & benchmarks (sibling `goamr-wb` module)
+
+The AMR-WB codec is a pure-Go port of the Apache-2.0 `opencore-amrwb` (decoder) and
+`vo-amrwbenc` (encoder) C reference, maintained as its own published module
+(`github.com/VoiceBlender/goamr-wb`) and pinned in VoiceBlender's `go.mod`. Its own tests run
+from a local clone of that repo:
+
+```bash
+git clone https://github.com/VoiceBlender/goamr-wb && cd goamr-wb
+
+# Unit tests (pure Go; ~98 subtests)
+go test .
+
+# Go micro-benchmarks: encode/decode ns/op + an xRT real-time factor, per mode
+go test -bench 'BenchmarkEncode|BenchmarkDecode' -benchmem .
+```
+
+**Differential + speed-vs-C tests (optional).** Two differential tests validate the port
+bit-for-bit, and two speed tests report a per-mode Go-vs-C table (`go ns/frame | c ns/frame |
+go/c | ×realtime`). All four **skip** unless pointed at a locally built reference harness (the
+C binaries are not vendored and do not run in CI):
+
+```bash
+# Encoder: bit-exact + speed vs vo-amrwbenc
+AMRWB_ENC=/path/to/vo-amrwbenc-harness go test -run TestEncDiffAgainstCReference .
+AMRWB_ENC=/path/to/vo-amrwbenc-harness go test -run TestEncSpeedVsCReference -v .
+
+# Decoder: bit-exact + speed vs opencore-amrwb
+AMRWB_DIFF=/path/to/opencore-amr-harness go test -run TestDiffAgainstCReference .
+AMRWB_DIFF=/path/to/opencore-amr-harness go test -run TestDecSpeedVsCReference -v .
+```
+
+The speed comparison times the C reference across a pipe to a separate process and uses a
+two-point (slope) method over `AMRWB_BENCH_FRAMES` frames (default 4000) to cancel process
+startup; see the header of `goamr-wb/speed_test.go` for the methodology and its caveats.
+Without the env vars all of these skip, so the normal VoiceBlender `go test ./internal/...` run
+is unaffected.
 
 ---
 
@@ -178,6 +219,8 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestCodecSelect_RingingExposesOffer` | `leg.ringing` payload includes `offered_codecs` array with priority order |
 | `TestCodecSelect_AnswerWithExplicitCodec` | `POST /v1/legs/{id}/answer` honors a `codec` field in the request body |
 | `TestCodecSelect_AnswerRejectsCodecNotInOffer` | Answer with a codec not in the remote offer returns 400 |
+| `TestAMRWB_NegotiateAndConnect` | AMR-WB-only offer exposed in `leg.ringing` (16 kHz clock, dynamic PT), `/answer` with `AMR-WB` connects both legs |
+| `TestAMRWB_EndToEndAudio` | AMR-WB call recovers non-silent audio through encode → RTP → decode, for both octet-aligned and bandwidth-efficient framing |
 | `TestRing_ExplicitRingingThenAnswer` | Default `SIP_AUTO_RINGING=false`; multiple `/ring` calls send 180s, then `/answer` connects |
 | `TestRing_AutoRingingPreservesLegacyFlow` | `SIP_AUTO_RINGING=true` restores auto-180 behavior; no explicit `/ring` needed |
 | `TestRing_RejectsAfterAnswer` | `/ring` on a connected leg returns 409 |

@@ -57,6 +57,10 @@ type Config struct {
 	DefaultSampleRate                    int
 	SpeechDetectionEnabled               bool
 
+	// AMR-WB (G.722.2, RFC 4867) codec parameters.
+	AMRWBMode         int  // encoder speech-mode ceiling 0..8 (default 2 = 12.65 kbit/s), clamped to the peer's mode-set
+	AMRWBOctetAligned bool // offer octet-aligned framing (default true)
+
 	MoQEnabled     bool
 	MoQListenAddr  string
 	MoQTLSCertFile string
@@ -125,6 +129,9 @@ func Load() Config {
 		DefaultSampleRate:                    defaultRate,
 		SpeechDetectionEnabled:               os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
+		AMRWBMode:         amrwbMode(envInt("AMRWB_MODE", 2)),
+		AMRWBOctetAligned: envBool("AMRWB_OCTET_ALIGNED", true),
+
 		MoQEnabled:     os.Getenv("MOQ_ENABLED") == "true",
 		MoQListenAddr:  envOr("MOQ_LISTEN_ADDR", ":8443"),
 		MoQTLSCertFile: os.Getenv("MOQ_TLS_CERT_FILE"),
@@ -167,6 +174,17 @@ func vsiBufferSize(n int) int {
 	}
 	if n > maxSize {
 		return maxSize
+	}
+	return n
+}
+
+// amrwbMode clamps an AMR-WB speech mode to the valid range 0..8.
+func amrwbMode(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > 8 {
+		return 8
 	}
 	return n
 }
