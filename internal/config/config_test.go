@@ -2,6 +2,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
 
 func TestLoad_Defaults(t *testing.T) {
@@ -14,6 +16,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEFAULT_SAMPLE_RATE",
 		"MOQ_ENABLED", "MOQ_LISTEN_ADDR", "MOQ_TLS_CERT_FILE", "MOQ_TLS_KEY_FILE",
 		"MOQ_OPUS_BITRATE", "AMRWB_MODE", "AMRWB_OCTET_ALIGNED",
+		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
 	} {
 		t.Setenv(key, "")
 	}
@@ -76,6 +79,63 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if !cfg.AMRWBOctetAligned {
 		t.Error("AMRWBOctetAligned should default to true")
+	}
+	wantCodecs := []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}
+	if len(cfg.Codecs) != len(wantCodecs) {
+		t.Fatalf("Codecs = %v, want %v", cfg.Codecs, wantCodecs)
+	}
+	for i, c := range wantCodecs {
+		if cfg.Codecs[i] != c {
+			t.Errorf("Codecs[%d] = %s, want %s", i, cfg.Codecs[i], c)
+		}
+	}
+}
+
+func TestLoad_SIPCodecs(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want []codec.CodecType
+	}{
+		{
+			name: "single codec",
+			env:  "opus",
+			want: []codec.CodecType{codec.CodecOpus},
+		},
+		{
+			name: "preference order preserved",
+			env:  "opus,G722,PCMU,PCMA",
+			want: []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA},
+		},
+		{
+			name: "whitespace trimmed, unknowns dropped, dupes deduped",
+			env:  " PCMU , garbage, PCMU , AMR-NB ",
+			want: []codec.CodecType{codec.CodecPCMU, codec.CodecAMRNB},
+		},
+		{
+			name: "AMR aliases resolve",
+			env:  "AMR-WB,AMR",
+			want: []codec.CodecType{codec.CodecAMRWB, codec.CodecAMRNB},
+		},
+		{
+			name: "all unknown falls back to default (PCMU,PCMA)",
+			env:  "foo,bar",
+			want: []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SIP_CODECS", tc.env)
+			got := Load().Codecs
+			if len(got) != len(tc.want) {
+				t.Fatalf("Codecs = %v, want %v", got, tc.want)
+			}
+			for i, c := range tc.want {
+				if got[i] != c {
+					t.Errorf("Codecs[%d] = %s, want %s", i, got[i], c)
+				}
+			}
+		})
 	}
 }
 

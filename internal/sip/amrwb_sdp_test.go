@@ -11,16 +11,16 @@ func TestAMRWBRtpmapFmtp(t *testing.T) {
 	if got := codecRtpmap(codec.CodecAMRWB); got != "AMR-WB/16000/1" {
 		t.Errorf("codecRtpmap = %q, want AMR-WB/16000/1", got)
 	}
-	if got := codecFmtp(codec.CodecAMRWB, true, ""); got != "octet-align=1" {
+	if got := codecFmtp(codec.CodecAMRWB, true, "", false, ""); got != "octet-align=1" {
 		t.Errorf("codecFmtp(octet-aligned) = %q, want octet-align=1", got)
 	}
-	if got := codecFmtp(codec.CodecAMRWB, false, ""); got != "" {
+	if got := codecFmtp(codec.CodecAMRWB, false, "", false, ""); got != "" {
 		t.Errorf("codecFmtp(bandwidth-efficient) = %q, want empty", got)
 	}
-	if got := codecFmtp(codec.CodecAMRWB, true, "0,1,2"); got != "octet-align=1; mode-set=0,1,2" {
+	if got := codecFmtp(codec.CodecAMRWB, true, "0,1,2", false, ""); got != "octet-align=1; mode-set=0,1,2" {
 		t.Errorf("codecFmtp(octet+mode-set) = %q, want octet-align=1; mode-set=0,1,2", got)
 	}
-	if got := codecFmtp(codec.CodecAMRWB, false, "0,1,2"); got != "mode-set=0,1,2" {
+	if got := codecFmtp(codec.CodecAMRWB, false, "0,1,2", false, ""); got != "mode-set=0,1,2" {
 		t.Errorf("codecFmtp(be+mode-set) = %q, want mode-set=0,1,2", got)
 	}
 }

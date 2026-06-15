@@ -35,6 +35,16 @@ type SDPConfig struct {
 	// fmtp param. Used on answers to echo the peer's negotiated mode-set per
 	// RFC 4867; left empty on offers (we accept all modes on receive).
 	AMRWBModeSet string
+
+	// AMRNBOctetAligned controls the AMR-NB fmtp emitted for an offer/answer:
+	// true emits "octet-align=1", false emits no octet-align (RFC 4867 default,
+	// bandwidth-efficient). On answers it must echo the peer's negotiated format.
+	AMRNBOctetAligned bool
+
+	// AMRNBModeSet, when non-empty (e.g. "0,4,7"), adds a "mode-set=..." AMR-NB
+	// fmtp param. Used on answers to echo the peer's negotiated mode-set per
+	// RFC 4867; left empty on offers (we accept all modes on receive).
+	AMRNBModeSet string
 }
 
 // SDPMedia holds parsed remote media parameters.
@@ -66,21 +76,24 @@ type SDPTextMedia struct {
 }
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
+// AMR-NB uses the RFC 4867 §8.1 encoding name "AMR" (AMR-WB uses "AMR-WB").
 func codecRtpmap(c codec.CodecType) string {
 	switch c {
 	case codec.CodecOpus:
 		return "opus/48000/2"
 	case codec.CodecAMRWB:
 		return "AMR-WB/16000/1"
+	case codec.CodecAMRNB:
+		return "AMR/8000/1"
 	default:
 		return fmt.Sprintf("%s/%d", c.String(), c.ClockRate())
 	}
 }
 
 // codecFmtp returns the fmtp parameters for a codec, or "" if none.
-// amrwbOctetAligned selects the AMR-WB framing parameter and amrwbModeSet (e.g.
-// "0,1,2"), when non-empty, adds a mode-set param (both ignored for others).
-func codecFmtp(c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string) string {
+// The amrwb* / amrnb* args control each AMR variant's framing format and
+// (optional) mode-set; they're ignored for unrelated codecs.
+func codecFmtp(c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string, amrnbOctetAligned bool, amrnbModeSet string) string {
 	switch c {
 	case codec.CodecOpus:
 		return "minptime=20; useinbandfec=1; stereo=0; sprop-stereo=0"
@@ -91,6 +104,15 @@ func codecFmtp(c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string) s
 		}
 		if amrwbModeSet != "" {
 			parts = append(parts, "mode-set="+amrwbModeSet)
+		}
+		return strings.Join(parts, "; ")
+	case codec.CodecAMRNB:
+		var parts []string
+		if amrnbOctetAligned {
+			parts = append(parts, "octet-align=1") // else bandwidth-efficient (RFC 4867 default)
+		}
+		if amrnbModeSet != "" {
+			parts = append(parts, "mode-set="+amrnbModeSet)
 		}
 		return strings.Join(parts, "; ")
 	default:
@@ -167,6 +189,73 @@ func ClampAMRWBMode(ceiling int, modeSet []int) int {
 	return best
 }
 
+// AMRNBOctetAligned reports whether the AMR-NB fmtp params select octet-aligned
+// framing. Per RFC 4867 the default (no octet-align) is bandwidth-efficient, so
+// an absent or "octet-align=0" parameter means bandwidth-efficient.
+func AMRNBOctetAligned(fmtp string) bool {
+	for _, p := range strings.Split(fmtp, ";") {
+		p = strings.TrimSpace(p)
+		if strings.EqualFold(p, "octet-align=1") {
+			return true
+		}
+	}
+	return false
+}
+
+// AMRNBModeSet parses an AMR-NB "mode-set=a,b,c" fmtp parameter into the set of
+// allowed speech modes (0..7). Returns nil when no valid mode-set is present
+// (RFC 4867: absence means all modes are permitted). Modes outside 0..7 are
+// dropped.
+func AMRNBModeSet(fmtp string) []int {
+	for _, p := range strings.Split(fmtp, ";") {
+		p = strings.TrimSpace(p)
+		v, ok := strings.CutPrefix(strings.ToLower(p), "mode-set=")
+		if !ok {
+			continue
+		}
+		var modes []int
+		for _, tok := range strings.Split(v, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(tok))
+			if err == nil && n >= 0 && n <= 7 {
+				modes = append(modes, n)
+			}
+		}
+		return modes
+	}
+	return nil
+}
+
+// FormatAMRNBModeSet renders modes as a "0,4,7" mode-set value (the inverse of
+// AMRNBModeSet); returns "" for an empty set.
+func FormatAMRNBModeSet(modes []int) string {
+	parts := make([]string, len(modes))
+	for i, m := range modes {
+		parts[i] = strconv.Itoa(m)
+	}
+	return strings.Join(parts, ",")
+}
+
+// ClampAMRNBMode constrains a desired ceiling mode to the peer's negotiated
+// mode-set. Behaviour mirrors ClampAMRWBMode but ranges over AMR-NB modes 0..7.
+func ClampAMRNBMode(ceiling int, modeSet []int) int {
+	if len(modeSet) == 0 {
+		return ceiling
+	}
+	best, min := -1, modeSet[0]
+	for _, m := range modeSet {
+		if m < min {
+			min = m
+		}
+		if m <= ceiling && m > best {
+			best = m
+		}
+	}
+	if best < 0 {
+		return min
+	}
+	return best
+}
+
 // buildSessionDescription creates the common session-level SDP fields. The
 // SDP address-type token (IP4/IP6) is derived from localIP — empty or
 // non-literal input falls back to IP4 for backward compatibility.
@@ -199,10 +288,10 @@ func buildSessionDescription(localIP string) *pionsdp.SessionDescription {
 }
 
 // addCodecAttributes appends rtpmap and fmtp attributes for a codec.
-func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecType, amrwbOctetAligned bool, amrwbModeSet string) {
+func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecType, cfg SDPConfig) {
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d %s", pt, codecRtpmap(c))))
-	if fmtp := codecFmtp(c, amrwbOctetAligned, amrwbModeSet); fmtp != "" {
+	if fmtp := codecFmtp(c, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet, cfg.AMRNBOctetAligned, cfg.AMRNBModeSet); fmtp != "" {
 		md.Attributes = append(md.Attributes,
 			pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", pt, fmtp)))
 	}
@@ -347,7 +436,7 @@ func GenerateOffer(cfg SDPConfig) []byte {
 
 	// Add codec attributes.
 	for _, c := range cfg.Codecs {
-		addCodecAttributes(md, c.PayloadType(), c, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
+		addCodecAttributes(md, c.PayloadType(), c, cfg)
 	}
 	if hasOpus {
 		addTelephoneEvent(md, 100, 48000)
@@ -392,7 +481,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 		},
 	}
 
-	addCodecAttributes(md, selectedPT, selected, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
+	addCodecAttributes(md, selectedPT, selected, cfg)
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
@@ -630,7 +719,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 		},
 	}
 
-	addCodecAttributes(md, selectedPT, selected, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet)
+	addCodecAttributes(md, selectedPT, selected, cfg)
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}

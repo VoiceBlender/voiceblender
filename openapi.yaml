@@ -2602,6 +2602,7 @@ components:
                         - G722
                         - opus
                         - AMR-WB
+                        - AMR-NB
         CreateLegRequest:
             type: object
             properties:
@@ -2643,6 +2644,7 @@ components:
                             - G722
                             - opus
                             - AMR-WB
+                            - AMR-NB
                     description: Codec preference order (sip legs only)
                 headers:
                     type: object
@@ -2813,6 +2815,7 @@ components:
                         - G722
                         - opus
                         - AMR-WB
+                        - AMR-NB
         ElevenLabsAgentRequest:
             type: object
             properties:

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/google/uuid"
 )
 
@@ -57,9 +58,18 @@ type Config struct {
 	DefaultSampleRate                    int
 	SpeechDetectionEnabled               bool
 
+	// Codecs is the engine's supported codec list, ordered by preference. Used
+	// for both outbound offer construction and inbound offer/answer matching —
+	// a codec absent from this list is not negotiable in either direction.
+	Codecs []codec.CodecType
+
 	// AMR-WB (G.722.2, RFC 4867) codec parameters.
 	AMRWBMode         int  // encoder speech-mode ceiling 0..8 (default 2 = 12.65 kbit/s), clamped to the peer's mode-set
 	AMRWBOctetAligned bool // offer octet-aligned framing (default true)
+
+	// AMR-NB (RFC 4867) codec parameters.
+	AMRNBMode         int  // encoder speech-mode ceiling 0..7 (default 7 = 12.2 kbit/s, GSM-EFR), clamped to the peer's mode-set
+	AMRNBOctetAligned bool // offer octet-aligned framing (default true)
 
 	MoQEnabled     bool
 	MoQListenAddr  string
@@ -129,8 +139,13 @@ func Load() Config {
 		DefaultSampleRate:                    defaultRate,
 		SpeechDetectionEnabled:               os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
+		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),
+
 		AMRWBMode:         amrwbMode(envInt("AMRWB_MODE", 2)),
 		AMRWBOctetAligned: envBool("AMRWB_OCTET_ALIGNED", true),
+
+		AMRNBMode:         amrnbMode(envInt("AMRNB_MODE", 7)),
+		AMRNBOctetAligned: envBool("AMRNB_OCTET_ALIGNED", true),
 
 		MoQEnabled:     os.Getenv("MOQ_ENABLED") == "true",
 		MoQListenAddr:  envOr("MOQ_LISTEN_ADDR", ":8443"),
@@ -178,6 +193,30 @@ func vsiBufferSize(n int) int {
 	return n
 }
 
+// parseCodecList parses a comma-separated list of codec names into the engine's
+// preference-ordered codec slice. Unknown names and duplicates are dropped
+// silently; an empty input (or a list that produces no recognized codecs)
+// returns def. Whitespace around each name is trimmed.
+func parseCodecList(s string, def []codec.CodecType) []codec.CodecType {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	var out []codec.CodecType
+	seen := make(map[codec.CodecType]bool)
+	for _, tok := range strings.Split(s, ",") {
+		ct := codec.CodecTypeFromName(strings.TrimSpace(tok))
+		if ct == codec.CodecUnknown || seen[ct] {
+			continue
+		}
+		seen[ct] = true
+		out = append(out, ct)
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
+}
+
 // amrwbMode clamps an AMR-WB speech mode to the valid range 0..8.
 func amrwbMode(n int) int {
 	if n < 0 {
@@ -185,6 +224,17 @@ func amrwbMode(n int) int {
 	}
 	if n > 8 {
 		return 8
+	}
+	return n
+}
+
+// amrnbMode clamps an AMR-NB speech mode to the valid range 0..7.
+func amrnbMode(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > 7 {
+		return 7
 	}
 	return n
 }
