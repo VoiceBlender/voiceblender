@@ -30,6 +30,8 @@ github.com/VoiceBlender/goamr-nb v1.0.0 h1:DxtRZHssxKhM2PfacSYO1L7JVzrggwfmqIaU+
 github.com/VoiceBlender/goamr-nb v1.0.0/go.mod h1:Eb6MpLAXDAC2TvwdEzNL6rXfcNmIJll8NBUjoAqpRaY=
 github.com/VoiceBlender/goamr-wb v1.1.0 h1:Fd0ZPBQLzucVYcUZZ9FiBcfXW5G5CZmLfRfIZqLAgYg=
 github.com/VoiceBlender/goamr-wb v1.1.0/go.mod h1:0WslyibUmJYuCGw1RU/RlJXK7Z9cIIuOE3RdFPOryXw=
+github.com/VoiceBlender/goamr-wb v1.1.1 h1:wnJefp4APio7FOavNaIhxY4zq8Tb56Cwl74Ilnn4YV8=
+github.com/VoiceBlender/goamr-wb v1.1.1/go.mod h1:0WslyibUmJYuCGw1RU/RlJXK7Z9cIIuOE3RdFPOryXw=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/aws/aws-sdk-go-v2 v1.41.3 h1:4kQ/fa22KjDt13QCy1+bYADvdgcxpfH18f0zP542kZA=
