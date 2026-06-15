@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	cloud.google.com/go/texttospeech v1.16.0
-	github.com/VoiceBlender/goamr-nb v0.0.0-00010101000000-000000000000
+	github.com/VoiceBlender/goamr-nb v1.0.0
 	github.com/VoiceBlender/goamr-wb v1.1.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
@@ -36,8 +36,6 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/VoiceBlender/goamr-nb => ../goamr-nb
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.6-20250625184727-c923a0c2a132.1 // indirect
