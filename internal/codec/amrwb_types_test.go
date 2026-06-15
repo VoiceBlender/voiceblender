@@ -2,6 +2,7 @@ package codec
 
 import (
 	"math"
+	"strconv"
 	"testing"
 )
 
@@ -69,6 +70,82 @@ func TestAMRWBFactoryRoundTrip(t *testing.T) {
 		}
 		if len(out) != 320 {
 			t.Errorf("Decode(octetAligned=%v) = %d samples, want 320", octetAligned, len(out))
+		}
+	}
+}
+
+// TestAMRWBAmplitudePreserved guards the encoder's 6 dB pre-attenuation
+// (added in goamr-wb to keep the LPC synthesis filter from saturating at the
+// remote decoder) and that no later change re-introduces unbounded gain.
+// Feeds 1 s of a 1 kHz sine at -6 dBFS through encode→decode for every mode
+// and both payload formats. Expected decoded peak is roughly -12 dBFS
+// (input was -6, encoder attenuates 6 dB, decoder roughly preserves).
+func TestAMRWBAmplitudePreserved(t *testing.T) {
+	const (
+		sampleRate   = 16000
+		freq         = 1000.0
+		seconds      = 1
+		inputPeak    = 16384 // ~ -6 dBFS for int16
+		samplesPerFr = 320   // 20 ms at 16 kHz
+		framesPerSec = sampleRate / samplesPerFr
+		minAllowed   = 3000  // ~ -20 dBFS — catches gross attenuation
+		maxAllowed   = 16000 // ~ -6 dBFS — catches the original blow-up bug
+	)
+
+	in := make([]int16, sampleRate*seconds)
+	for i := range in {
+		in[i] = int16(float64(inputPeak) * math.Sin(2*math.Pi*freq*float64(i)/sampleRate))
+	}
+
+	for _, octetAligned := range []bool{true, false} {
+		for mode := 0; mode <= 8; mode++ {
+			label := "BE"
+			if octetAligned {
+				label = "OA"
+			}
+			t.Run(label+"/mode="+strconv.Itoa(mode), func(t *testing.T) {
+				enc, err := NewAMRWBEncoder(mode, octetAligned)
+				if err != nil {
+					t.Fatalf("NewAMRWBEncoder(mode=%d, octetAligned=%v): %v", mode, octetAligned, err)
+				}
+				dec := NewAMRWBDecoder(octetAligned)
+
+				var decoded []int16
+				for f := 0; f < framesPerSec*seconds; f++ {
+					frame := in[f*samplesPerFr : (f+1)*samplesPerFr]
+					payload, err := enc.Encode(frame)
+					if err != nil {
+						t.Fatalf("Encode frame %d: %v", f, err)
+					}
+					out, err := dec.Decode(payload)
+					if err != nil {
+						t.Fatalf("Decode frame %d: %v", f, err)
+					}
+					decoded = append(decoded, out...)
+				}
+
+				// Skip the codec's analysis warmup (~2 frames) before measuring.
+				measured := decoded[samplesPerFr*2:]
+				peak := int16(0)
+				for _, s := range measured {
+					a := s
+					if a < 0 {
+						a = -a
+					}
+					if a > peak {
+						peak = a
+					}
+				}
+				t.Logf("mode=%d %s input peak=%d decoded peak=%d", mode, label, inputPeak, peak)
+				if peak < minAllowed {
+					t.Errorf("mode=%d %s: decoded peak %d below %d (input was %d) — encoder/decoder attenuating signal",
+						mode, label, peak, minAllowed, inputPeak)
+				}
+				if peak > maxAllowed {
+					t.Errorf("mode=%d %s: decoded peak %d above %d (input was %d) — encoder/decoder amplifying signal, likely the Microsip 'loud/clipping' bug",
+						mode, label, peak, maxAllowed, inputPeak)
+				}
+			})
 		}
 	}
 }
