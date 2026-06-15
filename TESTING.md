@@ -64,7 +64,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
 | `internal/room` (routing) | 6 | Role-based routing matrix: supervisor-whisper no-bleed at join, mid-call role change recomputes allow-sets, unroled legs default to full mesh, removing a leg prunes others' whitelists, `UpdateRoutingRow` with null clears row, matrix round-trip via `RoutingMatrix()` |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
-| `internal/codec` | 13 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB type registration + factory + RFC 4867 round-trip (both payload formats) |
+| `internal/codec` | 17 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB and AMR-NB type registration + factory + RFC 4867 round-trip (both payload formats) |
 | `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
 | `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
@@ -223,6 +223,9 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestAMRWB_NegotiateAndConnect` | AMR-WB-only offer exposed in `leg.ringing` (16 kHz clock, dynamic PT), `/answer` with `AMR-WB` connects both legs |
 | `TestAMRWB_EndToEndAudio` | AMR-WB call recovers non-silent audio through encode → RTP → decode, for both octet-aligned and bandwidth-efficient framing |
 | `TestAMRWB_DTMF` | Out-of-band DTMF (RFC 4733) flows in both directions over the 16 kHz telephone-event negotiated alongside AMR-WB |
+| `TestAMRNB_NegotiateAndConnect` | AMR-NB-only offer exposed in `leg.ringing` (8 kHz clock, dynamic PT, rtpmap name "AMR" per RFC 4867 §8.1), `/answer` with `AMR-NB` connects both legs |
+| `TestAMRNB_EndToEndAudio` | AMR-NB call recovers non-silent audio through encode → RTP → decode, for both octet-aligned and bandwidth-efficient framing |
+| `TestAMRNB_DTMF` | Out-of-band DTMF (RFC 4733) flows in both directions over the 8 kHz telephone-event paired with AMR-NB |
 | `TestG722_DTMF` | Out-of-band DTMF (RFC 4733) flows in both directions over a G.722 call (telephone-event stays at G.722's 8 kHz RTP clock despite 16 kHz sampling) |
 | `TestRing_ExplicitRingingThenAnswer` | Default `SIP_AUTO_RINGING=false`; multiple `/ring` calls send 180s, then `/answer` connects |
 | `TestRing_AutoRingingPreservesLegacyFlow` | `SIP_AUTO_RINGING=true` restores auto-180 behavior; no explicit `/ring` needed |

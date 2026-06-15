@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
-	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -113,9 +112,11 @@ func main() {
 		SIPDebug:          cfg.SIPDebug,
 		SIPHost:           cfg.SIPHost,
 		UseSourceSocket:   cfg.SIPUseSourceSocket,
-		Codecs:            []codec.CodecType{codec.CodecOpus, codec.CodecG722, codec.CodecPCMU, codec.CodecPCMA, codec.CodecAMRWB},
+		Codecs:            cfg.Codecs,
 		AMRWBMode:         cfg.AMRWBMode,
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
+		AMRNBMode:         cfg.AMRNBMode,
+		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
 		Log:               log,
 		PortAllocator:     portAlloc,
 		Registrar:         registrar,

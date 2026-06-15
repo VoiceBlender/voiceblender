@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	amrnb "github.com/VoiceBlender/goamr-nb"
 	amrwb "github.com/VoiceBlender/goamr-wb"
 )
 
@@ -17,12 +18,17 @@ const (
 	CodecG722              // PT=9, 16kHz internal / 8kHz SDP clock (RFC 3551)
 	CodecOpus              // PT=111 (dynamic), 48kHz
 	CodecAMRWB             // PT=96 (dynamic), 16kHz (G.722.2, RFC 4867)
+	CodecAMRNB             // PT=97 (dynamic), 8kHz (AMR narrowband, RFC 4867)
 )
 
 // amrwbDefaultPT is the dynamic payload type used when VoiceBlender offers
 // AMR-WB. The peer may answer with a different dynamic PT; the negotiated PT
 // from the remote SDP takes precedence on the send path.
 const amrwbDefaultPT = 96
+
+// amrnbDefaultPT is the dynamic payload type used when VoiceBlender offers
+// AMR-NB. As with AMR-WB the peer's answer PT (from the rtpmap) wins on send.
+const amrnbDefaultPT = 97
 
 func (c CodecType) String() string {
 	switch c {
@@ -36,6 +42,8 @@ func (c CodecType) String() string {
 		return "opus"
 	case CodecAMRWB:
 		return "AMR-WB"
+	case CodecAMRNB:
+		return "AMR-NB"
 	default:
 		return "unknown"
 	}
@@ -54,6 +62,8 @@ func (c CodecType) PayloadType() uint8 {
 		return 111
 	case CodecAMRWB:
 		return amrwbDefaultPT
+	case CodecAMRNB:
+		return amrnbDefaultPT
 	default:
 		return 0
 	}
@@ -63,7 +73,7 @@ func (c CodecType) PayloadType() uint8 {
 // Per RFC 3551, G.722 uses 8000 in SDP despite encoding at 16kHz.
 func (c CodecType) ClockRate() int {
 	switch c {
-	case CodecPCMU, CodecPCMA, CodecG722:
+	case CodecPCMU, CodecPCMA, CodecG722, CodecAMRNB:
 		return 8000
 	case CodecOpus:
 		return 48000
@@ -77,7 +87,7 @@ func (c CodecType) ClockRate() int {
 // SampleRate returns the actual internal sample rate.
 func (c CodecType) SampleRate() int {
 	switch c {
-	case CodecPCMU, CodecPCMA:
+	case CodecPCMU, CodecPCMA, CodecAMRNB:
 		return 8000
 	case CodecG722, CodecAMRWB:
 		return 16000
@@ -117,6 +127,8 @@ func CodecTypeFromName(name string) CodecType {
 		return CodecOpus
 	case "AMR-WB", "AMRWB":
 		return CodecAMRWB
+	case "AMR-NB", "AMRNB", "AMR":
+		return CodecAMRNB
 	default:
 		return CodecUnknown
 	}
@@ -147,6 +159,8 @@ func NewEncoder(ct CodecType) (Encoder, error) {
 		return NewOpusEncoder()
 	case CodecAMRWB:
 		return NewAMRWBEncoder(int(amrwb.Mode2385), true)
+	case CodecAMRNB:
+		return NewAMRNBEncoder(int(amrnb.Mode1220), true)
 	default:
 		return nil, fmt.Errorf("unsupported encoder codec: %s", ct)
 	}
@@ -163,6 +177,17 @@ func NewAMRWBDecoder(octetAligned bool) Decoder {
 	return amrwb.NewDecoder(amrwb.DecoderConfig{OctetAligned: octetAligned})
 }
 
+// NewAMRNBEncoder creates an AMR-NB encoder for the given speech mode (0..7)
+// and payload format (octetAligned=false selects bandwidth-efficient framing).
+func NewAMRNBEncoder(mode int, octetAligned bool) (Encoder, error) {
+	return amrnb.NewEncoder(amrnb.EncoderConfig{Mode: amrnb.Mode(mode), OctetAligned: octetAligned})
+}
+
+// NewAMRNBDecoder creates an AMR-NB decoder for the given payload format.
+func NewAMRNBDecoder(octetAligned bool) Decoder {
+	return amrnb.NewDecoder(amrnb.DecoderConfig{OctetAligned: octetAligned})
+}
+
 // NewDecoder creates a Decoder for the given codec type.
 func NewDecoder(ct CodecType) (Decoder, error) {
 	switch ct {
@@ -176,6 +201,8 @@ func NewDecoder(ct CodecType) (Decoder, error) {
 		return NewOpusDecoder()
 	case CodecAMRWB:
 		return NewAMRWBDecoder(true), nil
+	case CodecAMRNB:
+		return NewAMRNBDecoder(true), nil
 	default:
 		return nil, fmt.Errorf("unsupported decoder codec: %s", ct)
 	}

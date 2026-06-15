@@ -53,6 +53,11 @@ type EngineConfig struct {
 	// AMRWBOctetAligned selects octet-aligned (true) vs bandwidth-efficient
 	// (false) AMR-WB framing in generated offers.
 	AMRWBOctetAligned bool
+	// AMRNBMode is the AMR-NB encoder speech mode (0..7) offered/transmitted.
+	AMRNBMode int
+	// AMRNBOctetAligned selects octet-aligned (true) vs bandwidth-efficient
+	// (false) AMR-NB framing in generated offers.
+	AMRNBOctetAligned bool
 	Log               *slog.Logger
 	PortAllocator     *PortAllocator // nil = OS-assigned ports
 
@@ -76,6 +81,8 @@ type Engine struct {
 	codecs            []codec.CodecType
 	amrwbMode         int
 	amrwbOctetAligned bool
+	amrnbMode         int
+	amrnbOctetAligned bool
 	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
 	bindIPV6          string // IPv6 advertised address; empty if v4-only
 	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
@@ -415,6 +422,8 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		codecs:            cfg.Codecs,
 		amrwbMode:         cfg.AMRWBMode,
 		amrwbOctetAligned: cfg.AMRWBOctetAligned,
+		amrnbMode:         cfg.AMRNBMode,
+		amrnbOctetAligned: cfg.AMRNBOctetAligned,
 		bindIP:            advertiseIP,
 		bindIPV6:          advertiseIPV6,
 		publicHost:        publicHost,
@@ -989,6 +998,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		RTPPort:           rtpSess.LocalPort(),
 		Codecs:            codecs,
 		AMRWBOctetAligned: e.amrwbOctetAligned,
+		AMRNBOctetAligned: e.amrnbOctetAligned,
 	}
 	if opts.RTTEnabled {
 		ts, terr := NewRTPSessionFromAllocator(e.portAlloc)
@@ -1172,6 +1182,12 @@ func (e *Engine) AMRWBMode() int { return e.amrwbMode }
 
 // AMRWBOctetAligned reports whether AMR-WB offers advertise octet-aligned framing.
 func (e *Engine) AMRWBOctetAligned() bool { return e.amrwbOctetAligned }
+
+// AMRNBMode returns the configured AMR-NB encoder speech mode (0..7).
+func (e *Engine) AMRNBMode() int { return e.amrnbMode }
+
+// AMRNBOctetAligned reports whether AMR-NB offers advertise octet-aligned framing.
+func (e *Engine) AMRNBOctetAligned() bool { return e.amrnbOctetAligned }
 
 // BindIP returns the engine's IPv4 advertised address. May be empty in
 // IPv6-only deployments.
