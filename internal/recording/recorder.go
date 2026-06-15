@@ -52,8 +52,10 @@ func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sa
 	}
 
 	go func() {
-		defer r.clearRecording()
+		// LIFO: clearRecording must run BEFORE close(r.done) so that callers
+		// blocked on Wait() observe IsRecording()==false the moment they wake.
 		defer close(r.done)
+		defer r.clearRecording()
 		err := r.recordMono(cancel.ctx, reader, f, int(sampleRate))
 		if err != nil && cancel.ctx.Err() == nil {
 			r.log.Error("recording error", "error", err)
@@ -73,8 +75,10 @@ func (r *Recorder) StartStereo(ctx context.Context, left, right io.Reader, dir s
 	}
 
 	go func() {
-		defer r.clearRecording()
+		// LIFO: clearRecording must run BEFORE close(r.done) so that callers
+		// blocked on Wait() observe IsRecording()==false the moment they wake.
 		defer close(r.done)
+		defer r.clearRecording()
 		err := r.recordStereo(cancel.ctx, left, right, f, int(sampleRate))
 		if err != nil && cancel.ctx.Err() == nil {
 			r.log.Error("stereo recording error", "error", err)
