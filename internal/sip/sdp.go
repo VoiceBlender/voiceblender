@@ -45,6 +45,19 @@ type SDPConfig struct {
 	// fmtp param. Used on answers to echo the peer's negotiated mode-set per
 	// RFC 4867; left empty on offers (we accept all modes on receive).
 	AMRNBModeSet string
+
+	// DTMFPT, when non-zero, is the telephone-event (RFC 4733) PT to advertise
+	// in the generated SDP. Zero defaults to 101. In answers callers should set
+	// this from the remote offer to mirror the offerer's choice.
+	DTMFPT uint8
+
+	// DTMFClockRate, when non-zero, is the telephone-event clock rate (Hz) to
+	// advertise. Zero defaults to TelephoneEventClockRate(selected codec). In
+	// answers callers must set this from the remote offer so RFC 3264
+	// offer/answer semantics hold — phones like Fanvil pin telephone-event at
+	// 8 kHz regardless of audio codec, and unilaterally upgrading to 16 kHz
+	// breaks their DTMF.
+	DTMFClockRate int
 }
 
 // SDPMedia holds parsed remote media parameters.
@@ -319,6 +332,39 @@ func (m *SDPMedia) DTMFPTForRate(rate int) (uint8, bool) {
 	return 0, false
 }
 
+// PreferredDTMFEvent returns the telephone-event PT and clock rate to mirror
+// in an answer (RFC 3264 offer/answer). When the remote advertised multiple
+// telephone-event lines, the lowest PT wins for determinism. Returns
+// (0, 0, false) when no telephone-event was offered.
+func (m *SDPMedia) PreferredDTMFEvent() (pt uint8, rate int, ok bool) {
+	var best uint8
+	var bestRate int
+	found := false
+	for p, r := range m.DTMFEventPTs {
+		if !found || p < best {
+			best = p
+			bestRate = r
+			found = true
+		}
+	}
+	return best, bestRate, found
+}
+
+// resolveDTMF returns the telephone-event PT and clock rate for a generated
+// SDP. Explicit values in cfg win; otherwise we fall back to PT 101 and the
+// codec-conventional rate.
+func resolveDTMF(cfg SDPConfig, selected codec.CodecType) (uint8, int) {
+	pt := cfg.DTMFPT
+	if pt == 0 {
+		pt = 101
+	}
+	rate := cfg.DTMFClockRate
+	if rate == 0 {
+		rate = TelephoneEventClockRate(selected)
+	}
+	return pt, rate
+}
+
 // addTelephoneEvent appends telephone-event rtpmap and fmtp for the given PT and clock rate.
 func addTelephoneEvent(md *pionsdp.MediaDescription, pt uint8, clockRate int) {
 	md.Attributes = append(md.Attributes,
@@ -466,11 +512,13 @@ func GenerateOffer(cfg SDPConfig) []byte {
 func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, textRejected bool) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
+	dtmfPT, dtmfRate := resolveDTMF(cfg, selected)
+
 	formats := []string{strconv.Itoa(int(selectedPT))}
 	if selected == codec.CodecOpus {
 		formats = append(formats, "100") // telephone-event/48000
 	}
-	formats = append(formats, "101") // telephone-event
+	formats = append(formats, strconv.Itoa(int(dtmfPT)))
 
 	md := &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
@@ -485,7 +533,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
-	addTelephoneEvent(md, 101, TelephoneEventClockRate(selected))
+	addTelephoneEvent(md, dtmfPT, dtmfRate)
 
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("ptime", "20"),
@@ -704,11 +752,13 @@ func parseTextMedia(md *pionsdp.MediaDescription, m *SDPMedia, sd *pionsdp.Sessi
 func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, direction string) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
+	dtmfPT, dtmfRate := resolveDTMF(cfg, selected)
+
 	formats := []string{strconv.Itoa(int(selectedPT))}
 	if selected == codec.CodecOpus {
 		formats = append(formats, "100") // telephone-event/48000
 	}
-	formats = append(formats, "101") // telephone-event
+	formats = append(formats, strconv.Itoa(int(dtmfPT)))
 
 	md := &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
@@ -723,7 +773,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 	if selected == codec.CodecOpus {
 		addTelephoneEvent(md, 100, 48000)
 	}
-	addTelephoneEvent(md, 101, TelephoneEventClockRate(selected))
+	addTelephoneEvent(md, dtmfPT, dtmfRate)
 
 	md.Attributes = append(md.Attributes,
 		pionsdp.NewAttribute("ptime", "20"),
