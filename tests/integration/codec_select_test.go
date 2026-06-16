@@ -111,3 +111,37 @@ func TestCodecSelect_AnswerRejectsCodecNotInOffer(t *testing.T) {
 		t.Fatalf("answer with unsupported codec: status %d, body=%s, want 400", resp.StatusCode, body)
 	}
 }
+
+// TestCodecSelect_AnswerRejectsCodecNotInEngine verifies that the answer
+// endpoint returns 400 when the requested codec is in the remote offer but
+// not in the answerer's engine codec list. Before this guard the engine would
+// silently fall back to NegotiateCodecPreferred's first-common match (e.g.
+// AMR-WB when both sides offered it), masking the misconfiguration.
+func TestCodecSelect_AnswerRejectsCodecNotInEngine(t *testing.T) {
+	// A offers G722 + PCMU. B's engine is configured only for PCMU+AMR-WB —
+	// G722 is in the offer but not in B's supported list.
+	instA := newTestInstanceWithCodecs(t, "instance-a", []codec.CodecType{codec.CodecG722, codec.CodecPCMU})
+	instB := newTestInstanceWithCodecs(t, "instance-b", []codec.CodecType{codec.CodecPCMU, codec.CodecAMRWB})
+
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs": []string{"G722", "PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: status %d", createResp.StatusCode)
+	}
+	createResp.Body.Close()
+
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	resp := httpPost(t,
+		fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID),
+		map[string]interface{}{"codec": "G722"},
+	)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("answer with codec the engine lacks: status %d, body=%s, want 400", resp.StatusCode, body)
+	}
+}

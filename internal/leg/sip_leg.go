@@ -83,10 +83,11 @@ type SIPLeg struct {
 	rtpSendPT uint8
 	// DTMF (RFC 4733 telephone-event) send parameters, derived from the remote
 	// SDP after negotiation. dtmfSendPT is the telephone-event PT to transmit
-	// on (the PT the remote advertised at the matching clock rate); 0 means the
-	// default 101. dtmfClockRate must equal the negotiated audio codec's clock
-	// rate (16kHz for AMR-WB, 8kHz otherwise) so digit durations are encoded in
-	// the right units; 0 means the default 8kHz.
+	// on (the PT the remote advertised); 0 means the default 101.
+	// dtmfClockRate is the negotiated telephone-event clock rate — typically
+	// the rate the peer advertised, not necessarily the audio codec's rate
+	// (phones like Fanvil pin telephone-event at 8 kHz with an AMR-WB body).
+	// 0 means the default 8kHz.
 	dtmfSendPT    uint8
 	dtmfClockRate int
 	// AMR-WB negotiated parameters (only meaningful when codecType is AMR-WB).
@@ -532,6 +533,15 @@ func (l *SIPLeg) RemoteOfferCodecs() []codec.CodecType {
 	return out
 }
 
+// SupportedCodecs returns the engine's supported codecs for this leg, in
+// preference order. Used by the REST layer to reject answer/early-media
+// requests that name a codec the engine wasn't configured for.
+func (l *SIPLeg) SupportedCodecs() []codec.CodecType {
+	out := make([]codec.CodecType, len(l.supportedCodecs))
+	copy(out, l.supportedCodecs)
+	return out
+}
+
 // Reject sends a final non-2xx response on an unanswered inbound leg,
 // terminating the dialog without ever creating a session. statusCode is the
 // SIP status code (e.g. 486, 603); reasonPhrase is the SIP reason phrase
@@ -669,6 +679,8 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 		AMRWBModeSet:      l.amrwbModeSet,
 		AMRNBOctetAligned: l.amrnbOctetAligned,
 		AMRNBModeSet:      l.amrnbModeSet,
+		DTMFPT:            l.dtmfSendPT,
+		DTMFClockRate:     l.dtmfClockRate,
 	}, negotiated, pt, textRejected)
 
 	// Store SDP for reuse in Answer()
@@ -779,6 +791,8 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 		AMRWBModeSet:      l.amrwbModeSet,
 		AMRNBOctetAligned: l.amrnbOctetAligned,
 		AMRNBModeSet:      l.amrnbModeSet,
+		DTMFPT:            l.dtmfSendPT,
+		DTMFClockRate:     l.dtmfClockRate,
 	}, negotiated, pt, textRejected)
 
 	// Send 200 OK with SDP answer
@@ -869,18 +883,21 @@ func (l *SIPLeg) configureAMRNB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
 }
 
 // configureDTMF picks the telephone-event PT and clock rate for outbound DTMF
-// from the negotiated codec and the remote SDP. The clock rate must match the
-// audio codec (RFC 4733): AMR-WB runs telephone-event at 16kHz, so encoding
-// digit durations at the legacy 8kHz would halve their apparent length and
-// strict peers (e.g. MicroSIP) drop them. The send PT is the one the remote
-// advertised at that rate, falling back to the conventional 101.
+// from the remote SDP, honouring whatever the peer advertised (RFC 3264
+// offer/answer). RFC 4733 recommends matching the audio codec's clock rate,
+// but real phones disagree — MicroSIP pairs AMR-WB with telephone-event/16000,
+// Fanvil pairs it with telephone-event/8000 — so we trust the peer rather
+// than impose a rate. Falls back to PT 101 at the codec-conventional rate
+// when no telephone-event was offered.
 func (l *SIPLeg) configureDTMF(remoteSDP *sipmod.SDPMedia) {
 	l.dtmfSendPT = 101
 	l.dtmfClockRate = sipmod.TelephoneEventClockRate(l.codecType)
-	if remoteSDP != nil {
-		if pt, ok := remoteSDP.DTMFPTForRate(l.dtmfClockRate); ok {
-			l.dtmfSendPT = pt
-		}
+	if remoteSDP == nil {
+		return
+	}
+	if pt, rate, ok := remoteSDP.PreferredDTMFEvent(); ok {
+		l.dtmfSendPT = pt
+		l.dtmfClockRate = rate
 	}
 }
 
@@ -1548,6 +1565,8 @@ func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 		AMRWBModeSet:      l.amrwbModeSet,
 		AMRNBOctetAligned: l.amrnbOctetAligned,
 		AMRNBModeSet:      l.amrnbModeSet,
+		DTMFPT:            l.dtmfSendPT,
+		DTMFClockRate:     l.dtmfClockRate,
 	}
 	if l.textRtpSess != nil {
 		cfg.TextRTPPort = l.textRtpSess.LocalPort()

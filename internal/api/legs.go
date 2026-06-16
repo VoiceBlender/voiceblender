@@ -229,19 +229,31 @@ func (s *Server) publishCommandFailed(l leg.Leg, command string, err error) {
 }
 
 // resolveOfferedCodec maps a codec name from a request body to a CodecType,
-// rejecting unknown codecs and codecs not present in the leg's remote offer.
+// rejecting unknown codecs, codecs not in the leg's remote offer, and codecs
+// the engine isn't configured to support. The last check is needed so the
+// caller learns about the mismatch instead of silently getting whichever
+// codec NegotiateCodecPreferred falls back to.
 func resolveOfferedCodec(l *leg.SIPLeg, name string) (codec.CodecType, error) {
 	c := codec.CodecTypeFromName(name)
 	if c == codec.CodecUnknown {
 		return c, newAPIError(http.StatusBadRequest, "unknown codec %q", name)
 	}
-	offer := l.RemoteOfferCodecs()
-	for _, o := range offer {
+	inOffer := false
+	for _, o := range l.RemoteOfferCodecs() {
 		if o == c {
+			inOffer = true
+			break
+		}
+	}
+	if !inOffer {
+		return c, newAPIError(http.StatusBadRequest, "codec %q not in remote offer", name)
+	}
+	for _, s := range l.SupportedCodecs() {
+		if s == c {
 			return c, nil
 		}
 	}
-	return c, newAPIError(http.StatusBadRequest, "codec %q not in remote offer", name)
+	return c, newAPIError(http.StatusBadRequest, "codec %q not in engine's supported codecs", name)
 }
 
 func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
