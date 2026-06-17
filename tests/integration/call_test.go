@@ -132,6 +132,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, allowedIPs, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
+	engine.OnUpdate(apiSrv.HandleUpdate)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)
 

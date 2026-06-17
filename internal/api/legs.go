@@ -565,6 +565,30 @@ func (s *Server) HandleReInvite(callID string, direction string) []byte {
 	return nil
 }
 
+// HandleUpdate processes a remote in-dialog UPDATE (RFC 3311). For session-
+// timer refresh (no SDP), it only resets the session timer. When an SDP
+// offer is included, it reuses the re-INVITE path to renegotiate media and
+// returns the SDP answer for the 200 OK response.
+func (s *Server) HandleUpdate(callID string, direction string, hasSDP bool) []byte {
+	for _, l := range s.LegMgr.List() {
+		sl, ok := l.(*leg.SIPLeg)
+		if !ok {
+			continue
+		}
+		if sl.CallID() == callID {
+			sl.ResetSessionTimer()
+			if hasSDP {
+				sdp := sl.ReInviteAnswerSDP(direction)
+				sl.HandleRemoteHold(direction)
+				return sdp
+			}
+			return nil
+		}
+	}
+	s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
+	return nil
+}
+
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sipLeg, err := s.resolveHoldLeg(id)

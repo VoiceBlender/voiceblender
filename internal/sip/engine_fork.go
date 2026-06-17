@@ -77,6 +77,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		req := sip.NewRequest(sip.INVITE, branchURI)
 		req.SetBody(sdpOffer)
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.AppendHeader(e.AllowHeader())
 		toURI := recipient
 		req.AppendHeader(&sip.ToHeader{Address: toURI})
 		if opts.FromUser != "" {

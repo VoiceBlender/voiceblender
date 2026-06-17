@@ -166,6 +166,33 @@ func TestEngine_PinDestinationToSource(t *testing.T) {
 	}
 }
 
+func TestEngine_AllowHeader(t *testing.T) {
+	e, err := NewEngine(EngineConfig{
+		BindIP:   "127.0.0.1",
+		BindPort: 0,
+		SIPHost:  "test",
+		Codecs:   []codec.CodecType{codec.CodecPCMU},
+		Log:      slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	h := e.AllowHeader()
+	if h.Name() != "Allow" {
+		t.Fatalf("header name = %q, want Allow", h.Name())
+	}
+	val := h.Value()
+	for _, m := range []string{"INVITE", "ACK", "CANCEL", "BYE", "UPDATE", "REFER", "NOTIFY", "REGISTER"} {
+		if !strings.Contains(val, m) {
+			t.Errorf("Allow header %q missing method %s", val, m)
+		}
+	}
+	// INVITE should always come first to match the conventional method ordering.
+	if !strings.HasPrefix(val, "INVITE") {
+		t.Errorf("Allow header %q does not start with INVITE", val)
+	}
+}
+
 func TestEngine_UseSourceSocketPropagated(t *testing.T) {
 	for _, want := range []bool{true, false} {
 		want := want

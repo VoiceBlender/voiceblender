@@ -64,6 +64,7 @@ func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, nil, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
+	engine.OnUpdate(apiSrv.HandleUpdate)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)
 
@@ -171,6 +172,7 @@ func newTestInstanceDualStack(t *testing.T, name string) *testInstance {
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, nil, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
+	engine.OnUpdate(apiSrv.HandleUpdate)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)
 

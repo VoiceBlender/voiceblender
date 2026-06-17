@@ -219,6 +219,9 @@ func main() {
 	// Register re-INVITE handler for hold/unhold detection
 	engine.OnReInvite(apiSrv.HandleReInvite)
 
+	// Register UPDATE handler for session-timer refresh and in-dialog media renegotiation (RFC 3311, RFC 4028).
+	engine.OnUpdate(apiSrv.HandleUpdate)
+
 	// Register REFER + NOTIFY handlers for SIP transfer (RFC 3515).
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)

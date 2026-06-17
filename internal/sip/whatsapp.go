@@ -69,6 +69,7 @@ func (e *Engine) InviteWhatsApp(ctx context.Context, recipient sip.Uri, opts Wha
 	req.SetTransport("TLS")
 	req.SetBody(opts.SDPOffer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(e.AllowHeader())
 
 	from := &sip.FromHeader{Address: sip.Uri{Scheme: "sip", User: fromURIUser, Host: fromHost}}
 	from.Params.Add("tag", sip.GenerateTagN(16))

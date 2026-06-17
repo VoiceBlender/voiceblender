@@ -76,6 +76,7 @@ type Engine struct {
 
 	onInvite          func(call *InboundCall)
 	onReInvite        func(callID string, direction string) []byte // returns SDP answer for 200 OK
+	onUpdate          func(callID string, direction string, hasSDP bool) []byte
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify          func(callID string, statusCode int, reason string, terminated bool)
 	codecs            []codec.CodecType
@@ -209,6 +210,7 @@ func (e *Engine) RespondInviteSDP(dialog *sipgo.DialogServerSession, sdp []byte)
 	res := sip.NewResponseFromRequest(dialog.InviteRequest, sip.StatusOK, "OK", sdp)
 	res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.AllowHeader())
 	res.AppendHeader(e.contactForInvite(dialog.InviteRequest))
 	res.SetBody(sdp)
 	e.pinDestinationToSource(dialog.InviteRequest, res)
@@ -461,6 +463,16 @@ func (e *Engine) OnReInvite(handler func(callID string, direction string) []byte
 	e.onReInvite = handler
 }
 
+// OnUpdate registers a handler for in-dialog UPDATE requests (RFC 3311),
+// used for session-timer refresh (RFC 4028) and mid-dialog media changes.
+// hasSDP indicates whether the UPDATE carried an SDP offer; when true,
+// direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
+// and the returned []byte is the SDP answer for the 200 OK. When false,
+// direction is "" and the handler should only refresh session-timer state.
+func (e *Engine) OnUpdate(handler func(callID string, direction string, hasSDP bool) []byte) {
+	e.onUpdate = handler
+}
+
 // OnRefer registers a handler for in-dialog REFER requests (transfer). The
 // handler is responsible for sending the SIP response (typically 202
 // Accepted, or 603 Decline when transfers are disabled). req is provided
@@ -523,6 +535,7 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
 	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.AllowHeader())
 	if len(answerSDP) > 0 {
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	}
@@ -545,6 +558,95 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "direction", direction)
 }
 
+// handleUpdate processes an in-dialog UPDATE (RFC 3311). Typical uses are
+// session-timer refresh without an SDP body (RFC 4028) and mid-dialog media
+// renegotiation with an SDP offer.
+func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
+	callID := req.CallID()
+	if callID == nil {
+		e.log.Error("UPDATE missing Call-ID")
+		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing Call-ID", nil)
+		res.AppendHeader(e.ServerHeader())
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("UPDATE: respond 400 failed", "error", rerr)
+		}
+		return
+	}
+
+	// RFC 3311 §5.2: UPDATE must target an existing dialog. Find it on
+	// either the UAS or UAC dialog cache so we advance the CSeq tracker.
+	matched := false
+	if ds, err := e.dsCache.MatchDialogRequest(req); err == nil {
+		matched = true
+		if rerr := ds.ReadRequest(req, tx); rerr != nil {
+			e.log.Debug("UPDATE: ReadRequest on server dialog", "error", rerr)
+		}
+	} else if dc, err := e.dcCache.MatchRequestDialog(req); err == nil {
+		matched = true
+		if rerr := dc.ReadRequest(req, tx); rerr != nil {
+			e.log.Debug("UPDATE: ReadRequest on client dialog", "error", rerr)
+		}
+	}
+	if !matched {
+		e.log.Debug("UPDATE: no matching dialog, replying 481", "call_id", callID.Value())
+		res := sip.NewResponseFromRequest(req, 481, "Call/Transaction Does Not Exist", nil)
+		res.AppendHeader(e.ServerHeader())
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("UPDATE: respond 481 failed", "error", rerr)
+		}
+		return
+	}
+
+	body := req.Body()
+	hasSDP := len(body) > 0
+	direction := ""
+	if hasSDP {
+		remoteSDP, err := ParseSDP(body)
+		if err != nil {
+			e.log.Warn("UPDATE: parse SDP failed", "error", err)
+			res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad SDP", nil)
+			res.AppendHeader(e.ServerHeader())
+			if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+				e.log.Error("UPDATE: respond 400 failed", "error", rerr)
+			}
+			return
+		}
+		direction = remoteSDP.Direction
+		if direction == "" {
+			direction = "sendrecv"
+		}
+	}
+
+	var answerSDP []byte
+	if e.onUpdate != nil {
+		answerSDP = e.onUpdate(callID.Value(), direction, hasSDP)
+	}
+
+	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
+	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.AllowHeader())
+	if len(answerSDP) > 0 {
+		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
+	// Echo Session-Expires per RFC 4028 §9.
+	if seHdr := req.GetHeader("Session-Expires"); seHdr != nil {
+		interval, refresher := ParseSessionExpires(seHdr.Value())
+		if interval > 0 {
+			if refresher == "" {
+				refresher = "uac"
+			}
+			res.AppendHeader(sip.NewHeader("Supported", "timer"))
+			res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)))
+		}
+	}
+	if err := e.respondMaybeFromSource(tx, req, res); err != nil {
+		e.log.Error("UPDATE: respond failed", "error", err)
+		return
+	}
+
+	e.log.Info("UPDATE handled", "call_id", callID.Value(), "has_sdp", hasSDP, "direction", direction)
+}
+
 // SendReInvite sends a re-INVITE within an existing dialog for hold/unhold.
 // dialog must be either *sipgo.DialogServerSession or *sipgo.DialogClientSession.
 func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody []byte) error {
@@ -552,6 +654,7 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.AppendHeader(e.AllowHeader())
 		req.SetBody(sdpBody)
 
 		res, err := d.Do(ctx, req)
@@ -574,6 +677,7 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 		req := sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
 		req.AppendHeader(d.InviteRequest.Contact())
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.AppendHeader(e.AllowHeader())
 		req.SetBody(sdpBody)
 
 		res, err := d.Do(ctx, req)
@@ -624,6 +728,7 @@ func (e *Engine) registerHandlers() {
 			e.log.Error("read invite failed", "error", err)
 			res := sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "Internal Server Error", nil)
 			res.AppendHeader(e.ServerHeader())
+			res.AppendHeader(e.AllowHeader())
 			if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
 				e.log.Error("INVITE: respond 500 failed", "error", rerr)
 			}
@@ -633,7 +738,7 @@ func (e *Engine) registerHandlers() {
 		remoteSDP, err := ParseSDP(req.Body())
 		if err != nil {
 			e.log.Error("parse offer SDP failed", "error", err)
-			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil, e.ServerHeader())
+			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil, e.ServerHeader(), e.AllowHeader())
 			return
 		}
 
@@ -733,6 +838,7 @@ func (e *Engine) registerHandlers() {
 		}
 	}))
 
+	e.server.OnUpdate(wrap(e.handleUpdate))
 	e.server.OnRefer(wrap(e.handleRefer))
 	e.server.OnNotify(wrap(e.handleNotify))
 	e.server.OnRegister(wrap(e.handleRegister))
@@ -799,6 +905,7 @@ func (e *Engine) DialogRespond(d *sipgo.DialogServerSession, statusCode int, rea
 	for _, h := range headers {
 		res.AppendHeader(h)
 	}
+	res.AppendHeader(e.AllowHeader())
 	e.pinDestinationToSource(d.InviteRequest, res)
 	return d.WriteResponse(res)
 }
@@ -1021,6 +1128,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	req := sip.NewRequest(sip.INVITE, recipient)
 	req.SetBody(sdpOffer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(e.AllowHeader())
 
 	if opts.FromUser != "" {
 		fromURI := sip.Uri{
@@ -1268,6 +1376,32 @@ func (e *Engine) SIPHost() string {
 // ServerHeader returns a SIP Server header for UAS responses.
 func (e *Engine) ServerHeader() sip.Header {
 	return sip.NewHeader("Server", e.sipHost)
+}
+
+// AllowHeader returns an Allow header listing every SIP method this UA
+// answers (RFC 3261 §20.5). The list comes from sipgo's registered request
+// handlers so it can never drift from the methods we actually accept.
+func (e *Engine) AllowHeader() sip.Header {
+	methods := e.server.RegisteredMethods()
+	if len(methods) == 0 {
+		return sip.NewHeader("Allow", "")
+	}
+	order := []string{"INVITE", "ACK", "CANCEL", "BYE", "UPDATE", "INFO", "PRACK", "REFER", "NOTIFY", "OPTIONS", "MESSAGE", "REGISTER", "SUBSCRIBE", "PUBLISH"}
+	seen := make(map[string]bool, len(methods))
+	for _, m := range methods {
+		seen[m] = true
+	}
+	out := make([]string, 0, len(methods))
+	for _, m := range order {
+		if seen[m] {
+			out = append(out, m)
+			delete(seen, m)
+		}
+	}
+	for m := range seen {
+		out = append(out, m)
+	}
+	return sip.NewHeader("Allow", strings.Join(out, ", "))
 }
 
 // PortAllocator returns the engine's port allocator (nil if OS-assigned).
