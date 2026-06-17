@@ -71,7 +71,7 @@ func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 		t.Fatalf("[%s] new engine: %v", name, err)
 	}
 
-	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, metricsCollector, cfg, log)
+	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, metricsCollector, cfg, nil, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
 

@@ -125,7 +125,11 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		t.Fatalf("[%s] new engine: %v", name, err)
 	}
 
-	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, log)
+	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPs)
+	if err != nil {
+		t.Fatalf("[%s] parse AllowedIPs: %v", name, err)
+	}
+	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, allowedIPs, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)

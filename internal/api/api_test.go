@@ -30,7 +30,7 @@ func newTestServer(t *testing.T) *Server {
 		DefaultSampleRate: 16000,
 	}
 
-	s := NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, log)
+	s := NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, nil, log)
 	return s
 }
 

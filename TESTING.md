@@ -249,6 +249,14 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestLiveKit_PublishLegLifecycle` | Gated on `LIVEKIT_TEST_*` env vars. `POST /v1/legs type=livekit_room` creates a `livekit_publish` leg with the correct `livekit_identity` / `livekit_room` headers; `DELETE` tears it down with `leg.disconnected`. |
 | `TestLiveKit_RemoteParticipantBecomesLeg` | Gated on `LIVEKIT_TEST_*` env vars. VB joins the LK room via the API; a second LK client (driven by `lkmedia.NewTransport`) joins the same room; VB auto-registers a `livekit_participant` leg with role `livekit_listen`. Disconnecting the second client triggers `leg.disconnected` for the participant leg. |
 | `TestLiveKit_BadTokenReturns502` | Gated on `LIVEKIT_TEST_*` env vars. A JWT signed with the wrong secret causes the LK server to reject the JOIN; VB returns 502 with no leg registered. |
+| `TestIPAllowlist_DefaultAllowsLoopback` | Default config (no `ALLOWED_IPS`) — loopback request returns 200 (sanity baseline). |
+| `TestIPAllowlist_LoopbackAllowed` | `ALLOWED_IPS=127.0.0.1` — loopback request returns 200. |
+| `TestIPAllowlist_LoopbackRejected` | `ALLOWED_IPS=10.0.0.0/8` — loopback request returns 403. |
+| `TestIPAllowlist_MixedListWithRanges` | `ALLOWED_IPS` mixing IPv4 CIDR, IPv4 literal, and IPv6 CIDR in one value — loopback still matches the literal entry. |
+| `TestIPAllowlist_VSIWebSocketRejected` | `ALLOWED_IPS=10.0.0.0/8` — `ws://host/v1/vsi` handshake from loopback fails (allowlist gates WebSocket upgrades). |
+| `TestIPAllowlist_TrustProxyHeadersUsesXFF` | `TRUST_PROXY_HEADERS=true` — leftmost `X-Forwarded-For` entry is used for the allowlist match. |
+| `TestIPAllowlist_XFFIgnoredWhenTrustProxyOff` | Default `TRUST_PROXY_HEADERS=false` — `X-Forwarded-For` is ignored; only the socket peer is consulted. |
+| `TestIPAllowlist_RejectedBody` | Rejected requests return the standard `{"error":"forbidden"}` envelope with status 403. |
 
 ---
 

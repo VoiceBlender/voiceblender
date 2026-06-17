@@ -167,7 +167,15 @@ func main() {
 	metricsCollector := metrics.New(bus)
 
 	// HTTP API server
-	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhookReg, ttsProvider, ttsCache, s3Backend, metricsCollector, cfg, log)
+	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPs)
+	if err != nil {
+		log.Error("invalid ALLOWED_IPS", "error", err)
+		os.Exit(1)
+	}
+	if len(allowedIPs) > 0 {
+		log.Info("HTTP IP allowlist enabled", "prefixes", len(allowedIPs), "trust_proxy_headers", cfg.TrustProxyHeaders)
+	}
+	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhookReg, ttsProvider, ttsCache, s3Backend, metricsCollector, cfg, allowedIPs, log)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: apiSrv,

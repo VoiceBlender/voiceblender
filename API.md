@@ -2908,6 +2908,8 @@ All errors return:
 |---------------------|---------|-------------|
 | `INSTANCE_ID` | _(auto-generated UUID)_ | Instance identifier, included in all API response bodies and webhook events |
 | `HTTP_ADDR` | `:8080` | REST API listen address |
+| `ALLOWED_IPS` | _(empty = allow all)_ | Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6, in any mix) gating every HTTP endpoint, including the `/v1/vsi` event WebSocket, `/v1/legs/websocket`, the `/v1/legs/moq` WebTransport endpoint, `/metrics`, and pprof. Bare addresses are treated as host routes (`/32` or `/128`); malformed entries fail server startup. Only `X-Forwarded-For` is consulted as a proxy header (see `TRUST_PROXY_HEADERS`). Examples: `127.0.0.1`, `10.0.0.0/8,192.168.0.0/16`, `2001:db8::/32,::1`. |
+| `TRUST_PROXY_HEADERS` | `false` | When `true`, the client IP used for the `ALLOWED_IPS` check is taken from the leftmost entry in `X-Forwarded-For` (falling back to the socket peer when the header is absent). Default `false` ignores `X-Forwarded-For`. Enable only behind a trusted reverse proxy that unconditionally overwrites the header. |
 | `SIP_BIND_IP` | `127.0.0.1` | IP advertised in SDP/Contact/Via headers (auto-detected if `0.0.0.0`) |
 | `SIP_LISTEN_IP` | _(same as SIP_BIND_IP)_ | IP to bind the UDP socket on |
 | `SIP_PORT` | `5060` | SIP listen port |
