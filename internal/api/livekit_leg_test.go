@@ -42,7 +42,7 @@ func newLiveKitTestServer(t *testing.T, withSigning bool) *Server {
 		cfg.LiveKitAPIKey = "k"
 		cfg.LiveKitAPISecret = "s"
 	}
-	return NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, log)
+	return NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, nil, log)
 }
 
 func TestCreateLiveKitRoomLeg_DisabledReturns503(t *testing.T) {
@@ -55,7 +55,7 @@ func TestCreateLiveKitRoomLeg_DisabledReturns503(t *testing.T) {
 	m := metrics.New(bus)
 
 	cfg := config.Config{InstanceID: "t", DefaultSampleRate: 16000, LiveKitEnabled: false}
-	s := NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, log)
+	s := NewServer(legMgr, roomMgr, nil, bus, webhooks, nil, nil, nil, m, cfg, nil, log)
 
 	w := doRequest(s, http.MethodPost, "/v1/legs",
 		`{"type":"livekit_room","livekit":{"token":"jwt"}}`)

@@ -6,6 +6,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
@@ -24,18 +25,19 @@ import (
 )
 
 type Server struct {
-	Router    *chi.Mux
-	LegMgr    *leg.Manager
-	RoomMgr   *room.Manager
-	SIPEngine *sipmod.Engine
-	Bus       *events.Bus
-	Webhooks  *events.WebhookRegistry
-	TTS       tts.Provider
-	TTSCache  *tts.Cache
-	S3        storage.Backend
-	Metrics   *metrics.Collector
-	Config    config.Config
-	Log       *slog.Logger
+	Router     *chi.Mux
+	LegMgr     *leg.Manager
+	RoomMgr    *room.Manager
+	SIPEngine  *sipmod.Engine
+	Bus        *events.Bus
+	Webhooks   *events.WebhookRegistry
+	TTS        tts.Provider
+	TTSCache   *tts.Cache
+	S3         storage.Backend
+	Metrics    *metrics.Collector
+	Config     config.Config
+	AllowedIPs []netip.Prefix
+	Log        *slog.Logger
 
 	// MoQWebTransport is set by main.go when MoQ is enabled. The MoQ leg
 	// handler (s.moqLeg) returns 503 if this is nil.
@@ -61,6 +63,7 @@ func NewServer(
 	s3Backend storage.Backend,
 	metricsCollector *metrics.Collector,
 	cfg config.Config,
+	allowedIPs []netip.Prefix,
 	log *slog.Logger,
 ) *Server {
 	instanceID = cfg.InstanceID
@@ -76,6 +79,7 @@ func NewServer(
 		S3:             s3Backend,
 		Metrics:        metricsCollector,
 		Config:         cfg,
+		AllowedIPs:     allowedIPs,
 		Log:            log,
 		speakDets:      make(map[string]*speaking.Detector),
 		speechOverride: make(map[string]*bool),
@@ -90,6 +94,7 @@ func (s *Server) routes() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(corsMiddleware)
+	r.Use(ipAllowlistMiddleware(s.AllowedIPs, s.Config.TrustProxyHeaders, s.Log))
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

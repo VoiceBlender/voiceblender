@@ -25,6 +25,8 @@ type Config struct {
 	SIPDomain             string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
 	SIPHost               string
 	HTTPAddr              string
+	AllowedIPs            string // comma-separated IPs and CIDR ranges; empty = allow all
+	TrustProxyHeaders     bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
 	ICEServers            []string
 	RecordingDir          string
 	LogLevel              string
@@ -106,6 +108,8 @@ func Load() Config {
 		SIPDomain:             os.Getenv("SIP_DOMAIN"),
 		SIPHost:               envOr("SIP_HOST", "voiceblender"),
 		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),
+		AllowedIPs:            os.Getenv("ALLOWED_IPS"),
+		TrustProxyHeaders:     envBool("TRUST_PROXY_HEADERS", false),
 		ICEServers:            strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
 		RecordingDir:          envOr("RECORDING_DIR", "/tmp/recordings"),
 		LogLevel:              envOr("LOG_LEVEL", "info"),

@@ -61,7 +61,7 @@ func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 		t.Fatalf("[%s] new engine: %v", name, err)
 	}
 
-	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, log)
+	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, nil, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
@@ -168,7 +168,7 @@ func newTestInstanceDualStack(t *testing.T, name string) *testInstance {
 		t.Fatalf("[%s] new engine: %v", name, err)
 	}
 
-	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, log)
+	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhooks, nil, nil, nil, nil, cfg, nil, log)
 	engine.OnInvite(apiSrv.HandleInboundCall)
 	engine.OnReInvite(apiSrv.HandleReInvite)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
