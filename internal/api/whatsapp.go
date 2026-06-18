@@ -31,11 +31,12 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 
 	var legPtr *leg.WhatsAppLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
-		Codec:      codec.CodecOpus,
-		ICEServers: s.Config.ICEServers,
-		RTPPortMin: uint16(s.Config.RTPPortMin),
-		RTPPortMax: uint16(s.Config.RTPPortMax),
-		Log:        s.Log,
+		Codec:       codec.CodecOpus,
+		ICEServers:  s.Config.ICEServers,
+		ExternalIPs: s.Config.WebRTCExternalIPs,
+		RTPPortMin:  uint16(s.Config.RTPPortMin),
+		RTPPortMax:  uint16(s.Config.RTPPortMax),
+		Log:         s.Log,
 		// Meta is ice-lite + setup:actpass; we must drive DTLS.
 		AnsweringDTLSRole:    webrtc.DTLSRoleClient,
 		EnableTelephoneEvent: true,
@@ -188,11 +189,12 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 	}
 
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
-		Codec:      codec.CodecOpus,
-		ICEServers: s.Config.ICEServers,
-		RTPPortMin: uint16(s.Config.RTPPortMin),
-		RTPPortMax: uint16(s.Config.RTPPortMax),
-		Log:        s.Log,
+		Codec:       codec.CodecOpus,
+		ICEServers:  s.Config.ICEServers,
+		ExternalIPs: s.Config.WebRTCExternalIPs,
+		RTPPortMin:  uint16(s.Config.RTPPortMin),
+		RTPPortMax:  uint16(s.Config.RTPPortMax),
+		Log:         s.Log,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create PCMedia")

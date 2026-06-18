@@ -31,6 +31,9 @@ info:
         - name: ICE_SERVERS
           default: stun:stun.l.google.com:19302
           description: STUN/TURN URLs for WebRTC ICE, comma-separated
+        - name: WEBRTC_EXTERNAL_IPS
+          default: (empty)
+          description: Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value "auto" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal.
         - name: RECORDING_DIR
           default: /tmp/recordings
           description: Local directory for recording output files

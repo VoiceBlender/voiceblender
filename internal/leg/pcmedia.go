@@ -29,7 +29,16 @@ type PCMediaConfig struct {
 	RTPPortMax uint16
 	Log        *slog.Logger
 
+	// ExternalIPs are public addresses substituted into local host ICE
+	// candidates via pion's SetNAT1To1IPs. Required when VB runs behind
+	// NAT/Docker and the gathered host interface IPs aren't routable
+	// from the remote peer.
+	ExternalIPs []string
+
 	OnDisconnect func(reason string)
+	// OnConnected fires once when the peer connection reaches the
+	// Connected state. Subsequent state transitions don't re-fire.
+	OnConnected func()
 
 	// AnsweringDTLSRole forces the DTLS role on actpass offers. Use
 	// DTLSRoleClient against ice-lite peers (e.g. WhatsApp).
@@ -119,6 +128,9 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	se.LoggerFactory = &pionLogFactory{log: cfg.Log}
 	if cfg.RTPPortMin > 0 && cfg.RTPPortMax > 0 {
 		se.SetEphemeralUDPPortRange(cfg.RTPPortMin, cfg.RTPPortMax)
+	}
+	if len(cfg.ExternalIPs) > 0 {
+		se.SetNAT1To1IPs(cfg.ExternalIPs, webrtc.ICECandidateTypeHost)
 	}
 	if cfg.AnsweringDTLSRole != 0 {
 		if err := se.SetAnsweringDTLSRole(cfg.AnsweringDTLSRole); err != nil {
@@ -230,8 +242,12 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 			cfg.OnDisconnect(state.String())
 		}
 	})
+	var connectedOnce sync.Once
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		m.log.Debug("pcmedia: peer connection state", "state", state.String())
+		if state == webrtc.PeerConnectionStateConnected && cfg.OnConnected != nil {
+			connectedOnce.Do(cfg.OnConnected)
+		}
 	})
 
 	if dtls := sender.Transport(); dtls != nil {

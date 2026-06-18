@@ -400,6 +400,7 @@ func configVars() *seq {
 		{Name: "SIP_PORT", Default: "5060", Description: "SIP listen port"},
 		{Name: "SIP_HOST", Default: "voiceblender", Description: "SIP User-Agent name"},
 		{Name: "ICE_SERVERS", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},
+		{Name: "WEBRTC_EXTERNAL_IPS", Default: "(empty)", Description: "Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value \"auto\" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal."},
 		{Name: "RECORDING_DIR", Default: "/tmp/recordings", Description: "Local directory for recording output files"},
 		{Name: "LOG_LEVEL", Default: "info", Description: "Log verbosity: debug, info, warn, error"},
 		{Name: "WEBHOOK_URL", Default: "", Description: "Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)"},

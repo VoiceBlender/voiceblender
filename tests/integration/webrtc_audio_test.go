@@ -97,11 +97,11 @@ func TestWebRTC_AudioFlowToRoomRecording(t *testing.T) {
 		t.Fatalf("client SetRemoteDescription: %v", err)
 	}
 
+	trickleICEUntilConnected(t, inst, clientPC, offerResult.LegID, candCh, connected, 10*time.Second)
+
 	inst.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
 		return e.Data.GetLegID() == offerResult.LegID
-	}, 3*time.Second)
-
-	trickleICEUntilConnected(t, inst, clientPC, offerResult.LegID, candCh, connected, 10*time.Second)
+	}, 5*time.Second)
 
 	roomResp := httpPost(t, inst.baseURL()+"/v1/rooms", map[string]interface{}{})
 	if roomResp.StatusCode != http.StatusCreated {

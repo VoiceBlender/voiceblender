@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -55,8 +54,9 @@ func firstClientCandidate(t *testing.T, sdp string) string {
 
 // TestVSI_WebRTC_FullFlow exercises the three webrtc_* commands end-to-end
 // over the /v1/vsi WebSocket: offer, drain candidates, add a remote
-// candidate, and verify the resulting leg appears in list_legs and emits a
-// leg.connected event on the bus.
+// candidate, and verify the resulting leg appears in list_legs. The
+// leg.connected event is asserted end-to-end in TestWebRTCAudio once the
+// peer connection actually establishes.
 func TestVSI_WebRTC_FullFlow(t *testing.T) {
 	inst := newTestInstance(t, "vsi-webrtc")
 
@@ -111,11 +111,6 @@ func TestVSI_WebRTC_FullFlow(t *testing.T) {
 	if !found {
 		t.Fatalf("webrtc leg %s not in list_legs result: %+v", offerResult.LegID, legs)
 	}
-
-	// leg.connected should have been emitted on the bus by doWebRTCOffer.
-	inst.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
-		return e.Data.GetLegID() == offerResult.LegID
-	}, 2*time.Second)
 
 	// 2. webrtc_get_candidates — poll until either candidates appear or
 	// gathering reports done. Host candidates are produced without external

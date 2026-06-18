@@ -27,16 +27,27 @@ type WebRTCCandidatesResult struct {
 func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, error) {
 	var l *leg.WebRTCLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
-		Codec:      codec.CodecOpus,
-		ICEServers: s.Config.ICEServers,
-		RTPPortMin: uint16(s.Config.RTPPortMin),
-		RTPPortMax: uint16(s.Config.RTPPortMax),
-		Log:        s.Log,
+		Codec:       codec.CodecOpus,
+		ICEServers:  s.Config.ICEServers,
+		ExternalIPs: s.Config.WebRTCExternalIPs,
+		RTPPortMin:  uint16(s.Config.RTPPortMin),
+		RTPPortMax:  uint16(s.Config.RTPPortMax),
+		Log:         s.Log,
 		OnDisconnect: func(reason string) {
 			if l != nil {
 				s.cleanupLeg(l)
 				s.publishDisconnect(l, "ice_failure")
 			}
+		},
+		OnConnected: func() {
+			if l == nil {
+				return
+			}
+			s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
+				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+				LegType:  "webrtc",
+			})
+			s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 		},
 	})
 	if err != nil {
@@ -62,11 +73,6 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 
 	l = leg.NewWebRTCLeg(media, s.Log)
 	s.LegMgr.Add(l)
-	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-		LegType:  "webrtc",
-	})
-	s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil
 }

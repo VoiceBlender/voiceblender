@@ -28,6 +28,7 @@ type Config struct {
 	AllowedIPs            string // comma-separated IPs and CIDR ranges; empty = allow all
 	TrustProxyHeaders     bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
 	ICEServers            []string
+	WebRTCExternalIPs     []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
 	RecordingDir          string
 	LogLevel              string
 	WebhookURL            string
@@ -111,6 +112,7 @@ func Load() Config {
 		AllowedIPs:            os.Getenv("ALLOWED_IPS"),
 		TrustProxyHeaders:     envBool("TRUST_PROXY_HEADERS", false),
 		ICEServers:            strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
+		WebRTCExternalIPs:     parseExternalIPs(os.Getenv("WEBRTC_EXTERNAL_IPS")),
 		RecordingDir:          envOr("RECORDING_DIR", "/tmp/recordings"),
 		LogLevel:              envOr("LOG_LEVEL", "info"),
 		WebhookURL:            os.Getenv("WEBHOOK_URL"),
@@ -165,6 +167,21 @@ func Load() Config {
 		LiveKitAPISecret:           os.Getenv("LIVEKIT_API_SECRET"),
 		LiveKitDefaultTokenTTL:     envDuration("LIVEKIT_DEFAULT_TOKEN_TTL", 6*time.Hour),
 	}
+}
+
+// parseExternalIPs splits a comma-separated list of IPs and drops empties.
+// Returns nil for an empty input so callers can branch on len(...) == 0.
+func parseExternalIPs(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, tok := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(tok); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // envDuration parses a duration from the environment (Go duration string

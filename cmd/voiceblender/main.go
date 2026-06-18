@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,6 +57,17 @@ func main() {
 
 	log.Info("starting voiceblender", "version", version)
 	log.Info("config loaded", "default_sample_rate", cfg.DefaultSampleRate)
+
+	// Resolve "auto" WebRTC external IPs via STUN. An empty value stays
+	// empty (no NAT1To1 rewrite); the literal "auto" triggers discovery
+	// against the configured ICE_SERVERS. Discovery failure is non-fatal.
+	if len(cfg.WebRTCExternalIPs) == 1 && strings.EqualFold(cfg.WebRTCExternalIPs[0], "auto") {
+		ips := leg.DiscoverPublicIPs(cfg.ICEServers, log)
+		cfg.WebRTCExternalIPs = ips
+		if len(ips) == 0 {
+			log.Warn("webrtc external IP discovery returned no addresses; advertising host candidates only")
+		}
+	}
 
 	// Leg and room managers
 	legMgr := leg.NewManager()

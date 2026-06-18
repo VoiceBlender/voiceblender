@@ -2507,6 +2507,10 @@ Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP o
 
 The returned `leg_id` can be used with all `/v1/legs` and `/v1/rooms` endpoints.
 
+**`leg.connected` event:** fires only once the underlying peer connection reaches the `Connected` state (post-ICE/DTLS). Wait for it before pushing media into the leg.
+
+**NAT/firewall deployments:** when VoiceBlender runs behind NAT (e.g. Docker, a VPC NAT gateway), set `WEBRTC_EXTERNAL_IPS` to the host's public IPv4/IPv6 address(es) — pion will substitute them into host ICE candidates, allowing remote peers that only emit private host candidates of their own to still reach VB.
+
 **Errors:**
 - `400` — Invalid JSON or invalid SDP offer
 - `500` — Peer connection, track creation, or answer generation failed

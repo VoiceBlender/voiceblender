@@ -73,6 +73,7 @@ All configuration is via environment variables:
 | `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on **all** outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
+| `WEBRTC_EXTERNAL_IPS` | *(empty)* | Comma-separated public IPs advertised as host ICE candidates (pion `SetNAT1To1IPs`). Set this when VoiceBlender runs behind NAT/Docker and the gathered host interface IPs aren't routable from the remote peer — otherwise WebRTC peers behind firewalls won't be able to reach VB. Supports IPv4 and IPv6 literals. The literal value `auto` performs STUN-based public-IP discovery at startup against the first reachable `ICE_SERVERS` entry; discovery failure is non-fatal and logs a warning. |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
