@@ -10,6 +10,12 @@ info:
         - name: HTTP_ADDR
           default: :8080
           description: REST API listen address
+        - name: ALLOWED_IPS
+          default: (empty = allow all)
+          description: Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS).
+        - name: TRUST_PROXY_HEADERS
+          default: "false"
+          description: When true, the client IP used for the ALLOWED_IPS check is taken from the leftmost X-Forwarded-For entry (falling back to the socket peer if absent). Enable only behind a trusted reverse proxy that overwrites the header — otherwise it is client-spoofable.
         - name: SIP_BIND_IP
           default: 127.0.0.1
           description: IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)
@@ -22,18 +28,84 @@ info:
         - name: SIP_LISTEN_IPV6
           default: (same as SIP_BIND_IPV6)
           description: Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)
+        - name: SIP_EXTERNAL_IP
+          default: ""
+          description: Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised.
         - name: SIP_PORT
           default: "5060"
           description: SIP listen port
+        - name: SIP_TLS_PORT
+          default: (disabled)
+          description: SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration.
+        - name: SIP_TLS_CERT
+          default: ""
+          description: Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN.
+        - name: SIP_TLS_KEY
+          default: ""
+          description: Path to PEM-encoded TLS private key (e.g. privkey.pem).
+        - name: SIP_DEBUG
+          default: "false"
+          description: When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting.
+        - name: SIP_DOMAIN
+          default: (falls back to advertised IP)
+          description: FQDN advertised in From, Contact and Via on all outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on SIP_TLS_CERT and any allowlist your carrier or Meta keeps.
         - name: SIP_HOST
           default: voiceblender
           description: SIP User-Agent name
+        - name: SIP_CODECS
+          default: PCMU,PCMA
+          description: 'Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs and accepts on inbound INVITEs. Recognized names (case-insensitive): PCMU, PCMA, G722, opus, AMR-WB, AMR-NB (bare token AMR resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently.'
+        - name: SIP_AUTO_RINGING
+          default: "false"
+          description: When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer.
+        - name: SIP_USE_SOURCE_SOCKET
+          default: "false"
+          description: When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT).
+        - name: SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS
+          default: "3600"
+          description: Expiry used when an inbound REGISTER carries no Expires value.
+        - name: SIP_REGISTRATION_MAX_EXPIRES_SECONDS
+          default: "7200"
+          description: Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum.
+        - name: SIP_REGISTRATION_SWEEP_INTERVAL_MS
+          default: "1000"
+          description: Sweeper period (ms) for evicting expired AOR bindings.
+        - name: SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS
+          default: "true"
+          description: When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR.
         - name: ICE_SERVERS
           default: stun:stun.l.google.com:19302
           description: STUN/TURN URLs for WebRTC ICE, comma-separated
         - name: WEBRTC_EXTERNAL_IPS
           default: (empty)
           description: Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value "auto" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal.
+        - name: RTP_PORT_MIN
+          default: "10000"
+          description: Minimum UDP port for RTP/RTCP media
+        - name: RTP_PORT_MAX
+          default: "20000"
+          description: Maximum UDP port for RTP/RTCP media
+        - name: DEFAULT_SAMPLE_RATE
+          default: "16000"
+          description: 'Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000.'
+        - name: SPEECH_DETECTION_ENABLED
+          default: "false"
+          description: Emit speaking.started / speaking.stopped events for every connected leg by default. Per-call speech_detection on POST /v1/legs or POST /v1/legs/{id}/answer overrides this.
+        - name: VSI_EVENT_BUFFER_SIZE
+          default: "256"
+          description: 'Per-client buffer (in events) on the /v1/vsi WebSocket. When the client falls behind, new events are dropped and the next delivered event carries an events_dropped notification. Clamped to [16, 1000000]. Memory: ~1 KB × buffer per connection at the default.'
+        - name: AMRWB_MODE
+          default: "2"
+          description: 'AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE.'
+        - name: AMRWB_OCTET_ALIGNED
+          default: "true"
+          description: Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
+        - name: AMRNB_MODE
+          default: "7"
+          description: 'AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s.'
+        - name: AMRNB_OCTET_ALIGNED
+          default: "true"
+          description: Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
         - name: RECORDING_DIR
           default: /tmp/recordings
           description: Local directory for recording output files
@@ -52,6 +124,15 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
+        - name: DEEPGRAM_API_KEY
+          default: ""
+          description: API key for Deepgram STT and TTS
+        - name: AZURE_SPEECH_KEY
+          default: ""
+          description: Subscription key for Azure Cognitive Speech Services (TTS and STT)
+        - name: AZURE_SPEECH_REGION
+          default: eastus
+          description: Azure region for Speech Services (e.g. eastus, westeurope)
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -64,6 +145,24 @@ info:
         - name: S3_PREFIX
           default: ""
           description: Key prefix applied to all S3 objects
+        - name: AWS_ACCESS_KEY_ID
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'
+        - name: AWS_SECRET_ACCESS_KEY
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID.'
+        - name: AWS_SESSION_TOKEN
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET.'
+        - name: AWS_PROFILE
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Profile name in ~/.aws/credentials to use instead of static AWS_* env vars.'
+        - name: AWS_REGION
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty.'
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS when no per-request api_key is supplied. Consumed by Google''s Application Default Credentials chain.'
         - name: TTS_CACHE_ENABLED
           default: "false"
           description: Enable disk-backed TTS audio cache; cached audio persists across restarts
@@ -82,6 +181,42 @@ info:
         - name: SIP_REFER_AUTO_DIAL
           default: "false"
           description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
+        - name: MOQ_ENABLED
+          default: "false"
+          description: Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at CONNECT /v1/legs/moq over WebTransport/HTTP/3. PoC quality, tracks IETF draft-11. When enabled, both MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE must be set.
+        - name: MOQ_LISTEN_ADDR
+          default: :8443
+          description: UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of HTTP_ADDR — TCP/:8080 and UDP/:8443 can run side-by-side.
+        - name: MOQ_TLS_CERT_FILE
+          default: ""
+          description: Path to the TLS certificate used by the HTTP/3 listener. Required when MOQ_ENABLED=true.
+        - name: MOQ_TLS_KEY_FILE
+          default: ""
+          description: Path to the TLS private key used by the HTTP/3 listener. Required when MOQ_ENABLED=true.
+        - name: MOQ_OPUS_BITRATE
+          default: "24000"
+          description: Target bitrate (bps) for the Opus encoder feeding the MoQ leg's mix track. Must be in 6000..510000.
+        - name: LIVEKIT_ENABLED
+          default: "false"
+          description: Enable the livekit_room leg type at POST /v1/legs (type=livekit_room). Lets VoiceBlender join a LiveKit room as a participant and bridge audio between SIP and LiveKit. Speaks the LiveKit signaling protocol directly via livekit/protocol protobufs over the existing pion stack — no LiveKit SDK is used.
+        - name: LIVEKIT_URL
+          default: ""
+          description: Default LiveKit server endpoint (wss://...). Required when LIVEKIT_ENABLED=true unless every request supplies livekit.url. Overridable per-request.
+        - name: LIVEKIT_OPUS_BITRATE
+          default: "24000"
+          description: Target bitrate (bps) for the Opus encoder publishing audio into LiveKit. Must be in 6000..510000. Overridable per-request via livekit.opus_bitrate.
+        - name: LIVEKIT_TOKEN_SIGNING_ENABLED
+          default: "false"
+          description: 'Opt-in: when true, callers may omit livekit.token and instead pass {room,identity,permissions}; VoiceBlender mints the JWT itself. Security caveat: enabling this stores the LiveKit API secret (a high-privilege credential) in VoiceBlender. Keep off in multi-tenant deployments.'
+        - name: LIVEKIT_API_KEY
+          default: ""
+          description: LiveKit API key used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true.
+        - name: LIVEKIT_API_SECRET
+          default: ""
+          description: LiveKit API secret used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true. Treat as a high-value secret; redact in logs.
+        - name: LIVEKIT_DEFAULT_TOKEN_TTL
+          default: 6h
+          description: Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours.
     version: 1.0.0
     license:
         name: MIT

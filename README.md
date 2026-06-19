@@ -77,6 +77,7 @@ All configuration is via environment variables:
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
+| `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
@@ -86,6 +87,8 @@ All configuration is via environment variables:
 | `S3_REGION` | `us-east-1` | AWS region |
 | `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.) |
 | `S3_PREFIX` | | Key prefix for S3 objects |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | | AWS credentials for S3 uploads and AWS Polly TTS. Resolved by the AWS SDK's default credential chain (env vars → `~/.aws/credentials` → EC2/ECS/EKS instance role), not by VoiceBlender directly. `AWS_REGION` is honored only when `S3_REGION` is empty. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to a Google Cloud service-account JSON file used by Google Cloud TTS when no per-request `api_key` is supplied. Resolved by Google's Application Default Credentials chain (env var → `~/.config/gcloud/application_default_credentials.json` → GCE/Cloud Run/GKE metadata), not by VoiceBlender directly. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files (used when `TTS_CACHE_ENABLED=true`) |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
