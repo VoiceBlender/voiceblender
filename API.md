@@ -3067,6 +3067,163 @@ through the standard webhook and VSI channels — see Event Types above.
 
 ---
 
+## SIP Trunks (Outbound Registrations)
+
+VoiceBlender acts as a SIP UAC and REGISTERs to an upstream SIP
+registrar/PBX so the registrar can deliver inbound calls to it and so that
+VoiceBlender's outbound calls traverse the registrar's proxy under the
+registered identity. Trunks are a typed resource: only the `sip_register`
+type is implemented in this release; `ip_ip` (static-IP peering) is reserved
+in the API schema and returns `501 Not Implemented` when requested.
+
+### Lifecycle summary
+
+| Action | Trigger | Event published |
+|---|---|---|
+| Create trunk → first REGISTER succeeds | `POST /v1/sip/trunks` | `sip.outbound_registration_active` |
+| Periodic refresh succeeds | timer fires at `granted_expires * SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `sip.outbound_registration_active` (re-emitted for liveness) |
+| Transport error or non-2xx response | REGISTER attempt fails (after digest retry) | `sip.outbound_registration_failed` |
+| Upstream binding lapsed while still failing | granted lifetime expires and refresh has not recovered | `sip.outbound_registration_expired` (`reason: refresh_failed`) — emitted once per outage; resets on the next successful REGISTER |
+| `DELETE /v1/sip/trunks/{id}` | operator removes the trunk | `sip.outbound_registration_expired` (`reason: unregistered`) |
+| Server shutdown | every trunk is unregistered in parallel | `sip.outbound_registration_expired` (`reason: unregistered` or `shutdown`) |
+
+### Implicit call wiring
+
+- **Outbound**: `POST /v1/legs` with `from` equal to a registered trunk's
+  AOR (full URI like `sip:alice@pbx.example`) or just the user-part
+  (`alice`) auto-attaches the trunk's digest credentials and adds a
+  loose-route `Route: <trunk's registrar URI;lr>` header. Caller-supplied
+  `auth` always wins. The resulting leg's `leg.ringing` event carries
+  `trunk_id`.
+- **Inbound**: any INVITE whose source socket matches a trunk's upstream
+  registrar peer (full host:port, or host-only as a fallback for ephemeral
+  source ports) is tagged with `trunk_id` on the `leg.ringing` event.
+  No filtering — calls from unknown peers still ring as before.
+
+### POST /v1/sip/trunks
+
+Create and start a trunk. Synchronously validates; REGISTER runs
+asynchronously. Returns **202 Accepted** with `{id, type, status}`.
+
+```bash
+curl -X POST http://vb.local:8080/v1/sip/trunks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "sip_register",
+    "app_id": "acme",
+    "sip_register": {
+      "registrar_uri":   "sip:pbx.example.com:5060",
+      "aor":             "sip:alice@pbx.example.com",
+      "username":        "alice",
+      "password":        "supersecret",
+      "contact_user":    "alice",
+      "expires_seconds": 600
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "instance_id": "abc-123",
+  "id": "7f5d39c6-2987-4643-9822-5c7ced9080e7",
+  "type": "sip_register",
+  "status": "registering"
+}
+```
+
+Field reference (`sip_register` block):
+
+| Field | Required | Description |
+|---|---|---|
+| `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS. |
+| `aor` | yes | Address-of-record. Becomes the `From` URI and the implicit-match key for outbound calls. |
+| `username` | no | Digest username. Defaults to the AOR user-part. |
+| `password` | yes | Digest password. **Never returned in any response.** |
+| `contact_user` | no | Override the `Contact` user-part. Defaults to the AOR user-part. |
+| `expires_seconds` | no | Requested expiry. Clamped to `[SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]`. |
+
+Errors: `400` for invalid JSON, missing fields, or invalid URIs. `501` when
+`type == "ip_ip"` (not yet implemented). `400` for unknown types.
+
+### GET /v1/sip/trunks
+
+List every configured trunk.
+
+```bash
+curl http://vb.local:8080/v1/sip/trunks
+```
+
+```json
+{
+  "instance_id": "abc-123",
+  "trunks": [
+    {
+      "id": "7f5d39c6-2987-4643-9822-5c7ced9080e7",
+      "type": "sip_register",
+      "app_id": "acme",
+      "status": "active",
+      "created_at": "2026-06-24T12:00:00Z",
+      "sip_register": {
+        "registrar_uri": "sip:pbx.example.com:5060",
+        "aor": "sip:alice@pbx.example.com",
+        "username": "alice",
+        "contact_uri": "sip:alice@vb.example:5060",
+        "requested_expires_seconds": 600,
+        "granted_expires_seconds": 300,
+        "last_registered_at": "2026-06-24T12:00:01Z",
+        "next_refresh_at": "2026-06-24T12:02:31Z",
+        "call_id": "f7c1...@vb.example",
+        "cseq": 4
+      }
+    }
+  ]
+}
+```
+
+### GET /v1/sip/trunks/{id}
+
+Return the same view shape for a single trunk. `404 Not Found` if the id
+is unknown.
+
+### DELETE /v1/sip/trunks/{id}
+
+Returns **202 Accepted** immediately. In the background: cancels the refresh
+timer, sends one final REGISTER with `Expires: 0` (digest-authed if
+challenged), removes the trunk from the manager, and emits
+`sip.outbound_registration_expired` with `reason: unregistered`.
+
+```bash
+curl -X DELETE http://vb.local:8080/v1/sip/trunks/7f5d39c6-2987-4643-9822-5c7ced9080e7
+```
+
+### Events
+
+| Event | When |
+|---|---|
+| `sip.outbound_registration_active` | REGISTER (initial or refresh) returned 2xx. Carries `trunk_id`, `aor`, `registrar`, `contact`, `granted_expires_seconds`, `expires_at`, `call_id`. |
+| `sip.outbound_registration_failed` | REGISTER attempt failed (transport error, non-2xx after digest retry). Carries `trunk_id`, `aor`, `registrar`, `status_code`, `reason`. The trunk stays in the manager and retries with exponential backoff. |
+| `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), or refresh failed past granted lifetime. `reason` is one of `unregistered`, `shutdown`, `refresh_failed`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER. |
+
+### VSI commands
+
+The same four operations are available on the `/v1/vsi` WebSocket:
+`create_sip_trunk`, `list_sip_trunks`, `get_sip_trunk`, `delete_sip_trunk`.
+Payloads and result shapes mirror the REST endpoints above.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Default requested expiry when `expires_seconds` is omitted on create |
+| `SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS` | `60` | Lower clamp on requested expiry |
+| `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on requested expiry |
+| `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of granted expiry at which the trunk refreshes |
+| `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the failure-retry exponential backoff |
+
+---
+
 ## Typical Workflow
 
 ```

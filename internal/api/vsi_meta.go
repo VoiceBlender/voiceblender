@@ -186,6 +186,12 @@ func VSICommandsMetadata() []VSICommandMeta {
 
 		// ── SIP Registrations ───────────────────────────────────────────
 		{Name: "list_sip_registrations", Summary: "List active SIP AOR registrations", ResultType: RegistrationsResponse{}},
+
+		// ── SIP Trunks (outbound registrations) ─────────────────────────
+		{Name: "create_sip_trunk", Summary: "Create an outbound SIP trunk (REGISTER or static peering)", PayloadType: CreateTrunkRequest{}, ResultType: CreateTrunkResponse{}, ErrorCodes: []int{400, 501}},
+		{Name: "list_sip_trunks", Summary: "List configured SIP trunks", ResultType: TrunksListResponse{}},
+		{Name: "get_sip_trunk", Summary: "Get a single SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "delete_sip_trunk", Summary: "Unregister and remove a SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 	}
 }
 
@@ -252,6 +258,9 @@ func EventsMetadata() []EventMeta {
 		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
 		{events.SIPRegistrationActive, "SIP AOR registration created or refreshed (one event per Contact)", reflect.TypeOf(events.SIPRegistrationActiveData{})},
 		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{})},
+		{events.SIPOutboundRegistrationActive, "Outbound SIP trunk REGISTER accepted (initial or refresh)", reflect.TypeOf(events.SIPOutboundRegistrationActiveData{})},
+		{events.SIPOutboundRegistrationFailed, "Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)", reflect.TypeOf(events.SIPOutboundRegistrationFailedData{})},
+		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{})},
 	}
 }
 

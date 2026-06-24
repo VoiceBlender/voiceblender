@@ -50,6 +50,15 @@ type LegRingingData struct {
 	To            string            `json:"to,omitempty"`
 	SIPHeaders    map[string]string `json:"sip_headers,omitempty"`
 	OfferedCodecs []OfferedCodec    `json:"offered_codecs,omitempty"`
+	// TrunkID identifies the trunk (outbound SIP registration) that delivered
+	// the call. Set on inbound INVITEs whose source socket matches a known
+	// trunk's registrar; populated on outbound legs whose From matches a
+	// registered AOR. Empty otherwise.
+	TrunkID string `json:"trunk_id,omitempty"`
+	// SourceAddress is the host:port the INVITE actually arrived on
+	// (inbound legs only). Useful for diagnostics when the peer's Via /
+	// Contact differs from the transport-layer source, e.g. behind NAT.
+	SourceAddress string `json:"source_address,omitempty"`
 }
 
 // OfferedCodec describes one codec from a remote SIP offer SDP.
@@ -414,6 +423,49 @@ type SIPRegistrationExpiredData struct {
 	Contact string `json:"contact"`
 	Socket  string `json:"socket,omitempty"`
 	Reason  string `json:"reason"`
+}
+
+// --- SIP outbound registrations (trunks) ---
+
+// SIPOutboundRegistrationActiveData fires when a sip_register trunk
+// successfully (re)registers with its upstream registrar. Re-emitted on every
+// refresh so observers can see liveness.
+type SIPOutboundRegistrationActiveData struct {
+	SIPRegistrationScope
+	TrunkID               string `json:"trunk_id"`
+	AOR                   string `json:"aor"`
+	Registrar             string `json:"registrar"`
+	Contact               string `json:"contact"`
+	GrantedExpiresSeconds int    `json:"granted_expires_seconds"`
+	ExpiresAt             string `json:"expires_at"`
+	CallID                string `json:"call_id,omitempty"`
+	// SourceAddress is the actual host:port the 2xx response came from
+	// (may differ from Registrar when DNS / a load balancer fronts it).
+	SourceAddress string `json:"source_address,omitempty"`
+}
+
+// SIPOutboundRegistrationFailedData fires when a REGISTER attempt receives a
+// non-2xx final response (after digest retry) or fails at the transport
+// layer. The trunk is not removed; refresh continues with backoff.
+type SIPOutboundRegistrationFailedData struct {
+	SIPRegistrationScope
+	TrunkID    string `json:"trunk_id"`
+	AOR        string `json:"aor"`
+	Registrar  string `json:"registrar"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// SIPOutboundRegistrationExpiredData fires when a trunk is removed (DELETE
+// or shutdown) or when refresh failed past the previously granted lifetime.
+// Reason is one of: "unregistered", "refresh_failed", "shutdown".
+type SIPOutboundRegistrationExpiredData struct {
+	SIPRegistrationScope
+	TrunkID   string `json:"trunk_id"`
+	AOR       string `json:"aor"`
+	Registrar string `json:"registrar"`
+	Reason    string `json:"reason"`
 }
 
 // LiveKit (Model B): no special event types. Remote LK participants

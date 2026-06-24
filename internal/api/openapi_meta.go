@@ -1,5 +1,7 @@
 package api
 
+import sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+
 // RouteMeta describes a single API endpoint for OpenAPI generation.
 type RouteMeta struct {
 	Method       string
@@ -1136,7 +1138,7 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 
-		// ── SIP Registrations ───────────────────────────────────────────
+		// ── SIP Trunks & Registrations ──────────────────────────────────
 		{
 			Method: "GET", Path: "/sip/registrations", OperationID: "listSIPRegistrations",
 			Summary: "List active SIP AOR registrations",
@@ -1160,6 +1162,49 @@ func RoutesMetadata() []RouteMeta {
 				204: {Description: "Binding(s) removed"},
 				400: {Description: "Invalid AOR encoding"},
 				404: {Description: "AOR (or specified contact) not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/sip/trunks", OperationID: "createSIPTrunk",
+			Summary: "Create an outbound SIP trunk (REGISTER or static peering)",
+			Description: "Creates a typed SIP trunk. For `type: \"sip_register\"`, VoiceBlender " +
+				"begins REGISTERing to the supplied registrar URI with digest auth, refreshes before " +
+				"expiry, and routes inbound INVITEs that arrive on that peer's socket plus outbound " +
+				"INVITEs whose `from` matches the AOR through the trunk. " +
+				"For `type: \"ip_ip\"`, returns 501 (reserved, not yet implemented).",
+			Tags:        []string{"SIP Trunks"},
+			RequestType: CreateTrunkRequest{},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Trunk accepted; REGISTER runs asynchronously", Type: CreateTrunkResponse{}},
+				400: {Description: "Invalid JSON, missing required field, or unknown type"},
+				501: {Description: "Trunk type reserved but not yet implemented (e.g. ip_ip)"},
+			},
+		},
+		{
+			Method: "GET", Path: "/sip/trunks", OperationID: "listSIPTrunks",
+			Summary: "List configured SIP trunks",
+			Tags:    []string{"SIP Trunks"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "List of trunks", Type: TrunksListResponse{}},
+			},
+		},
+		{
+			Method: "GET", Path: "/sip/trunks/{id}", OperationID: "getSIPTrunk",
+			Summary: "Get a single SIP trunk",
+			Tags:    []string{"SIP Trunks"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Trunk view", Type: sipmod.TrunkView{}},
+				404: {Description: "Trunk not found"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/sip/trunks/{id}", OperationID: "deleteSIPTrunk",
+			Summary:     "Unregister and remove a SIP trunk",
+			Description: "Returns 202 Accepted; the unregister (REGISTER with Expires: 0) and final removal run asynchronously.",
+			Tags:        []string{"SIP Trunks"},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Trunk accepted for teardown"},
+				404: {Description: "Trunk not found"},
 			},
 		},
 

@@ -302,6 +302,22 @@ channels:
                 $ref: '#/components/messages/list_sip_registrations'
             list_sip_registrations.result:
                 $ref: '#/components/messages/list_sip_registrationsResult'
+            create_sip_trunk:
+                $ref: '#/components/messages/create_sip_trunk'
+            create_sip_trunk.result:
+                $ref: '#/components/messages/create_sip_trunkResult'
+            list_sip_trunks:
+                $ref: '#/components/messages/list_sip_trunks'
+            list_sip_trunks.result:
+                $ref: '#/components/messages/list_sip_trunksResult'
+            get_sip_trunk:
+                $ref: '#/components/messages/get_sip_trunk'
+            get_sip_trunk.result:
+                $ref: '#/components/messages/get_sip_trunkResult'
+            delete_sip_trunk:
+                $ref: '#/components/messages/delete_sip_trunk'
+            delete_sip_trunk.result:
+                $ref: '#/components/messages/delete_sip_trunkResult'
             leg.ringing:
                 $ref: '#/components/messages/evt_leg_ringing'
             leg.early_media:
@@ -398,6 +414,12 @@ channels:
                 $ref: '#/components/messages/evt_sip_registration_active'
             sip.registration_expired:
                 $ref: '#/components/messages/evt_sip_registration_expired'
+            sip.outbound_registration_active:
+                $ref: '#/components/messages/evt_sip_outbound_registration_active'
+            sip.outbound_registration_failed:
+                $ref: '#/components/messages/evt_sip_outbound_registration_failed'
+            sip.outbound_registration_expired:
+                $ref: '#/components/messages/evt_sip_outbound_registration_expired'
             connected:
                 $ref: '#/components/messages/frame_connected'
             ping:
@@ -1350,6 +1372,58 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/list_sip_registrations.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_create_sip_trunk:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Create an outbound SIP trunk (REGISTER or static peering)
+        messages:
+            - $ref: '#/channels/vsi/messages/create_sip_trunk'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/create_sip_trunk.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_list_sip_trunks:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: List configured SIP trunks
+        messages:
+            - $ref: '#/channels/vsi/messages/list_sip_trunks'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/list_sip_trunks.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_get_sip_trunk:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Get a single SIP trunk
+        messages:
+            - $ref: '#/channels/vsi/messages/get_sip_trunk'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/get_sip_trunk.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_delete_sip_trunk:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Unregister and remove a SIP trunk
+        messages:
+            - $ref: '#/channels/vsi/messages/delete_sip_trunk'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/delete_sip_trunk.result'
+                - $ref: '#/channels/vsi/messages/error'
     send_leg_ringing:
         action: send
         channel:
@@ -1686,6 +1760,27 @@ operations:
         summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
         messages:
             - $ref: '#/channels/vsi/messages/sip.registration_expired'
+    send_sip_outbound_registration_active:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Outbound SIP trunk REGISTER accepted (initial or refresh)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.outbound_registration_active'
+    send_sip_outbound_registration_failed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.outbound_registration_failed'
+    send_sip_outbound_registration_expired:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.outbound_registration_expired'
     send_connected:
         action: send
         channel:
@@ -3899,6 +3994,127 @@ components:
                         $ref: '#/components/schemas/RegistrationsResponse'
                 required:
                     - type
+        create_sip_trunk:
+            name: create_sip_trunk
+            title: Create an outbound SIP trunk (REGISTER or static peering)
+            summary: Create an outbound SIP trunk (REGISTER or static peering)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: create_sip_trunk
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/CreateTrunkRequest'
+                required:
+                    - type
+        create_sip_trunkResult:
+            name: create_sip_trunkResult
+            title: Create an outbound SIP trunk (REGISTER or static peering) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: create_sip_trunk.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/CreateTrunkResponse'
+                required:
+                    - type
+        list_sip_trunks:
+            name: list_sip_trunks
+            title: List configured SIP trunks
+            summary: List configured SIP trunks
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: list_sip_trunks
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        type: "null"
+                        description: No payload.
+                required:
+                    - type
+        list_sip_trunksResult:
+            name: list_sip_trunksResult
+            title: List configured SIP trunks — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: list_sip_trunks.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TrunksListResponse'
+                required:
+                    - type
+        get_sip_trunk:
+            name: get_sip_trunk
+            title: Get a single SIP trunk
+            summary: Get a single SIP trunk
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: get_sip_trunk
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        get_sip_trunkResult:
+            name: get_sip_trunkResult
+            title: Get a single SIP trunk — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: get_sip_trunk.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        delete_sip_trunk:
+            name: delete_sip_trunk
+            title: Unregister and remove a SIP trunk
+            summary: Unregister and remove a SIP trunk
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_sip_trunk
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        delete_sip_trunkResult:
+            name: delete_sip_trunkResult
+            title: Unregister and remove a SIP trunk — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_sip_trunk.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
         evt_leg_ringing:
             name: evt_leg_ringing
             title: SIP call ringing (inbound or outbound)
@@ -4235,6 +4451,27 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_expired. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/sip.registration_expired/post/requestBody/content/application~1json/schema
+        evt_sip_outbound_registration_active:
+            name: evt_sip_outbound_registration_active
+            title: Outbound SIP trunk REGISTER accepted (initial or refresh)
+            summary: Outbound SIP trunk REGISTER accepted (initial or refresh)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_active. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_active/post/requestBody/content/application~1json/schema
+        evt_sip_outbound_registration_failed:
+            name: evt_sip_outbound_registration_failed
+            title: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
+            summary: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_failed. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_failed/post/requestBody/content/application~1json/schema
+        evt_sip_outbound_registration_expired:
+            name: evt_sip_outbound_registration_expired
+            title: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.
@@ -4389,6 +4626,32 @@ components:
                 - channel
                 - start_ms
                 - end_ms
+        CreateTrunkRequest:
+            type: object
+            properties:
+                type:
+                    type: string
+                app_id:
+                    type: string
+                sip_register:
+                    $ref: '#/components/schemas/SIPRegisterTrunkSpec'
+                ip_ip:
+                    $ref: '#/components/schemas/IPIPTrunkSpec'
+            required:
+                - type
+        CreateTrunkResponse:
+            type: object
+            properties:
+                id:
+                    type: string
+                type:
+                    type: string
+                status:
+                    type: string
+            required:
+                - id
+                - type
+                - status
         ICECandidateInit:
             type: object
             properties:
@@ -4405,6 +4668,16 @@ components:
                 - sdpMid
                 - sdpMLineIndex
                 - usernameFragment
+        IPIPTrunkSpec:
+            type: object
+            properties:
+                peer_uri:
+                    type: string
+        IPIPTrunkView:
+            type: object
+            properties:
+                peer_uri:
+                    type: string
         PlaybackStartResult:
             type: object
             properties:
@@ -4531,6 +4804,54 @@ components:
             required:
                 - listener_role
                 - sources
+        SIPRegisterTrunkSpec:
+            type: object
+            properties:
+                registrar_uri:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                password:
+                    type: string
+                contact_user:
+                    type: string
+                expires_seconds:
+                    type: integer
+            required:
+                - registrar_uri
+                - aor
+                - password
+        SIPRegisterTrunkView:
+            type: object
+            properties:
+                registrar_uri:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                contact_uri:
+                    type: string
+                requested_expires_seconds:
+                    type: integer
+                granted_expires_seconds:
+                    type: integer
+                last_registered_at:
+                    type: string
+                next_refresh_at:
+                    type: string
+                call_id:
+                    type: string
+                cseq:
+                    type: integer
+                source_address:
+                    type: string
+            required:
+                - registrar_uri
+                - aor
+                - requested_expires_seconds
         STTStartLegResult:
             type: object
             properties:
@@ -4580,6 +4901,39 @@ components:
                     type: string
             required:
                 - status
+        TrunkView:
+            type: object
+            properties:
+                id:
+                    type: string
+                type:
+                    type: string
+                app_id:
+                    type: string
+                status:
+                    type: string
+                last_error:
+                    type: string
+                created_at:
+                    type: string
+                sip_register:
+                    $ref: '#/components/schemas/SIPRegisterTrunkView'
+                ip_ip:
+                    $ref: '#/components/schemas/IPIPTrunkView'
+            required:
+                - id
+                - type
+                - status
+                - created_at
+        TrunksListResponse:
+            type: object
+            properties:
+                trunks:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/TrunkView'
+            required:
+                - trunks
         WebRTCCandidatesResult:
             type: object
             properties:

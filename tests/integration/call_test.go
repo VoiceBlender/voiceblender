@@ -188,6 +188,9 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer shutdownCancel()
 		httpSrv.Shutdown(shutdownCtx)
+		// Tear down any outbound trunks the test created so their refresh
+		// loops (started with context.Background()) don't leak past the test.
+		engine.Trunks().Shutdown(shutdownCtx)
 		webhooks.Stop()
 		// Hangup all remaining legs.
 		for _, l := range legMgr.List() {

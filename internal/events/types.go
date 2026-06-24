@@ -70,6 +70,10 @@ const (
 
 	SIPRegistrationActive  EventType = "sip.registration_active"
 	SIPRegistrationExpired EventType = "sip.registration_expired"
+
+	SIPOutboundRegistrationActive  EventType = "sip.outbound_registration_active"
+	SIPOutboundRegistrationFailed  EventType = "sip.outbound_registration_failed"
+	SIPOutboundRegistrationExpired EventType = "sip.outbound_registration_expired"
 )
 
 type Event struct {

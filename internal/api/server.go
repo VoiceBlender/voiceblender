@@ -195,6 +195,12 @@ func (s *Server) routes() {
 		r.Get("/sip/registrations", s.listRegistrations)
 		r.Delete("/sip/registrations/{aor}", s.deleteRegistration)
 
+		// SIP trunks (outbound registrations / static peering)
+		r.Post("/sip/trunks", s.createTrunk)
+		r.Get("/sip/trunks", s.listTrunks)
+		r.Get("/sip/trunks/{id}", s.getTrunk)
+		r.Delete("/sip/trunks/{id}", s.deleteTrunk)
+
 		// Event stream
 		r.Get("/vsi", s.vsi)
 

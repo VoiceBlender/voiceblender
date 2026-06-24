@@ -2418,6 +2418,86 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /sip/trunks:
+        post:
+            operationId: createSIPTrunk
+            summary: Create an outbound SIP trunk (REGISTER or static peering)
+            description: 'Creates a typed SIP trunk. For `type: "sip_register"`, VoiceBlender begins REGISTERing to the supplied registrar URI with digest auth, refreshes before expiry, and routes inbound INVITEs that arrive on that peer''s socket plus outbound INVITEs whose `from` matches the AOR through the trunk. For `type: "ip_ip"`, returns 501 (reserved, not yet implemented).'
+            tags:
+                - SIP Trunks
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateTrunkRequest'
+            responses:
+                '202':
+                    description: Trunk accepted; REGISTER runs asynchronously
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CreateTrunkResponse'
+                '400':
+                    description: Invalid JSON, missing required field, or unknown type
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '501':
+                    description: Trunk type reserved but not yet implemented (e.g. ip_ip)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        get:
+            operationId: listSIPTrunks
+            summary: List configured SIP trunks
+            tags:
+                - SIP Trunks
+            responses:
+                '200':
+                    description: List of trunks
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/TrunksListResponse'
+    /sip/trunks/{id}:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        get:
+            operationId: getSIPTrunk
+            summary: Get a single SIP trunk
+            tags:
+                - SIP Trunks
+            responses:
+                '200':
+                    description: Trunk view
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/TrunkView'
+                '404':
+                    description: Trunk not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: deleteSIPTrunk
+            summary: Unregister and remove a SIP trunk
+            description: 'Returns 202 Accepted; the unregister (REGISTER with Expires: 0) and final removal run asynchronously.'
+            tags:
+                - SIP Trunks
+            responses:
+                '202':
+                    description: Trunk accepted for teardown
+                '404':
+                    description: Trunk not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /vsi:
         get:
             operationId: vsi
@@ -2902,6 +2982,30 @@ components:
                     default: 16000
             required:
                 - id
+        CreateTrunkRequest:
+            type: object
+            properties:
+                type:
+                    type: string
+                    description: Trunk type discriminator. Only `sip_register` is implemented today; `ip_ip` is reserved and returns 501.
+                    enum:
+                        - sip_register
+                        - ip_ip
+                app_id:
+                    type: string
+                    description: Application identifier carried through to every event emitted by this trunk.
+                sip_register:
+                    description: Required when type == "sip_register". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry).
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/SIPRegisterTrunkSpec'
+                ip_ip:
+                    description: Reserved for static-IP peering (no REGISTER). Not yet implemented; supplying this returns 501.
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/IPIPTrunkSpec'
+            required:
+                - type
         DTMFRequest:
             type: object
             properties:
@@ -3273,6 +3377,30 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        CreateTrunkResponse:
+            type: object
+            properties:
+                id:
+                    type: string
+                type:
+                    type: string
+                status:
+                    type: string
+            required:
+                - id
+                - type
+                - status
+        IPIPTrunkSpec:
+            type: object
+            properties:
+                peer_uri:
+                    type: string
+                    description: Static peer SIP URI for IP-IP peering. Reserved; not yet implemented.
+        IPIPTrunkView:
+            type: object
+            properties:
+                peer_uri:
+                    type: string
         LiveKitParams:
             type: object
             properties:
@@ -3400,6 +3528,97 @@ components:
                     description: Digest auth password.
             required:
                 - password
+        SIPRegisterTrunkSpec:
+            type: object
+            properties:
+                registrar_uri:
+                    type: string
+                    description: Upstream registrar SIP URI (e.g. "sip:pbx.example.com:5060" or "sips:pbx.example.com:5061;transport=tls").
+                aor:
+                    type: string
+                    description: Address-of-record this trunk REGISTERs (e.g. "sip:alice@pbx.example.com"). Becomes the From URI for inbound REGISTER and outbound calls placed `from` this AOR.
+                username:
+                    type: string
+                    description: Digest auth username. Defaults to the AOR user-part when empty.
+                password:
+                    type: string
+                    description: Digest auth password. Required. Never returned in any response.
+                contact_user:
+                    type: string
+                    description: Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part.
+                expires_seconds:
+                    type: integer
+                    description: 'Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600).'
+            required:
+                - registrar_uri
+                - aor
+                - password
+        SIPRegisterTrunkView:
+            type: object
+            properties:
+                registrar_uri:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                contact_uri:
+                    type: string
+                requested_expires_seconds:
+                    type: integer
+                granted_expires_seconds:
+                    type: integer
+                last_registered_at:
+                    type: string
+                next_refresh_at:
+                    type: string
+                call_id:
+                    type: string
+                cseq:
+                    type: integer
+                source_address:
+                    type: string
+            required:
+                - registrar_uri
+                - aor
+                - requested_expires_seconds
+        TrunkView:
+            type: object
+            properties:
+                id:
+                    type: string
+                type:
+                    type: string
+                app_id:
+                    type: string
+                status:
+                    type: string
+                last_error:
+                    type: string
+                created_at:
+                    type: string
+                sip_register:
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/SIPRegisterTrunkView'
+                ip_ip:
+                    nullable: true
+                    allOf:
+                        - $ref: '#/components/schemas/IPIPTrunkView'
+            required:
+                - id
+                - type
+                - status
+                - created_at
+        TrunksListResponse:
+            type: object
+            properties:
+                trunks:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/TrunkView'
+            required:
+                - trunks
         WebRTCCandidatesResult:
             type: object
             properties:
@@ -3488,6 +3707,9 @@ components:
                 - amd.beep
                 - sip.registration_active
                 - sip.registration_expired
+                - sip.outbound_registration_active
+                - sip.outbound_registration_failed
+                - sip.outbound_registration_expired
         ICECandidateInit:
             type: object
             properties:
@@ -3539,6 +3761,10 @@ x-webhooks:
                                         type: array
                                         items:
                                             $ref: '#/components/schemas/OfferedCodec'
+                                    trunk_id:
+                                        type: string
+                                    source_address:
+                                        type: string
     leg.early_media:
         post:
             summary: Outbound leg received 183 Session Progress with SDP; media pipeline active
@@ -4568,3 +4794,75 @@ x-webhooks:
                                     reason:
                                         type: string
                                         description: 'Why the binding was removed: ttl, unregistered, forced, or replaced'
+    sip.outbound_registration_active:
+        post:
+            summary: Outbound SIP trunk REGISTER accepted (initial or refresh)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    trunk_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                    registrar:
+                                        type: string
+                                    contact:
+                                        type: string
+                                    granted_expires_seconds:
+                                        type: integer
+                                    expires_at:
+                                        type: string
+                                    call_id:
+                                        type: string
+                                    source_address:
+                                        type: string
+    sip.outbound_registration_failed:
+        post:
+            summary: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    trunk_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                    registrar:
+                                        type: string
+                                    status_code:
+                                        type: integer
+                                    reason:
+                                        type: string
+                                    error:
+                                        type: string
+    sip.outbound_registration_expired:
+        post:
+            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    trunk_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                    registrar:
+                                        type: string
+                                    reason:
+                                        type: string

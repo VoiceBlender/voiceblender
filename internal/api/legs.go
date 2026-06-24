@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -834,6 +836,34 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		inviteOpts.RTTEnabled = true
 	}
 
+	// Implicit trunk match: if `from` matches a registered outbound trunk's
+	// AOR (either as a full URI or just a user-part), auto-attach digest
+	// credentials and route the INVITE through the trunk's upstream proxy.
+	// Caller-supplied auth wins.
+	var trunkIDForLeg string
+	var matchedTrunk sipmod.Trunk
+	if req.From != "" {
+		// Full-URI match first.
+		fromURI := sip.Uri{}
+		if err := sip.ParseUri(req.From, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
+			matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
+		}
+		// User-only fallback (POST /v1/legs with `from: "alice"`).
+		if matchedTrunk == nil {
+			matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(req.From)
+		}
+	}
+	if matchedTrunk != nil && matchedTrunk.Type() == sipmod.TrunkTypeSIPRegister {
+		if reg, ok := matchedTrunk.(*sipmod.OutboundRegistration); ok {
+			trunkIDForLeg = reg.ID()
+			if inviteOpts.AuthUsername == "" && inviteOpts.AuthPassword == "" {
+				inviteOpts.AuthUsername, inviteOpts.AuthPassword = reg.Credentials()
+			}
+			regURI := reg.RegistrarURI()
+			inviteOpts.RouteURI = &regURI
+		}
+	}
+
 	// AOR auto-resolve: if the recipient URI matches a known registration,
 	// route the INVITE to the bound socket(s) instead of letting sipgo
 	// resolve the URI's host:port. Multi-contact AORs parallel-fork.
@@ -883,6 +913,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		URI:        target,
 		From:       req.From,
 		SIPHeaders: req.Headers,
+		TrunkID:    trunkIDForLeg,
 	})
 
 	go func() {
@@ -1012,6 +1043,20 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
 	}
 
+	// Tag the call with a trunk_id when the INVITE's source socket matches
+	// a known outbound trunk's registrar — informational, not a gate.
+	var trunkID string
+	sourceAddr := call.Request.Source()
+	if sourceAddr != "" {
+		host, portStr, err := net.SplitHostPort(sourceAddr)
+		if err == nil {
+			port, _ := strconv.Atoi(portStr)
+			if t := s.SIPEngine.Trunks().LookupByPeerSocket(host, port); t != nil {
+				trunkID = t.ID()
+			}
+		}
+	}
+
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:      events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		LegType:       string(l.Type()),
@@ -1019,6 +1064,8 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		To:            call.To,
 		SIPHeaders:    l.SIPHeaders(),
 		OfferedCodecs: buildOfferedCodecs(call.RemoteSDP),
+		TrunkID:       trunkID,
+		SourceAddress: sourceAddr,
 	})
 
 	// Wait for REST answer or context cancellation (caller hangup / timeout)

@@ -100,6 +100,7 @@ type Engine struct {
 	useSourceSocket   bool
 	destPinned        atomic.Uint64 // count of res.Destination overrides applied
 	registrar         *Registrar
+	trunks            *TrunkManager
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -441,6 +442,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		sipDebug:          cfg.SIPDebug,
 		useSourceSocket:   cfg.UseSourceSocket,
 		registrar:         cfg.Registrar,
+		trunks:            NewTrunkManager(),
 	}
 
 	if cfg.Log != nil {
@@ -848,6 +850,9 @@ func (e *Engine) registerHandlers() {
 // was created without one).
 func (e *Engine) Registrar() *Registrar { return e.registrar }
 
+// Trunks returns the engine's outbound SIP trunk manager. Always non-nil.
+func (e *Engine) Trunks() *TrunkManager { return e.trunks }
+
 // RespondFromSource pins the response destination to the request's UDP
 // source so peers with unroutable Via headers still get our reply.
 func (e *Engine) RespondFromSource(tx sip.ServerTransaction, req *sip.Request, statusCode int, reason string) error {
@@ -1047,6 +1052,11 @@ type InviteOptions struct {
 	// for the first 2xx (RFC 3261 §16).
 	ForkTargets []ForkTarget
 
+	// RouteURI, when set, adds a single loose-route header pointing at the
+	// given URI (typically a trunk's upstream proxy/registrar). The ";lr"
+	// param is appended if not already present.
+	RouteURI *sip.Uri
+
 	// RTT (T.140 / RFC 4103) parameters. RTTEnabled offers m=text alongside
 	// audio in the INVITE. RTTRedundancy controls the RFC 2198 RED depth
 	// (0 = plain T.140, no RED).
@@ -1129,6 +1139,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	req.SetBody(sdpOffer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(e.AllowHeader())
+	req.AppendHeader(e.UserAgentHeader())
 
 	if opts.FromUser != "" {
 		fromURI := sip.Uri{
@@ -1144,6 +1155,20 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	for _, h := range opts.Headers {
 		req.AppendHeader(h)
+	}
+
+	// Optional loose-route header — used to route the INVITE through a
+	// trunk's upstream proxy/registrar even when the Request-URI's host
+	// would route elsewhere (RFC 3261 §16.12.1).
+	if opts.RouteURI != nil {
+		routeURI := *opts.RouteURI
+		if routeURI.UriParams == nil {
+			routeURI.UriParams = sip.NewParams()
+		}
+		if _, ok := routeURI.UriParams.Get("lr"); !ok {
+			routeURI.UriParams.Add("lr", "")
+		}
+		req.AppendHeader(sip.NewHeader("Route", "<"+routeURI.String()+">"))
 	}
 
 	// Optional single-destination override (e.g. a single-contact AOR lookup
@@ -1376,6 +1401,12 @@ func (e *Engine) SIPHost() string {
 // ServerHeader returns a SIP Server header for UAS responses.
 func (e *Engine) ServerHeader() sip.Header {
 	return sip.NewHeader("Server", e.sipHost)
+}
+
+// UserAgentHeader returns a SIP User-Agent header for UAC requests.
+// Mirrors the Server header so peers see the same identity in both directions.
+func (e *Engine) UserAgentHeader() sip.Header {
+	return sip.NewHeader("User-Agent", e.sipHost)
 }
 
 // AllowHeader returns an Allow header listing every SIP method this UA

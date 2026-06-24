@@ -289,6 +289,9 @@ func main() {
 			_ = moqSrv.Close()
 		}
 
+		// Unregister all outbound SIP trunks in parallel.
+		engine.Trunks().Shutdown(shutdownCtx)
+
 		// Hangup all active legs
 		for _, l := range legMgr.List() {
 			l.Hangup(shutdownCtx)

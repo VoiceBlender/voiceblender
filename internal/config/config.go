@@ -57,9 +57,15 @@ type Config struct {
 	SIPRegistrationMaxExpiresSeconds     int
 	SIPRegistrationSweepIntervalMs       int
 	SIPRegistrationAllowMultipleContacts bool
-	VSIEventBufferSize                   int
-	DefaultSampleRate                    int
-	SpeechDetectionEnabled               bool
+
+	SIPOutboundRegistrationDefaultExpiresSeconds int
+	SIPOutboundRegistrationMinExpiresSeconds     int
+	SIPOutboundRegistrationMaxExpiresSeconds     int
+	SIPOutboundRegistrationRefreshRatio          float64
+	SIPOutboundRegistrationFailureBackoffMaxMs   int
+	VSIEventBufferSize                           int
+	DefaultSampleRate                            int
+	SpeechDetectionEnabled                       bool
 
 	// Codecs is the engine's supported codec list, ordered by preference. Used
 	// for both outbound offer construction and inbound offer/answer matching —
@@ -141,9 +147,15 @@ func Load() Config {
 		SIPRegistrationMaxExpiresSeconds:     envInt("SIP_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
 		SIPRegistrationSweepIntervalMs:       envInt("SIP_REGISTRATION_SWEEP_INTERVAL_MS", 1000),
 		SIPRegistrationAllowMultipleContacts: envBool("SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", true),
-		VSIEventBufferSize:                   vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
-		DefaultSampleRate:                    defaultRate,
-		SpeechDetectionEnabled:               os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
+
+		SIPOutboundRegistrationDefaultExpiresSeconds: envInt("SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS", 3600),
+		SIPOutboundRegistrationMinExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS", 60),
+		SIPOutboundRegistrationMaxExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
+		SIPOutboundRegistrationRefreshRatio:          envFloat("SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO", 0.5),
+		SIPOutboundRegistrationFailureBackoffMaxMs:   envInt("SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS", 300000),
+		VSIEventBufferSize:                           vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
+		DefaultSampleRate:                            defaultRate,
+		SpeechDetectionEnabled:                       os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
 		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),
 
@@ -264,6 +276,15 @@ func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def

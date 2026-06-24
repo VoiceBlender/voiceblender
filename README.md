@@ -106,6 +106,11 @@ All configuration is via environment variables:
 | `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry. Requests above this value are honored at this maximum. |
 | `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | Sweeper period for evicting expired AOR bindings. |
 | `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `true`, the same AOR may be bound from multiple Contacts simultaneously (and `POST /v1/legs` parallel-forks to every bound contact). When `false`, each `REGISTER` replaces any prior Contacts for the AOR. |
+| `SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Default `Expires` value sent on outbound REGISTER (sip_register trunks) when the create-trunk request does not specify one. |
+| `SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS` | `60` | Lower clamp on the requested outbound REGISTER expiry. |
+| `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the requested outbound REGISTER expiry. |
+| `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of the **granted** expiry at which the trunk refreshes (e.g. `0.5` of a 600 s grant → refresh every 300 s). Must be `(0, 1)`; out-of-range values fall back to `0.5`. |
+| `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the exponential backoff between failed outbound REGISTER attempts. Failures emit `sip.outbound_registration_failed`; the trunk stays in the manager and keeps retrying. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
 | `AMRWB_MODE` | `2` | AMR-WB (G.722.2) encoder speech-mode **ceiling** `0..8`: `0`=6.60, `1`=8.85, `2`=12.65, `3`=14.25, `4`=15.85, `5`=18.25, `6`=19.85, `7`=23.05, `8`=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set` (so e.g. `8` yields HD 23.85 only when the peer allows it, falling back automatically). Default `2` (12.65) matches the GSMA IR.92 / VoLTE common rate. Out-of-range values clamp to `0..8`. |
 | `AMRWB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
@@ -221,6 +226,26 @@ GET    /v1/legs/{id}/ice-candidates        # Get gathered ICE candidates
 GET    /v1/sip/registrations               # List current AOR bindings
 DELETE /v1/sip/registrations/{aor}         # Force-unbind an AOR (or one contact via ?contact=)
 ```
+
+### SIP Trunks (outbound REGISTER)
+
+VoiceBlender can REGISTER itself to an upstream SIP registrar/PBX as a UAC,
+refresh the binding before expiry, place outbound calls under the registered
+identity, and accept inbound INVITEs the registrar delivers. Only the
+`sip_register` trunk type is implemented today; `ip_ip` is reserved.
+
+```
+POST   /v1/sip/trunks                      # Create a trunk; 202 Accepted, REGISTER runs async
+GET    /v1/sip/trunks                      # List configured trunks
+GET    /v1/sip/trunks/{id}                 # Trunk status snapshot (never returns password)
+DELETE /v1/sip/trunks/{id}                 # Unregister + remove (202 Accepted, async)
+```
+
+Outbound calls placed with `POST /v1/legs` whose `from` matches a registered
+trunk's AOR (or AOR user-part) automatically attach the trunk's digest
+credentials and traverse the trunk's upstream proxy via a Route header.
+Inbound INVITEs arriving from a registered trunk's registrar are tagged with
+`trunk_id` on the `leg.ringing` event.
 
 ## WhatsApp Business Calling
 

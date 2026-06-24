@@ -555,6 +555,56 @@ var webRTCOfferRequestFields = map[string]FieldEnrichment{
 	"sdp": {Description: "SDP offer from the browser"},
 }
 
+// CreateTrunkRequest is the request body for POST /v1/sip/trunks. The shape
+// is typed by `type`; today only "sip_register" is implemented. "ip_ip"
+// (static-IP peering, no REGISTER) is reserved and rejected with 501.
+type CreateTrunkRequest struct {
+	Type        string                `json:"type"`
+	AppID       string                `json:"app_id,omitempty"`
+	SIPRegister *SIPRegisterTrunkSpec `json:"sip_register,omitempty"`
+	IPIP        *IPIPTrunkSpec        `json:"ip_ip,omitempty"`
+}
+
+// TrunkTypeEnum lists every trunk type understood by the request schema.
+// "ip_ip" is reserved (handler returns 501); "sip_register" is implemented.
+var TrunkTypeEnum = []string{"sip_register", "ip_ip"}
+
+var createTrunkRequestFields = map[string]FieldEnrichment{
+	"type":         {Description: "Trunk type discriminator. Only `sip_register` is implemented today; `ip_ip` is reserved and returns 501.", Enum: TrunkTypeEnum},
+	"app_id":       {Description: "Application identifier carried through to every event emitted by this trunk."},
+	"sip_register": {Description: "Required when type == \"sip_register\". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry)."},
+	"ip_ip":        {Description: "Reserved for static-IP peering (no REGISTER). Not yet implemented; supplying this returns 501."},
+}
+
+// SIPRegisterTrunkSpec is the per-type body for sip_register trunks. The
+// password is required on creation but never returned in any response.
+type SIPRegisterTrunkSpec struct {
+	RegistrarURI   string `json:"registrar_uri"`
+	AOR            string `json:"aor"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password"`
+	ContactUser    string `json:"contact_user,omitempty"`
+	ExpiresSeconds int    `json:"expires_seconds,omitempty"`
+}
+
+var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
+	"registrar_uri":   {Description: "Upstream registrar SIP URI (e.g. \"sip:pbx.example.com:5060\" or \"sips:pbx.example.com:5061;transport=tls\")."},
+	"aor":             {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI for inbound REGISTER and outbound calls placed `from` this AOR."},
+	"username":        {Description: "Digest auth username. Defaults to the AOR user-part when empty."},
+	"password":        {Description: "Digest auth password. Required. Never returned in any response."},
+	"contact_user":    {Description: "Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part."},
+	"expires_seconds": {Description: "Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600)."},
+}
+
+// IPIPTrunkSpec is the placeholder shape for the unimplemented ip_ip type.
+type IPIPTrunkSpec struct {
+	PeerURI string `json:"peer_uri,omitempty"`
+}
+
+var ipipTrunkSpecFields = map[string]FieldEnrichment{
+	"peer_uri": {Description: "Static peer SIP URI for IP-IP peering. Reserved; not yet implemented."},
+}
+
 // SchemaEnrichments maps "TypeName.json_field_name" → enrichment metadata.
 // These are the descriptions, enums, formats, defaults, and constraints
 // that cannot be derived from Go struct definitions alone.
@@ -599,5 +649,8 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("RoomRoutingUpdateRequest", roomRoutingUpdateRequestFields)
 	collect("RoutingRowUpdate", routingRowUpdateFields)
 	collect("RoomRoutingView", roomRoutingViewFields)
+	collect("CreateTrunkRequest", createTrunkRequestFields)
+	collect("SIPRegisterTrunkSpec", sipRegisterTrunkSpecFields)
+	collect("IPIPTrunkSpec", ipipTrunkSpecFields)
 	return all
 }
