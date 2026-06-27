@@ -79,6 +79,11 @@ All configuration is via environment variables:
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
 | `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
+| `SIXTYDB_API_KEY` | | API key for 60db TTS, STT, and Agent (one key powers all three, same as ElevenLabs) |
+| `SIXTYDB_API_BASE` | `https://api.60db.ai` | Override 60db API base URL |
+| `SIXTYDB_LLM_MODEL` | `60db-tiny` | Default model for the composed 60db Agent |
+| `SIXTYDB_TTS_VOICE_ID` | _(docs example UUID)_ | Default voice id for 60db TTS + Agent |
+| `SIXTYDB_SYSTEM_PROMPT` | | Optional system prompt for the composed 60db Agent (overridable per request via `agent.Options.Settings["system_prompt"]`) |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
@@ -453,6 +458,46 @@ See [TESTING.md](TESTING.md) for details.
 | [cloud.google.com/go/texttospeech](https://cloud.google.com/go/docs/reference/cloud.google.com/go/texttospeech/latest) | Google Cloud TTS | |
 | [protobuf](https://github.com/protocolbuffers/protobuf-go) | Protocol Buffers | Pipecat agent |
 | [x/sync](https://pkg.go.dev/golang.org/x/sync) | Concurrency utilities | |
+
+## 60db Provider (alongside ElevenLabs)
+
+This fork adds **60db** as a peer of ElevenLabs across all three provider interfaces. One `SIXTYDB_API_KEY` enables 60db TTS, STT, and a composed Agent.
+
+Reference: [docs.60db.ai](https://docs.60db.ai)
+
+### Mapping
+
+| Interface | File | Surface | Audio |
+|---|---|---|---|
+| `tts.Provider` | `internal/tts/sixtydb.go` | WS `/ws/tts` (default) + NDJSON `/tts-stream` + REST `/tts-synthesize` | LINEAR16 @ 16k (WS) / mp3 (REST + NDJSON) |
+| `stt.Provider` | `internal/stt/sixtydb.go` | WS `/ws/stt` (browser mode) | PCM 16k LINEAR16, JSON-enveloped base64 |
+| `agent.Provider` | `internal/agent/sixtydb.go` | **Composed**: STT WS → LLM `/v1/chat/completions` → TTS WS | All PCM 16k LINEAR16 end-to-end |
+
+The TTS provider picks the transport at construction:
+
+```go
+tts.NewSixtyDb(apiKey, log)                             // default = WebSocket
+tts.NewSixtyDbWith(apiKey, tts.TransportStream, log)    // NDJSON
+tts.NewSixtyDbWith(apiKey, tts.TransportREST, log)      // sync REST
+```
+
+60db has no managed ConvAI product, so `agent/sixtydb.go` orchestrates STT+LLM+TTS itself — same pattern as the `elevenlabs-twilio-ai-caller` fork. The Agent's state machine: on `is_final && speech_final`, append the user turn to history, call chat completions, then `send_text` + `flush_context` on the persistent TTS WS context. `InjectMessage(ctx, text)` pushes an out-of-band user message into history so the next turn sees it.
+
+### Wiring into the request router
+
+This file ships the providers but does not register them in the API switch. Add 60db as a new value in 3 places:
+
+| File | Line | Change |
+|---|---|---|
+| `cmd/voiceblender/main.go` | ~124 | Default TTS construction — wrap in a switch on `cfg.DefaultTTSProvider` or similar |
+| `internal/api/stt.go` | 57, 214 | `providerName = "60db"` case → `transcriber = stt.NewSixtyDb(s.Log)` |
+| `internal/api/agent.go` | 133 | `newProvider` factory → `case "60db": return agent.NewSixtyDb(s.Log)` |
+
+The `apiKey` flow for STT and Agent is per-request via `Start(ctx, ..., apiKey, ...)` — the existing `resolveAPIKey()` helper in `internal/api/agent.go` should be extended to fall back to `cfg.SixtyDbAPIKey` for the `"60db"` provider name.
+
+### Mixer-native audio
+
+VoiceBlender's mixer runs at PCM 16 kHz mono; 60db's WS endpoints support **LINEAR16 @ 16000** natively, so audio flows in and out with **zero transcoding**. Mp3 from the REST/NDJSON TTS surfaces still needs decoding upstream of the mixer (the existing mp3 → PCM path in `internal/playback/` handles it).
 
 ## AI-Assisted Development
 
