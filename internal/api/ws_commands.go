@@ -189,6 +189,27 @@ type setLegRolePayload struct {
 	Role  string `json:"role"`
 }
 
+// challengeLegPayload combines a leg id with the digest challenge inputs for
+// challenge_leg.
+type challengeLegPayload struct {
+	ID string `json:"id"`
+	ChallengeRequest
+}
+
+// challengeRegistrationPayload combines a registration-attempt id with the
+// digest challenge inputs for challenge_registration.
+type challengeRegistrationPayload struct {
+	ID string `json:"id"`
+	ChallengeRequest
+}
+
+// rejectRegistrationPayload combines a registration-attempt id with the
+// optional reject code/reason for reject_registration.
+type rejectRegistrationPayload struct {
+	ID string `json:"id"`
+	RegistrationRejectRequest
+}
+
 func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
@@ -938,6 +959,48 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			}
 		}
 		s.wsCommandResult(lw, msg, RegistrationsResponse{Bindings: views})
+
+	// ── Inbound auth (challenge INVITE / REGISTER) ──────────────────
+	case "challenge_leg":
+		var p challengeLegPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doChallengeLeg(p.ID, p.ChallengeRequest); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "challenging"})
+	case "challenge_registration":
+		var p challengeRegistrationPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doChallengeRegistration(p.ID, p.ChallengeRequest); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "challenging"})
+	case "accept_registration":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doAcceptRegistration(p.ID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "accepting"})
+	case "reject_registration":
+		var p rejectRegistrationPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doRejectRegistration(p.ID, p.Code, p.Reason); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "rejecting"})
 
 	default:
 		s.vsiSendResponse(lw, msg.RequestID, "error",

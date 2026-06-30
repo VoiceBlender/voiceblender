@@ -91,6 +91,10 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		RecordingDir:                         recDir,
 		DefaultSampleRate:                    16000,
 		SIPRegistrationAllowMultipleContacts: true,
+		// Keep the REGISTER consult window short so tests without a controller
+		// answering the sip.registration_attempt event still finish quickly via
+		// timeout-accept. Auth tests override this with a generous value.
+		SIPInboundAuthConsultTimeoutMs: 150,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -135,6 +139,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	engine.OnUpdate(apiSrv.HandleUpdate)
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)
+	engine.OnRegisterAttempt(apiSrv.HandleRegisterAttempt)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	registrar.Start(ctx)

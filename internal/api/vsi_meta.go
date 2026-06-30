@@ -187,6 +187,12 @@ func VSICommandsMetadata() []VSICommandMeta {
 		// ── SIP Registrations ───────────────────────────────────────────
 		{Name: "list_sip_registrations", Summary: "List active SIP AOR registrations", ResultType: RegistrationsResponse{}},
 
+		// ── Inbound auth (digest challenge) ─────────────────────────────
+		{Name: "challenge_leg", Summary: "Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)", PayloadType: challengeLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "challenge_registration", Summary: "Send a 401 digest challenge for a parked inbound REGISTER attempt", PayloadType: challengeRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404}},
+		{Name: "accept_registration", Summary: "Accept a parked inbound REGISTER attempt (bind and reply 200 OK)", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "reject_registration", Summary: "Reject a parked inbound REGISTER attempt (reply 403 by default)", PayloadType: rejectRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+
 		// ── SIP Trunks (outbound registrations) ─────────────────────────
 		{Name: "create_sip_trunk", Summary: "Create an outbound SIP trunk (REGISTER or static peering)", PayloadType: CreateTrunkRequest{}, ResultType: CreateTrunkResponse{}, ErrorCodes: []int{400, 501}},
 		{Name: "list_sip_trunks", Summary: "List configured SIP trunks", ResultType: TrunksListResponse{}},
@@ -256,6 +262,7 @@ func EventsMetadata() []EventMeta {
 		{events.AgentAgentResponse, "Agent generated a response", reflect.TypeOf(events.AgentResponseData{})},
 		{events.AMDResult, "Answering machine detection completed", reflect.TypeOf(events.AMDResultData{})},
 		{events.AMDBeep, "Voicemail beep tone detected after machine classification", reflect.TypeOf(events.AMDBeepData{})},
+		{events.SIPRegistrationAttempt, "Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)", reflect.TypeOf(events.SIPRegistrationAttemptData{})},
 		{events.SIPRegistrationActive, "SIP AOR registration created or refreshed (one event per Contact)", reflect.TypeOf(events.SIPRegistrationActiveData{})},
 		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{})},
 		{events.SIPOutboundRegistrationActive, "Outbound SIP trunk REGISTER accepted (initial or refresh)", reflect.TypeOf(events.SIPOutboundRegistrationActiveData{})},

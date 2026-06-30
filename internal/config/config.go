@@ -58,6 +58,15 @@ type Config struct {
 	SIPRegistrationSweepIntervalMs       int
 	SIPRegistrationAllowMultipleContacts bool
 
+	// Inbound digest authentication. A VSI/REST client may challenge an
+	// inbound INVITE or REGISTER; VoiceBlender then issues a 401 and verifies
+	// the credentialed retry. ConsultTimeout bounds how long an inbound
+	// REGISTER is parked waiting for a client decision before it auto-accepts
+	// (preserving the unauthenticated default). NonceTTL bounds the lifetime
+	// of an issued challenge nonce.
+	SIPInboundAuthConsultTimeoutMs int
+	SIPInboundAuthNonceTTLSeconds  int
+
 	SIPOutboundRegistrationDefaultExpiresSeconds int
 	SIPOutboundRegistrationMinExpiresSeconds     int
 	SIPOutboundRegistrationMaxExpiresSeconds     int
@@ -147,6 +156,9 @@ func Load() Config {
 		SIPRegistrationMaxExpiresSeconds:     envInt("SIP_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
 		SIPRegistrationSweepIntervalMs:       envInt("SIP_REGISTRATION_SWEEP_INTERVAL_MS", 1000),
 		SIPRegistrationAllowMultipleContacts: envBool("SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", true),
+
+		SIPInboundAuthConsultTimeoutMs: envInt("SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS", 2000),
+		SIPInboundAuthNonceTTLSeconds:  envInt("SIP_INBOUND_AUTH_NONCE_TTL_SECONDS", 60),
 
 		SIPOutboundRegistrationDefaultExpiresSeconds: envInt("SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS", 3600),
 		SIPOutboundRegistrationMinExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS", 60),

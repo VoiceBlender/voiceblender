@@ -68,6 +68,7 @@ const (
 	AMDResult EventType = "amd.result"
 	AMDBeep   EventType = "amd.beep"
 
+	SIPRegistrationAttempt EventType = "sip.registration_attempt"
 	SIPRegistrationActive  EventType = "sip.registration_active"
 	SIPRegistrationExpired EventType = "sip.registration_expired"
 
