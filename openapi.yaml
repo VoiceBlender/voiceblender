@@ -446,6 +446,42 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/challenge:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: challengeLeg
+            summary: Challenge a ringing inbound SIP leg with a 401 digest auth request
+            description: Sends a SIP 401 Unauthorized carrying a `WWW-Authenticate` digest challenge on an unanswered inbound INVITE. The current leg is torn down (a `leg.disconnected` with `reason="challenged"` is published); the UAC's credentialed re-INVITE arrives as a new inbound call surfaced via `leg.ringing` with `authenticated=true` once VoiceBlender verifies the response against the supplied credential. Provide either `password` or `ha1`. An invalid retry is answered with 403 Forbidden and never surfaced.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ChallengeRequest'
+            responses:
+                '202':
+                    description: 401 challenge queued
+                '400':
+                    description: Not a SIP inbound leg, or missing realm/credential
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg is not in ringing or early_media state
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/early-media:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -2418,6 +2454,77 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /sip/registrations/attempts/{id}/challenge:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: challengeSIPRegistrationAttempt
+            summary: Challenge a parked inbound REGISTER with a 401 digest auth request
+            description: Targets an inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`). Sends a SIP 401 with a `WWW-Authenticate` digest challenge; the UA's credentialed re-REGISTER is verified against the supplied credential and, on success, bound and answered with 200 OK. Provide either `password` or `ha1`. The attempt must still be parked (it auto-accepts after the consult timeout).
+            tags:
+                - SIP Registrations
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ChallengeRequest'
+            responses:
+                '202':
+                    description: 401 challenge queued
+                '400':
+                    description: Missing realm/credential
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Registration attempt not found or already decided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /sip/registrations/attempts/{id}/accept:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: acceptSIPRegistrationAttempt
+            summary: Accept a parked inbound REGISTER attempt
+            description: Binds the AOR and replies 200 OK for an inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`). Equivalent to letting the consult timeout elapse, but immediate.
+            tags:
+                - SIP Registrations
+            responses:
+                '202':
+                    description: Accept queued
+                '404':
+                    description: Registration attempt not found or already decided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /sip/registrations/attempts/{id}/reject:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: rejectSIPRegistrationAttempt
+            summary: Reject a parked inbound REGISTER attempt
+            description: Replies with a non-2xx (403 Forbidden by default; override via `code`/`reason`) for an inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`).
+            tags:
+                - SIP Registrations
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RegistrationRejectRequest'
+            responses:
+                '202':
+                    description: Reject queued
+                '404':
+                    description: Registration attempt not found or already decided
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /sip/trunks:
         post:
             operationId: createSIPTrunk
@@ -2821,6 +2928,25 @@ components:
                         - opus
                         - AMR-WB
                         - AMR-NB
+        ChallengeRequest:
+            type: object
+            properties:
+                realm:
+                    type: string
+                username:
+                    type: string
+                password:
+                    type: string
+                ha1:
+                    type: string
+                algorithm:
+                    type: string
+                qop:
+                    type: array
+                    items:
+                        type: string
+            required:
+                - realm
         CreateLegRequest:
             type: object
             properties:
@@ -3172,6 +3298,13 @@ components:
                 - s3_prefix
                 - s3_access_key
                 - s3_secret_key
+        RegistrationRejectRequest:
+            type: object
+            properties:
+                code:
+                    type: integer
+                reason:
+                    type: string
         RoomRoutingRequest:
             type: object
             properties:
@@ -3705,6 +3838,7 @@ components:
                 - agent.agent_response
                 - amd.result
                 - amd.beep
+                - sip.registration_attempt
                 - sip.registration_active
                 - sip.registration_expired
                 - sip.outbound_registration_active
@@ -3764,6 +3898,10 @@ x-webhooks:
                                     trunk_id:
                                         type: string
                                     source_address:
+                                        type: string
+                                    authenticated:
+                                        type: boolean
+                                    auth_username:
                                         type: string
     leg.early_media:
         post:
@@ -4734,6 +4872,34 @@ x-webhooks:
                                     beep_ms:
                                         type: integer
                                         description: Milliseconds from machine detection to beep tone detection
+    sip.registration_attempt:
+        post:
+            summary: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    attempt_id:
+                                        type: string
+                                    aor:
+                                        type: string
+                                    contact:
+                                        type: string
+                                    source_address:
+                                        type: string
+                                    transport:
+                                        type: string
+                                    user_agent:
+                                        type: string
+                                    call_id:
+                                        type: string
+                                    has_authorization:
+                                        type: boolean
     sip.registration_active:
         post:
             summary: SIP AOR registration created or refreshed (one event per Contact)

@@ -64,6 +64,10 @@ type EngineConfig struct {
 	// Registrar, when non-nil, enables inbound REGISTER handling and AOR
 	// resolution for outbound INVITEs.
 	Registrar *Registrar
+
+	// NonceTTL bounds the lifetime of an issued inbound-auth challenge nonce.
+	// Zero falls back to the store default (60s).
+	NonceTTL time.Duration
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -75,6 +79,8 @@ type Engine struct {
 	dcCache *dialogClientCache
 
 	onInvite          func(call *InboundCall)
+	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
+	pendingAuth       *pendingAuthStore
 	onReInvite        func(callID string, direction string) []byte // returns SDP answer for 200 OK
 	onUpdate          func(callID string, direction string, hasSDP bool) []byte
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
@@ -443,6 +449,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		useSourceSocket:   cfg.UseSourceSocket,
 		registrar:         cfg.Registrar,
 		trunks:            NewTrunkManager(),
+		pendingAuth:       newPendingAuthStore(cfg.NonceTTL),
 	}
 
 	if cfg.Log != nil {
@@ -456,6 +463,25 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 // OnInvite registers a handler for inbound INVITE requests.
 func (e *Engine) OnInvite(handler func(*InboundCall)) {
 	e.onInvite = handler
+}
+
+// OnRegisterAttempt registers the decision callback consulted for each inbound
+// REGISTER that would create or remove a binding. The handler returns whether
+// to accept, challenge (401), or reject the REGISTER. When nil (handler not
+// registered) every REGISTER is auto-accepted, preserving the unauthenticated
+// default.
+func (e *Engine) OnRegisterAttempt(handler func(*RegisterAttempt) RegisterDecision) {
+	e.onRegisterAttempt = handler
+}
+
+// ChallengeInvite sends a 401 Unauthorized carrying a digest WWW-Authenticate
+// challenge on an unanswered inbound INVITE and records the pending challenge
+// so the credentialed re-INVITE (same Call-ID) can be verified by
+// VerifyInboundAuth.
+func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
+	val := e.recordChallenge(callIDOf(call.Request), p)
+	return e.DialogRespond(call.Dialog, sip.StatusUnauthorized, "Unauthorized", nil,
+		e.ServerHeader(), sip.NewHeader("WWW-Authenticate", val))
 }
 
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).

@@ -73,6 +73,8 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
 | `internal/sip` (whatsapp) | 12 | `IsWhatsAppInvite` host matching (exact/subdomain/lookalike/case-insensitive), `WhatsAppRecipientURI` E.164 normalisation, `InviteWhatsApp` precondition checks (TLS configured, required fields) |
 | `internal/sip` (tls) | 4 | `EngineConfig` TLS validation, concurrent UDP+TLS listener startup, self-signed cert handshake loopback |
+| `internal/sip` (inbound auth) | 11 | `recordChallenge` WWW-Authenticate shape + nonce uniqueness; `VerifyInboundAuth` valid digest (MD5/SHA-256, password and HA1), wrong password/username → invalid, no/unknown/expired challenge → none, single-use nonce consumption |
+| `internal/api` (inbound auth) | 8 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, timeout-accepts when undecided, propagates a challenge decision; `ChallengeRequest` validation (realm + password/ha1 required) |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
@@ -148,6 +150,7 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestRTT ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integration/
 ```
 
 ### Integration test list
@@ -246,6 +249,10 @@ go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 | `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
 | `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket rather than the URI host |
 | `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
+| `TestSIPInboundAuth_RegisterChallengeSuccess` | Consult enabled (webhook set); REGISTER parks → `sip.registration_attempt` event → `POST /v1/sip/registrations/attempts/{id}/challenge` → `401`; credentialed re-REGISTER (same Call-ID) verifies → `200 OK` and a live binding |
+| `TestSIPInboundAuth_RegisterChallengeWrongPassword` | Same challenge flow but the retry signs with a wrong password → `403 Forbidden` and no binding is created |
+| `TestSIPInboundAuth_RegisterTimeoutAutoAccepts` | Symmetric with inbound INVITE: the REGISTER is always surfaced (`sip.registration_attempt` fires); with no client decision it auto-accepts with `200 OK` after the consult window and binds |
+| `TestSIPInboundAuth_InviteChallengeSuccess` | Inbound INVITE → `POST /v1/legs/{id}/challenge` → `401`; credentialed re-INVITE surfaced as a new `leg.ringing` with `authenticated=true` + `auth_username`; answered → `200 OK` |
 | `TestTrunk_SIPRegister_HappyPath` | `POST /v1/sip/trunks {"type":"sip_register",...}` → 202; the fake registrar receives one REGISTER, returns 200 with `Expires=120`; trunk status flips to `active`; `sip.outbound_registration_active` event emitted; no response body leaks `password` |
 | `TestTrunk_SIPRegister_DigestAuth` | Fake registrar challenges the initial REGISTER with `401 Unauthorized` + `WWW-Authenticate`; the trunk computes the digest response and the second REGISTER carries an `Authorization` header that the registrar accepts |
 | `TestTrunk_SIPRegister_Refresh` | Registrar grants `Expires=2`; the trunk refreshes at `granted * SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` (default 0.5) so a second REGISTER hits the registrar within ~1 s |

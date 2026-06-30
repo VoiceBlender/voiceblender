@@ -370,6 +370,24 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/challenge", OperationID: "challengeLeg",
+			Summary: "Challenge a ringing inbound SIP leg with a 401 digest auth request",
+			Description: "Sends a SIP 401 Unauthorized carrying a `WWW-Authenticate` digest challenge on " +
+				"an unanswered inbound INVITE. The current leg is torn down (a `leg.disconnected` with " +
+				"`reason=\"challenged\"` is published); the UAC's credentialed re-INVITE arrives as a new " +
+				"inbound call surfaced via `leg.ringing` with `authenticated=true` once VoiceBlender " +
+				"verifies the response against the supplied credential. Provide either `password` or `ha1`. " +
+				"An invalid retry is answered with 403 Forbidden and never surfaced.",
+			Tags:        []string{"Legs"},
+			RequestType: ChallengeRequest{},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "401 challenge queued"},
+				400: {Description: "Not a SIP inbound leg, or missing realm/credential"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg is not in ringing or early_media state"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/early-media", OperationID: "earlyMediaLeg",
 			Summary: "Enable early media on a ringing inbound SIP leg (asynchronous)",
 			Description: "Queues a SIP 183 Session Progress with SDP and the RTP/codec setup. The HTTP call returns 202 " +
@@ -1162,6 +1180,47 @@ func RoutesMetadata() []RouteMeta {
 				204: {Description: "Binding(s) removed"},
 				400: {Description: "Invalid AOR encoding"},
 				404: {Description: "AOR (or specified contact) not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/sip/registrations/attempts/{id}/challenge", OperationID: "challengeSIPRegistrationAttempt",
+			Summary: "Challenge a parked inbound REGISTER with a 401 digest auth request",
+			Description: "Targets an inbound REGISTER surfaced via the `sip.registration_attempt` event " +
+				"(by its `attempt_id`). Sends a SIP 401 with a `WWW-Authenticate` digest challenge; the UA's " +
+				"credentialed re-REGISTER is verified against the supplied credential and, on success, bound " +
+				"and answered with 200 OK. Provide either `password` or `ha1`. The attempt must still be parked " +
+				"(it auto-accepts after the consult timeout).",
+			Tags:        []string{"SIP Registrations"},
+			RequestType: ChallengeRequest{},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "401 challenge queued"},
+				400: {Description: "Missing realm/credential"},
+				404: {Description: "Registration attempt not found or already decided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/sip/registrations/attempts/{id}/accept", OperationID: "acceptSIPRegistrationAttempt",
+			Summary: "Accept a parked inbound REGISTER attempt",
+			Description: "Binds the AOR and replies 200 OK for an inbound REGISTER surfaced via the " +
+				"`sip.registration_attempt` event (by its `attempt_id`). Equivalent to letting the consult " +
+				"timeout elapse, but immediate.",
+			Tags: []string{"SIP Registrations"},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Accept queued"},
+				404: {Description: "Registration attempt not found or already decided"},
+			},
+		},
+		{
+			Method: "POST", Path: "/sip/registrations/attempts/{id}/reject", OperationID: "rejectSIPRegistrationAttempt",
+			Summary: "Reject a parked inbound REGISTER attempt",
+			Description: "Replies with a non-2xx (403 Forbidden by default; override via `code`/`reason`) for an " +
+				"inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`).",
+			Tags:         []string{"SIP Registrations"},
+			RequestType:  RegistrationRejectRequest{},
+			OptionalBody: true,
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Reject queued"},
+				404: {Description: "Registration attempt not found or already decided"},
 			},
 		},
 		{

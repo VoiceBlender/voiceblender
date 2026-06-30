@@ -494,6 +494,53 @@ SIP-level send failures surface as `leg.command_failed` with `command="ring"`.
 
 ---
 
+### POST /v1/legs/{id}/challenge
+
+**Asynchronous.** Send a SIP **401 Unauthorized** carrying a digest `WWW-Authenticate` challenge on a ringing (or early-media) inbound SIP leg, instead of answering or rejecting it. Use this to authenticate inbound INVITEs on a per-call basis — for example, challenge calls from unknown source addresses while accepting trusted peers without a challenge.
+
+Inbound calls are **not** challenged by default; a VSI/REST client decides per call (the `leg.ringing` event carries `source_address` to inform that decision). Challenging is optional and additive — existing accept/reject behavior is unchanged.
+
+Flow:
+1. You call `/challenge` on a ringing leg. VoiceBlender sends `401` with a freshly generated `nonce` and tears the current leg down (a `leg.disconnected` with `reason="challenged"` is published).
+2. The UAC retries the INVITE with an `Authorization` header (same `Call-ID`). VoiceBlender verifies the digest response against the credential you supplied.
+3. On success a **new** inbound leg is surfaced via `leg.ringing` with `authenticated: true` and `auth_username` set — answer/reject it as usual. On failure VoiceBlender replies `403 Forbidden` and the call is not surfaced.
+
+VoiceBlender holds the supplied credential only in memory for the challenge's lifetime (`SIP_INBOUND_AUTH_NONCE_TTL_SECONDS`, default 60s) and never persists or returns it.
+
+**Request:**
+
+```json
+{
+  "realm": "vb.example",
+  "username": "alice",
+  "password": "s3cret",
+  "algorithm": "MD5",
+  "qop": ["auth"]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `realm` | string (required) | Digest realm advertised in the challenge. |
+| `username` | string (optional) | Expected username. When set, a verified response whose username differs is rejected. When omitted, any username that verifies is accepted. |
+| `password` | string | Plaintext secret. Provide this **or** `ha1`. |
+| `ha1` | string | Precomputed `MD5(username:realm:password)` (hex), to avoid sending a plaintext secret. Provide this **or** `password`. |
+| `algorithm` | string (optional) | `MD5` (default), `SHA-256`, or `SHA-512-256`. |
+| `qop` | array (optional) | Advertised quality-of-protection, e.g. `["auth"]`. Omit to leave `qop` out of the challenge. |
+
+**Response:** `202 Accepted`
+
+```json
+{ "status": "challenging" }
+```
+
+**Errors:**
+- `400` — Not a SIP inbound leg, or missing `realm`/credential
+- `404` — Leg not found
+- `409` — Leg is not in `ringing` or `early_media` state
+
+---
+
 ### POST /v1/legs/{id}/answer
 
 **Asynchronous.** Queue the SIP 200 OK on a ringing or early-media inbound SIP leg. If the leg is in `early_media` state, the existing media pipeline and SDP are reused; if in `ringing` state, a new RTP session and codec negotiation are performed when the goroutine sends the 200 OK. Successful connection is observed via `leg.connected`.
@@ -2709,6 +2756,10 @@ Event data fields are flattened into the top-level JSON object alongside the env
 
 **`offered_codecs`** (inbound SIP only) lists the audio codecs from the remote INVITE's offer SDP, in offer order. `priority` is 1-based and matches the order — lower value = higher priority. Use any `name` from this list as the `codec` field on `POST /v1/legs/{id}/early-media` or `POST /v1/legs/{id}/answer` to force that codec for the answer SDP.
 
+**`source_address`** (inbound SIP only) is the transport-layer `host:port` the INVITE arrived on. Use it to decide whether to challenge the call via `POST /v1/legs/{id}/challenge`.
+
+**`authenticated`** / **`auth_username`** (inbound SIP only) are present and set when the INVITE carried digest credentials that VoiceBlender verified against a prior `/challenge` — i.e. the credentialed retry surfaced as a new, authenticated leg. They are omitted for un-challenged calls.
+
 All events include `instance_id` alongside the event-specific fields.
 
 ### Event Types
@@ -2766,6 +2817,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `room.unbridged` | Bridge torn down | `bridge_id`, `room_a_id`, `room_b_id`, `reason` |
 | `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms` |
 | `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
+| `sip.registration_attempt` | An inbound REGISTER (that would create/remove a binding) is awaiting a challenge/accept/reject decision; auto-accepts after `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `attempt_id`, `aor`, `contact`, `source_address`, `transport`, `user_agent`, `call_id`, `has_authorization` |
 | `sip.registration_active` | A SIP AOR binding was created or refreshed | `aor`, `contact`, `socket`, `transport`, `user_agent`, `call_id`, `granted_expires_seconds`, `expires_at` |
 | `sip.registration_expired` | A SIP AOR binding was removed | `aor`, `contact`, `socket`, `reason` (`ttl` / `unregistered` / `forced` / `replaced`) |
 > **LiveKit participants.** Remote LK participants do not get their own special event types. Each appears as a regular `leg.connected` / `leg.disconnected` for a `livekit_participant` leg (Model B). `speaking.started` / `speaking.stopped` apply per-leg as usual. The `leg.disconnected.reason` for an LK participant leg is `livekit_participant_left`.
@@ -3056,6 +3108,52 @@ Server replies:
 The `sip.registration_active` / `sip.registration_expired` events flow
 through the standard webhook and VSI channels — see Event Types above.
 
+### Inbound REGISTER authentication (digest challenge)
+
+Inbound REGISTER auth is handled **symmetrically with inbound INVITE**: just as
+an INVITE always surfaces `leg.ringing` and waits for the client to decide,
+every inbound REGISTER that creates or removes a binding is surfaced for a
+decision and may be challenged. By default (no challenge) the REGISTER is
+accepted — auth is assumed to be enforced by a SIP proxy in front, or not
+required.
+
+Flow:
+
+1. An inbound REGISTER (with a Contact) arrives. VoiceBlender publishes a
+   `sip.registration_attempt` event (carrying `attempt_id`, `aor`,
+   `source_address`, `transport`, etc.) and **parks** the REGISTER awaiting a
+   decision for up to `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` (default 2000 ms).
+2. The client responds by `attempt_id`:
+   - **challenge** — VoiceBlender replies `401` with a `WWW-Authenticate`
+     digest challenge.
+   - **accept** — bind and reply `200 OK` (same as letting the timeout elapse).
+   - **reject** — reply `403` (or a custom code/reason).
+3. If challenged, the UA retries the REGISTER with an `Authorization` header
+   (same `Call-ID`). VoiceBlender verifies the digest against the supplied
+   credential: on success it binds and replies `200 OK`; on failure it replies
+   `403 Forbidden`.
+
+Unlike an INVITE — whose leg can ring indefinitely — a REGISTER is request/response
+and cannot be parked forever, so the consult is bounded by the timeout above. If
+no decision arrives within that window the REGISTER auto-accepts, preserving the
+unauthenticated default.
+
+```
+POST /v1/sip/registrations/attempts/{id}/challenge   # body: ChallengeRequest (see POST /v1/legs/{id}/challenge)
+POST /v1/sip/registrations/attempts/{id}/accept       # no body
+POST /v1/sip/registrations/attempts/{id}/reject       # optional body: { "code": 403, "reason": "Forbidden" }
+```
+
+All three return `202 Accepted` on success, or `404` when the attempt is
+unknown or already decided (e.g. the consult timeout already elapsed). The same
+actions are available over VSI as `challenge_registration`,
+`accept_registration`, and `reject_registration` (payload `{ "id": "<attempt_id>", ... }`).
+
+The `ChallengeRequest` body matches `POST /v1/legs/{id}/challenge`: `realm`
+(required), one of `password` / `ha1`, and optional `username`, `algorithm`,
+`qop`. Supplied credentials are held only in memory for the challenge's lifetime
+(`SIP_INBOUND_AUTH_NONCE_TTL_SECONDS`) and never persisted or returned.
+
 ### Configuration
 
 | Variable | Default | Description |
@@ -3064,6 +3162,8 @@ through the standard webhook and VSI channels — see Event Types above.
 | `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry |
 | `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | How often the expiry sweeper runs |
 | `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `false`, every REGISTER replaces any prior Contacts for the AOR |
+| `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound REGISTER is parked awaiting a challenge/accept/reject decision before auto-accepting |
+| `SIP_INBOUND_AUTH_NONCE_TTL_SECONDS` | `60` | Lifetime of an issued inbound-auth challenge nonce |
 
 ---
 

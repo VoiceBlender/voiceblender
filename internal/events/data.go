@@ -59,6 +59,12 @@ type LegRingingData struct {
 	// (inbound legs only). Useful for diagnostics when the peer's Via /
 	// Contact differs from the transport-layer source, e.g. behind NAT.
 	SourceAddress string `json:"source_address,omitempty"`
+	// Authenticated is true when this inbound INVITE carried digest
+	// credentials that VoiceBlender verified against a prior challenge.
+	Authenticated bool `json:"authenticated,omitempty"`
+	// AuthUsername is the username from the verified digest credentials
+	// (set only when Authenticated is true).
+	AuthUsername string `json:"auth_username,omitempty"`
 }
 
 // OfferedCodec describes one codec from a remote SIP offer SDP.
@@ -398,6 +404,23 @@ type SIPRegistrationScope struct {
 func (s SIPRegistrationScope) GetLegID() string  { return "" }
 func (s SIPRegistrationScope) GetRoomID() string { return "" }
 func (s SIPRegistrationScope) GetAppID() string  { return s.AppID }
+
+// SIPRegistrationAttemptData fires when an inbound REGISTER that would create
+// or remove a binding is surfaced to the decision callback. A VSI/REST client
+// may respond by challenging (401), accepting, or rejecting the attempt,
+// referencing it by AttemptID. If no decision arrives before the consult
+// timeout the REGISTER is auto-accepted.
+type SIPRegistrationAttemptData struct {
+	SIPRegistrationScope
+	AttemptID        string `json:"attempt_id"`
+	AOR              string `json:"aor"`
+	Contact          string `json:"contact,omitempty"`
+	SourceAddress    string `json:"source_address,omitempty"`
+	Transport        string `json:"transport,omitempty"`
+	UserAgent        string `json:"user_agent,omitempty"`
+	CallID           string `json:"call_id,omitempty"`
+	HasAuthorization bool   `json:"has_authorization,omitempty"`
+}
 
 // SIPRegistrationActiveData fires when a new AOR binding is added or an
 // existing one is refreshed by a REGISTER request.

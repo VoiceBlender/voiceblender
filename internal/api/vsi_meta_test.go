@@ -24,6 +24,8 @@ func TestVSIMetadata_AllNewCommandsRegistered(t *testing.T) {
 		"leg_agent_message", "leg_agent_stop",
 		"room_agent_elevenlabs", "room_agent_vapi", "room_agent_pipecat", "room_agent_deepgram",
 		"room_agent_message", "room_agent_stop",
+		// Inbound auth (digest challenge)
+		"challenge_leg", "challenge_registration", "accept_registration", "reject_registration",
 	}
 	registered := make(map[string]VSICommandMeta)
 	for _, cmd := range VSICommandsMetadata() {

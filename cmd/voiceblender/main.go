@@ -132,6 +132,7 @@ func main() {
 		Log:               log,
 		PortAllocator:     portAlloc,
 		Registrar:         registrar,
+		NonceTTL:          time.Duration(cfg.SIPInboundAuthNonceTTLSeconds) * time.Second,
 	})
 	if err != nil {
 		log.Error("failed to create SIP engine", "error", err)
@@ -227,6 +228,9 @@ func main() {
 
 	// Register inbound call handler
 	engine.OnInvite(apiSrv.HandleInboundCall)
+
+	// Register inbound REGISTER decision handler (challenge / accept / reject).
+	engine.OnRegisterAttempt(apiSrv.HandleRegisterAttempt)
 
 	// Register re-INVITE handler for hold/unhold detection
 	engine.OnReInvite(apiSrv.HandleReInvite)
