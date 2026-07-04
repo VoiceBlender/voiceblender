@@ -50,6 +50,9 @@ type Server struct {
 	speechOverride   map[string]*bool
 
 	transfers *transferStore
+
+	// regAttempts tracks inbound REGISTERs parked awaiting a client decision.
+	regAttempts *registerAttemptStore
 }
 
 func NewServer(
@@ -84,6 +87,7 @@ func NewServer(
 		speakDets:      make(map[string]*speaking.Detector),
 		speechOverride: make(map[string]*bool),
 		transfers:      newTransferStore(),
+		regAttempts:    newRegisterAttemptStore(),
 	}
 	s.routes()
 	return s
@@ -123,6 +127,7 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/answer", s.answerLeg)
 		r.Post("/legs/{id}/early-media", s.earlyMediaLeg)
 		r.Post("/legs/{id}/ring", s.ringLeg)
+		r.Post("/legs/{id}/challenge", s.challengeLeg)
 		r.Post("/legs/{id}/mute", s.muteLeg)
 		r.Delete("/legs/{id}/mute", s.unmuteLeg)
 		r.Post("/legs/{id}/deaf", s.deafLeg)
@@ -194,6 +199,11 @@ func (s *Server) routes() {
 		// SIP registrations (AOR registry)
 		r.Get("/sip/registrations", s.listRegistrations)
 		r.Delete("/sip/registrations/{aor}", s.deleteRegistration)
+
+		// Inbound REGISTER auth decisions (parked attempts awaiting a decision)
+		r.Post("/sip/registrations/attempts/{id}/challenge", s.challengeRegistrationAttempt)
+		r.Post("/sip/registrations/attempts/{id}/accept", s.acceptRegistrationAttempt)
+		r.Post("/sip/registrations/attempts/{id}/reject", s.rejectRegistrationAttempt)
 
 		// SIP trunks (outbound registrations / static peering)
 		r.Post("/sip/trunks", s.createTrunk)

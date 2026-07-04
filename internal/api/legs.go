@@ -1000,6 +1000,26 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		return
 	}
 
+	// Inbound digest auth: a credentialed re-INVITE (the retry after a prior
+	// 401 challenge) is verified here before the call is surfaced. An invalid
+	// response is rejected with 403; a valid one is surfaced as authenticated.
+	var authenticated bool
+	var authUsername string
+	if call.Request.GetHeader("Authorization") != nil {
+		switch res, user := s.SIPEngine.VerifyInboundAuth(call.Request, "INVITE"); res {
+		case sipmod.AuthValid:
+			authenticated = true
+			authUsername = user
+		case sipmod.AuthInvalid:
+			if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusForbidden, "Forbidden", nil, s.SIPEngine.ServerHeader()); err != nil {
+				s.Log.Error("failed to send 403 Forbidden", "error", err)
+			}
+			return
+		}
+		// AuthNone (no live challenge matched): surface as unauthenticated so
+		// the client can issue a fresh challenge.
+	}
+
 	// 100 Trying is always sent so the UAC can stop INVITE retransmissions.
 	if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusTrying, "Trying", nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("failed to send 100 Trying", "error", err)
@@ -1066,6 +1086,8 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		OfferedCodecs: buildOfferedCodecs(call.RemoteSDP),
 		TrunkID:       trunkID,
 		SourceAddress: sourceAddr,
+		Authenticated: authenticated,
+		AuthUsername:  authUsername,
 	})
 
 	// Wait for REST answer or context cancellation (caller hangup / timeout)

@@ -302,6 +302,22 @@ channels:
                 $ref: '#/components/messages/list_sip_registrations'
             list_sip_registrations.result:
                 $ref: '#/components/messages/list_sip_registrationsResult'
+            challenge_leg:
+                $ref: '#/components/messages/challenge_leg'
+            challenge_leg.result:
+                $ref: '#/components/messages/challenge_legResult'
+            challenge_registration:
+                $ref: '#/components/messages/challenge_registration'
+            challenge_registration.result:
+                $ref: '#/components/messages/challenge_registrationResult'
+            accept_registration:
+                $ref: '#/components/messages/accept_registration'
+            accept_registration.result:
+                $ref: '#/components/messages/accept_registrationResult'
+            reject_registration:
+                $ref: '#/components/messages/reject_registration'
+            reject_registration.result:
+                $ref: '#/components/messages/reject_registrationResult'
             create_sip_trunk:
                 $ref: '#/components/messages/create_sip_trunk'
             create_sip_trunk.result:
@@ -410,6 +426,8 @@ channels:
                 $ref: '#/components/messages/evt_amd_result'
             amd.beep:
                 $ref: '#/components/messages/evt_amd_beep'
+            sip.registration_attempt:
+                $ref: '#/components/messages/evt_sip_registration_attempt'
             sip.registration_active:
                 $ref: '#/components/messages/evt_sip_registration_active'
             sip.registration_expired:
@@ -1372,6 +1390,58 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/list_sip_registrations.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_challenge_leg:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)
+        messages:
+            - $ref: '#/channels/vsi/messages/challenge_leg'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/challenge_leg.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_challenge_registration:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Send a 401 digest challenge for a parked inbound REGISTER attempt
+        messages:
+            - $ref: '#/channels/vsi/messages/challenge_registration'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/challenge_registration.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_accept_registration:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Accept a parked inbound REGISTER attempt (bind and reply 200 OK)
+        messages:
+            - $ref: '#/channels/vsi/messages/accept_registration'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/accept_registration.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_reject_registration:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Reject a parked inbound REGISTER attempt (reply 403 by default)
+        messages:
+            - $ref: '#/channels/vsi/messages/reject_registration'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/reject_registration.result'
+                - $ref: '#/channels/vsi/messages/error'
     recv_create_sip_trunk:
         action: receive
         channel:
@@ -1746,6 +1816,13 @@ operations:
         summary: Voicemail beep tone detected after machine classification
         messages:
             - $ref: '#/channels/vsi/messages/amd.beep'
+    send_sip_registration_attempt:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.registration_attempt'
     send_sip_registration_active:
         action: send
         channel:
@@ -3994,6 +4071,126 @@ components:
                         $ref: '#/components/schemas/RegistrationsResponse'
                 required:
                     - type
+        challenge_leg:
+            name: challenge_leg
+            title: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)
+            summary: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: challenge_leg
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/challengeLegPayload'
+                required:
+                    - type
+        challenge_legResult:
+            name: challenge_legResult
+            title: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: challenge_leg.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        challenge_registration:
+            name: challenge_registration
+            title: Send a 401 digest challenge for a parked inbound REGISTER attempt
+            summary: Send a 401 digest challenge for a parked inbound REGISTER attempt
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: challenge_registration
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/challengeRegistrationPayload'
+                required:
+                    - type
+        challenge_registrationResult:
+            name: challenge_registrationResult
+            title: Send a 401 digest challenge for a parked inbound REGISTER attempt — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: challenge_registration.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        accept_registration:
+            name: accept_registration
+            title: Accept a parked inbound REGISTER attempt (bind and reply 200 OK)
+            summary: Accept a parked inbound REGISTER attempt (bind and reply 200 OK)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: accept_registration
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        accept_registrationResult:
+            name: accept_registrationResult
+            title: Accept a parked inbound REGISTER attempt (bind and reply 200 OK) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: accept_registration.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        reject_registration:
+            name: reject_registration
+            title: Reject a parked inbound REGISTER attempt (reply 403 by default)
+            summary: Reject a parked inbound REGISTER attempt (reply 403 by default)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: reject_registration
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/rejectRegistrationPayload'
+                required:
+                    - type
+        reject_registrationResult:
+            name: reject_registrationResult
+            title: Reject a parked inbound REGISTER attempt (reply 403 by default) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: reject_registration.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
         create_sip_trunk:
             name: create_sip_trunk
             title: Create an outbound SIP trunk (REGISTER or static peering)
@@ -4437,6 +4634,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/amd.beep. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/amd.beep/post/requestBody/content/application~1json/schema
+        evt_sip_registration_attempt:
+            name: evt_sip_registration_attempt
+            title: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
+            summary: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_attempt. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.registration_attempt/post/requestBody/content/application~1json/schema
         evt_sip_registration_active:
             name: evt_sip_registration_active
             title: SIP AOR registration created or refreshed (one event per Contact)
@@ -5110,6 +5314,50 @@ components:
                 - room_id
                 - bridge_id
                 - direction
+        challengeLegPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                realm:
+                    type: string
+                username:
+                    type: string
+                password:
+                    type: string
+                ha1:
+                    type: string
+                algorithm:
+                    type: string
+                qop:
+                    type: array
+                    items:
+                        type: string
+            required:
+                - id
+                - realm
+        challengeRegistrationPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                realm:
+                    type: string
+                username:
+                    type: string
+                password:
+                    type: string
+                ha1:
+                    type: string
+                algorithm:
+                    type: string
+                qop:
+                    type: array
+                    items:
+                        type: string
+            required:
+                - id
+                - realm
         deleteLegPayload:
             type: object
             properties:
@@ -5240,6 +5488,17 @@ components:
                 - s3_prefix
                 - s3_access_key
                 - s3_secret_key
+        rejectRegistrationPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - id
         roomLegPayload:
             type: object
             properties:

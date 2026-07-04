@@ -8,10 +8,44 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// handleRegister processes inbound SIP REGISTER per RFC 3261 §10.3. The
-// registrar is auto-approving — every REGISTER from a supported transport
-// is accepted and the AOR is bound to the request's source socket. Auth is
-// assumed to be enforced by a SIP proxy in front of VoiceBlender.
+// RegisterDecisionKind is the action a VSI/REST client chooses for an inbound
+// REGISTER it was consulted about.
+type RegisterDecisionKind int
+
+const (
+	RegisterAccept    RegisterDecisionKind = iota // bind and reply 200 OK
+	RegisterChallenge                             // reply 401 with a digest challenge
+	RegisterReject                                // reply with a non-2xx (default 403)
+)
+
+// RegisterDecision is returned by the OnRegisterAttempt callback.
+type RegisterDecision struct {
+	Kind         RegisterDecisionKind
+	Challenge    ChallengeParams // used when Kind == RegisterChallenge
+	RejectCode   int             // used when Kind == RegisterReject; 0 => 403
+	RejectReason string          // used when Kind == RegisterReject; "" => "Forbidden"
+}
+
+// RegisterAttempt describes an inbound REGISTER surfaced to the decision
+// callback so the client can decide whether to challenge it (e.g. based on the
+// source address).
+type RegisterAttempt struct {
+	Request   *sip.Request
+	AOR       string
+	Contact   string
+	Source    string
+	Transport string
+	UserAgent string
+	CallID    string
+	HasAuth   bool
+}
+
+// handleRegister processes inbound SIP REGISTER per RFC 3261 §10.3. A REGISTER
+// that creates or removes a binding is first passed to the OnRegisterAttempt
+// decision callback (when registered), which may accept it, challenge it with a
+// 401 digest challenge, or reject it. With no callback wired the registrar is
+// auto-approving — every REGISTER from a supported transport is accepted and
+// the AOR is bound to the request's source socket.
 func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 	if e.registrar == nil {
 		e.respondRegister(tx, req, sip.StatusNotImplemented, "Registrar not enabled", nil, nil)
@@ -56,9 +90,17 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 		}
 	}
 
-	// Query REGISTER (no Contact header): reply 200 OK with the current bindings.
+	// Query REGISTER (no Contact header): reply 200 OK with the current
+	// bindings. A pure query never binds, so it is not subject to the auth gate.
 	if len(contacts) == 0 {
 		e.respondRegister(tx, req, sip.StatusOK, "OK", e.registrar.LookupAll(aor), nil)
+		return
+	}
+
+	// Authentication gate: verify a credentialed retry, or consult the client
+	// for a challenge/accept/reject decision. A 401/403 is sent inside when the
+	// REGISTER is not authorized to proceed.
+	if !e.authorizeRegister(req, tx, aor) {
 		return
 	}
 
@@ -130,6 +172,69 @@ func (e *Engine) respondRegister(tx sip.ServerTransaction, req *sip.Request, sta
 	e.logSIPMessage("outbound", res)
 	if err := tx.Respond(res); err != nil {
 		e.log.Error("REGISTER: respond failed", "error", err, "status", statusCode)
+	}
+}
+
+// authorizeRegister applies the inbound-REGISTER auth gate. It returns true
+// when the REGISTER may proceed to binding; otherwise it has already sent the
+// appropriate 401 (challenge) or 4xx (reject/forbidden) response. A credentialed
+// retry is verified against the issued challenge first; absent valid
+// credentials, the OnRegisterAttempt callback is consulted.
+func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, aor string) bool {
+	hasAuth := req.GetHeader("Authorization") != nil
+	if hasAuth {
+		switch res, _ := e.VerifyInboundAuth(req, sip.REGISTER.String()); res {
+		case AuthValid:
+			return true
+		case AuthInvalid:
+			e.respondRegister(tx, req, sip.StatusForbidden, "Forbidden", nil, nil)
+			return false
+		}
+		// AuthNone (no live challenge matched) falls through to a fresh consult.
+	}
+
+	if e.onRegisterAttempt == nil {
+		return true
+	}
+
+	contact := ""
+	if c := req.GetHeader("Contact"); c != nil {
+		contact = c.Value()
+	}
+	userAgent := ""
+	if ua := req.GetHeader("User-Agent"); ua != nil {
+		userAgent = ua.Value()
+	}
+	decision := e.onRegisterAttempt(&RegisterAttempt{
+		Request:   req,
+		AOR:       aor,
+		Contact:   contact,
+		Source:    req.Source(),
+		Transport: strings.ToLower(req.Transport()),
+		UserAgent: userAgent,
+		CallID:    callIDOf(req),
+		HasAuth:   hasAuth,
+	})
+
+	switch decision.Kind {
+	case RegisterChallenge:
+		val := e.recordChallenge(callIDOf(req), decision.Challenge)
+		e.respondRegister(tx, req, sip.StatusUnauthorized, "Unauthorized", nil,
+			[]sip.Header{sip.NewHeader("WWW-Authenticate", val)})
+		return false
+	case RegisterReject:
+		code := decision.RejectCode
+		if code == 0 {
+			code = sip.StatusForbidden
+		}
+		reason := decision.RejectReason
+		if reason == "" {
+			reason = "Forbidden"
+		}
+		e.respondRegister(tx, req, code, reason, nil, nil)
+		return false
+	default:
+		return true
 	}
 }
 

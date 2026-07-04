@@ -578,6 +578,35 @@ func (l *SIPLeg) Reject(ctx context.Context, statusCode int, reasonPhrase string
 	return respErr
 }
 
+// Challenge sends a 401 Unauthorized with a digest WWW-Authenticate challenge
+// on an unanswered inbound leg, terminating the dialog. The credentialed
+// re-INVITE arrives as a fresh inbound call (same Call-ID) which the engine
+// verifies via VerifyInboundAuth. Like Reject, this is a terminal response on
+// the INVITE transaction and is guarded by the same once-gate.
+//
+// Only valid on inbound legs in StateRinging or StateEarlyMedia.
+func (l *SIPLeg) Challenge(ctx context.Context, params sipmod.ChallengeParams) error {
+	if l.inbound == nil {
+		return fmt.Errorf("cannot challenge outbound leg")
+	}
+	l.mu.RLock()
+	st := l.state
+	l.mu.RUnlock()
+	if st != StateRinging && st != StateEarlyMedia {
+		return fmt.Errorf("leg is %s, expected ringing or early_media", st)
+	}
+	var respErr error
+	l.rejectOnce.Do(func() {
+		l.setState(StateHungUp)
+		if err := l.engine.ChallengeInvite(l.inbound, params); err != nil {
+			respErr = fmt.Errorf("respond 401: %w", err)
+			return
+		}
+		l.cancel()
+	})
+	return respErr
+}
+
 // SetDisconnectReason stores a reason that will be used in the next
 // leg.disconnected event published for this leg, in place of the goroutine's
 // default. Set by the API DELETE handler before calling Reject or Hangup so
