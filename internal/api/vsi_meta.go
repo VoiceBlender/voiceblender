@@ -4,6 +4,7 @@ import (
 	"reflect"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 )
 
 // VSICommandMeta describes a single command accepted on the /v1/vsi
@@ -61,10 +62,12 @@ func VSICommandsMetadata() []VSICommandMeta {
 		// ── Leg lifecycle ───────────────────────────────────────────────
 		{
 			Name: "create_leg", Summary: "Originate an outbound leg",
-			Description: "Currently returns a 501 error directing clients to use POST /v1/legs. " +
-				"Reserved for the future when the originate flow is fully extracted into a do* helper.",
+			Description: "Originates an outbound leg, mirroring POST /v1/legs, and returns the leg " +
+				"view. Supports all leg types: \"sip\", \"websocket\", \"whatsapp\", and " +
+				"\"livekit_room\". For \"livekit_room\", custom headers come from the request's " +
+				"`headers` map (there is no HTTP request over the WebSocket).",
 			PayloadType: CreateLegRequest{}, ResultType: LegView{},
-			ErrorCodes: []int{400, 501},
+			ErrorCodes: []int{400, 500, 502, 503},
 		},
 		{
 			Name: "answer_leg", Summary: "Answer a ringing inbound leg",
@@ -186,6 +189,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 
 		// ── SIP Registrations ───────────────────────────────────────────
 		{Name: "list_sip_registrations", Summary: "List active SIP AOR registrations", ResultType: RegistrationsResponse{}},
+		{Name: "delete_sip_registration", Summary: "Force-unbind an AOR (or a single contact under it)", PayloadType: deleteRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
 		// ── Inbound auth (digest challenge) ─────────────────────────────
 		{Name: "challenge_leg", Summary: "Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)", PayloadType: challengeLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
@@ -196,7 +200,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		// ── SIP Trunks (outbound registrations) ─────────────────────────
 		{Name: "create_sip_trunk", Summary: "Create an outbound SIP trunk (REGISTER or static peering)", PayloadType: CreateTrunkRequest{}, ResultType: CreateTrunkResponse{}, ErrorCodes: []int{400, 501}},
 		{Name: "list_sip_trunks", Summary: "List configured SIP trunks", ResultType: TrunksListResponse{}},
-		{Name: "get_sip_trunk", Summary: "Get a single SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "get_sip_trunk", Summary: "Get a single SIP trunk", PayloadType: idPayload{}, ResultType: sipmod.TrunkView{}, ErrorCodes: []int{404}},
 		{Name: "delete_sip_trunk", Summary: "Unregister and remove a SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 	}
 }

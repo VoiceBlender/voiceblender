@@ -114,21 +114,29 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 // resulting leg. Responds 201 immediately; the dial completes
 // asynchronously and publishes LegConnected or LegDisconnected.
 func (s *Server) createWebSocketOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
-	if req.URL == "" {
-		writeError(w, http.StatusBadRequest, "url is required for type=websocket")
+	view, err := s.doCreateWebSocketOutboundLeg(req)
+	if err != nil {
+		handleAPIError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+// doCreateWebSocketOutboundLeg validates and starts an outbound WebSocket leg,
+// returning the leg view. Shared by the REST handler and VSI create_leg.
+func (s *Server) doCreateWebSocketOutboundLeg(req CreateLegRequest) (LegView, error) {
+	if req.URL == "" {
+		return LegView{}, newAPIError(http.StatusBadRequest, "url is required for type=websocket")
 	}
 	cfg, err := wsCfgFromCreateReq(req, s.Log)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
 			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID, s.Config.DefaultSampleRate); err != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
-				return
+				return LegView{}, newAPIError(http.StatusInternalServerError, "create room: %v", err)
 			}
 		}
 	}
@@ -157,7 +165,7 @@ func (s *Server) createWebSocketOutboundLeg(w http.ResponseWriter, r *http.Reque
 
 	go s.runWSOutboundDial(l, req, cfg)
 
-	writeJSON(w, http.StatusCreated, toLegView(l))
+	return toLegView(l), nil
 }
 
 func (s *Server) runWSOutboundDial(l *leg.WebSocketLeg, req CreateLegRequest, cfg wsmedia.Config) {

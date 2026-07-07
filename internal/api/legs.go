@@ -750,14 +750,25 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
+	view, err := s.doCreateSIPOutboundLeg(req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+// doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
+// outbound SIP originate and kicks off the async INVITE, returning the leg view.
+// Shared by the REST handler and the VSI create_leg dispatch.
+func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	target := req.To
 	if target == "" {
 		target = req.URI
 	}
 	recipient := sip.Uri{}
 	if err := sip.ParseUri(target, &recipient); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid SIP URI: %v", err))
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "invalid SIP URI: %v", err)
 	}
 
 	// Parse codec overrides from request.
@@ -765,8 +776,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	for _, name := range req.Codecs {
 		ct := codec.CodecTypeFromName(name)
 		if ct == codec.CodecUnknown {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown codec: %s", name))
-			return
+			return LegView{}, newAPIError(http.StatusBadRequest, "unknown codec: %s", name)
 		}
 		codecs = append(codecs, ct)
 	}
@@ -775,8 +785,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
 			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID, s.Config.DefaultSampleRate); err != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
-				return
+				return LegView{}, newAPIError(http.StatusInternalServerError, "create room: %v", err)
 			}
 		}
 	}
@@ -819,8 +828,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		var err error
 		startAMD, err = s.prepareAMD(l, req.AMD)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 		}
 	} else {
 		startAMD = func() {}
@@ -988,7 +996,7 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 		}
 	}()
 
-	writeJSON(w, http.StatusCreated, toLegView(l))
+	return toLegView(l), nil
 }
 
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.

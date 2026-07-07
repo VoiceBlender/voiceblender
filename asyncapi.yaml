@@ -302,6 +302,10 @@ channels:
                 $ref: '#/components/messages/list_sip_registrations'
             list_sip_registrations.result:
                 $ref: '#/components/messages/list_sip_registrationsResult'
+            delete_sip_registration:
+                $ref: '#/components/messages/delete_sip_registration'
+            delete_sip_registration.result:
+                $ref: '#/components/messages/delete_sip_registrationResult'
             challenge_leg:
                 $ref: '#/components/messages/challenge_leg'
             challenge_leg.result:
@@ -482,7 +486,7 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Originate an outbound leg
-        description: Currently returns a 501 error directing clients to use POST /v1/legs. Reserved for the future when the originate flow is fully extracted into a do* helper.
+        description: 'Originates an outbound leg, mirroring POST /v1/legs, and returns the leg view. Supports all leg types: "sip", "websocket", "whatsapp", and "livekit_room". For "livekit_room", custom headers come from the request''s `headers` map (there is no HTTP request over the WebSocket).'
         messages:
             - $ref: '#/channels/vsi/messages/create_leg'
         reply:
@@ -1389,6 +1393,19 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/list_sip_registrations.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_delete_sip_registration:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Force-unbind an AOR (or a single contact under it)
+        messages:
+            - $ref: '#/channels/vsi/messages/delete_sip_registration'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/delete_sip_registration.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_challenge_leg:
         action: receive
@@ -4071,6 +4088,36 @@ components:
                         $ref: '#/components/schemas/RegistrationsResponse'
                 required:
                     - type
+        delete_sip_registration:
+            name: delete_sip_registration
+            title: Force-unbind an AOR (or a single contact under it)
+            summary: Force-unbind an AOR (or a single contact under it)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_sip_registration
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/deleteRegistrationPayload'
+                required:
+                    - type
+        delete_sip_registrationResult:
+            name: delete_sip_registrationResult
+            title: Force-unbind an AOR (or a single contact under it) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_sip_registration.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
         challenge_leg:
             name: challenge_leg
             title: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)
@@ -4279,7 +4326,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: '#/components/schemas/vsiStatusResponse'
+                        $ref: '#/components/schemas/TrunkView'
                 required:
                     - type
         delete_sip_trunk:
@@ -5367,6 +5414,15 @@ components:
                     type: string
             required:
                 - id
+        deleteRegistrationPayload:
+            type: object
+            properties:
+                aor:
+                    type: string
+                contact:
+                    type: string
+            required:
+                - aor
         dtmfPayload:
             type: object
             properties:

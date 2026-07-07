@@ -207,6 +207,13 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestVSI_RTT_SendDelivers` | VSI `send_leg_rtt` over the `/v1/vsi` WebSocket delivers text to the remote leg (parity with REST `POST /rtt`) |
 | `TestVSI_RTT_AcceptRejectFlags` | VSI `accept_leg_rtt`/`reject_leg_rtt` toggle the receiver's `accept_text` flag; rejected legs suppress `rtt.received` events |
 | `TestVSI_RTT_SendOnNonNegotiatedLegReturns409` | VSI `send_leg_rtt` returns an error frame when RTT was never negotiated on the leg |
+| `TestVSI_CreateLeg_Originates` | Outbound SIP originate over the `/v1/vsi` WebSocket (`create_leg` type `sip`) returns a `create_leg.result` leg view; the callee receives the INVITE, answers, and both legs reach `connected` (parity with REST `POST /v1/legs`) |
+| `TestVSI_CreateLeg_InvalidURI` | VSI `create_leg` with an invalid SIP URI returns an `error` frame with code 400 (not a 501 or silent accept) |
+| `TestVSI_CreateLeg_WebSocket` | VSI `create_leg` type `websocket` dials an in-test echo server and the leg reaches `connected` (parity with REST `POST /v1/legs` type websocket) |
+| `TestVSI_CreateLeg_WebSocketValidation` | VSI `create_leg` type `websocket` with no `url` returns an `error` frame with code 400 |
+| `TestVSI_CreateLeg_WhatsAppValidation` | VSI `create_leg` type `whatsapp` with no `to` returns an `error` frame with code 400 (validation runs over VSI, not "unsupported leg type") |
+| `TestVSI_CreateLeg_LiveKitError` | VSI `create_leg` type `livekit_room` is dispatched and returns a real `error` frame (503 when LiveKit disabled — the default — or 400 for missing params), never a 501/unsupported |
+| `TestVSI_DeleteRegistration` | Over VSI: a raw client REGISTERs, `list_sip_registrations` shows the binding, `delete_sip_registration` unbinds it, the list goes empty, and an unknown-AOR delete returns an `error` frame with code 404 |
 | `TestVSI_WebRTC_FullFlow` | VSI `webrtc_offer` / `webrtc_get_candidates` / `webrtc_add_candidate` round-trip with a real pion client; leg appears in `list_legs` and emits `leg.connected` |
 | `TestVSI_WebRTC_OfferInvalidSDP` | VSI `webrtc_offer` with malformed SDP returns a 400 error frame |
 | `TestVSI_WebRTC_AddCandidateNotFound` | VSI `webrtc_add_candidate` for an unknown leg returns a 404 error frame |
@@ -247,7 +254,8 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestSIPRegister_Expiry` | Short-expires REGISTER → TTL sweeper removes the binding and emits `sip.registration_expired` with `reason:ttl` |
 | `TestSIPRegister_Unregister` | REGISTER with `Contact: *` and `Expires: 0` removes all bindings with `reason:unregistered` |
 | `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
-| `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket rather than the URI host |
+| `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket (via a loose Route) while keeping the dialed AOR as the Request-URI |
+| `TestSIPRegister_CancelUnansweredRoutesToContact` | Deleting an unanswered outbound leg dialed to a registered AOR sends CANCEL to the registered contact (not the AOR host / VoiceBlender itself); the CANCEL Request-URI stays the dialed AOR per RFC 3261 §9.1 |
 | `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
 | `TestSIPInboundAuth_RegisterChallengeSuccess` | Consult enabled (webhook set); REGISTER parks → `sip.registration_attempt` event → `POST /v1/sip/registrations/attempts/{id}/challenge` → `401`; credentialed re-REGISTER (same Call-ID) verifies → `200 OK` and a live binding |
 | `TestSIPInboundAuth_RegisterChallengeWrongPassword` | Same challenge flow but the retry signs with a wrong password → `403 Forbidden` and no binding is created |
@@ -261,6 +269,8 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestTrunk_SIPRegister_OutboundCallUsesTrunk` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:bob@<registrar>","from":"alice"}` auto-attaches the trunk's credentials and adds a `Route: <registrar_uri;lr>` header on the outbound INVITE (verified at the fake registrar) |
 | `TestTrunk_TypeIPIP_NotImplemented` | `POST /v1/sip/trunks {"type":"ip_ip",...}` returns 501 Not Implemented (the type is reserved in the schema but not yet wired) |
 | `TestTrunk_TypeUnknown_BadRequest` | `POST /v1/sip/trunks {"type":"bogus"}` returns 400 with an "unknown trunk type" error |
+| `TestVSI_Trunk_Lifecycle` | Full trunk lifecycle over the `/v1/vsi` WebSocket: `create_sip_trunk` → `list_sip_trunks` → `get_sip_trunk` → `delete_sip_trunk`; the trunk REGISTERs at the fake registrar, list/get return it without leaking `password`, and a get after delete returns an error frame |
+| `TestVSI_Trunk_CreateValidationError` | `create_sip_trunk` with a missing `sip_register` block returns a VSI `error` frame with code 400 (not silently accepted) |
 | `TestSIPUpdate_SessionTimerRefresh` | In-dialog UPDATE (RFC 3311) with no body and a `Session-Expires` header is accepted with 200 OK and the `Session-Expires` value is echoed (RFC 4028 §10) — guards against the legacy 405 Method Not Allowed response for session-timer refreshes |
 | `TestSIPUpdate_OutOfDialogRejected` | UPDATE that doesn't match any active dialog gets 481 Call/Transaction Does Not Exist (RFC 3311 §5.2), not 405 |
 | `TestLiveKit_PublishLegLifecycle` | Gated on `LIVEKIT_TEST_*` env vars. `POST /v1/legs type=livekit_room` creates a `livekit_publish` leg with the correct `livekit_identity` / `livekit_room` headers; `DELETE` tears it down with `leg.disconnected`. |

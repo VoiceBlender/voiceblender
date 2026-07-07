@@ -2438,7 +2438,7 @@ The WebSocket accepts bidirectional commands using the same naming as the REST A
 |---------|---------|-------------|
 | `list_legs` | *(none)* | List all legs |
 | `get_leg` | `{"id":"..."}` | Get a single leg |
-| `create_leg` | `CreateLegRequest` | Create a leg (not yet implemented over WS; use REST) |
+| `create_leg` | `CreateLegRequest` | Originate an outbound leg; returns the leg view. All types are supported (`sip`, `websocket`, `whatsapp`, `livekit_room`). For `livekit_room`, custom headers come from the request's `headers` map. |
 | `delete_leg` | `{"id":"..."}` | Hang up and delete a leg |
 | `answer_leg` | `{"id":"..."}` | Answer a ringing inbound leg |
 | `mute_leg` | `{"id":"..."}` | Mute a leg |
@@ -3090,7 +3090,7 @@ must also be URL-encoded).
 Responses: `204 No Content` on success; `404 Not Found` when the AOR (or
 the specified contact) does not exist.
 
-### VSI command
+### VSI commands
 
 The same listing is available over the VSI WebSocket:
 
@@ -3104,6 +3104,19 @@ Server replies:
 {"type": "list_sip_registrations.result", "request_id": "1",
  "data": {"bindings": [...]}}
 ```
+
+Force-unbind is available as `delete_sip_registration`. The AOR is sent plain
+(no URL-encoding, unlike the REST path); add `contact` to remove just one
+Contact:
+
+```json
+{"type": "delete_sip_registration", "request_id": "2",
+ "payload": {"aor": "sip:alice@vb.example"}}
+```
+
+Server replies `{"type": "delete_sip_registration.result", "request_id": "2",
+"data": {"status": "unbound"}}`, or an `error` frame with code `404` when the
+AOR (or contact) does not exist.
 
 The `sip.registration_active` / `sip.registration_expired` events flow
 through the standard webhook and VSI channels — see Event Types above.

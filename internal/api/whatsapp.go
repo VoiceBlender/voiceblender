@@ -162,28 +162,35 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 }
 
 func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
-	if req.To == "" {
-		writeError(w, http.StatusBadRequest, "'to' is required")
+	view, err := s.doCreateWhatsAppOutboundLeg(req)
+	if err != nil {
+		handleAPIError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+// doCreateWhatsAppOutboundLeg validates, sets up WebRTC media, and starts an
+// outbound WhatsApp leg, returning the leg view. Shared by the REST handler and
+// VSI create_leg.
+func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, error) {
+	if req.To == "" {
+		return LegView{}, newAPIError(http.StatusBadRequest, "'to' is required")
 	}
 	if req.From == "" {
-		writeError(w, http.StatusBadRequest, "'from' is required (business phone number, E.164)")
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "'from' is required (business phone number, E.164)")
 	}
 	if req.Auth == nil || req.Auth.Password == "" {
-		writeError(w, http.StatusBadRequest, "'auth.password' is required (Meta-issued digest password)")
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "'auth.password' is required (Meta-issued digest password)")
 	}
 	if s.SIPEngine.TLSPort() == 0 {
-		writeError(w, http.StatusServiceUnavailable, "SIP TLS not configured on this instance")
-		return
+		return LegView{}, newAPIError(http.StatusServiceUnavailable, "SIP TLS not configured on this instance")
 	}
 
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
 			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID, s.Config.DefaultSampleRate); err != nil {
-				writeError(w, http.StatusInternalServerError, "create room: "+err.Error())
-				return
+				return LegView{}, newAPIError(http.StatusInternalServerError, "create room: %s", err.Error())
 			}
 		}
 	}
@@ -197,22 +204,19 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		Log:         s.Log,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create PCMedia")
-		return
+		return LegView{}, newAPIError(http.StatusInternalServerError, "failed to create PCMedia")
 	}
 
 	pc := media.PC()
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
 		media.Close()
-		writeError(w, http.StatusInternalServerError, "failed to create offer")
-		return
+		return LegView{}, newAPIError(http.StatusInternalServerError, "failed to create offer")
 	}
 	gatherDone := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(offer); err != nil {
 		media.Close()
-		writeError(w, http.StatusInternalServerError, "failed to set local description")
-		return
+		return LegView{}, newAPIError(http.StatusInternalServerError, "failed to set local description")
 	}
 
 	l := leg.NewWhatsAppOutboundPendingLeg(media, req.From, req.To, s.Log)
@@ -228,9 +232,9 @@ func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Reques
 		From:     req.From,
 	})
 
-	writeJSON(w, http.StatusCreated, legViewFrom(l))
-
 	go s.driveWhatsAppOutbound(l, media, gatherDone, req)
+
+	return legViewFrom(l), nil
 }
 
 func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, gatherDone <-chan struct{}, req CreateLegRequest) {
