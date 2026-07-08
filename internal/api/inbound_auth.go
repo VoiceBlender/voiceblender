@@ -25,6 +25,12 @@ type ChallengeRequest struct {
 	HA1       string   `json:"ha1,omitempty"`
 	Algorithm string   `json:"algorithm,omitempty"`
 	QOP       []string `json:"qop,omitempty"`
+	// MaxExpires (REGISTER only; ignored for INVITE leg challenges) caps the
+	// granted registration TTL in seconds for the credentialed re-REGISTER. It
+	// only shortens — a smaller UA-requested Expires still wins — and is floored
+	// at the registrar's 60s minimum. Omit or 0 to leave the registrar's
+	// SIP_REGISTRATION_MAX_EXPIRES_SECONDS clamp in force.
+	MaxExpires int `json:"max_expires,omitempty"`
 }
 
 func (r ChallengeRequest) toParams() sipmod.ChallengeParams {
@@ -45,6 +51,9 @@ func (r ChallengeRequest) validate() error {
 	if r.Password == "" && r.HA1 == "" {
 		return newAPIError(http.StatusBadRequest, "password or ha1 is required")
 	}
+	if r.MaxExpires < 0 {
+		return newAPIError(http.StatusBadRequest, "max_expires must not be negative")
+	}
 	return nil
 }
 
@@ -53,6 +62,20 @@ func (r ChallengeRequest) validate() error {
 type RegistrationRejectRequest struct {
 	Code   int    `json:"code,omitempty"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// RegistrationAcceptRequest is the optional body for accepting a registration
+// attempt. MaxExpires (>0) caps the granted binding TTL in seconds, as for a
+// challenge; omit or 0 to bind with the registrar's normal clamp.
+type RegistrationAcceptRequest struct {
+	MaxExpires int `json:"max_expires,omitempty"`
+}
+
+func (r RegistrationAcceptRequest) validate() error {
+	if r.MaxExpires < 0 {
+		return newAPIError(http.StatusBadRequest, "max_expires must not be negative")
+	}
+	return nil
 }
 
 // ── Inbound INVITE challenge ─────────────────────────────────────────────
@@ -192,13 +215,20 @@ func (s *Server) doChallengeRegistration(id string, req ChallengeRequest) error 
 		return err
 	}
 	return s.decideRegisterAttempt(id, sipmod.RegisterDecision{
-		Kind:      sipmod.RegisterChallenge,
-		Challenge: req.toParams(),
+		Kind:       sipmod.RegisterChallenge,
+		Challenge:  req.toParams(),
+		MaxExpires: req.MaxExpires,
 	})
 }
 
-func (s *Server) doAcceptRegistration(id string) error {
-	return s.decideRegisterAttempt(id, sipmod.RegisterDecision{Kind: sipmod.RegisterAccept})
+func (s *Server) doAcceptRegistration(id string, req RegistrationAcceptRequest) error {
+	if err := req.validate(); err != nil {
+		return err
+	}
+	return s.decideRegisterAttempt(id, sipmod.RegisterDecision{
+		Kind:       sipmod.RegisterAccept,
+		MaxExpires: req.MaxExpires,
+	})
 }
 
 func (s *Server) doRejectRegistration(id string, code int, reason string) error {
@@ -225,7 +255,12 @@ func (s *Server) challengeRegistrationAttempt(w http.ResponseWriter, r *http.Req
 
 func (s *Server) acceptRegistrationAttempt(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doAcceptRegistration(id); err != nil {
+	var req RegistrationAcceptRequest
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if err := s.doAcceptRegistration(id, req); err != nil {
 		handleAPIError(w, err)
 		return
 	}

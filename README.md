@@ -381,8 +381,12 @@ the first contact to answer wins and the others are CANCELled (RFC 3261 §16).
 
 Bindings emit `sip.registration_active` / `sip.registration_expired` events
 over both webhooks and the `/v1/vsi` WebSocket. Tuning lives behind the
-`SIP_REGISTRATION_*` env vars (see [Configuration](#configuration)). Full
-endpoint and event reference is in [API.md](API.md#sip-registrations-aor).
+`SIP_REGISTRATION_*` env vars (see [Configuration](#configuration)). A
+challenge or accept decision on an inbound REGISTER may also cap that single
+binding's lifetime via an optional `max_expires` (floored at the 60 s minimum),
+forcing short-lived registrations (and, when challenging, frequent re-auth)
+without lowering the global clamp. Full endpoint and event reference is in
+[API.md](API.md#sip-registrations-aor).
 
 **No authentication.** VoiceBlender does *not* perform digest challenges or
 verify any `Authorization` header — every well-formed REGISTER from a supported

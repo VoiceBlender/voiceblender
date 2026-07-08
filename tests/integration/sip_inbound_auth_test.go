@@ -120,6 +120,64 @@ func TestSIPInboundAuth_RegisterChallengeSuccess(t *testing.T) {
 	}
 }
 
+// TestSIPInboundAuth_RegisterChallengeMaxExpires verifies a challenge's
+// max_expires caps the granted binding TTL, floored at the registrar's 60 s
+// minimum: the UA requests 600 s and the challenge caps at 30 s, so the
+// credentialed re-REGISTER binds for the 60 s floor.
+func TestSIPInboundAuth_RegisterChallengeMaxExpires(t *testing.T) {
+	inst := newTestInstanceWithOpts(t, "reg-chal-cap", authConsultConfig)
+	cli := newRawSIPClient(t, "reg-chal-cap-ua")
+
+	const realm = "vb.test"
+	const user = "alice"
+	const pass = "s3cret"
+
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && !inst.collector.hasEvent(events.SIPRegistrationAttempt, nil) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		for _, e := range inst.collector.matchAll(events.SIPRegistrationAttempt, nil) {
+			id := e.Data.(*events.SIPRegistrationAttemptData).AttemptID
+			resp := httpPost(t, fmt.Sprintf("%s/v1/sip/registrations/attempts/%s/challenge", inst.baseURL(), id),
+				map[string]interface{}{"realm": realm, "username": user, "password": pass, "max_expires": 30})
+			resp.Body.Close()
+		}
+	}()
+
+	callID := sip.GenerateTagN(16)
+	regURI := fmt.Sprintf("sip:127.0.0.1:%d", inst.sipPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	// Initial REGISTER (requests 600 s) → 401.
+	resp, err := cli.client.Do(ctx, cli.buildAuthRegister(user, inst.sipPort, cli.contactURI(user), callID, 1, ""))
+	if err != nil {
+		t.Fatalf("initial REGISTER: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("initial REGISTER status = %d, want 401", resp.StatusCode)
+	}
+
+	// Credentialed re-REGISTER → 200 OK, but capped at 30 s.
+	auth := digestAuthHeader(t, resp.GetHeader("WWW-Authenticate").Value(), "REGISTER", regURI, user, pass)
+	resp2, err := cli.client.Do(ctx, cli.buildAuthRegister(user, inst.sipPort, cli.contactURI(user), callID, 2, auth))
+	if err != nil {
+		t.Fatalf("authed REGISTER: %v", err)
+	}
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("authed REGISTER status = %d, want 200", resp2.StatusCode)
+	}
+
+	list := registrationsList(t, inst.baseURL())
+	if len(list.Bindings) != 1 {
+		t.Fatalf("bindings = %d, want 1", len(list.Bindings))
+	}
+	if got := list.Bindings[0].GrantedExpiresSeconds; got != 60 {
+		t.Errorf("GrantedExpiresSeconds = %d, want 60 (max_expires 30 floored to the 60s minimum)", got)
+	}
+}
+
 // TestSIPInboundAuth_RegisterChallengeWrongPassword verifies a bad credential
 // is answered with 403 and never binds.
 func TestSIPInboundAuth_RegisterChallengeWrongPassword(t *testing.T) {

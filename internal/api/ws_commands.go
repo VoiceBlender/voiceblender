@@ -203,6 +203,13 @@ type challengeRegistrationPayload struct {
 	ChallengeRequest
 }
 
+// acceptRegistrationPayload combines a registration-attempt id with the
+// optional TTL cap for accept_registration.
+type acceptRegistrationPayload struct {
+	ID string `json:"id"`
+	RegistrationAcceptRequest
+}
+
 // rejectRegistrationPayload combines a registration-attempt id with the
 // optional reject code/reason for reject_registration.
 type rejectRegistrationPayload struct {
@@ -1000,11 +1007,11 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "challenging"})
 	case "accept_registration":
-		var p idPayload
+		var p acceptRegistrationPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAcceptRegistration(p.ID); err != nil {
+		if err := s.doAcceptRegistration(p.ID, p.RegistrationAcceptRequest); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}

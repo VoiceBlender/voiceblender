@@ -24,6 +24,12 @@ type RegisterDecision struct {
 	Challenge    ChallengeParams // used when Kind == RegisterChallenge
 	RejectCode   int             // used when Kind == RegisterReject; 0 => 403
 	RejectReason string          // used when Kind == RegisterReject; "" => "Forbidden"
+	// MaxExpires, when > 0, caps the granted binding TTL (seconds) for a REGISTER
+	// this decision admits (accept, or the credentialed retry of a challenge). It
+	// only ever shortens: the effective grant is min(ClampExpires(requested),
+	// MaxExpires), still subject to the 60s floor. 0 leaves the registrar's normal
+	// clamp in force.
+	MaxExpires int
 }
 
 // RegisterAttempt describes an inbound REGISTER surfaced to the decision
@@ -99,8 +105,10 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Authentication gate: verify a credentialed retry, or consult the client
 	// for a challenge/accept/reject decision. A 401/403 is sent inside when the
-	// REGISTER is not authorized to proceed.
-	if !e.authorizeRegister(req, tx, aor) {
+	// REGISTER is not authorized to proceed. maxExpires (>0) caps the granted
+	// binding TTL for this REGISTER when the admitting decision requested it.
+	proceed, maxExpires := e.authorizeRegister(req, tx, aor)
+	if !proceed {
 		return
 	}
 
@@ -135,6 +143,12 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 			continue
 		}
 		granted := e.registrar.ClampExpires(expires)
+		if maxExpires > 0 && maxExpires < granted {
+			granted = maxExpires
+		}
+		if granted < 60 { // the 60s floor holds even against an explicit cap
+			granted = 60
+		}
 		e.registrar.Bind(Binding{
 			AOR:            aor,
 			Contact:        contactStr,
@@ -175,26 +189,28 @@ func (e *Engine) respondRegister(tx sip.ServerTransaction, req *sip.Request, sta
 	}
 }
 
-// authorizeRegister applies the inbound-REGISTER auth gate. It returns true
-// when the REGISTER may proceed to binding; otherwise it has already sent the
-// appropriate 401 (challenge) or 4xx (reject/forbidden) response. A credentialed
+// authorizeRegister applies the inbound-REGISTER auth gate. proceed is true
+// when the REGISTER may bind; otherwise it has already sent the appropriate 401
+// (challenge) or 4xx (reject/forbidden) response. maxExpires (>0) is the TTL cap
+// carried by the admitting decision — recovered from the pending challenge on a
+// credentialed retry, or taken directly from an accept decision. A credentialed
 // retry is verified against the issued challenge first; absent valid
 // credentials, the OnRegisterAttempt callback is consulted.
-func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, aor string) bool {
+func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, aor string) (proceed bool, maxExpires int) {
 	hasAuth := req.GetHeader("Authorization") != nil
 	if hasAuth {
-		switch res, _ := e.VerifyInboundAuth(req, sip.REGISTER.String()); res {
+		switch res, _, override := e.VerifyInboundAuth(req, sip.REGISTER.String()); res {
 		case AuthValid:
-			return true
+			return true, override
 		case AuthInvalid:
 			e.respondRegister(tx, req, sip.StatusForbidden, "Forbidden", nil, nil)
-			return false
+			return false, 0
 		}
 		// AuthNone (no live challenge matched) falls through to a fresh consult.
 	}
 
 	if e.onRegisterAttempt == nil {
-		return true
+		return true, 0
 	}
 
 	contact := ""
@@ -218,10 +234,10 @@ func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, a
 
 	switch decision.Kind {
 	case RegisterChallenge:
-		val := e.recordChallenge(callIDOf(req), decision.Challenge)
+		val := e.recordChallenge(callIDOf(req), decision.Challenge, decision.MaxExpires)
 		e.respondRegister(tx, req, sip.StatusUnauthorized, "Unauthorized", nil,
 			[]sip.Header{sip.NewHeader("WWW-Authenticate", val)})
-		return false
+		return false, 0
 	case RegisterReject:
 		code := decision.RejectCode
 		if code == 0 {
@@ -232,9 +248,9 @@ func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, a
 			reason = "Forbidden"
 		}
 		e.respondRegister(tx, req, code, reason, nil, nil)
-		return false
+		return false, 0
 	default:
-		return true
+		return true, decision.MaxExpires
 	}
 }
 

@@ -2490,12 +2490,23 @@ paths:
         post:
             operationId: acceptSIPRegistrationAttempt
             summary: Accept a parked inbound REGISTER attempt
-            description: Binds the AOR and replies 200 OK for an inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`). Equivalent to letting the consult timeout elapse, but immediate.
+            description: Binds the AOR and replies 200 OK for an inbound REGISTER surfaced via the `sip.registration_attempt` event (by its `attempt_id`). Equivalent to letting the consult timeout elapse, but immediate. An optional `max_expires` caps the granted binding TTL.
             tags:
                 - SIP Registrations
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RegistrationAcceptRequest'
             responses:
                 '202':
                     description: Accept queued
+                '400':
+                    description: Invalid max_expires
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
                 '404':
                     description: Registration attempt not found or already decided
                     content:
@@ -2945,6 +2956,8 @@ components:
                     type: array
                     items:
                         type: string
+                max_expires:
+                    type: integer
             required:
                 - realm
         CreateLegRequest:
@@ -3298,6 +3311,11 @@ components:
                 - s3_prefix
                 - s3_access_key
                 - s3_secret_key
+        RegistrationAcceptRequest:
+            type: object
+            properties:
+                max_expires:
+                    type: integer
         RegistrationRejectRequest:
             type: object
             properties:

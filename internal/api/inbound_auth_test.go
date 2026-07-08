@@ -71,7 +71,7 @@ func TestHandleRegisterAttempt_ChallengeDecision(t *testing.T) {
 
 	select {
 	case id := <-gotID:
-		if err := s.doChallengeRegistration(id, ChallengeRequest{Realm: "vb", Password: "pw"}); err != nil {
+		if err := s.doChallengeRegistration(id, ChallengeRequest{Realm: "vb", Password: "pw", MaxExpires: 30}); err != nil {
 			t.Fatalf("doChallengeRegistration: %v", err)
 		}
 	case <-time.After(time.Second):
@@ -86,6 +86,44 @@ func TestHandleRegisterAttempt_ChallengeDecision(t *testing.T) {
 		if r.d.Challenge.Realm != "vb" || r.d.Challenge.Password != "pw" {
 			t.Errorf("challenge params not propagated: %+v", r.d.Challenge)
 		}
+		if r.d.MaxExpires != 30 {
+			t.Errorf("MaxExpires = %d, want 30", r.d.MaxExpires)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleRegisterAttempt did not return after decision")
+	}
+}
+
+func TestHandleRegisterAttempt_AcceptCarriesMaxExpires(t *testing.T) {
+	s := newAuthTestServer(5000)
+
+	gotID := make(chan string, 1)
+	s.Bus.Subscribe(func(e events.Event) {
+		if e.Type == events.SIPRegistrationAttempt {
+			gotID <- e.Data.(*events.SIPRegistrationAttemptData).AttemptID
+		}
+	})
+
+	done := make(chan sipmod.RegisterDecision, 1)
+	go func() { done <- s.HandleRegisterAttempt(sampleAttempt()) }()
+
+	select {
+	case id := <-gotID:
+		if err := s.doAcceptRegistration(id, RegistrationAcceptRequest{MaxExpires: 45}); err != nil {
+			t.Fatalf("doAcceptRegistration: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no registration_attempt event published")
+	}
+
+	select {
+	case d := <-done:
+		if d.Kind != sipmod.RegisterAccept {
+			t.Fatalf("kind = %v, want RegisterAccept", d.Kind)
+		}
+		if d.MaxExpires != 45 {
+			t.Errorf("MaxExpires = %d, want 45", d.MaxExpires)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("HandleRegisterAttempt did not return after decision")
 	}
@@ -93,8 +131,15 @@ func TestHandleRegisterAttempt_ChallengeDecision(t *testing.T) {
 
 func TestDecideRegisterAttempt_NotFound(t *testing.T) {
 	s := newAuthTestServer(100)
-	if err := s.doAcceptRegistration("nope"); err == nil {
+	if err := s.doAcceptRegistration("nope", RegistrationAcceptRequest{}); err == nil {
 		t.Fatal("expected error for unknown attempt id")
+	}
+}
+
+func TestChallengeRequest_NegativeMaxExpires(t *testing.T) {
+	err := ChallengeRequest{Realm: "vb", Password: "pw", MaxExpires: -1}.validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_expires")
 	}
 }
 

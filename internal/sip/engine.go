@@ -479,7 +479,7 @@ func (e *Engine) OnRegisterAttempt(handler func(*RegisterAttempt) RegisterDecisi
 // so the credentialed re-INVITE (same Call-ID) can be verified by
 // VerifyInboundAuth.
 func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
-	val := e.recordChallenge(callIDOf(call.Request), p)
+	val := e.recordChallenge(callIDOf(call.Request), p, 0)
 	return e.DialogRespond(call.Dialog, sip.StatusUnauthorized, "Unauthorized", nil,
 		e.ServerHeader(), sip.NewHeader("WWW-Authenticate", val))
 }

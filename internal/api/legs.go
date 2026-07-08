@@ -1014,7 +1014,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	var authenticated bool
 	var authUsername string
 	if call.Request.GetHeader("Authorization") != nil {
-		switch res, user := s.SIPEngine.VerifyInboundAuth(call.Request, "INVITE"); res {
+		switch res, user, _ := s.SIPEngine.VerifyInboundAuth(call.Request, "INVITE"); res {
 		case sipmod.AuthValid:
 			authenticated = true
 			authUsername = user

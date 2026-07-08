@@ -1203,10 +1203,13 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Accept a parked inbound REGISTER attempt",
 			Description: "Binds the AOR and replies 200 OK for an inbound REGISTER surfaced via the " +
 				"`sip.registration_attempt` event (by its `attempt_id`). Equivalent to letting the consult " +
-				"timeout elapse, but immediate.",
-			Tags: []string{"SIP Registrations"},
+				"timeout elapse, but immediate. An optional `max_expires` caps the granted binding TTL.",
+			Tags:         []string{"SIP Registrations"},
+			RequestType:  RegistrationAcceptRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Accept queued"},
+				400: {Description: "Invalid max_expires"},
 				404: {Description: "Registration attempt not found or already decided"},
 			},
 		},

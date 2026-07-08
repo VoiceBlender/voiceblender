@@ -194,7 +194,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		// ── Inbound auth (digest challenge) ─────────────────────────────
 		{Name: "challenge_leg", Summary: "Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)", PayloadType: challengeLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
 		{Name: "challenge_registration", Summary: "Send a 401 digest challenge for a parked inbound REGISTER attempt", PayloadType: challengeRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404}},
-		{Name: "accept_registration", Summary: "Accept a parked inbound REGISTER attempt (bind and reply 200 OK)", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "accept_registration", Summary: "Accept a parked inbound REGISTER attempt (bind and reply 200 OK)", PayloadType: acceptRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 		{Name: "reject_registration", Summary: "Reject a parked inbound REGISTER attempt (reply 403 by default)", PayloadType: rejectRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
 		// ── SIP Trunks (outbound registrations) ─────────────────────────

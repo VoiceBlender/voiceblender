@@ -4191,7 +4191,7 @@ components:
                         type: string
                         description: Echoed back on the matching .result/error frame; clients use it to correlate.
                     payload:
-                        $ref: '#/components/schemas/idPayload'
+                        $ref: '#/components/schemas/acceptRegistrationPayload'
                 required:
                     - type
         accept_registrationResult:
@@ -5214,6 +5214,15 @@ components:
             required:
                 - leg_id
                 - sdp
+        acceptRegistrationPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                max_expires:
+                    type: integer
+            required:
+                - id
         addLegPayload:
             type: object
             properties:
@@ -5380,6 +5389,8 @@ components:
                     type: array
                     items:
                         type: string
+                max_expires:
+                    type: integer
             required:
                 - id
                 - realm
@@ -5402,6 +5413,8 @@ components:
                     type: array
                     items:
                         type: string
+                max_expires:
+                    type: integer
             required:
                 - id
                 - realm

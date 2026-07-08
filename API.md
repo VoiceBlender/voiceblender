@@ -3153,7 +3153,7 @@ unauthenticated default.
 
 ```
 POST /v1/sip/registrations/attempts/{id}/challenge   # body: ChallengeRequest (see POST /v1/legs/{id}/challenge)
-POST /v1/sip/registrations/attempts/{id}/accept       # no body
+POST /v1/sip/registrations/attempts/{id}/accept       # optional body: { "max_expires": 30 }
 POST /v1/sip/registrations/attempts/{id}/reject       # optional body: { "code": 403, "reason": "Forbidden" }
 ```
 
@@ -3166,6 +3166,28 @@ The `ChallengeRequest` body matches `POST /v1/legs/{id}/challenge`: `realm`
 (required), one of `password` / `ha1`, and optional `username`, `algorithm`,
 `qop`. Supplied credentials are held only in memory for the challenge's lifetime
 (`SIP_INBOUND_AUTH_NONCE_TTL_SECONDS`) and never persisted or returned.
+
+**Capping the granted TTL (`max_expires`).** Both the challenge and accept
+bodies accept an optional `max_expires` (seconds). It caps the binding lifetime
+granted for that REGISTER: the effective grant is
+`min(clamped_requested_expires, max_expires)`, so a UA asking for less still
+wins and the value never exceeds `SIP_REGISTRATION_MAX_EXPIRES_SECONDS`. The
+registrar's **60 s floor still applies** — a `max_expires` below 60 grants 60.
+On a **challenge** the cap is remembered and applied when the credentialed
+re-REGISTER binds. Omit it (or send `0`) to leave the registrar's normal clamp
+in force; a negative value is rejected with `400`. This lets you force
+short-lived registrations — and, when challenging, frequent re-authentication —
+without lowering the global clamp.
+
+```jsonc
+// Challenge this REGISTER and, once authenticated, grant only a 90 s binding
+POST /v1/sip/registrations/attempts/{attempt_id}/challenge
+{ "realm": "vb.example", "username": "alice", "password": "s3cret", "max_expires": 90 }
+
+// Accept immediately but cap the binding at 60 s (the minimum)
+POST /v1/sip/registrations/attempts/{attempt_id}/accept
+{ "max_expires": 60 }
+```
 
 ### Configuration
 

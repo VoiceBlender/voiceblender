@@ -47,10 +47,11 @@ const (
 )
 
 type pendingChallenge struct {
-	nonce     string
-	opaque    string
-	params    ChallengeParams
-	expiresAt time.Time
+	nonce      string
+	opaque     string
+	params     ChallengeParams
+	maxExpires int // REGISTER TTL cap carried to the credentialed retry; 0 = none
+	expiresAt  time.Time
 }
 
 // pendingAuthStore holds issued-but-unverified challenges keyed by Call-ID. A
@@ -96,8 +97,10 @@ func callIDOf(req *sip.Request) string {
 
 // recordChallenge generates a fresh nonce, stores the pending challenge keyed
 // by callID, and returns the WWW-Authenticate header value (including the
-// "Digest " prefix) the caller should attach to a 401 response.
-func (e *Engine) recordChallenge(callID string, p ChallengeParams) string {
+// "Digest " prefix) the caller should attach to a 401 response. maxExpires
+// (>0), relevant only to REGISTER, is carried on the pending challenge so the
+// credentialed retry binds with the capped TTL; pass 0 for INVITE challenges.
+func (e *Engine) recordChallenge(callID string, p ChallengeParams, maxExpires int) string {
 	p = p.withDefaults()
 	nonce := sip.GenerateTagN(16)
 	opaque := sip.GenerateTagN(8)
@@ -109,10 +112,11 @@ func (e *Engine) recordChallenge(callID string, p ChallengeParams) string {
 		QOP:       p.QOP,
 	}
 	e.pendingAuth.put(callID, pendingChallenge{
-		nonce:     nonce,
-		opaque:    opaque,
-		params:    p,
-		expiresAt: time.Now().Add(e.pendingAuth.ttl),
+		nonce:      nonce,
+		opaque:     opaque,
+		params:     p,
+		maxExpires: maxExpires,
+		expiresAt:  time.Now().Add(e.pendingAuth.ttl),
 	})
 	return chal.String()
 }
@@ -120,19 +124,21 @@ func (e *Engine) recordChallenge(callID string, p ChallengeParams) string {
 // VerifyInboundAuth validates the Authorization header of an inbound request
 // against the challenge previously issued for its Call-ID. method is the SIP
 // method ("INVITE" / "REGISTER") signed by the digest. On AuthValid the second
-// return value is the authenticated username.
-func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult, string) {
+// return value is the authenticated username and the third is the TTL cap
+// (seconds, 0 = none) recorded with the challenge — meaningful only for
+// REGISTER. Non-valid results return "" and 0.
+func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult, string, int) {
 	authHdr := req.GetHeader("Authorization")
 	if authHdr == nil {
-		return AuthNone, ""
+		return AuthNone, "", 0
 	}
 	pc, ok := e.pendingAuth.take(callIDOf(req))
 	if !ok || time.Now().After(pc.expiresAt) {
-		return AuthNone, ""
+		return AuthNone, "", 0
 	}
 	cred, err := digest.ParseCredentials(authHdr.Value())
 	if err != nil || cred.Nonce != pc.nonce {
-		return AuthNone, ""
+		return AuthNone, "", 0
 	}
 
 	chal := &digest.Challenge{
@@ -156,13 +162,13 @@ func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult,
 	}
 	expected, err := digest.Digest(chal, opts)
 	if err != nil {
-		return AuthInvalid, ""
+		return AuthInvalid, "", 0
 	}
 	if subtle.ConstantTimeCompare([]byte(expected.Response), []byte(cred.Response)) != 1 {
-		return AuthInvalid, ""
+		return AuthInvalid, "", 0
 	}
 	if pc.params.Username != "" && !strings.EqualFold(pc.params.Username, cred.Username) {
-		return AuthInvalid, ""
+		return AuthInvalid, "", 0
 	}
-	return AuthValid, cred.Username
+	return AuthValid, cred.Username, pc.maxExpires
 }
