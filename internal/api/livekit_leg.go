@@ -29,13 +29,25 @@ const (
 // room. Model B: the VB room mixer drives audio for everyone; there is no
 // bespoke sum-mixer.
 func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
-	if !s.Config.LiveKitEnabled {
-		writeError(w, http.StatusServiceUnavailable, "LiveKit is not enabled (set LIVEKIT_ENABLED=true)")
+	view, err := s.doCreateLiveKitRoomLeg(r.Context(), captureCustomHeaders(r.Header), req)
+	if err != nil {
+		handleAPIError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+// doCreateLiveKitRoomLeg opens the LiveKit connection, registers the publish
+// leg, and returns its view. Shared by the REST handler and VSI create_leg.
+// The caller supplies the base ctx (wrapped here with the 20s connect timeout)
+// and any custom headers to attach to the publish leg — over VSI these come
+// from context.Background() and req.Headers respectively.
+func (s *Server) doCreateLiveKitRoomLeg(ctx context.Context, headers map[string]string, req CreateLegRequest) (LegView, error) {
+	if !s.Config.LiveKitEnabled {
+		return LegView{}, newAPIError(http.StatusServiceUnavailable, "LiveKit is not enabled (set LIVEKIT_ENABLED=true)")
+	}
 	if req.LiveKit == nil {
-		writeError(w, http.StatusBadRequest, "type=livekit_room requires `livekit` parameters")
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "type=livekit_room requires `livekit` parameters")
 	}
 	p := req.LiveKit
 
@@ -44,14 +56,12 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 		url = s.Config.LiveKitURL
 	}
 	if url == "" {
-		writeError(w, http.StatusBadRequest, "LiveKit URL is required (set LIVEKIT_URL or pass livekit.url)")
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "LiveKit URL is required (set LIVEKIT_URL or pass livekit.url)")
 	}
 
 	token, err := s.resolveLiveKitToken(p)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
 	bitrate := p.OpusBitrate
@@ -63,30 +73,26 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 		Log:         s.Log,
 	}
 	if err := cfg.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
 	if req.RoomID != "" {
 		if _, ok := s.RoomMgr.Get(req.RoomID); !ok {
 			if _, err := s.RoomMgr.Create(req.RoomID, req.AppID, s.Config.DefaultSampleRate); err != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("create room: %v", err))
-				return
+				return LegView{}, newAPIError(http.StatusInternalServerError, "create room: %v", err)
 			}
 		}
 	}
 
-	headers := captureCustomHeaders(r.Header)
-
-	// NewTransport is synchronous: any failure here returns a clean HTTP
-	// response with no events emitted and no leg registered. We pass
-	// empty callbacks first; SetCallbacks runs once we have the publish
-	// leg to close over. The brief window where OnTrack may fire before
-	// callbacks are set is handled by Transport.fireRemoteAudioTrack —
-	// it drains the pcm reader rather than blocking.
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// NewTransport is synchronous: any failure here returns a clean error
+	// with no events emitted and no leg registered. We pass empty callbacks
+	// first; SetCallbacks runs once we have the publish leg to close over.
+	// The brief window where OnTrack may fire before callbacks are set is
+	// handled by Transport.fireRemoteAudioTrack — it drains the pcm reader
+	// rather than blocking.
+	connectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	tr, err := lkmedia.NewTransport(ctx, cfg,
+	tr, err := lkmedia.NewTransport(connectCtx, cfg,
 		lkmedia.SignalConfig{URL: url, Token: token, Log: s.Log},
 		lkmedia.PeerConfig{
 			RTPPortMin: s.Config.RTPPortMin,
@@ -96,8 +102,7 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 	)
 	if err != nil {
 		s.Log.Warn("livekit transport connect failed", "error", err)
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("livekit connect: %v", err))
-		return
+		return LegView{}, newAPIError(http.StatusBadGateway, "livekit connect: %v", err)
 	}
 
 	publishLeg := leg.NewLiveKitPublishLeg(tr, headers, cfg.SampleRate, s.Log)
@@ -144,7 +149,7 @@ func (s *Server) createLiveKitRoomLeg(w http.ResponseWriter, r *http.Request, re
 
 	go conn.watch(unsubHears)
 
-	writeJSON(w, http.StatusCreated, toLegView(publishLeg))
+	return toLegView(publishLeg), nil
 }
 
 // resolveLiveKitToken returns the JWT to use for this leg-create request.

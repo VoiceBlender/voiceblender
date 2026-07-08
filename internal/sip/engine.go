@@ -1197,15 +1197,27 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		req.AppendHeader(sip.NewHeader("Route", "<"+routeURI.String()+">"))
 	}
 
-	// Optional single-destination override (e.g. a single-contact AOR lookup
-	// produced one ForkTarget). Sets the transport-layer destination without
-	// touching the Request-URI.
+	// Single-contact AOR resolution produced one ForkTarget: pin the transport
+	// destination to the bound contact socket while leaving the Request-URI as
+	// the dialed AOR. RFC 3261 §9.1 requires a CANCEL to reuse the INVITE's
+	// Request-URI and be sent to the same next hop; sipgo builds the CANCEL
+	// from the INVITE but does NOT preserve SetDestination — it only copies
+	// Route headers — so without a Route the CANCEL would re-resolve the AOR
+	// host (possibly ourselves). We therefore add a loose Route to the contact
+	// socket, which both directs the INVITE and survives onto the CANCEL. A
+	// trunk Route (opts.RouteURI) already provides this, so skip it then.
 	if len(opts.ForkTargets) == 1 {
 		t := opts.ForkTargets[0]
 		if t.Transport != "" {
 			req.SetTransport(strings.ToUpper(t.Transport))
 		}
 		if t.Socket != "" {
+			if opts.RouteURI == nil {
+				host, port := splitHostPort(t.Socket)
+				contactRoute := sip.Uri{Scheme: "sip", Host: host, Port: port, UriParams: sip.NewParams()}
+				contactRoute.UriParams.Add("lr", "")
+				req.AppendHeader(sip.NewHeader("Route", "<"+contactRoute.String()+">"))
+			}
 			req.SetDestination(t.Socket)
 		}
 	}

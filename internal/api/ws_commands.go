@@ -210,6 +210,14 @@ type rejectRegistrationPayload struct {
 	RegistrationRejectRequest
 }
 
+// deleteRegistrationPayload force-unbinds an AOR (or a single contact under it)
+// for delete_sip_registration. AOR is sent plain (no URL-encoding, unlike the
+// REST path param).
+type deleteRegistrationPayload struct {
+	AOR     string `json:"aor"`
+	Contact string `json:"contact,omitempty"`
+}
+
 func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
@@ -959,6 +967,16 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			}
 		}
 		s.wsCommandResult(lw, msg, RegistrationsResponse{Bindings: views})
+	case "delete_sip_registration":
+		var p deleteRegistrationPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doDeleteRegistration(p.AOR, p.Contact); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "unbound"})
 
 	// ── Inbound auth (challenge INVITE / REGISTER) ──────────────────
 	case "challenge_leg":
@@ -1001,6 +1019,42 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			return
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "rejecting"})
+
+	// ── SIP Trunks (outbound registrations) ─────────────────────────
+	case "create_sip_trunk":
+		var p CreateTrunkRequest
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doCreateTrunk(p)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "list_sip_trunks":
+		s.wsCommandResult(lw, msg, s.doListTrunks())
+	case "get_sip_trunk":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetTrunk(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+	case "delete_sip_trunk":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doDeleteTrunk(p.ID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "deleting"})
 
 	default:
 		s.vsiSendResponse(lw, msg.RequestID, "error",
@@ -1049,17 +1103,31 @@ func (s *Server) wsCommandError(lw *wsLockedWriter, msg vsiInMsg, err error) {
 	})
 }
 
-// wsCreateLeg is a placeholder for create_leg over WS. It calls the HTTP-based
-// createSIPOutboundLeg flow synchronously. Full do* extraction of the complex
-// originate flow is deferred to Phase 2.
+// wsCreateLeg handles create_leg over the VSI WebSocket, mirroring POST /v1/legs.
 func (s *Server) wsCreateLeg(lw *wsLockedWriter, msg vsiInMsg, req CreateLegRequest) {
+	var (
+		view LegView
+		err  error
+	)
 	switch req.Type {
 	case "sip":
-		// For now, return an error directing clients to use the REST API for
-		// leg creation until the complex originate flow is extracted into a
-		// do* method.
-		s.wsCommandError(lw, msg, newAPIError(501, "create_leg over WS not yet implemented; use POST /v1/legs"))
+		view, err = s.doCreateSIPOutboundLeg(req)
+	case "websocket":
+		view, err = s.doCreateWebSocketOutboundLeg(req)
+	case "whatsapp":
+		view, err = s.doCreateWhatsAppOutboundLeg(req)
+	case "livekit_room":
+		// No HTTP request over VSI: use a background context (the helper
+		// still applies the 20s connect timeout) and custom headers from
+		// the request body's headers map.
+		view, err = s.doCreateLiveKitRoomLeg(context.Background(), req.Headers, req)
 	default:
 		s.wsCommandError(lw, msg, newAPIError(400, "unsupported leg type: %s", req.Type))
+		return
 	}
+	if err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	s.wsCommandResult(lw, msg, view)
 }

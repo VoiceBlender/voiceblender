@@ -34,6 +34,9 @@ type rawSIPClient struct {
 
 	// Inbound INVITE delivery for AOR-dial tests.
 	invites chan inviteEvent
+	// Inbound CANCEL delivery — lets tests assert a CANCEL actually reached
+	// this contact (rather than being misrouted to the AOR host).
+	cancels chan *sip.Request
 }
 
 type inviteEvent struct {
@@ -80,6 +83,7 @@ func newRawSIPClient(t *testing.T, ua string) *rawSIPClient {
 		host:    "127.0.0.1",
 		port:    port,
 		invites: make(chan inviteEvent, 8),
+		cancels: make(chan *sip.Request, 8),
 	}
 
 	srv.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
@@ -88,6 +92,15 @@ func newRawSIPClient(t *testing.T, ua string) *rawSIPClient {
 		// (e.g. parallel fork) rely on this.
 		ring := sip.NewResponseFromRequest(req, sip.StatusRinging, "Ringing", nil)
 		_ = tx.Respond(ring)
+
+		// A matching CANCEL is handled at the transaction layer (sipgo does not
+		// call the server's OnCancel request handler for it), so record it here.
+		tx.OnCancel(func(r *sip.Request) {
+			select {
+			case c.cancels <- r:
+			default:
+			}
+		})
 
 		done := make(chan struct{})
 		select {
@@ -443,12 +456,61 @@ func TestSIPRegister_DialAOR(t *testing.T) {
 
 	// raw client receives the INVITE on its own listener.
 	e := cli.waitInvite(t, 3*time.Second)
-	// Confirm Request-URI host is the AOR's host (URI unchanged), but the
-	// transport delivered the packet to our port — which is the test contract.
+	// The Request-URI is left as the dialed AOR (the transport delivered the
+	// packet to our port via a loose Route to the contact socket). Preserving
+	// the Request-URI keeps CANCEL/ACK — which reuse it per RFC 3261 §9.1 —
+	// pointing at the AOR the caller asked for.
 	if e.req.Recipient.Host != "vb.test" {
-		t.Errorf("Recipient.Host = %q, want vb.test", e.req.Recipient.Host)
+		t.Errorf("Recipient.Host = %q, want vb.test (dialed AOR preserved)", e.req.Recipient.Host)
 	}
 	cli.answerInvite(t, e)
+}
+
+// TestSIPRegister_CancelUnansweredRoutesToContact reproduces the bug where
+// deleting an unanswered outbound leg dialed to a registered AOR sent CANCEL to
+// the AOR host (potentially VoiceBlender itself) instead of the contact. The
+// contact must receive the CANCEL.
+func TestSIPRegister_CancelUnansweredRoutesToContact(t *testing.T) {
+	inst := newTestInstance(t, "reg-cancel")
+	cli := newRawSIPClient(t, "alice-ua")
+
+	cli.sendRegister(t, inst.sipPort, "alice", cli.contactURI("alice"), 600)
+	inst.collector.waitForMatch(t, events.SIPRegistrationActive, nil, 1*time.Second)
+
+	createResp := httpPost(t, inst.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":   "sip",
+		"to":     "sip:alice@vb.test",
+		"from":   "support",
+		"codecs": []string{"PCMU"},
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: %d", createResp.StatusCode)
+	}
+	var lv legView
+	decodeJSON(t, createResp, &lv)
+
+	// Contact receives the INVITE (and auto-replies 180 Ringing) but never
+	// answers.
+	cli.waitInvite(t, 3*time.Second)
+
+	// Delete the unanswered leg → VB must CANCEL the outbound INVITE.
+	delResp := httpDelete(t, inst.baseURL()+"/v1/legs/"+lv.ID)
+	delResp.Body.Close()
+
+	select {
+	case req := <-cli.cancels:
+		if req.Method != sip.CANCEL {
+			t.Fatalf("got %s, want CANCEL", req.Method)
+		}
+		// RFC 3261 §9.1: the CANCEL Request-URI must be identical to the
+		// INVITE's — i.e. the dialed AOR — even though it was delivered to the
+		// contact socket (the same next hop as the INVITE).
+		if req.Recipient.Host != "vb.test" {
+			t.Errorf("CANCEL Request-URI host = %q, want vb.test (dialed AOR)", req.Recipient.Host)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("contact never received CANCEL — it was misrouted to the AOR host")
+	}
 }
 
 func TestSIPRegister_Fork(t *testing.T) {

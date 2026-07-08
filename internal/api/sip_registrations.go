@@ -67,28 +67,34 @@ func (s *Server) listRegistrations(w http.ResponseWriter, r *http.Request) {
 // only that one Contact under the AOR is removed; otherwise every Contact
 // is force-unbound.
 func (s *Server) deleteRegistration(w http.ResponseWriter, r *http.Request) {
-	reg := s.SIPEngine.Registrar()
-	if reg == nil {
-		writeError(w, http.StatusNotFound, "registrar not enabled")
-		return
-	}
 	raw := chi.URLParam(r, "aor")
 	aor, err := url.PathUnescape(raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid AOR encoding")
 		return
 	}
-	if c := r.URL.Query().Get("contact"); c != "" {
-		if ok := reg.UnbindContact(aor, c, "forced"); !ok {
-			writeError(w, http.StatusNotFound, "contact not found")
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if n := reg.UnbindAll(aor, "forced"); n == 0 {
-		writeError(w, http.StatusNotFound, "AOR not found")
+	if err := s.doDeleteRegistration(aor, r.URL.Query().Get("contact")); err != nil {
+		handleAPIError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// doDeleteRegistration force-unbinds an AOR (or a single contact under it).
+// Shared by the REST handler and the VSI delete_sip_registration command.
+func (s *Server) doDeleteRegistration(aor, contact string) error {
+	reg := s.SIPEngine.Registrar()
+	if reg == nil {
+		return newAPIError(http.StatusNotFound, "registrar not enabled")
+	}
+	if contact != "" {
+		if ok := reg.UnbindContact(aor, contact, "forced"); !ok {
+			return newAPIError(http.StatusNotFound, "contact not found")
+		}
+		return nil
+	}
+	if n := reg.UnbindAll(aor, "forced"); n == 0 {
+		return newAPIError(http.StatusNotFound, "AOR not found")
+	}
+	return nil
 }
