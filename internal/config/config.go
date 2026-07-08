@@ -61,11 +61,14 @@ type Config struct {
 	// Inbound digest authentication. A VSI/REST client may challenge an
 	// inbound INVITE or REGISTER; VoiceBlender then issues a 401 and verifies
 	// the credentialed retry. ConsultTimeout bounds how long an inbound
-	// REGISTER is parked waiting for a client decision before it auto-accepts
-	// (preserving the unauthenticated default). NonceTTL bounds the lifetime
-	// of an issued challenge nonce.
+	// REGISTER is parked waiting for a client decision. RegisterDefault
+	// ("reject" | "accept", default "reject") is the fallback applied when that
+	// window elapses with no decision — fail-closed by default, so an
+	// unanswered REGISTER is denied rather than bound. NonceTTL bounds the
+	// lifetime of an issued challenge nonce.
 	SIPInboundAuthConsultTimeoutMs int
 	SIPInboundAuthNonceTTLSeconds  int
+	SIPInboundRegisterDefault      string
 
 	SIPOutboundRegistrationDefaultExpiresSeconds int
 	SIPOutboundRegistrationMinExpiresSeconds     int
@@ -159,6 +162,7 @@ func Load() Config {
 
 		SIPInboundAuthConsultTimeoutMs: envInt("SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS", 2000),
 		SIPInboundAuthNonceTTLSeconds:  envInt("SIP_INBOUND_AUTH_NONCE_TTL_SECONDS", 60),
+		SIPInboundRegisterDefault:      envOr("SIP_INBOUND_REGISTER_DEFAULT", "reject"),
 
 		SIPOutboundRegistrationDefaultExpiresSeconds: envInt("SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS", 3600),
 		SIPOutboundRegistrationMinExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS", 60),

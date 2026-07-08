@@ -227,24 +227,44 @@ func TestSIPInboundAuth_RegisterChallengeWrongPassword(t *testing.T) {
 	}
 }
 
-// TestSIPInboundAuth_RegisterTimeoutAutoAccepts confirms the default behaviour
-// is symmetric with inbound INVITE: the REGISTER is always surfaced for a
-// decision (a sip.registration_attempt event fires), and when no client
-// challenges/rejects within the consult window it auto-accepts — preserving the
-// unauthenticated default. The harness uses a short consult timeout.
-func TestSIPInboundAuth_RegisterTimeoutAutoAccepts(t *testing.T) {
+// TestSIPInboundAuth_RegisterTimeoutAcceptsWhenConfigured confirms that with
+// SIP_INBOUND_REGISTER_DEFAULT=accept (the harness default) the REGISTER is
+// surfaced for a decision (a sip.registration_attempt event fires) and, when no
+// client challenges/rejects within the consult window, the fallback binds it.
+func TestSIPInboundAuth_RegisterTimeoutAcceptsWhenConfigured(t *testing.T) {
 	inst := newTestInstance(t, "reg-timeout")
 	cli := newRawSIPClient(t, "reg-timeout-ua")
 
 	resp := cli.sendRegister(t, inst.sipPort, "alice", cli.contactURI("alice"), 600)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("REGISTER status = %d, want 200 (timeout auto-accept)", resp.StatusCode)
+		t.Fatalf("REGISTER status = %d, want 200 (accept fallback)", resp.StatusCode)
 	}
 	if !inst.collector.hasEvent(events.SIPRegistrationAttempt, nil) {
 		t.Error("sip.registration_attempt event was not published")
 	}
 	if list := registrationsList(t, inst.baseURL()); len(list.Bindings) != 1 {
 		t.Errorf("bindings = %d, want 1", len(list.Bindings))
+	}
+}
+
+// TestSIPInboundAuth_RegisterTimeoutRejectsByDefault verifies the shipped
+// fail-closed default: with SIP_INBOUND_REGISTER_DEFAULT=reject, an inbound
+// REGISTER that no controller decides is denied with 403 and never binds.
+func TestSIPInboundAuth_RegisterTimeoutRejectsByDefault(t *testing.T) {
+	inst := newTestInstanceWithOpts(t, "reg-timeout-reject", func(c *config.Config) {
+		c.SIPInboundRegisterDefault = "reject"
+	})
+	cli := newRawSIPClient(t, "reg-timeout-reject-ua")
+
+	resp := cli.sendRegister(t, inst.sipPort, "alice", cli.contactURI("alice"), 600)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("REGISTER status = %d, want 403 (reject fallback)", resp.StatusCode)
+	}
+	if !inst.collector.hasEvent(events.SIPRegistrationAttempt, nil) {
+		t.Error("sip.registration_attempt event was not published")
+	}
+	if list := registrationsList(t, inst.baseURL()); len(list.Bindings) != 0 {
+		t.Errorf("bindings = %d, want 0 (no binding on reject)", len(list.Bindings))
 	}
 }
 

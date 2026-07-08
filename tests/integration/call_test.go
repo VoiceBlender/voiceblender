@@ -93,8 +93,11 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		SIPRegistrationAllowMultipleContacts: true,
 		// Keep the REGISTER consult window short so tests without a controller
 		// answering the sip.registration_attempt event still finish quickly via
-		// timeout-accept. Auth tests override this with a generous value.
+		// the fallback. Auth tests override this with a generous value. The
+		// shipped binary defaults to "reject"; the harness opts into "accept" so
+		// REGISTER-driven tests bind without wiring a controller per test.
 		SIPInboundAuthConsultTimeoutMs: 150,
+		SIPInboundRegisterDefault:      "accept",
 	}
 	if mutate != nil {
 		mutate(&cfg)
