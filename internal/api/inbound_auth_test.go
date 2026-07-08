@@ -25,16 +25,46 @@ func sampleAttempt() *sipmod.RegisterAttempt {
 }
 
 // Every REGISTER is consulted (symmetric with the always-surfaced inbound
-// INVITE); when no decision arrives within the consult window it auto-accepts.
-func TestHandleRegisterAttempt_TimeoutAccepts(t *testing.T) {
+// INVITE); when no decision arrives within the consult window the configured
+// fallback applies — reject by default (fail-closed).
+func TestHandleRegisterAttempt_TimeoutRejectsByDefault(t *testing.T) {
 	s := newAuthTestServer(50)
+	s.Config.SIPInboundRegisterDefault = "reject"
 	start := time.Now()
 	d := s.HandleRegisterAttempt(sampleAttempt())
-	if d.Kind != sipmod.RegisterAccept {
-		t.Fatalf("kind = %v, want RegisterAccept on timeout", d.Kind)
+	if d.Kind != sipmod.RegisterReject {
+		t.Fatalf("kind = %v, want RegisterReject on timeout", d.Kind)
 	}
 	if time.Since(start) < 40*time.Millisecond {
 		t.Error("returned before the consult timeout elapsed")
+	}
+}
+
+func TestHandleRegisterAttempt_TimeoutAcceptsWhenConfigured(t *testing.T) {
+	s := newAuthTestServer(50)
+	s.Config.SIPInboundRegisterDefault = "accept"
+	if d := s.HandleRegisterAttempt(sampleAttempt()); d.Kind != sipmod.RegisterAccept {
+		t.Fatalf("kind = %v, want RegisterAccept on timeout with accept default", d.Kind)
+	}
+}
+
+func TestRegisterConsultFallback(t *testing.T) {
+	cases := []struct {
+		val  string
+		want sipmod.RegisterDecisionKind
+	}{
+		{"", sipmod.RegisterReject},        // unset → fail-closed
+		{"reject", sipmod.RegisterReject},  // explicit reject
+		{"garbage", sipmod.RegisterReject}, // unrecognised → fail-closed
+		{"accept", sipmod.RegisterAccept},
+		{"  Accept  ", sipmod.RegisterAccept}, // trimmed + case-insensitive
+	}
+	for _, c := range cases {
+		s := newAuthTestServer(50)
+		s.Config.SIPInboundRegisterDefault = c.val
+		if got := s.registerConsultFallback().Kind; got != c.want {
+			t.Errorf("registerConsultFallback(%q) = %v, want %v", c.val, got, c.want)
+		}
 	}
 }
 

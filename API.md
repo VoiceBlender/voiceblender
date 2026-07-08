@@ -2817,7 +2817,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `room.unbridged` | Bridge torn down | `bridge_id`, `room_a_id`, `room_b_id`, `reason` |
 | `amd.result` | Answering machine detection completed | `leg_id`, `result`, `initial_silence_ms`, `greeting_duration_ms`, `total_analysis_ms` |
 | `amd.beep` | Voicemail beep tone detected | `leg_id`, `beep_ms` |
-| `sip.registration_attempt` | An inbound REGISTER (that would create/remove a binding) is awaiting a challenge/accept/reject decision; auto-accepts after `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `attempt_id`, `aor`, `contact`, `source_address`, `transport`, `user_agent`, `call_id`, `has_authorization` |
+| `sip.registration_attempt` | An inbound REGISTER (that would create/remove a binding) is awaiting a challenge/accept/reject decision; after `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` the `SIP_INBOUND_REGISTER_DEFAULT` fallback applies (reject by default) | `attempt_id`, `aor`, `contact`, `source_address`, `transport`, `user_agent`, `call_id`, `has_authorization` |
 | `sip.registration_active` | A SIP AOR binding was created or refreshed | `aor`, `contact`, `socket`, `transport`, `user_agent`, `call_id`, `granted_expires_seconds`, `expires_at` |
 | `sip.registration_expired` | A SIP AOR binding was removed | `aor`, `contact`, `socket`, `reason` (`ttl` / `unregistered` / `forced` / `replaced`) |
 > **LiveKit participants.** Remote LK participants do not get their own special event types. Each appears as a regular `leg.connected` / `leg.disconnected` for a `livekit_participant` leg (Model B). `speaking.started` / `speaking.stopped` apply per-leg as usual. The `leg.disconnected.reason` for an LK participant leg is `livekit_participant_left`.
@@ -3126,9 +3126,7 @@ through the standard webhook and VSI channels — see Event Types above.
 Inbound REGISTER auth is handled **symmetrically with inbound INVITE**: just as
 an INVITE always surfaces `leg.ringing` and waits for the client to decide,
 every inbound REGISTER that creates or removes a binding is surfaced for a
-decision and may be challenged. By default (no challenge) the REGISTER is
-accepted — auth is assumed to be enforced by a SIP proxy in front, or not
-required.
+decision and may be challenged.
 
 Flow:
 
@@ -3139,7 +3137,7 @@ Flow:
 2. The client responds by `attempt_id`:
    - **challenge** — VoiceBlender replies `401` with a `WWW-Authenticate`
      digest challenge.
-   - **accept** — bind and reply `200 OK` (same as letting the timeout elapse).
+   - **accept** — bind and reply `200 OK`.
    - **reject** — reply `403` (or a custom code/reason).
 3. If challenged, the UA retries the REGISTER with an `Authorization` header
    (same `Call-ID`). VoiceBlender verifies the digest against the supplied
@@ -3148,8 +3146,10 @@ Flow:
 
 Unlike an INVITE — whose leg can ring indefinitely — a REGISTER is request/response
 and cannot be parked forever, so the consult is bounded by the timeout above. If
-no decision arrives within that window the REGISTER auto-accepts, preserving the
-unauthenticated default.
+no decision arrives within that window the **`SIP_INBOUND_REGISTER_DEFAULT`**
+fallback applies: **`reject` (403) by default** (fail-closed — an unanswered
+REGISTER is denied), or `accept` to bind it (the legacy fail-open behaviour,
+appropriate when a front proxy enforces auth).
 
 ```
 POST /v1/sip/registrations/attempts/{id}/challenge   # body: ChallengeRequest (see POST /v1/legs/{id}/challenge)
@@ -3197,7 +3197,8 @@ POST /v1/sip/registrations/attempts/{attempt_id}/accept
 | `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry |
 | `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | How often the expiry sweeper runs |
 | `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `false`, every REGISTER replaces any prior Contacts for the AOR |
-| `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound REGISTER is parked awaiting a challenge/accept/reject decision before auto-accepting |
+| `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound REGISTER is parked awaiting a challenge/accept/reject decision before the fallback applies |
+| `SIP_INBOUND_REGISTER_DEFAULT` | `reject` | Fallback for an undecided inbound REGISTER: `reject` (403, fail-closed default) or `accept` (bind, legacy fail-open) |
 | `SIP_INBOUND_AUTH_NONCE_TTL_SECONDS` | `60` | Lifetime of an issued inbound-auth challenge nonce |
 
 ---

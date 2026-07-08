@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -161,14 +162,26 @@ func (s *registerAttemptStore) delete(id string) {
 	s.mu.Unlock()
 }
 
+// registerConsultFallback is the decision applied when an inbound REGISTER
+// consult elapses with no client decision. Governed by
+// SIP_INBOUND_REGISTER_DEFAULT: "accept" binds (legacy fail-open behaviour);
+// anything else — including the "reject" default and any unrecognised value —
+// denies with 403, so a slow or absent controller fails closed.
+func (s *Server) registerConsultFallback() sipmod.RegisterDecision {
+	if strings.EqualFold(strings.TrimSpace(s.Config.SIPInboundRegisterDefault), "accept") {
+		return sipmod.RegisterDecision{Kind: sipmod.RegisterAccept}
+	}
+	return sipmod.RegisterDecision{Kind: sipmod.RegisterReject}
+}
+
 // HandleRegisterAttempt is the engine OnRegisterAttempt callback. Mirroring the
 // inbound-INVITE path (which always surfaces leg.ringing and waits for the
 // client to decide), every inbound REGISTER is surfaced as a
 // sip.registration_attempt event and the client is consulted for a
 // challenge/accept/reject decision. Because a REGISTER — unlike an INVITE —
 // cannot be parked indefinitely, the consult is bounded: if no decision arrives
-// within the consult timeout the REGISTER auto-accepts, preserving the
-// unauthenticated default.
+// within the consult timeout the configured fallback applies
+// (registerConsultFallback — reject by default).
 func (s *Server) HandleRegisterAttempt(a *sipmod.RegisterAttempt) sipmod.RegisterDecision {
 	attemptID := uuid.New().String()
 	ch := make(chan sipmod.RegisterDecision, 1)
@@ -194,7 +207,7 @@ func (s *Server) HandleRegisterAttempt(a *sipmod.RegisterAttempt) sipmod.Registe
 	case d := <-ch:
 		return d
 	case <-time.After(timeout):
-		return sipmod.RegisterDecision{Kind: sipmod.RegisterAccept}
+		return s.registerConsultFallback()
 	}
 }
 

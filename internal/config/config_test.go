@@ -17,6 +17,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"MOQ_ENABLED", "MOQ_LISTEN_ADDR", "MOQ_TLS_CERT_FILE", "MOQ_TLS_KEY_FILE",
 		"MOQ_OPUS_BITRATE", "AMRWB_MODE", "AMRWB_OCTET_ALIGNED",
 		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
+		"SIP_INBOUND_REGISTER_DEFAULT",
 	} {
 		t.Setenv(key, "")
 	}
@@ -58,6 +59,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.DefaultSampleRate != 16000 {
 		t.Errorf("DefaultSampleRate = %d, want 16000", cfg.DefaultSampleRate)
+	}
+	if cfg.SIPInboundRegisterDefault != "reject" {
+		t.Errorf("SIPInboundRegisterDefault = %q, want reject (fail-closed default)", cfg.SIPInboundRegisterDefault)
 	}
 	if cfg.MoQEnabled {
 		t.Error("MoQEnabled should default to false")

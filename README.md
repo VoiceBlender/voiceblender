@@ -106,7 +106,8 @@ All configuration is via environment variables:
 | `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry. Requests above this value are honored at this maximum. |
 | `SIP_REGISTRATION_SWEEP_INTERVAL_MS` | `1000` | Sweeper period for evicting expired AOR bindings. |
 | `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS` | `true` | When `true`, the same AOR may be bound from multiple Contacts simultaneously (and `POST /v1/legs` parallel-forks to every bound contact). When `false`, each `REGISTER` replaces any prior Contacts for the AOR. |
-| `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound `REGISTER` is parked awaiting a challenge/accept/reject decision (surfaced via the `sip.registration_attempt` event) before it auto-accepts. Every REGISTER is surfaced for a decision — symmetric with inbound INVITE, which always surfaces `leg.ringing` and waits for the client; when no decision arrives the REGISTER auto-accepts, preserving the unauthenticated default. |
+| `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound `REGISTER` is parked awaiting a challenge/accept/reject decision (surfaced via the `sip.registration_attempt` event) before the fallback (`SIP_INBOUND_REGISTER_DEFAULT`) applies. Every REGISTER is surfaced for a decision — symmetric with inbound INVITE, which always surfaces `leg.ringing` and waits for the client. |
+| `SIP_INBOUND_REGISTER_DEFAULT` | `reject` | Fallback for an inbound `REGISTER` that no client decides within the consult window: `reject` (reply `403`, **fail-closed default**) or `accept` (bind and reply `200 OK` — the legacy fail-open behaviour). |
 | `SIP_INBOUND_AUTH_NONCE_TTL_SECONDS` | `60` | Lifetime of an issued inbound-auth digest challenge nonce. A credentialed retry arriving after this elapses must be re-challenged. |
 | `SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Default `Expires` value sent on outbound REGISTER (sip_register trunks) when the create-trunk request does not specify one. |
 | `SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS` | `60` | Lower clamp on the requested outbound REGISTER expiry. |
@@ -388,14 +389,17 @@ forcing short-lived registrations (and, when challenging, frequent re-auth)
 without lowering the global clamp. Full endpoint and event reference is in
 [API.md](API.md#sip-registrations-aor).
 
-**No authentication.** VoiceBlender does *not* perform digest challenges or
-verify any `Authorization` header — every well-formed REGISTER from a supported
-transport is auto-accepted. Production deployments are expected to terminate
-authentication at a SIP proxy in front of VoiceBlender (e.g.
-[Kamailio](https://www.kamailio.org/) or [OpenSIPS](https://opensips.org/));
-the proxy enforces credentials and then forwards the authenticated REGISTER
-on. Exposing VoiceBlender's SIP port directly to the public internet without
-such a proxy is **not safe**.
+**Authentication.** Every inbound REGISTER (that creates or removes a binding)
+is surfaced as a `sip.registration_attempt` event and parked for a client
+decision — challenge (401 digest), accept, or reject — for up to
+`SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS`. If no client decides within that window,
+the `SIP_INBOUND_REGISTER_DEFAULT` fallback applies: **`reject` (403) by
+default**, so an unanswered REGISTER is denied rather than blindly bound. Set it
+to `accept` for the legacy fail-open behaviour (e.g. when authentication is
+terminated at a SIP proxy such as [Kamailio](https://www.kamailio.org/) or
+[OpenSIPS](https://opensips.org/) in front of VoiceBlender). Either way, enforce
+credentials via your `sip.registration_attempt` handler or a front proxy before
+exposing VoiceBlender's SIP port to the public internet.
 
 ## Typical Workflow
 
