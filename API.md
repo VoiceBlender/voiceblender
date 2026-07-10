@@ -772,6 +772,63 @@ The REST call returns immediately after validating the request. The REFER is sen
 
 ---
 
+### Receiving a transfer (inbound REFER)
+
+When a peer sends **us** a REFER (asks us to transfer its call), the handling depends on `SIP_REFER_AUTO_DIAL`:
+
+- **`SIP_REFER_AUTO_DIAL=true`** — the server accepts (`202`) and **dials the target itself**, driving the NOTIFY sipfrag progress. The app is notified via `leg.transfer_requested` but does nothing.
+- **`SIP_REFER_AUTO_DIAL=false` (default)** — the REFER is **parked** and surfaced as `leg.transfer_requested` (a *decision request*). The app drives the outcome with the commands below, keyed by the **referrer leg** (`{id}` = the leg that received the REFER). If no decision arrives within `SIP_REFER_CONSULT_TIMEOUT_MS` (default 2000 ms), the REFER auto-declines with `603` (fail-closed) and `leg.transfer_failed` fires.
+
+The typical app flow: on `leg.transfer_requested`, call **accept**, perform the re-bridge (route the other party to the target), optionally report **progress**, then **complete**. If the app can't perform the transfer, call **decline** instead.
+
+All four return `202 Accepted` on success, or `404` when there is no matching parked/accepted transfer for the leg. The same actions are available over VSI as `accept_transfer`, `progress_transfer`, `complete_transfer`, and `decline_transfer` (payload `{ "id": "<referrer_leg_id>", ... }`).
+
+#### POST /v1/legs/{id}/transfer/accept
+
+Accepts the parked REFER: replies `202 Accepted` to the referrer and sends `NOTIFY 100 Trying`, keeping the refer subscription open. No body.
+
+```json
+{ "status": "accepting" }
+```
+
+#### POST /v1/legs/{id}/transfer/progress
+
+Sends an interim sipfrag `NOTIFY` (e.g. `180 Ringing`) on an accepted transfer so the referrer's UA reflects real progress.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `status_code` | int | yes | SIP status to relay (100–699) |
+| `reason` | string | no | Reason phrase; a sensible default is used when omitted |
+
+Errors: `400` (status_code out of range), `404` (no accepted transfer for the leg).
+
+#### POST /v1/legs/{id}/transfer/complete
+
+Terminates an accepted transfer with a final sipfrag `NOTIFY` and emits `leg.transfer_completed` (2xx) or `leg.transfer_failed`. The referrer leg is left for the app to hang up.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `success` | bool | no | `true` sends `200 OK`; otherwise a failure NOTIFY is sent |
+| `status_code` | int | no | Explicit terminal status (defaults: `200` on success, `500` on failure) |
+| `reason` | string | no | Reason phrase; defaulted from `status_code` when omitted |
+
+```json
+{ "success": true }
+```
+
+#### POST /v1/legs/{id}/transfer/decline
+
+Rejects a parked (not-yet-accepted) REFER, replying to the referrer with a non-2xx and emitting `leg.transfer_failed`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | int | no | SIP reject code (default `603`) |
+| `reason` | string | no | Reason phrase (default `Decline`) |
+
+Once a REFER has been **accepted**, use `complete` with `success:false` to signal failure — `decline` only applies before acceptance (`404` otherwise).
+
+---
+
 ### POST /v1/legs/{id}/dtmf
 
 Send DTMF digits on a leg (RFC 4733 telephone-event).
@@ -2782,7 +2839,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `leg_type` |
 | `leg.command_failed` | An asynchronous leg command failed after the HTTP 202 was returned | `leg_id`, `command` (e.g. `ring`, `early_media`, `hold`, `unhold`, `add_to_room`), `error` |
 | `leg.transfer_initiated` | We sent a SIP REFER for this leg | `leg_id`, `kind` (`blind`/`attended`), `target`, `replaces_leg_id` |
-| `leg.transfer_requested` | A peer sent us a SIP REFER targeting this leg | `leg_id`, `kind`, `target`, `replaces_call_id`, `declined` |
+| `leg.transfer_requested` | A peer sent us a SIP REFER targeting this leg. In the default app-driven model it is a decision request — respond via `accept_transfer`/`decline_transfer` (see [Receiving a transfer](#receiving-a-transfer-inbound-refer)). `declined` is vestigial (always false) | `leg_id`, `kind`, `target`, `replaces_call_id`, `declined` |
 | `leg.transfer_progress` | NOTIFY sipfrag for an in-flight transfer | `leg_id`, `status_code`, `reason` |
 | `leg.transfer_completed` | Transfer reached terminal 2xx; leg is hung up | `leg_id`, `status_code`, `reason` |
 | `leg.transfer_failed` | Transfer ended in non-2xx or local error | `leg_id`, `status_code`, `reason`, `error` |

@@ -51,6 +51,9 @@ type Server struct {
 
 	transfers *transferStore
 
+	// pendingRefers tracks inbound REFERs parked awaiting an app accept/decline.
+	pendingRefers *pendingReferStore
+
 	// regAttempts tracks inbound REGISTERs parked awaiting a client decision.
 	regAttempts *registerAttemptStore
 }
@@ -87,6 +90,7 @@ func NewServer(
 		speakDets:      make(map[string]*speaking.Detector),
 		speechOverride: make(map[string]*bool),
 		transfers:      newTransferStore(),
+		pendingRefers:  newPendingReferStore(),
 		regAttempts:    newRegisterAttemptStore(),
 	}
 	s.routes()
@@ -135,6 +139,10 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/hold", s.holdLeg)
 		r.Delete("/legs/{id}/hold", s.unholdLeg)
 		r.Post("/legs/{id}/transfer", s.transferLeg)
+		r.Post("/legs/{id}/transfer/accept", s.acceptTransferLeg)
+		r.Post("/legs/{id}/transfer/progress", s.progressTransferLeg)
+		r.Post("/legs/{id}/transfer/complete", s.completeTransferLeg)
+		r.Post("/legs/{id}/transfer/decline", s.declineTransferLeg)
 		r.Delete("/legs/{id}", s.deleteLeg)
 		r.Post("/legs/{id}/dtmf", s.sendDTMF)
 		r.Post("/legs/{id}/dtmf/accept", s.acceptDTMFLeg)

@@ -172,6 +172,10 @@ func VSICommandsMetadata() []VSICommandMeta {
 
 		// ── Transfer ────────────────────────────────────────────────────
 		{Name: "leg_transfer", Summary: "Initiate a SIP REFER transfer (blind or attended)", PayloadType: transferLegPayload{}, ResultType: TransferLegResult{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "accept_transfer", Summary: "Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying)", PayloadType: acceptTransferPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "progress_transfer", Summary: "Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer", PayloadType: progressTransferPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404}},
+		{Name: "complete_transfer", Summary: "Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure)", PayloadType: completeTransferPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "decline_transfer", Summary: "Reject a parked (not-yet-accepted) inbound REFER (603 by default)", PayloadType: declineTransferPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
 		// ── Agent ───────────────────────────────────────────────────────
 		{Name: "leg_agent_elevenlabs", Summary: "Attach an ElevenLabs Conversational AI agent to a leg", PayloadType: agentElevenLabsPayload{}, ResultType: AgentStartLegResult{}, ErrorCodes: []int{400, 404, 409, 503}},
@@ -248,7 +252,7 @@ func EventsMetadata() []EventMeta {
 		{events.RecordingPaused, "Recording paused (audio replaced with silence)", reflect.TypeOf(events.RecordingPausedData{})},
 		{events.RecordingResumed, "Recording resumed from a paused state", reflect.TypeOf(events.RecordingResumedData{})},
 		{events.LegTransferInitiated, "We sent a SIP REFER (transfer initiated by the operator)", reflect.TypeOf(events.LegTransferInitiatedData{})},
-		{events.LegTransferRequested, "We received a SIP REFER from the peer", reflect.TypeOf(events.LegTransferRequestedData{})},
+		{events.LegTransferRequested, "We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)", reflect.TypeOf(events.LegTransferRequestedData{})},
 		{events.LegTransferProgress, "Transfer progress reported via NOTIFY sipfrag", reflect.TypeOf(events.LegTransferProgressData{})},
 		{events.LegTransferCompleted, "Transfer reached terminal 2xx", reflect.TypeOf(events.LegTransferCompletedData{})},
 		{events.LegTransferFailed, "Transfer failed (REFER rejected, sipfrag non-2xx, or local error)", reflect.TypeOf(events.LegTransferFailedData{})},

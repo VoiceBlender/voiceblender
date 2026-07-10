@@ -144,7 +144,7 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.transfer_requested.kind":             "Transfer kind: \"blind\" or \"attended\"",
 		"leg.transfer_requested.target":           "SIP URI requested by the peer",
 		"leg.transfer_requested.replaces_call_id": "Call-ID present in the Refer-To Replaces parameter (attended only)",
-		"leg.transfer_requested.declined":         "True when the REFER was declined (e.g. SIP_REFER_AUTO_DIAL=false)",
+		"leg.transfer_requested.declined":         "Vestigial (always false); retained for wire compatibility. The outcome now flows via leg.transfer_completed / leg.transfer_failed after the app decides",
 		"leg.transfer_progress.leg_id":            "Leg identifier",
 		"leg.transfer_progress.status_code":       "Provisional SIP status from the NOTIFY sipfrag",
 		"leg.transfer_progress.reason":            "Reason phrase",
@@ -468,6 +468,59 @@ func RoutesMetadata() []RouteMeta {
 				400: {Description: "Missing or invalid target URI (including URIs without a host such as sip:)"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg not connected, not a SIP leg, or replaces_leg_id is invalid"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/transfer/accept", OperationID: "acceptTransfer",
+			Summary: "Accept a parked inbound REFER",
+			Description: "Accepts an inbound transfer surfaced via `leg.transfer_requested` (default app-driven model, " +
+				"`SIP_REFER_AUTO_DIAL=false`). Sends `202 Accepted` to the referrer and a `NOTIFY` sipfrag `100 Trying`, " +
+				"keeping the refer subscription open. `{id}` is the referrer leg (the leg that received the REFER). " +
+				"After accepting, re-bridge as needed and report progress via `.../transfer/progress` and the outcome via " +
+				"`.../transfer/complete`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Accept queued (202 + NOTIFY 100 sent)"},
+				404: {Description: "No pending transfer for the leg (unknown or already decided)"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/transfer/progress", OperationID: "transferProgress",
+			Summary: "Report interim transfer progress",
+			Description: "Sends an interim sipfrag `NOTIFY` (e.g. `180 Ringing`) on an accepted inbound transfer so the " +
+				"referrer's UA reflects real progress. The subscription stays active.",
+			Tags:        []string{"Legs"},
+			RequestType: TransferProgressRequest{},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Progress NOTIFY queued"},
+				400: {Description: "status_code out of range (must be 100-699)"},
+				404: {Description: "No accepted transfer for the leg"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/transfer/complete", OperationID: "completeTransfer",
+			Summary: "Complete an accepted inbound transfer",
+			Description: "Terminates an accepted inbound transfer with a final sipfrag `NOTIFY` and emits " +
+				"`leg.transfer_completed` (on success) or `leg.transfer_failed`. `success:true` sends `200 OK`; otherwise " +
+				"`status_code`/`reason` (default 500) carry the failure. The referrer leg is left for the app to hang up.",
+			Tags:        []string{"Legs"},
+			RequestType: TransferCompleteRequest{},
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Terminal NOTIFY queued"},
+				404: {Description: "No accepted transfer for the leg (accept it first)"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/transfer/decline", OperationID: "declineTransfer",
+			Summary: "Decline a parked inbound REFER",
+			Description: "Rejects a parked (not-yet-accepted) inbound transfer, replying to the referrer with a non-2xx " +
+				"(`603 Decline` by default; override via `code`/`reason`) and emitting `leg.transfer_failed`.",
+			Tags:         []string{"Legs"},
+			RequestType:  TransferDeclineRequest{},
+			OptionalBody: true,
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Decline queued"},
+				404: {Description: "No pending transfer for the leg (unknown or already accepted)"},
 			},
 		},
 		{

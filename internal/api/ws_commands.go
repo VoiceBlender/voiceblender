@@ -92,6 +92,32 @@ type transferLegPayload struct {
 	TransferRequest
 }
 
+// acceptTransferPayload carries the referrer leg id for accept_transfer.
+type acceptTransferPayload struct {
+	ID string `json:"id"`
+}
+
+// progressTransferPayload combines the referrer leg id with an interim sipfrag
+// status for progress_transfer.
+type progressTransferPayload struct {
+	ID string `json:"id"`
+	TransferProgressRequest
+}
+
+// completeTransferPayload combines the referrer leg id with the terminal outcome
+// for complete_transfer.
+type completeTransferPayload struct {
+	ID string `json:"id"`
+	TransferCompleteRequest
+}
+
+// declineTransferPayload combines the referrer leg id with the optional
+// reject code/reason for decline_transfer.
+type declineTransferPayload struct {
+	ID string `json:"id"`
+	TransferDeclineRequest
+}
+
 // recordStartPayload combines a leg/room id with the record request.
 type recordStartPayload struct {
 	ID string `json:"id"`
@@ -795,6 +821,46 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 			return
 		}
 		s.wsCommandResult(lw, msg, res)
+	case "accept_transfer":
+		var p acceptTransferPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doAcceptTransfer(p.ID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "accepting"})
+	case "progress_transfer":
+		var p progressTransferPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doTransferProgress(p.ID, p.TransferProgressRequest); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "progress"})
+	case "complete_transfer":
+		var p completeTransferPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doCompleteTransfer(p.ID, p.TransferCompleteRequest); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "completing"})
+	case "decline_transfer":
+		var p declineTransferPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doDeclineTransfer(p.ID, p.TransferDeclineRequest); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, map[string]string{"status": "declining"})
 
 	// ── Playback volume ─────────────────────────────────────────────
 	case "leg_play_volume":

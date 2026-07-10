@@ -75,6 +75,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/sip` (tls) | 4 | `EngineConfig` TLS validation, concurrent UDP+TLS listener startup, self-signed cert handshake loopback |
 | `internal/sip` (inbound auth) | 12 | `recordChallenge` WWW-Authenticate shape + nonce uniqueness; `VerifyInboundAuth` valid digest (MD5/SHA-256, password and HA1), wrong password/username → invalid, no/unknown/expired challenge → none, single-use nonce consumption, `max_expires` TTL cap round-trips through the pending challenge |
 | `internal/api` (inbound auth) | 12 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, applies the configured fallback when undecided (reject by default, accept when configured), propagates a challenge decision (incl. `max_expires`), accept decision carries `max_expires`; `registerConsultFallback` mapping (unset/unknown → reject, `accept` case-insensitive); `ChallengeRequest` validation (realm + password/ha1 required, non-negative `max_expires`) |
+| `internal/api` (inbound transfer) | 2 | `pendingReferStore` state machine (accept vs decline/timeout are mutually exclusive; progress/complete require a prior accept; unknown-leg misses); `sipReasonPhrase` default reason phrases |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
@@ -224,7 +225,9 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestWSCommands_MuteLeg` | Mute/get_leg via WS; error on missing leg; error on unknown command |
 | `TestWSEvents_AppIDFilter` | Two WS clients (filtered + unfiltered), two legs with different `app_id`; filtered client only sees matching events |
 | `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |
-| `TestTransfer_Inbound_DeclinedByDefault` | With default `SIP_REFER_AUTO_DIAL=false` the peer's REFER gets 603 and an audit event |
+| `TestTransfer_Inbound_AutoDeclineOnTimeout` | Auto-dial off: an undecided inbound REFER is parked, surfaced as `leg.transfer_requested` (declined vestigial), then auto-declined 603 after `SIP_REFER_CONSULT_TIMEOUT_MS`; referrer sees `transfer_failed` |
+| `TestTransfer_Inbound_AppAcceptsAndCompletes` | App-driven happy path: `transfer/accept` then `transfer/complete{success:true}`; referrer observes 202→NOTIFY 100→NOTIFY 200 as `transfer_completed` |
+| `TestTransfer_Inbound_AppDeclines` | App calls `transfer/decline`; referrer sees `transfer_failed` |
 | `TestTransfer_NotConnected` | `/transfer` on a ringing leg returns 409 |
 | `TestTransfer_BadRequest` | Missing or malformed `target` returns 400 |
 | `TestCodecSelect_RingingExposesOffer` | `leg.ringing` payload includes `offered_codecs` array with priority order |

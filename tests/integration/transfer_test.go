@@ -52,13 +52,16 @@ func TestTransfer_Blind_Outbound(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instC.baseURL(), inboundOnC.ID))
 }
 
-// TestTransfer_Inbound_DeclinedByDefault: with the default (auto-dial off),
-// when a peer sends us a REFER we 603 Decline and emit a `declined: true`
-// event. We exercise this by having instance A REFER instance B; B is
-// at the default config so it should reject.
-func TestTransfer_Inbound_DeclinedByDefault(t *testing.T) {
+// TestTransfer_Inbound_AutoDeclineOnTimeout: with the default (auto-dial off),
+// an inbound REFER is parked for an app decision and surfaced as
+// leg.transfer_requested. When no app accepts/declines within
+// SIP_REFER_CONSULT_TIMEOUT_MS, VoiceBlender auto-declines (603, fail-closed)
+// and the referrer (instance A) sees transfer_failed.
+func TestTransfer_Inbound_AutoDeclineOnTimeout(t *testing.T) {
 	instA := newTestInstance(t, "instance-a")
-	instB := newTestInstance(t, "instance-b") // SIP_REFER_AUTO_DIAL=false (default)
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferConsultTimeoutMs = 200 // decline fast; no app responds
+	})
 	instC := newTestInstance(t, "instance-c")
 
 	outboundID, _ := establishCall(t, instA, instB)
@@ -66,19 +69,96 @@ func TestTransfer_Inbound_DeclinedByDefault(t *testing.T) {
 	transferResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
 		"target": fmt.Sprintf("sip:test@127.0.0.1:%d", instC.sipPort),
 	})
-	// REST accepts the request asynchronously (202) regardless of how
-	// the peer responds. The peer's 603 Decline surfaces on the event bus.
 	if transferResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("transfer: status %d, want 202", transferResp.StatusCode)
 	}
 
-	// instance B should publish an audit event for the declined REFER.
+	// instance B surfaces the parked REFER as a decision request (declined is
+	// vestigial and always false now).
 	instB.collector.waitForMatch(t, events.LegTransferRequested, func(e events.Event) bool {
 		d, ok := e.Data.(*events.LegTransferRequestedData)
-		return ok && d.Declined
+		return ok && !d.Declined
 	}, 3*time.Second)
 
-	// instance A should publish transfer_failed once the REFER is rejected.
+	// instance A should publish transfer_failed once the auto-decline 603 lands.
+	instA.collector.waitForMatch(t, events.LegTransferFailed, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 3*time.Second)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestTransfer_Inbound_AppAcceptsAndCompletes: the app-driven happy path. B
+// parks the REFER; the test (acting as B's controller) accepts it, then reports
+// completion. The referrer (instance A) observes the 202 → NOTIFY 100 → NOTIFY
+// 200 lifecycle as transfer_completed.
+func TestTransfer_Inbound_AppAcceptsAndCompletes(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferConsultTimeoutMs = 4000 // ample time for the test to accept
+	})
+	instC := newTestInstance(t, "instance-c")
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	transferResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
+		"target": fmt.Sprintf("sip:test@127.0.0.1:%d", instC.sipPort),
+	})
+	if transferResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d, want 202", transferResp.StatusCode)
+	}
+
+	// B's controller: on the parked REFER, accept then complete on B's leg.
+	ev := instB.collector.waitForMatch(t, events.LegTransferRequested, func(e events.Event) bool {
+		d, ok := e.Data.(*events.LegTransferRequestedData)
+		return ok && !d.Declined
+	}, 3*time.Second)
+	referrerLeg := ev.Data.GetLegID()
+
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer/accept", instB.baseURL(), referrerLeg), nil); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("accept_transfer: status %d, want 202", r.StatusCode)
+	}
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer/complete", instB.baseURL(), referrerLeg), map[string]interface{}{
+		"success": true,
+	}); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("complete_transfer: status %d, want 202", r.StatusCode)
+	}
+
+	// A sees the transfer complete (terminal 2xx NOTIFY from B).
+	instA.collector.waitForMatch(t, events.LegTransferCompleted, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestTransfer_Inbound_AppDeclines: the app explicitly rejects a parked REFER;
+// the referrer (instance A) sees transfer_failed.
+func TestTransfer_Inbound_AppDeclines(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferConsultTimeoutMs = 4000
+	})
+	instC := newTestInstance(t, "instance-c")
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
+		"target": fmt.Sprintf("sip:test@127.0.0.1:%d", instC.sipPort),
+	}); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d, want 202", r.StatusCode)
+	}
+
+	ev := instB.collector.waitForMatch(t, events.LegTransferRequested, func(e events.Event) bool {
+		d, ok := e.Data.(*events.LegTransferRequestedData)
+		return ok && !d.Declined
+	}, 3*time.Second)
+	referrerLeg := ev.Data.GetLegID()
+
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer/decline", instB.baseURL(), referrerLeg), nil); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("decline_transfer: status %d, want 202", r.StatusCode)
+	}
+
 	instA.collector.waitForMatch(t, events.LegTransferFailed, func(e events.Event) bool {
 		return e.Data.GetLegID() == outboundID
 	}, 3*time.Second)

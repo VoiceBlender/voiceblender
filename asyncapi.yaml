@@ -250,6 +250,22 @@ channels:
                 $ref: '#/components/messages/leg_transfer'
             leg_transfer.result:
                 $ref: '#/components/messages/leg_transferResult'
+            accept_transfer:
+                $ref: '#/components/messages/accept_transfer'
+            accept_transfer.result:
+                $ref: '#/components/messages/accept_transferResult'
+            progress_transfer:
+                $ref: '#/components/messages/progress_transfer'
+            progress_transfer.result:
+                $ref: '#/components/messages/progress_transferResult'
+            complete_transfer:
+                $ref: '#/components/messages/complete_transfer'
+            complete_transfer.result:
+                $ref: '#/components/messages/complete_transferResult'
+            decline_transfer:
+                $ref: '#/components/messages/decline_transfer'
+            decline_transfer.result:
+                $ref: '#/components/messages/decline_transferResult'
             leg_agent_elevenlabs:
                 $ref: '#/components/messages/leg_agent_elevenlabs'
             leg_agent_elevenlabs.result:
@@ -1225,6 +1241,58 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/leg_transfer.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_accept_transfer:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying)
+        messages:
+            - $ref: '#/channels/vsi/messages/accept_transfer'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/accept_transfer.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_progress_transfer:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer
+        messages:
+            - $ref: '#/channels/vsi/messages/progress_transfer'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/progress_transfer.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_complete_transfer:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure)
+        messages:
+            - $ref: '#/channels/vsi/messages/complete_transfer'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/complete_transfer.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_decline_transfer:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Reject a parked (not-yet-accepted) inbound REFER (603 by default)
+        messages:
+            - $ref: '#/channels/vsi/messages/decline_transfer'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/decline_transfer.result'
+                - $ref: '#/channels/vsi/messages/error'
     recv_leg_agent_elevenlabs:
         action: receive
         channel:
@@ -1711,7 +1779,7 @@ operations:
         action: send
         channel:
             $ref: '#/channels/vsi'
-        summary: We received a SIP REFER from the peer
+        summary: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_requested'
     send_leg_transfer_progress:
@@ -3697,6 +3765,126 @@ components:
                         $ref: '#/components/schemas/TransferLegResult'
                 required:
                     - type
+        accept_transfer:
+            name: accept_transfer
+            title: Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying)
+            summary: Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: accept_transfer
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/acceptTransferPayload'
+                required:
+                    - type
+        accept_transferResult:
+            name: accept_transferResult
+            title: Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: accept_transfer.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        progress_transfer:
+            name: progress_transfer
+            title: Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer
+            summary: Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: progress_transfer
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/progressTransferPayload'
+                required:
+                    - type
+        progress_transferResult:
+            name: progress_transferResult
+            title: Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: progress_transfer.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        complete_transfer:
+            name: complete_transfer
+            title: Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure)
+            summary: Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: complete_transfer
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/completeTransferPayload'
+                required:
+                    - type
+        complete_transferResult:
+            name: complete_transferResult
+            title: Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: complete_transfer.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        decline_transfer:
+            name: decline_transfer
+            title: Reject a parked (not-yet-accepted) inbound REFER (603 by default)
+            summary: Reject a parked (not-yet-accepted) inbound REFER (603 by default)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: decline_transfer
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/declineTransferPayload'
+                required:
+                    - type
+        decline_transferResult:
+            name: decline_transferResult
+            title: Reject a parked (not-yet-accepted) inbound REFER (603 by default) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: decline_transfer.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
         leg_agent_elevenlabs:
             name: leg_agent_elevenlabs
             title: Attach an ElevenLabs Conversational AI agent to a leg
@@ -4557,8 +4745,8 @@ components:
                 $ref: openapi.yaml#/x-webhooks/leg.transfer_initiated/post/requestBody/content/application~1json/schema
         evt_leg_transfer_requested:
             name: evt_leg_transfer_requested
-            title: We received a SIP REFER from the peer
-            summary: We received a SIP REFER from the peer
+            title: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
+            summary: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_requested. Full envelope: {type, timestamp, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.transfer_requested/post/requestBody/content/application~1json/schema
@@ -5223,6 +5411,13 @@ components:
                     type: integer
             required:
                 - id
+        acceptTransferPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+            required:
+                - id
         addLegPayload:
             type: object
             properties:
@@ -5418,6 +5613,31 @@ components:
             required:
                 - id
                 - realm
+        completeTransferPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                success:
+                    type: boolean
+                status_code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - id
+                - success
+        declineTransferPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - id
         deleteLegPayload:
             type: object
             properties:
@@ -5526,6 +5746,18 @@ components:
                 - id
                 - playback_id
                 - volume
+        progressTransferPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                status_code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - id
+                - status_code
         recordStartPayload:
             type: object
             properties:

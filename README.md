@@ -99,7 +99,8 @@ All configuration is via environment variables:
 | `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
 | `SIP_CODECS` | `PCMU,PCMA` | Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs **and** accepts on inbound INVITEs (a codec absent from this list cannot be negotiated in either direction). Recognized names (case-insensitive): `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB` (the bare token `AMR` also resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently; if the parsed list ends up empty the default is used. Example: `SIP_CODECS=opus,G722,PCMU,PCMA,AMR-WB,AMR-NB` enables every supported codec, ranked Opus-first. |
-| `SIP_REFER_AUTO_DIAL` | `false` | Accept incoming SIP REFER requests and auto-dial the transferred call. **Default-deny** (toll-fraud risk). Outbound transfers via the REST API are unaffected. |
+| `SIP_REFER_AUTO_DIAL` | `false` | When `true`, the server accepts an incoming SIP REFER (202) and **dials the target itself**. When `false` (default), the REFER is parked and surfaced as `leg.transfer_requested` for the app to drive via the transfer commands (`accept`/`progress`/`complete`/`decline`); an undecided REFER auto-declines (603, **default-deny** — toll-fraud risk). Outbound transfers via the REST API are unaffected. |
+| `SIP_REFER_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound REFER is parked awaiting an app accept/decline decision before it auto-declines with `603` (fail-closed). Only used when `SIP_REFER_AUTO_DIAL=false`. |
 | `SIP_AUTO_RINGING` | `false` | **Behavior change vs prior releases**: previously the server always sent `180 Ringing` after `100 Trying`. The new default sends only `100 Trying`; the API caller drives ringing explicitly via `POST /v1/legs/{id}/ring`, `/early-media`, or `/answer`. Set to `true` to restore the legacy auto-180 behavior. |
 | `SIP_USE_SOURCE_SOCKET` | `false` | When `true`, route SIP responses **and** in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's `Contact` URI / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in `Contact` from behind NAT, or Via sent-by hosts that don't resolve). Equivalent to sipgo's `DialogUA.RewriteContact` plus per-response `SetDestination(req.Source())`. |
 | `SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Expiry used when an inbound `REGISTER` carries no `Expires` value. |
@@ -166,7 +167,11 @@ POST   /v1/legs/{id}/mute          # Mute
 DELETE /v1/legs/{id}/mute          # Unmute
 POST   /v1/legs/{id}/hold          # Put on hold
 DELETE /v1/legs/{id}/hold          # Resume from hold
-POST   /v1/legs/{id}/transfer      # SIP REFER (blind or attended)
+POST   /v1/legs/{id}/transfer            # Initiate a SIP REFER (blind or attended)
+POST   /v1/legs/{id}/transfer/accept     # Accept a parked inbound REFER (202 + NOTIFY 100)
+POST   /v1/legs/{id}/transfer/progress   # Interim sipfrag NOTIFY (e.g. 180 Ringing)
+POST   /v1/legs/{id}/transfer/complete   # Terminal NOTIFY (200 OK or failure)
+POST   /v1/legs/{id}/transfer/decline    # Reject a parked inbound REFER (603 default)
 POST   /v1/legs/{id}/dtmf          # Send DTMF digits
 POST   /v1/legs/{id}/dtmf/accept   # Re-enable DTMF reception (default)
 POST   /v1/legs/{id}/dtmf/reject   # Stop receiving DTMF broadcast from peers

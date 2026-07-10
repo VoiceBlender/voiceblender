@@ -133,10 +133,14 @@ type LegTransferInitiatedData struct {
 	ReplacesLegID string `json:"replaces_leg_id,omitempty"`
 }
 
-// LegTransferRequestedData fires when a peer sends us a REFER targeting one
-// of our legs. Declined=true means we rejected it (default-deny when
-// SIP_REFER_AUTO_DIAL=false); declined=false means we accepted (202) and
-// will originate the new leg.
+// LegTransferRequestedData fires when a peer sends us a REFER targeting one of
+// our legs. In the default app-driven model (SIP_REFER_AUTO_DIAL=false) this is
+// a decision request: the REFER is parked and the app responds via
+// accept_transfer / decline_transfer (then progress_transfer / complete_transfer)
+// keyed by LegID; the actual outcome flows through leg.transfer_completed /
+// leg.transfer_failed. With SIP_REFER_AUTO_DIAL=true the server accepts and
+// originates the target itself. Declined is vestigial (always false) and
+// retained only for wire compatibility.
 type LegTransferRequestedData struct {
 	LegScope
 	Kind           string `json:"kind"`

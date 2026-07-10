@@ -50,8 +50,14 @@ type Config struct {
 	SIPJitterBufferMs     int
 	SIPJitterBufferMaxMs  int
 	SIPReferAutoDial      bool
-	SIPAutoRinging        bool
-	SIPUseSourceSocket    bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
+	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
+	// awaiting an app accept/decline decision (via the transfer commands) before
+	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
+	// when no controller handles the transfer. Only used when SIPReferAutoDial is
+	// false (the app-driven consult path).
+	SIPReferConsultTimeoutMs int
+	SIPAutoRinging           bool
+	SIPUseSourceSocket       bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
 
 	SIPRegistrationDefaultExpiresSeconds int
 	SIPRegistrationMaxExpiresSeconds     int
@@ -113,47 +119,48 @@ func Load() Config {
 		defaultRate = 16000
 	}
 	return Config{
-		InstanceID:            envOr("INSTANCE_ID", uuid.New().String()),
-		SIPBindIP:             envOr("SIP_BIND_IP", "127.0.0.1"),
-		SIPBindIPV6:           os.Getenv("SIP_BIND_IPV6"),   // empty = no IPv6 advertised
-		SIPListenIP:           os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
-		SIPListenIPV6:         os.Getenv("SIP_LISTEN_IPV6"), // empty = same as SIP_BIND_IPV6
-		SIPExternalIP:         os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
-		SIPPort:               envOr("SIP_PORT", "5060"),
-		SIPTLSPort:            os.Getenv("SIP_TLS_PORT"),
-		SIPTLSCert:            os.Getenv("SIP_TLS_CERT"),
-		SIPTLSKey:             os.Getenv("SIP_TLS_KEY"),
-		SIPDebug:              os.Getenv("SIP_DEBUG") == "true",
-		SIPDomain:             os.Getenv("SIP_DOMAIN"),
-		SIPHost:               envOr("SIP_HOST", "voiceblender"),
-		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),
-		AllowedIPs:            os.Getenv("ALLOWED_IPS"),
-		TrustProxyHeaders:     envBool("TRUST_PROXY_HEADERS", false),
-		ICEServers:            strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
-		WebRTCExternalIPs:     parseExternalIPs(os.Getenv("WEBRTC_EXTERNAL_IPS")),
-		RecordingDir:          envOr("RECORDING_DIR", "/tmp/recordings"),
-		LogLevel:              envOr("LOG_LEVEL", "info"),
-		WebhookURL:            os.Getenv("WEBHOOK_URL"),
-		WebhookSecret:         os.Getenv("WEBHOOK_SECRET"),
-		ElevenLabsAPIKey:      os.Getenv("ELEVENLABS_API_KEY"),
-		VAPIAPIKey:            os.Getenv("VAPI_API_KEY"),
-		DeepgramAPIKey:        os.Getenv("DEEPGRAM_API_KEY"),
-		AzureSpeechKey:        os.Getenv("AZURE_SPEECH_KEY"),
-		AzureSpeechRegion:     envOr("AZURE_SPEECH_REGION", "eastus"),
-		S3Bucket:              os.Getenv("S3_BUCKET"),
-		S3Region:              envOr("S3_REGION", "us-east-1"),
-		S3Endpoint:            os.Getenv("S3_ENDPOINT"),
-		S3Prefix:              os.Getenv("S3_PREFIX"),
-		TTSCacheEnabled:       os.Getenv("TTS_CACHE_ENABLED") == "true",
-		TTSCacheDir:           envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
-		TTSCacheIncludeAPIKey: os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
-		RTPPortMin:            envInt("RTP_PORT_MIN", 10000),
-		RTPPortMax:            envInt("RTP_PORT_MAX", 20000),
-		SIPJitterBufferMs:     envInt("SIP_JITTER_BUFFER_MS", 0),
-		SIPJitterBufferMaxMs:  envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
-		SIPReferAutoDial:      os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
-		SIPAutoRinging:        os.Getenv("SIP_AUTO_RINGING") == "true",
-		SIPUseSourceSocket:    os.Getenv("SIP_USE_SOURCE_SOCKET") == "true",
+		InstanceID:               envOr("INSTANCE_ID", uuid.New().String()),
+		SIPBindIP:                envOr("SIP_BIND_IP", "127.0.0.1"),
+		SIPBindIPV6:              os.Getenv("SIP_BIND_IPV6"),   // empty = no IPv6 advertised
+		SIPListenIP:              os.Getenv("SIP_LISTEN_IP"),   // empty = same as SIP_BIND_IP
+		SIPListenIPV6:            os.Getenv("SIP_LISTEN_IPV6"), // empty = same as SIP_BIND_IPV6
+		SIPExternalIP:            os.Getenv("SIP_EXTERNAL_IP"), // public IP for NAT/Docker
+		SIPPort:                  envOr("SIP_PORT", "5060"),
+		SIPTLSPort:               os.Getenv("SIP_TLS_PORT"),
+		SIPTLSCert:               os.Getenv("SIP_TLS_CERT"),
+		SIPTLSKey:                os.Getenv("SIP_TLS_KEY"),
+		SIPDebug:                 os.Getenv("SIP_DEBUG") == "true",
+		SIPDomain:                os.Getenv("SIP_DOMAIN"),
+		SIPHost:                  envOr("SIP_HOST", "voiceblender"),
+		HTTPAddr:                 envOr("HTTP_ADDR", ":8080"),
+		AllowedIPs:               os.Getenv("ALLOWED_IPS"),
+		TrustProxyHeaders:        envBool("TRUST_PROXY_HEADERS", false),
+		ICEServers:               strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
+		WebRTCExternalIPs:        parseExternalIPs(os.Getenv("WEBRTC_EXTERNAL_IPS")),
+		RecordingDir:             envOr("RECORDING_DIR", "/tmp/recordings"),
+		LogLevel:                 envOr("LOG_LEVEL", "info"),
+		WebhookURL:               os.Getenv("WEBHOOK_URL"),
+		WebhookSecret:            os.Getenv("WEBHOOK_SECRET"),
+		ElevenLabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
+		VAPIAPIKey:               os.Getenv("VAPI_API_KEY"),
+		DeepgramAPIKey:           os.Getenv("DEEPGRAM_API_KEY"),
+		AzureSpeechKey:           os.Getenv("AZURE_SPEECH_KEY"),
+		AzureSpeechRegion:        envOr("AZURE_SPEECH_REGION", "eastus"),
+		S3Bucket:                 os.Getenv("S3_BUCKET"),
+		S3Region:                 envOr("S3_REGION", "us-east-1"),
+		S3Endpoint:               os.Getenv("S3_ENDPOINT"),
+		S3Prefix:                 os.Getenv("S3_PREFIX"),
+		TTSCacheEnabled:          os.Getenv("TTS_CACHE_ENABLED") == "true",
+		TTSCacheDir:              envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
+		TTSCacheIncludeAPIKey:    os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
+		RTPPortMin:               envInt("RTP_PORT_MIN", 10000),
+		RTPPortMax:               envInt("RTP_PORT_MAX", 20000),
+		SIPJitterBufferMs:        envInt("SIP_JITTER_BUFFER_MS", 0),
+		SIPJitterBufferMaxMs:     envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPReferAutoDial:         os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
+		SIPReferConsultTimeoutMs: envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
+		SIPAutoRinging:           os.Getenv("SIP_AUTO_RINGING") == "true",
+		SIPUseSourceSocket:       os.Getenv("SIP_USE_SOURCE_SOCKET") == "true",
 
 		SIPRegistrationDefaultExpiresSeconds: envInt("SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS", 3600),
 		SIPRegistrationMaxExpiresSeconds:     envInt("SIP_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),

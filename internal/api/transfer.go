@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -215,7 +217,12 @@ func (s *Server) HandleReferNotify(callID string, statusCode int, reason string,
 	})
 }
 
-// HandleIncomingRefer handles inbound REFER. Default-deny via SIP_REFER_AUTO_DIAL.
+// HandleIncomingRefer handles inbound REFER. With SIP_REFER_AUTO_DIAL=true the
+// server accepts (202) and originates the target itself (legacy path). With it
+// false (default) the REFER is parked for an app decision: leg.transfer_requested
+// is emitted and the app drives the outcome via the transfer commands
+// (accept/progress/complete/decline). If no decision arrives within
+// SIP_REFER_CONSULT_TIMEOUT_MS the REFER auto-declines with 603 (fail-closed).
 func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.ReplacesParams, req *sip.Request, tx sip.ServerTransaction) {
 	kind := "blind"
 	replacesCallID := ""
@@ -231,10 +238,22 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 		scope.AppID = sl.AppID()
 	}
 
-	if !s.Config.SIPReferAutoDial {
+	// Legacy server-driven auto-dial: accept and originate the target here.
+	if s.Config.SIPReferAutoDial {
+		if sl == nil {
+			// Auto-dial on but no leg matches — can't NOTIFY back, so reject.
+			if tx != nil {
+				if err := s.SIPEngine.RespondFromSource(tx, req, 481, "Call/Transaction Does Not Exist"); err != nil {
+					s.Log.Error("REFER respond 481 failed", "error", err)
+				}
+			}
+			return
+		}
 		if tx != nil {
-			if err := s.SIPEngine.RespondFromSource(tx, req, 603, "Decline"); err != nil {
-				s.Log.Error("REFER respond 603 failed", "error", err)
+			if err := s.SIPEngine.RespondFromSource(tx, req, sip.StatusAccepted, "Accepted"); err != nil {
+				s.Log.Error("REFER respond 202 failed", "error", err)
+			} else {
+				s.Log.Info("REFER accepted with 202", "leg_id", sl.ID(), "target", target)
 			}
 		}
 		s.Bus.Publish(events.LegTransferRequested, &events.LegTransferRequestedData{
@@ -242,28 +261,41 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 			Kind:           kind,
 			Target:         target,
 			ReplacesCallID: replacesCallID,
-			Declined:       true,
+			Declined:       false,
 		})
+		go s.originateForRefer(sl, target, replaces)
 		return
 	}
 
-	if sl == nil {
-		// Auto-dial on but no leg matches — can't NOTIFY back, so reject.
+	// App-driven consult: park and ask the app to decide. Without a referrer leg
+	// we can't drive the NOTIFY subscription, and without a transaction we can't
+	// respond — decline in either case.
+	if sl == nil || tx == nil {
 		if tx != nil {
-			if err := s.SIPEngine.RespondFromSource(tx, req, 481, "Call/Transaction Does Not Exist"); err != nil {
-				s.Log.Error("REFER respond 481 failed", "error", err)
+			if err := s.SIPEngine.RespondFromSource(tx, req, 603, "Decline"); err != nil {
+				s.Log.Error("REFER respond 603 failed", "error", err)
 			}
 		}
 		return
 	}
 
-	if tx != nil {
-		if err := s.SIPEngine.RespondFromSource(tx, req, sip.StatusAccepted, "Accepted"); err != nil {
-			s.Log.Error("REFER respond 202 failed", "error", err)
-		} else {
-			s.Log.Info("REFER accepted with 202", "leg_id", sl.ID(), "target", target)
-		}
+	pr := &pendingRefer{
+		legID:    sl.ID(),
+		callID:   callID,
+		referrer: sl,
+		req:      req,
+		tx:       tx,
+		target:   target,
+		replaces: replaces,
+		kind:     kind,
 	}
+	timeout := time.Duration(s.Config.SIPReferConsultTimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	pr.timer = time.AfterFunc(timeout, func() { s.declineReferOnTimeout(sl.ID()) })
+	s.pendingRefers.put(pr)
+
 	s.Bus.Publish(events.LegTransferRequested, &events.LegTransferRequestedData{
 		LegScope:       scope,
 		Kind:           kind,
@@ -271,8 +303,6 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 		ReplacesCallID: replacesCallID,
 		Declined:       false,
 	})
-
-	go s.originateForRefer(sl, target, replaces)
 }
 
 // originateForRefer dials the REFER target and NOTIFYs sipfrag back to referrer.
@@ -351,4 +381,312 @@ func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason stri
 			Reason:     reason,
 		})
 	}
+}
+
+// ── App-driven inbound REFER (Option A: park + accept/progress/complete/decline) ──
+
+// pendingRefer is a parked inbound REFER awaiting an app decision. The referrer
+// leg's id is the correlation key. tx/req are held so the 202 or 6xx can be sent
+// once the app decides; referrer drives the sipfrag NOTIFY subscription.
+type pendingRefer struct {
+	legID    string
+	callID   string
+	referrer *leg.SIPLeg
+	req      *sip.Request
+	tx       sip.ServerTransaction
+	target   string
+	replaces *sipmod.ReplacesParams
+	kind     string
+	accepted bool // true once accept_transfer has sent the 202
+	timer    *time.Timer
+}
+
+// pendingReferStore holds parked REFERs keyed by referrer leg id. All state
+// transitions run under the mutex so the consult-timeout race (auto-decline vs.
+// app-accept) resolves to exactly one outcome.
+type pendingReferStore struct {
+	mu sync.Mutex
+	m  map[string]*pendingRefer
+}
+
+func newPendingReferStore() *pendingReferStore {
+	return &pendingReferStore{m: make(map[string]*pendingRefer)}
+}
+
+func (s *pendingReferStore) put(pr *pendingRefer) {
+	s.mu.Lock()
+	s.m[pr.legID] = pr
+	s.mu.Unlock()
+}
+
+// markAccepted flips a parked REFER to accepted and stops its decline timer.
+// Returns (nil, false) if unknown or already accepted.
+func (s *pendingReferStore) markAccepted(legID string) (*pendingRefer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr, ok := s.m[legID]
+	if !ok || pr.accepted {
+		return nil, false
+	}
+	pr.accepted = true
+	if pr.timer != nil {
+		pr.timer.Stop()
+	}
+	return pr, true
+}
+
+// peekAccepted returns an accepted entry without removing it (for interim
+// progress NOTIFYs).
+func (s *pendingReferStore) peekAccepted(legID string) (*pendingRefer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr, ok := s.m[legID]
+	if !ok || !pr.accepted {
+		return nil, false
+	}
+	return pr, true
+}
+
+// takeAccepted removes and returns an accepted entry (for the terminal NOTIFY).
+func (s *pendingReferStore) takeAccepted(legID string) (*pendingRefer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr, ok := s.m[legID]
+	if !ok || !pr.accepted {
+		return nil, false
+	}
+	delete(s.m, legID)
+	return pr, true
+}
+
+// takeIfPending removes and returns an entry only if it has not been accepted
+// (for decline and the consult-timeout auto-decline).
+func (s *pendingReferStore) takeIfPending(legID string) (*pendingRefer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr, ok := s.m[legID]
+	if !ok || pr.accepted {
+		return nil, false
+	}
+	delete(s.m, legID)
+	if pr.timer != nil {
+		pr.timer.Stop()
+	}
+	return pr, true
+}
+
+// TransferProgressRequest reports an interim sipfrag status (e.g. 180 Ringing)
+// on an accepted inbound transfer.
+type TransferProgressRequest struct {
+	StatusCode int    `json:"status_code"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// TransferCompleteRequest reports the terminal outcome of an accepted inbound
+// transfer. Success sends 200 OK; otherwise StatusCode/Reason (default 500)
+// carry the failure. Either way the refer subscription is terminated.
+type TransferCompleteRequest struct {
+	Success    bool   `json:"success"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// TransferDeclineRequest rejects a parked (not-yet-accepted) inbound transfer.
+// Code defaults to 603 and Reason to "Decline".
+type TransferDeclineRequest struct {
+	Code   int    `json:"code,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+func (s *Server) doAcceptTransfer(legID string) error {
+	pr, ok := s.pendingRefers.markAccepted(legID)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "no pending transfer for leg (unknown or already decided)")
+	}
+	if pr.tx != nil {
+		if err := s.SIPEngine.RespondFromSource(pr.tx, pr.req, sip.StatusAccepted, "Accepted"); err != nil {
+			s.Log.Error("REFER respond 202 failed", "leg_id", legID, "error", err)
+		}
+	}
+	if err := pr.referrer.SendNotifySipfrag(context.Background(), 100, "Trying", false); err != nil {
+		s.Log.Warn("transfer NOTIFY 100 failed", "leg_id", legID, "error", err)
+	}
+	s.Log.Info("inbound REFER accepted by app", "leg_id", legID, "target", pr.target)
+	return nil
+}
+
+func (s *Server) doTransferProgress(legID string, req TransferProgressRequest) error {
+	if req.StatusCode < 100 || req.StatusCode > 699 {
+		return newAPIError(http.StatusBadRequest, "status_code must be a SIP status (100-699)")
+	}
+	pr, ok := s.pendingRefers.peekAccepted(legID)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "no accepted transfer for leg")
+	}
+	reason := req.Reason
+	if reason == "" {
+		reason = sipReasonPhrase(req.StatusCode)
+	}
+	if err := pr.referrer.SendNotifySipfrag(context.Background(), req.StatusCode, reason, false); err != nil {
+		s.Log.Warn("transfer progress NOTIFY failed", "leg_id", legID, "error", err)
+	}
+	return nil
+}
+
+func (s *Server) doCompleteTransfer(legID string, req TransferCompleteRequest) error {
+	pr, ok := s.pendingRefers.takeAccepted(legID)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "no accepted transfer for leg (accept it first)")
+	}
+	code := req.StatusCode
+	reason := req.Reason
+	if req.Success {
+		if code == 0 {
+			code = 200
+		}
+		if reason == "" {
+			reason = "OK"
+		}
+	} else {
+		if code == 0 {
+			code = 500
+		}
+		if reason == "" {
+			reason = sipReasonPhrase(code)
+		}
+	}
+	if err := pr.referrer.SendNotifySipfrag(context.Background(), code, reason, true); err != nil {
+		s.Log.Warn("transfer terminal NOTIFY failed", "leg_id", legID, "error", err)
+	}
+	scope := events.LegScope{LegID: pr.referrer.ID(), AppID: pr.referrer.AppID()}
+	if code >= 200 && code < 300 {
+		s.Bus.Publish(events.LegTransferCompleted, &events.LegTransferCompletedData{
+			LegScope: scope, StatusCode: code, Reason: reason,
+		})
+	} else {
+		s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
+			LegScope: scope, StatusCode: code, Reason: reason,
+		})
+	}
+	return nil
+}
+
+func (s *Server) doDeclineTransfer(legID string, req TransferDeclineRequest) error {
+	pr, ok := s.pendingRefers.takeIfPending(legID)
+	if !ok {
+		return newAPIError(http.StatusNotFound, "no pending transfer for leg (unknown or already accepted)")
+	}
+	code := req.Code
+	if code == 0 {
+		code = 603
+	}
+	reason := req.Reason
+	if reason == "" {
+		reason = "Decline"
+	}
+	if pr.tx != nil {
+		if err := s.SIPEngine.RespondFromSource(pr.tx, pr.req, code, reason); err != nil {
+			s.Log.Error("REFER decline respond failed", "leg_id", legID, "error", err)
+		}
+	}
+	s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
+		LegScope:   events.LegScope{LegID: pr.referrer.ID(), AppID: pr.referrer.AppID()},
+		StatusCode: code,
+		Reason:     reason,
+	})
+	return nil
+}
+
+// declineReferOnTimeout auto-declines a parked REFER that no app decided within
+// the consult window. A no-op if the REFER was already accepted or decided.
+func (s *Server) declineReferOnTimeout(legID string) {
+	pr, ok := s.pendingRefers.takeIfPending(legID)
+	if !ok {
+		return
+	}
+	if pr.tx != nil {
+		if err := s.SIPEngine.RespondFromSource(pr.tx, pr.req, 603, "Decline"); err != nil {
+			s.Log.Error("REFER timeout respond 603 failed", "leg_id", legID, "error", err)
+		}
+	}
+	s.Log.Info("inbound REFER auto-declined (consult timeout)", "leg_id", legID)
+	s.Bus.Publish(events.LegTransferFailed, &events.LegTransferFailedData{
+		LegScope:   events.LegScope{LegID: pr.referrer.ID(), AppID: pr.referrer.AppID()},
+		StatusCode: 603,
+		Reason:     "Decline",
+	})
+}
+
+// sipReasonPhrase returns a default reason phrase for common SIP status codes
+// used in transfer sipfrag NOTIFYs.
+func sipReasonPhrase(code int) string {
+	switch code {
+	case 100:
+		return "Trying"
+	case 180:
+		return "Ringing"
+	case 183:
+		return "Session Progress"
+	case 200:
+		return "OK"
+	case 486:
+		return "Busy Here"
+	case 487:
+		return "Request Terminated"
+	case 500:
+		return "Server Internal Error"
+	case 603:
+		return "Decline"
+	default:
+		return "Transfer"
+	}
+}
+
+// ── HTTP handlers for the inbound-transfer decision commands ──
+
+func (s *Server) acceptTransferLeg(w http.ResponseWriter, r *http.Request) {
+	if err := s.doAcceptTransfer(chi.URLParam(r, "id")); err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepting"})
+}
+
+func (s *Server) progressTransferLeg(w http.ResponseWriter, r *http.Request) {
+	var req TransferProgressRequest
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if err := s.doTransferProgress(chi.URLParam(r, "id"), req); err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "progress"})
+}
+
+func (s *Server) completeTransferLeg(w http.ResponseWriter, r *http.Request) {
+	var req TransferCompleteRequest
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if err := s.doCompleteTransfer(chi.URLParam(r, "id"), req); err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "completing"})
+}
+
+func (s *Server) declineTransferLeg(w http.ResponseWriter, r *http.Request) {
+	var req TransferDeclineRequest
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if err := s.doDeclineTransfer(chi.URLParam(r, "id"), req); err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "declining"})
 }

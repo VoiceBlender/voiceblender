@@ -650,6 +650,101 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/transfer/accept:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: acceptTransfer
+            summary: Accept a parked inbound REFER
+            description: Accepts an inbound transfer surfaced via `leg.transfer_requested` (default app-driven model, `SIP_REFER_AUTO_DIAL=false`). Sends `202 Accepted` to the referrer and a `NOTIFY` sipfrag `100 Trying`, keeping the refer subscription open. `{id}` is the referrer leg (the leg that received the REFER). After accepting, re-bridge as needed and report progress via `.../transfer/progress` and the outcome via `.../transfer/complete`.
+            tags:
+                - Legs
+            responses:
+                '202':
+                    description: Accept queued (202 + NOTIFY 100 sent)
+                '404':
+                    description: No pending transfer for the leg (unknown or already decided)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/transfer/progress:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: transferProgress
+            summary: Report interim transfer progress
+            description: Sends an interim sipfrag `NOTIFY` (e.g. `180 Ringing`) on an accepted inbound transfer so the referrer's UA reflects real progress. The subscription stays active.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TransferProgressRequest'
+            responses:
+                '202':
+                    description: Progress NOTIFY queued
+                '400':
+                    description: status_code out of range (must be 100-699)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: No accepted transfer for the leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/transfer/complete:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: completeTransfer
+            summary: Complete an accepted inbound transfer
+            description: Terminates an accepted inbound transfer with a final sipfrag `NOTIFY` and emits `leg.transfer_completed` (on success) or `leg.transfer_failed`. `success:true` sends `200 OK`; otherwise `status_code`/`reason` (default 500) carry the failure. The referrer leg is left for the app to hang up.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TransferCompleteRequest'
+            responses:
+                '202':
+                    description: Terminal NOTIFY queued
+                '404':
+                    description: No accepted transfer for the leg (accept it first)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/transfer/decline:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: declineTransfer
+            summary: Decline a parked inbound REFER
+            description: Rejects a parked (not-yet-accepted) inbound transfer, replying to the referrer with a non-2xx (`603 Decline` by default; override via `code`/`reason`) and emitting `leg.transfer_failed`.
+            tags:
+                - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TransferDeclineRequest'
+            responses:
+                '202':
+                    description: Decline queued
+                '404':
+                    description: No pending transfer for the leg (unknown or already accepted)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/dtmf:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -3415,6 +3510,33 @@ components:
                 - voice
                 - model_id
                 - volume
+        TransferCompleteRequest:
+            type: object
+            properties:
+                success:
+                    type: boolean
+                status_code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - success
+        TransferDeclineRequest:
+            type: object
+            properties:
+                code:
+                    type: integer
+                reason:
+                    type: string
+        TransferProgressRequest:
+            type: object
+            properties:
+                status_code:
+                    type: integer
+                reason:
+                    type: string
+            required:
+                - status_code
         TransferRequest:
             type: object
             properties:
@@ -4505,7 +4627,7 @@ x-webhooks:
                                         description: Leg whose dialog is replaced (attended transfer only)
     leg.transfer_requested:
         post:
-            summary: We received a SIP REFER from the peer
+            summary: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
             requestBody:
                 content:
                     application/json:
@@ -4529,7 +4651,7 @@ x-webhooks:
                                         description: Call-ID present in the Refer-To Replaces parameter (attended only)
                                     declined:
                                         type: boolean
-                                        description: True when the REFER was declined (e.g. SIP_REFER_AUTO_DIAL=false)
+                                        description: Vestigial (always false); retained for wire compatibility. The outcome now flows via leg.transfer_completed / leg.transfer_failed after the app decides
     leg.transfer_progress:
         post:
             summary: Transfer progress reported via NOTIFY sipfrag
