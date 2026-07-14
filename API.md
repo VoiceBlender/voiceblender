@@ -2432,7 +2432,9 @@ The full machine-readable contract for the VSI WebSocket — every command, ever
 |-------|------|-------------|
 | `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
 
-Set `app_id` on legs via `POST /v1/legs` body or `X-App-ID` SIP header on inbound calls. Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+
+Events from untagged legs carry an empty `app_id` and are dropped by any non-empty filter — tag every leg an app cares about, or it will silently miss its own events.
 
 **Example with filter:**
 
@@ -2596,9 +2598,15 @@ Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP o
 
 ```json
 {
-  "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n..."
+  "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...",
+  "app_id": "myapp"
 }
 ```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sdp` | string | yes | SDP offer from the browser. |
+| `app_id` | string | no | Tag the leg for event filtering. Carried on every event this leg emits, and matched against the VSI `app_id` filter. Omit it and the leg's events carry an empty `app_id`, so any non-empty filter drops them. |
 
 **Response:** `200 OK`
 
@@ -2610,6 +2618,8 @@ Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP o
 ```
 
 The returned `leg_id` can be used with all `/v1/legs` and `/v1/rooms` endpoints.
+
+The same request body is accepted by the VSI `webrtc_offer` command.
 
 **`leg.connected` event:** fires only once the underlying peer connection reaches the `Connected` state (post-ICE/DTLS). Wait for it before pushing media into the leg.
 

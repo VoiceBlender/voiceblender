@@ -60,6 +60,36 @@ func TestDoWebRTCOffer_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDoWebRTCOffer_AppID(t *testing.T) {
+	tests := []struct {
+		name  string
+		appID string
+		want  string
+	}{
+		{name: "tagged", appID: "ptt", want: "ptt"},
+		{name: "omitted", appID: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestServer(t)
+			clientPC, sdp := makeClientOffer(t)
+			defer clientPC.Close()
+
+			res, err := s.doWebRTCOffer(WebRTCOfferRequest{SDP: sdp, AppID: tt.appID})
+			if err != nil {
+				t.Fatalf("doWebRTCOffer: %v", err)
+			}
+			got, ok := s.LegMgr.Get(res.LegID)
+			if !ok {
+				t.Fatal("leg not registered with manager")
+			}
+			if got.AppID() != tt.want {
+				t.Errorf("leg AppID() = %q, want %q", got.AppID(), tt.want)
+			}
+		})
+	}
+}
+
 func TestDoWebRTCOffer_InvalidSDP(t *testing.T) {
 	s := newTestServer(t)
 	_, err := s.doWebRTCOffer(WebRTCOfferRequest{SDP: "not an sdp"})

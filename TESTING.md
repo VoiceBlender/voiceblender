@@ -224,6 +224,8 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestWSCommands_RoomLifecycle` | Create, get, list, delete room via WS commands; error on deleted room |
 | `TestWSCommands_MuteLeg` | Mute/get_leg via WS; error on missing leg; error on unknown command |
 | `TestWSEvents_AppIDFilter` | Two WS clients (filtered + unfiltered), two legs with different `app_id`; filtered client only sees matching events |
+| `TestWebRTC_AppIDFilter` | A WebRTC leg tagged with `app_id` on the offer reaches an `app_id`-filtered VSI subscriber, while an untagged WebRTC leg on the same server is dropped by the filter |
+| `TestWebRTC_AppIDInLegEvents` | `app_id` set on `POST /v1/webrtc/offer` is carried on the leg's `leg.connected` event |
 | `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |
 | `TestTransfer_Inbound_AutoDeclineOnTimeout` | Auto-dial off: an undecided inbound REFER is parked, surfaced as `leg.transfer_requested` (declined vestigial), then auto-declined 603 after `SIP_REFER_CONSULT_TIMEOUT_MS`; referrer sees `transfer_failed` |
 | `TestTransfer_Inbound_AppAcceptsAndCompletes` | App-driven happy path: `transfer/accept` then `transfer/complete{success:true}`; referrer observes 202→NOTIFY 100→NOTIFY 200 as `transfer_completed` |

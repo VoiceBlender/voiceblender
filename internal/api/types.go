@@ -548,11 +548,13 @@ var agentMessageRequestFields = map[string]FieldEnrichment{
 
 // WebRTCOfferRequest is the request body for POST /v1/webrtc/offer.
 type WebRTCOfferRequest struct {
-	SDP string `json:"sdp"`
+	SDP   string `json:"sdp"`
+	AppID string `json:"app_id,omitempty"`
 }
 
 var webRTCOfferRequestFields = map[string]FieldEnrichment{
-	"sdp": {Description: "SDP offer from the browser"},
+	"sdp":    {Description: "SDP offer from the browser"},
+	"app_id": {Description: "Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter."},
 }
 
 // CreateTrunkRequest is the request body for POST /v1/sip/trunks. The shape

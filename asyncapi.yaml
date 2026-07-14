@@ -5390,6 +5390,8 @@ components:
             properties:
                 sdp:
                     type: string
+                app_id:
+                    type: string
             required:
                 - sdp
         WebRTCOfferResult:

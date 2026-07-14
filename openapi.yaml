@@ -3596,6 +3596,9 @@ components:
                 sdp:
                     type: string
                     description: SDP offer from the browser
+                app_id:
+                    type: string
+                    description: Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter.
             required:
                 - sdp
         AMDParams:

@@ -72,6 +72,10 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 	}
 
 	l = leg.NewWebRTCLeg(media, s.Log)
+	// Must precede Add: OnConnected can fire immediately and publishes l.AppID().
+	if req.AppID != "" {
+		l.SetAppID(req.AppID)
+	}
 	s.LegMgr.Add(l)
 
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil
