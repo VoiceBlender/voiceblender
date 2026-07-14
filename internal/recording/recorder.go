@@ -67,6 +67,12 @@ func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sa
 
 // StartStereo begins a stereo recording with left and right channel readers.
 // Left channel = participant's incoming audio, right channel = room mix.
+//
+// The right reader is the master clock and must be paced (written every frame,
+// silence included); it alone determines the recording's timeline. The left
+// reader is the companion: it may stall or burst, and must support TryRead so
+// it can be drained without blocking. See recordStereo.
+//
 // Returns the file path of the recording.
 func (r *Recorder) StartStereo(ctx context.Context, left, right io.Reader, dir string, sampleRate uint32) (string, error) {
 	f, fpath, cancel, err := r.initRecording(ctx, dir)
@@ -230,18 +236,56 @@ func (r *Recorder) recordMono(ctx context.Context, reader io.Reader, f *os.File,
 	}
 }
 
-// recordStereo reads one frame at a time from left and right readers,
-// interleaves the samples [L0, R0, L1, R1, ...], and writes a stereo WAV file.
-// While paused, interleaved samples are zeroed.
+// tryReader is a reader that can be drained without blocking. The companion
+// channel must satisfy it so that a companion with nothing to say cannot stall
+// the master clock.
+type tryReader interface {
+	// TryRead reads whatever is immediately available, returning (0, nil) when
+	// nothing is ready rather than waiting. It returns io.EOF only once the
+	// source is closed and drained.
+	TryRead(p []byte) (int, error)
+}
+
+// recordStereo writes a stereo WAV [L0, R0, L1, R1, ...] driven by the right
+// reader's clock.
+//
+// The right channel is the master: it is fed continuously (silence included) by
+// the leg's write loop or the room's mix tick, so each right frame read emits
+// exactly one output slot and the file advances in real time. The left channel
+// is the companion: it is written only when a packet actually arrives, so it is
+// bursty and gap-prone. Reading it in lock-step with the master would park the
+// loop the moment incoming audio stalled, while the master kept being written
+// and silently dropped frames — leaving the two channels permanently skewed for
+// the rest of the call. Instead the companion is drained without blocking into
+// a bounded accumulator, and each slot either pops one companion frame or falls
+// back to silence. The channels therefore stay sample-aligned across a stall.
+//
+// While paused, interleaved samples are zeroed on both channels.
 func (r *Recorder) recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sampleRate int) error {
 	defer f.Close()
+
+	// One slot is one 20 ms tap frame, the cadence both tap writers emit at.
+	slotBytes := sampleRate / 50 * 2
+	if slotBytes <= 0 {
+		return fmt.Errorf("stereo recording: sample rate %d is too low", sampleRate)
+	}
+	slotSamples := slotBytes / 2
+
+	// Both wired companions are pipe readers, which are non-blocking-capable.
+	// Anything else would silence the left channel for the entire call, so say
+	// so instead of quietly recording half a conversation.
+	companion, ok := left.(tryReader)
+	if !ok {
+		return fmt.Errorf("stereo recording: companion reader %T cannot be read without blocking", left)
+	}
 
 	enc := wav.NewEncoder(f, sampleRate, 16, 2, 1) // stereo, PCM format=1
 	defer enc.Close()
 
-	const frameSizeBytes = 640 // 320 samples * 2 bytes per sample
-	leftBuf := make([]byte, frameSizeBytes)
-	rightBuf := make([]byte, frameSizeBytes)
+	masterBuf := make([]byte, slotBytes)
+	drainBuf := make([]byte, slotBytes)
+	silence := make([]byte, slotBytes)
+	acc := newCompanionBuffer(slotBytes, companionMaxSlots)
 
 	intBuf := &audio.IntBuffer{
 		Format: &audio.Format{
@@ -257,31 +301,37 @@ func (r *Recorder) recordStereo(ctx context.Context, left, right io.Reader, f *o
 		default:
 		}
 
-		ln, lerr := io.ReadFull(left, leftBuf)
-		rn, rerr := io.ReadFull(right, rightBuf)
-
-		// Use whichever has fewer samples to stay aligned.
-		nSamples := ln / 2
-		if rn/2 < nSamples {
-			nSamples = rn / 2
-		}
-
-		if nSamples > 0 {
-			interleaved := make([]int, nSamples*2)
-			if !r.paused.Load() {
-				for i := 0; i < nSamples; i++ {
-					interleaved[i*2] = int(int16(binary.LittleEndian.Uint16(leftBuf[i*2:])))
-					interleaved[i*2+1] = int(int16(binary.LittleEndian.Uint16(rightBuf[i*2:])))
-				}
-			}
-			intBuf.Data = interleaved
-			if werr := enc.Write(intBuf); werr != nil {
-				return werr
-			}
-		}
-
-		if lerr != nil || rerr != nil {
+		// The master paces the recording: one full frame in, one slot out.
+		if _, rerr := io.ReadFull(right, masterBuf); rerr != nil {
 			return nil
+		}
+
+		// Take whatever the companion has ready right now, and no more.
+		for {
+			n, cerr := companion.TryRead(drainBuf)
+			if n > 0 {
+				acc.append(drainBuf[:n])
+			}
+			if cerr != nil || n == 0 {
+				break
+			}
+		}
+
+		leftSlot, popped := acc.pop()
+		if !popped {
+			leftSlot = silence
+		}
+
+		interleaved := make([]int, slotSamples*2)
+		if !r.paused.Load() {
+			for i := 0; i < slotSamples; i++ {
+				interleaved[i*2] = int(int16(binary.LittleEndian.Uint16(leftSlot[i*2:])))
+				interleaved[i*2+1] = int(int16(binary.LittleEndian.Uint16(masterBuf[i*2:])))
+			}
+		}
+		intBuf.Data = interleaved
+		if werr := enc.Write(intBuf); werr != nil {
+			return werr
 		}
 	}
 }

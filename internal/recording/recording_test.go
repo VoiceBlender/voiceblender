@@ -419,6 +419,35 @@ func (r *syncPipeReader) Read(p []byte) (int, error) {
 	}
 }
 
+// TryRead mirrors the api package's pipeReader.TryRead: non-blocking, buffered
+// remainder first, io.EOF only once closed and drained. It makes syncPipeReader
+// usable as a stereo companion channel.
+func (r *syncPipeReader) TryRead(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	select {
+	case data, ok := <-r.ch:
+		if !ok {
+			return 0, io.EOF
+		}
+		n := copy(p, data)
+		if n < len(data) {
+			r.buf = data[n:]
+		}
+		return n, nil
+	default:
+	}
+	select {
+	case <-r.done:
+		return 0, io.EOF
+	default:
+		return 0, nil
+	}
+}
+
 func (w *syncPipeWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
