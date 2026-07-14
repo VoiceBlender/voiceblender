@@ -72,6 +72,12 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 // webhook. Order matters: the clear must follow publish so the event has
 // a route. ClaimDisconnect gates racing termination paths.
 func (s *Server) publishDisconnect(l leg.Leg, reason string) {
+	// End the leg's root span ahead of the gate, so a path that loses the
+	// ClaimDisconnect race still closes the span (EndRootSpan has its own
+	// once). Only SIP legs carry a span; the assertion misses the rest.
+	if e, ok := l.(leg.RootSpanEnder); ok {
+		e.EndRootSpan(reason)
+	}
 	if !l.ClaimDisconnect() {
 		return
 	}
@@ -790,7 +796,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		}
 	}
 
-	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Log)
+	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Tracer, s.Log)
 
 	// Apply server-default jitter buffer. No per-request override: jitter
 	// buffer tuning is operator-driven via the SIP_JITTER_BUFFER_MS env var.
@@ -1043,7 +1049,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		}
 	}
 
-	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
+	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Tracer, s.Log)
 	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
 		l.SetAppID(appID)
 	}
