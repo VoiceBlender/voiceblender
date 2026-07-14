@@ -36,8 +36,29 @@ type Collector struct {
 	// Labels: type, reason.
 	callTotalDurationSeconds *prometheus.HistogramVec
 
+	// webhookEnqueued counts events accepted onto the webhook delivery queue.
+	// Denominator for the drop ratio alongside webhookDropped.
+	webhookEnqueued prometheus.Counter
+
+	// webhookDropped counts events discarded because the delivery queue was full.
+	webhookDropped prometheus.Counter
+
+	// webhookDeliveries counts terminal webhook delivery outcomes.
+	// Labels: outcome ("success"|"exhausted"|"marshal_error"|"request_error").
+	// Closed set, so cardinality is fixed at 4.
+	webhookDeliveries *prometheus.CounterVec
+
+	// vsiEventsDropped counts events discarded because a VSI WebSocket
+	// client's send buffer was full.
+	vsiEventsDropped prometheus.Counter
+
 	registry *prometheus.Registry
 }
+
+// Collector observes webhook egress on behalf of the events package. The
+// methods below are counter increments only: goroutine-safe and non-blocking,
+// as events.MetricsObserver requires.
+var _ events.MetricsObserver = (*Collector)(nil)
 
 var durationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600}
 
@@ -81,6 +102,26 @@ func New(bus *events.Bus) *Collector {
 			Buckets: durationBuckets,
 		}, []string{"type"}),
 
+		webhookEnqueued: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "voiceblender_webhook_enqueued_total",
+			Help: "Total events accepted onto the webhook delivery queue.",
+		}),
+
+		webhookDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "voiceblender_webhook_dropped_total",
+			Help: "Total events dropped because the webhook delivery queue was full.",
+		}),
+
+		webhookDeliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "voiceblender_webhook_deliveries_total",
+			Help: "Total terminal webhook delivery outcomes.",
+		}, []string{"outcome"}),
+
+		vsiEventsDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "voiceblender_vsi_events_dropped_total",
+			Help: "Total events dropped because a VSI WebSocket client's buffer was full.",
+		}),
+
 		registry: reg,
 	}
 
@@ -98,10 +139,48 @@ func New(bus *events.Bus) *Collector {
 		c.disconnectReasons,
 		c.callDurationSeconds,
 		c.callTotalDurationSeconds,
+		c.webhookEnqueued,
+		c.webhookDropped,
+		c.webhookDeliveries,
+		c.vsiEventsDropped,
 	)
 
 	_ = bus.Subscribe(c.handle)
 	return c
+}
+
+// The webhookID and eventType arguments are deliberately not used as label
+// values: webhookID is a leg or room ID and eventType is open-ended, so either
+// would give these series unbounded cardinality. They stay on the interface
+// because they are what a non-Prometheus observer (or a debug logger) would
+// need, and because the drop log line already carries both.
+
+// OnWebhookEnqueued implements events.MetricsObserver.
+func (c *Collector) OnWebhookEnqueued(webhookID, eventType string) {
+	c.webhookEnqueued.Inc()
+}
+
+// OnWebhookDropped implements events.MetricsObserver.
+func (c *Collector) OnWebhookDropped(webhookID, eventType string) {
+	c.webhookDropped.Inc()
+}
+
+// OnWebhookDelivered implements events.MetricsObserver. outcome comes from a
+// closed set fixed by deliver's terminal exits, so it is safe as a label.
+func (c *Collector) OnWebhookDelivered(webhookID, eventType, outcome string) {
+	c.webhookDeliveries.WithLabelValues(outcome).Inc()
+}
+
+// ObserveVSIDropped records one event dropped because a VSI WebSocket
+// client's send buffer was full. Called inline from the VSI subscriber's
+// drop branch, which runs on the publisher's goroutine — a counter increment
+// is non-blocking, so this is safe there.
+//
+// This is deliberately not part of events.MetricsObserver: the VSI path lives
+// in internal/api, which already imports internal/metrics and can call the
+// concrete collector without the interface indirection.
+func (c *Collector) ObserveVSIDropped() {
+	c.vsiEventsDropped.Inc()
 }
 
 // Handler returns an http.Handler that serves the Prometheus metrics page.

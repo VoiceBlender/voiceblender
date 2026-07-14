@@ -124,6 +124,51 @@ func TestMetrics_RoomCreatedDeleted(t *testing.T) {
 	}
 }
 
+// TestCollector_ImplementsObserver is an interface/registration conformance
+// check: it proves each observer method reaches its counter and that every new
+// series renders in the /metrics body.
+//
+// Scope: it calls the methods directly, so it CANNOT prove any production call
+// site is wired. The webhook call sites are proven in internal/events
+// (TestWebhookRegistry_*) and the VSI call site in internal/api
+// (TestVSI_BufferFullIncrementsDroppedCounter). A registered-but-never-
+// incremented counter would still satisfy this test.
+func TestCollector_ImplementsObserver(t *testing.T) {
+	bus := events.NewBus("test")
+	c := New(bus)
+
+	// Compile-time conformance is asserted in metrics.go; this pins the
+	// runtime behavior of each method.
+	var obs events.MetricsObserver = c
+	obs.OnWebhookEnqueued("leg-1", "leg.ringing")
+	obs.OnWebhookEnqueued("leg-1", "leg.ringing")
+	obs.OnWebhookDropped("leg-1", "leg.ringing")
+	obs.OnWebhookDelivered("leg-1", "leg.ringing", "success")
+	obs.OnWebhookDelivered("leg-1", "leg.ringing", "request_error")
+	c.ObserveVSIDropped()
+
+	// Assert by value off the rendered body. (prometheus/testutil would read
+	// the counters directly, but it pulls in module requirements this repo
+	// does not have; the body is the same source of truth and needs no new
+	// dependency.)
+	body := getMetrics(t, c)
+	for _, tc := range []struct {
+		sample string
+		want   string
+	}{
+		{"voiceblender_webhook_enqueued_total", "2"},
+		{"voiceblender_webhook_dropped_total", "1"},
+		{`voiceblender_webhook_deliveries_total{outcome="success"}`, "1"},
+		{`voiceblender_webhook_deliveries_total{outcome="request_error"}`, "1"},
+		{"voiceblender_vsi_events_dropped_total", "1"},
+	} {
+		want := tc.sample + " " + tc.want
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in /metrics body:\n%s", want, body)
+		}
+	}
+}
+
 func getMetrics(t *testing.T, c *Collector) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
