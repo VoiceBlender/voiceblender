@@ -468,6 +468,7 @@ func (m *Mixer) recoverTick() {
 // readLoop continuously reads PCM frames from a participant's Reader
 // and buffers them for the mix loop. Blocks on IO (RTP receive).
 func (m *Mixer) readLoop(p *Participant) {
+	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
 	for {
 		select {
@@ -510,6 +511,7 @@ func (m *Mixer) readLoop(p *Participant) {
 // and writes to the participant's Writer. Blocks on IO (RTP send).
 // This runs on its own goroutine so the mix tick never blocks.
 func (m *Mixer) writeLoop(p *Participant) {
+	defer m.recoverParticipant(p, "writeLoop")
 	for {
 		select {
 		case <-m.stopCh:
