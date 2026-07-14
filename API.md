@@ -2453,16 +2453,18 @@ websocat "ws://localhost:8080/v1/vsi?app_id=^billing$"
 **Server → Client (event):**
 
 ```json
-{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
+{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "event_id": "8f14e45f-...", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
 ```
 
-Events use the same flattened JSON envelope as webhook POSTs. Clients already parsing webhook payloads can reuse the same deserializer.
+Events use the same flattened JSON envelope as webhook POSTs — including `event_id`, the same per-event idempotency key webhook receivers see. Clients already parsing webhook payloads can reuse the same deserializer.
 
 **Server → Client (keepalive ping):**
 
 ```json
-{"type": "ping", "event_id": 1}
+{"type": "ping", "seq": 1}
 ```
+
+`seq` is a monotonic per-connection counter for the keepalive itself. It is unrelated to the `event_id` on streamed events; the ping is not an event and carries no `event_id`.
 
 **Client → Server (keepalive pong):**
 
@@ -2800,6 +2802,16 @@ X-Signature-256: sha256=<hex-encoded-hmac-sha256>
 
 The signature is computed over the raw JSON request body using HMAC-SHA256 with the webhook secret as the key.
 
+### Deduplication
+
+Every delivery carries an `X-Event-Id` header equal to the `event_id` field in the body:
+
+```
+X-Event-Id: 550e8400-e29b-41d4-a716-446655440000
+```
+
+`event_id` is a UUID assigned once when the event is published, so it is **stable across all 3 delivery attempts** of the same event and identical for every subscriber that receives it (webhook and VSI alike). Delivery is at-least-once, so a receiver should treat `event_id` as an idempotency key: record it and ignore an event whose id has already been processed. Distinct events never share an id.
+
 ### Event Envelope
 
 Event data fields are flattened into the top-level JSON object alongside the envelope fields — there is no `"data"` wrapper.
@@ -2808,6 +2820,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 {
   "type": "leg.ringing",
   "timestamp": "2026-03-01T11:05:00.123Z",
+  "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_type": "sip_inbound",
@@ -2827,7 +2840,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 
 **`authenticated`** / **`auth_username`** (inbound SIP only) are present and set when the INVITE carried digest credentials that VoiceBlender verified against a prior `/challenge` — i.e. the credentialed retry surfaced as a new, authenticated leg. They are omitted for un-challenged calls.
 
-All events include `instance_id` alongside the event-specific fields.
+All events include `event_id` and `instance_id` alongside the event-specific fields.
 
 ### Event Types
 
