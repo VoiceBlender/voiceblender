@@ -27,6 +27,9 @@ type mockLeg struct {
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 	panicOnHangup  bool
+	// hungUp records that Hangup was entered. Atomic because teardown can
+	// run on a goroutine the test only observes.
+	hungUp atomic.Bool
 }
 
 func newMockLeg(id string) *mockLeg {
@@ -47,6 +50,7 @@ func (m *mockLeg) AudioWriter() io.Writer                       { return m.write
 func (m *mockLeg) OnDTMF(func(digit rune))                      {}
 func (m *mockLeg) SendDTMF(ctx context.Context, d string) error { return nil }
 func (m *mockLeg) Hangup(ctx context.Context) error {
+	m.hungUp.Store(true)
 	if m.panicOnHangup {
 		panic("simulated hangup panic")
 	}

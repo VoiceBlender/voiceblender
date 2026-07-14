@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -237,6 +238,105 @@ func TestMixer_MixTickPanicSkipsTickNotRoom(t *testing.T) {
 	default:
 		t.Fatal("expected output on the tick after recovery")
 	}
+}
+
+// TestMixer_ParticipantPanicHookFires verifies the owner is notified when a
+// participant's IO loop panics — removing the participant from the mixer's
+// map is only half of teardown, and without this the leg behind it would be
+// left connected but deaf and mute.
+func TestMixer_ParticipantPanicHookFires(t *testing.T) {
+	m := New(testLog(), DefaultSampleRate)
+	m.Start()
+	defer m.Stop()
+
+	type call struct{ id, loop string }
+	calls := make(chan call, 4)
+	m.SetOnParticipantPanic(func(id, loop string) {
+		calls <- call{id, loop}
+	})
+
+	victimReader := &panicAfterReader{limit: 1, frame: make([]byte, m.frameSizeBytes)}
+	m.AddParticipant("victim", victimReader, io.Discard)
+
+	select {
+	case c := <-calls:
+		if c.id != "victim" {
+			t.Errorf("hook participant id = %q, want victim", c.id)
+		}
+		if c.loop != "readLoop" {
+			t.Errorf("hook loop = %q, want readLoop", c.loop)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the participant panic hook to fire")
+	}
+}
+
+// TestMixer_ParticipantPanicHookFiresExactlyOnce is the assertion that buys
+// removeParticipant's returned bool: when both IO loops panic for the same
+// participant, the map delete under m.mu elects a single teardown owner, so
+// the owner is notified once — and close(p.done) is never double-closed.
+func TestMixer_ParticipantPanicHookFiresExactlyOnce(t *testing.T) {
+	m := New(testLog(), DefaultSampleRate)
+
+	var fired atomic.Int32
+	m.SetOnParticipantPanic(func(id, loop string) {
+		fired.Add(1)
+		if id != "victim" {
+			t.Errorf("hook participant id = %q, want victim", id)
+		}
+	})
+
+	gw := &guardedWriter{w: io.Discard}
+	p := &Participant{
+		ID:       "victim",
+		Reader:   &silenceReader{frame: make([]byte, m.frameSizeBytes)},
+		Writer:   gw,
+		incoming: make(chan []byte, 3),
+		outgoing: make(chan []byte, 3),
+		inject:   make(chan []byte, 3),
+		done:     make(chan struct{}),
+		guard:    gw,
+	}
+	m.mu.Lock()
+	m.participants["victim"] = p
+	m.mu.Unlock()
+
+	// Both of this participant's IO loops fail at once. Driving
+	// recoverParticipant directly makes the race deterministic: a real
+	// readLoop panic closes p.done, which would usually retire writeLoop
+	// before it ever got the chance to panic too.
+	var wg sync.WaitGroup
+	for _, loop := range []string{"readLoop", "writeLoop"} {
+		wg.Add(1)
+		go func(loop string) {
+			defer wg.Done()
+			defer m.recoverParticipant(p, loop)
+			panic("simulated " + loop + " panic")
+		}(loop)
+	}
+	wg.Wait()
+
+	if got := fired.Load(); got != 1 {
+		t.Fatalf("hook fired %d times, want exactly 1", got)
+	}
+	if m.ParticipantCount() != 0 {
+		t.Fatalf("participant count = %d, want 0", m.ParticipantCount())
+	}
+}
+
+// TestMixer_ParticipantPanicHookNilIsNoop verifies a mixer with no hook
+// registered (the mixer is usable standalone) still recovers and removes.
+func TestMixer_ParticipantPanicHookNilIsNoop(t *testing.T) {
+	m := New(testLog(), DefaultSampleRate)
+	m.Start()
+	defer m.Stop()
+
+	victimReader := &panicAfterReader{limit: 1, frame: make([]byte, m.frameSizeBytes)}
+	m.AddParticipant("victim", victimReader, io.Discard)
+
+	waitFor(t, 2*time.Second, "victim removed with no hook registered", func() bool {
+		return m.ParticipantCount() == 0
+	})
 }
 
 // TestMixer_ReadLoopPanicGoroutinesExit verifies that after a read-panic

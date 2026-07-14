@@ -45,10 +45,64 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 	}
 
 	r := NewRoom(id, appID, sampleRate, m.log)
+	m.wireMixerPanicHook(r)
 	m.rooms[id] = r
 	m.log.Info("room created", "room_id", id, "sample_rate", r.SampleRate)
 	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id, AppID: appID}})
 	return r, nil
+}
+
+// wireMixerPanicHook makes the room's mixer report a participant whose IO
+// loop panicked, so the leg behind it is torn down instead of being left in
+// the room as a live-but-silent call. Must be called for every room the
+// manager owns, right after NewRoom.
+//
+// The hook fires on the panicking mixer goroutine holding no locks, but
+// Hangup blocks on a SIP BYE — so dispatch asynchronously and let that
+// goroutine exit, the same way Delete fans hangups out.
+func (m *Manager) wireMixerPanicHook(r *Room) {
+	roomID := r.ID
+	r.Mixer().SetOnParticipantPanic(func(participantID, loop string) {
+		go m.tearDownPanickedLeg(roomID, participantID, loop)
+	})
+}
+
+// tearDownPanickedLeg removes a leg whose mixer IO loop panicked from its
+// room and hangs it up. Further operation of that leg is unsafe: its audio
+// path is gone, so leaving it connected would strand the caller on a deaf,
+// mute call with no operator signal.
+func (m *Manager) tearDownPanickedLeg(roomID, legID, loop string) {
+	// This runs on its own goroutine, so a panic here — Hangup reaching into
+	// a wedged SIP stack, say — would take the process down. That is the exact
+	// failure this teardown exists to contain, so it must contain its own.
+	defer func() {
+		if r := recover(); r != nil {
+			m.log.Error("panic tearing down leg after mixer IO panic",
+				"room_id", roomID,
+				"leg_id", legID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
+	m.log.Warn("tearing down leg after mixer IO panic",
+		"room_id", roomID,
+		"leg_id", legID,
+		"loop", loop,
+	)
+
+	// Removes the leg from the room and publishes leg.left_room.
+	if err := m.RemoveLeg(roomID, legID); err != nil {
+		m.log.Error("removing panicked leg from room",
+			"room_id", roomID, "leg_id", legID, "error", err)
+	}
+	if l, ok := m.legMgr.Get(legID); ok {
+		if err := l.Hangup(context.Background()); err != nil {
+			m.log.Error("hanging up panicked leg",
+				"room_id", roomID, "leg_id", legID, "error", err)
+		}
+	}
 }
 
 func (m *Manager) Get(id string) (*Room, bool) {
@@ -261,6 +315,7 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	toRoom, ok := m.rooms[toRoomID]
 	if !ok {
 		toRoom = NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
+		m.wireMixerPanicHook(toRoom)
 		m.rooms[toRoomID] = toRoom
 		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID, AppID: toRoom.AppID}})
 	}

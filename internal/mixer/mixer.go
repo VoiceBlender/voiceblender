@@ -116,7 +116,28 @@ type Mixer struct {
 	tapMu  sync.Mutex
 	tapOut io.Writer
 
+	// onParticipantPanic, when set, is notified after a participant's IO
+	// loop panicked and the participant was removed. It lets the owner (the
+	// room layer) finish the teardown the mixer cannot see — the mixer is a
+	// leaf and knows nothing about legs, rooms or events.
+	hookMu             sync.Mutex
+	onParticipantPanic func(participantID, loop string)
+
 	comfortNoise *comfortnoise.Generator
+}
+
+// SetOnParticipantPanic registers a callback invoked once per participant
+// whose readLoop or writeLoop panicked, after the mixer has removed it.
+// loop is "readLoop" or "writeLoop". Passing nil disables the hook.
+//
+// The mixer holds no lock — neither m.mu nor hookMu — while invoking fn, so
+// fn may call back into the mixer. fn runs on the panicking goroutine as its
+// last act before exiting; if fn does anything that blocks, it must hand off
+// to its own goroutine.
+func (m *Mixer) SetOnParticipantPanic(fn func(participantID, loop string)) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	m.onParticipantPanic = fn
 }
 
 func New(log *slog.Logger, sampleRate int) *Mixer {
@@ -457,9 +478,14 @@ func (m *Mixer) Stop() {
 }
 
 // recoverParticipant logs a panic on a per-participant IO loop (readLoop or
-// writeLoop) and removes the participant, mirroring SIPLeg.recoverLoop. The
-// panicking goroutine is not restarted; RemoveParticipant is idempotent
-// (mixer.go:391-409) so this is safe even if teardown is already underway.
+// writeLoop) and removes the participant, mirroring SIPLeg.recoverLoopAndHangup.
+// The panicking goroutine is not restarted.
+//
+// Removing the participant from the mixer is only half of teardown: the owner
+// still has the leg registered and would leave a live call connected but deaf
+// and mute. removeParticipant's returned bool is the exactly-once gate — if
+// both IO loops panic for the same participant, only one of them notifies the
+// owner. The hook is read under hookMu but invoked with no lock held.
 func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 	if r := recover(); r != nil {
 		m.log.Error(loop+" panic",
@@ -467,7 +493,14 @@ func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 			"panic", r,
 			"stack", string(debug.Stack()),
 		)
-		m.RemoveParticipant(p.ID)
+		if m.removeParticipant(p.ID) {
+			m.hookMu.Lock()
+			hook := m.onParticipantPanic
+			m.hookMu.Unlock()
+			if hook != nil {
+				hook(p.ID, loop)
+			}
+		}
 	}
 }
 
