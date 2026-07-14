@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -433,6 +434,35 @@ func (m *Mixer) Stop() {
 	m.stopped = true
 	m.mu.Unlock()
 	close(m.stopCh)
+}
+
+// recoverParticipant logs a panic on a per-participant IO loop (readLoop or
+// writeLoop) and removes the participant, mirroring SIPLeg.recoverLoop. The
+// panicking goroutine is not restarted; RemoveParticipant is idempotent
+// (mixer.go:391-409) so this is safe even if teardown is already underway.
+func (m *Mixer) recoverParticipant(p *Participant, loop string) {
+	if r := recover(); r != nil {
+		m.log.Error(loop+" panic",
+			"participant_id", p.ID,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+		m.RemoveParticipant(p.ID)
+	}
+}
+
+// recoverTick logs a panic from a single mixTick invocation and lets the
+// mix loop continue to the next tick. Must be deferred at the per-tick call
+// site (mixLoop's ticker case), never around mixLoop itself — recovering the
+// loop would stop the whole room instead of skipping one tick. Frame
+// contents are deliberately not logged.
+func (m *Mixer) recoverTick() {
+	if r := recover(); r != nil {
+		m.log.Error("mixTick panic, skipping tick",
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+	}
 }
 
 // readLoop continuously reads PCM frames from a participant's Reader
