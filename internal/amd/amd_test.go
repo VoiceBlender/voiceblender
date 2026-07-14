@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -390,24 +391,43 @@ func TestParams_Validate(t *testing.T) {
 	tests := []struct {
 		name   string
 		modify func(*Params)
+		// wantErr, when set, is a substring the error must contain. It pins
+		// down which check rejected the params rather than just that one did.
+		wantErr string
 	}{
-		{"zero initial silence", func(p *Params) { p.InitialSilenceTimeout = 0 }},
-		{"negative greeting", func(p *Params) { p.GreetingDuration = -1 }},
-		{"zero after greeting", func(p *Params) { p.AfterGreetingSilence = 0 }},
-		{"zero total", func(p *Params) { p.TotalAnalysisTime = 0 }},
-		{"zero min word", func(p *Params) { p.MinimumWordLength = 0 }},
+		{"zero initial silence", func(p *Params) { p.InitialSilenceTimeout = 0 }, ""},
+		{"negative greeting", func(p *Params) { p.GreetingDuration = -1 }, ""},
+		{"zero after greeting", func(p *Params) { p.AfterGreetingSilence = 0 }, ""},
+		{"zero total", func(p *Params) { p.TotalAnalysisTime = 0 }, ""},
+		{"zero min word", func(p *Params) { p.MinimumWordLength = 0 }, ""},
 		{"total < initial silence", func(p *Params) {
 			p.TotalAnalysisTime = 1000 * time.Millisecond
 			p.InitialSilenceTimeout = 2000 * time.Millisecond
-		}},
+		}, "initial_silence_timeout"},
+		{"total < greeting", func(p *Params) {
+			// Keep every other cross-field check satisfied so only the
+			// greeting_duration check can reject these params.
+			p.InitialSilenceTimeout = 500 * time.Millisecond
+			p.TotalAnalysisTime = 2000 * time.Millisecond
+			p.GreetingDuration = 3000 * time.Millisecond
+		}, "greeting_duration"},
+		{"total < after greeting", func(p *Params) {
+			p.InitialSilenceTimeout = 500 * time.Millisecond
+			p.TotalAnalysisTime = 2000 * time.Millisecond
+			p.AfterGreetingSilence = 3000 * time.Millisecond
+		}, "after_greeting_silence"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := DefaultParams()
 			tt.modify(&p)
-			if err := p.Validate(); err == nil {
-				t.Error("expected validation error")
+			err := p.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should mention %q", err, tt.wantErr)
 			}
 		})
 	}

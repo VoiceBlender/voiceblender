@@ -38,6 +38,14 @@ func (p Params) Validate() error {
 	if p.TotalAnalysisTime < p.InitialSilenceTimeout {
 		return errors.New("total_analysis_time must be >= initial_silence_timeout")
 	}
+	// A greeting or after-greeting window longer than the whole analysis window
+	// can never be reached, silently defeating the machine/human verdict.
+	if p.TotalAnalysisTime < p.GreetingDuration {
+		return errors.New("total_analysis_time must be >= greeting_duration")
+	}
+	if p.TotalAnalysisTime < p.AfterGreetingSilence {
+		return errors.New("total_analysis_time must be >= after_greeting_silence")
+	}
 	return nil
 }
 
