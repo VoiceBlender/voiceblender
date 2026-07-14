@@ -891,6 +891,37 @@ func (r *pipeReader) Read(p []byte) (int, error) {
 	}
 }
 
+// TryRead is a non-blocking counterpart to Read. It serves any buffered
+// remainder first, then one frame if the writer already queued it, and
+// otherwise returns (0, nil) rather than waiting for one. io.EOF is reported
+// only once the writer is closed and nothing is left buffered or queued.
+//
+// Callers that must keep to their own clock use this to drain the pipe for
+// whatever it has right now, so a silent writer never stalls the reader.
+func (r *pipeReader) TryRead(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	select {
+	case data := <-r.ch:
+		n := copy(p, data)
+		if n < len(data) {
+			r.buf = data[n:]
+		}
+		return n, nil
+	default:
+	}
+	// Nothing buffered and nothing queued: EOF only once the writer is gone.
+	select {
+	case <-r.done:
+		return 0, io.EOF
+	default:
+		return 0, nil
+	}
+}
+
 type pipeWriter struct {
 	ch     chan []byte
 	done   chan struct{}
