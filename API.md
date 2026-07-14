@@ -1199,6 +1199,8 @@ When `s3_bucket` is provided, a per-request S3 backend is created using the supp
 
 Recording runs asynchronously. Events `recording.started` and `recording.finished` are emitted. When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
 
+The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
+
 **Errors:**
 - `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
 - `404` — Leg not found
@@ -2868,7 +2870,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `tts.started` | TTS synthesis began playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
-| `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
+| `recording.started` | Recording began | `leg_id` or `room_id`, `file` (does not exist yet — the path only appears when the recording stops) |
 | `recording.finished` | Recording ended | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
