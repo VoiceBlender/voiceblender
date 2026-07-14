@@ -217,6 +217,30 @@ info:
         - name: LIVEKIT_DEFAULT_TOKEN_TTL
           default: 6h
           description: Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours.
+        - name: OTEL_TRACES_ENABLED
+          default: "false"
+          description: Enable the OpenTelemetry trace pipeline. When false (the default) no exporter is constructed and nothing is dialed. Traces only — VoiceBlender exposes Prometheus metrics at /metrics and logs to stdout; there is no OTel metrics or logs pipeline.
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          default: ""
+          description: OTLP/gRPC collector address as host:port (e.g. otel-collector:4317). Required when OTEL_TRACES_ENABLED=true; startup logs an error and continues untraced if it is missing.
+        - name: OTEL_EXPORTER_OTLP_TRACES_INSECURE
+          default: "false"
+          description: Disable transport security on the collector connection. Use only for a collector reached over a trusted network.
+        - name: OTEL_EXPORTER_OTLP_HEADERS
+          default: ""
+          description: Comma-separated key=value pairs sent with every export request, e.g. authorization=Bearer <token>. Malformed entries are skipped.
+        - name: OTEL_SERVICE_NAME
+          default: voiceblender
+          description: service.name resource attribute on exported spans.
+        - name: OTEL_SERVICE_NAMESPACE
+          default: ""
+          description: service.namespace resource attribute on exported spans.
+        - name: OTEL_PROPAGATORS
+          default: tracecontext,baggage
+          description: 'Comma-separated context propagators. Recognized: tracecontext, baggage. Unknown names are ignored, and an empty result falls back to the default pair.'
+        - name: OTEL_TRACES_SAMPLER_ARG
+          default: "1.0"
+          description: Head-sampling probability, clamped to [0,1]. 1.0 samples every leg.
     version: 1.0.0
     license:
         name: MIT
