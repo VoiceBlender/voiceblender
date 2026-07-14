@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/bridge"
@@ -98,6 +99,15 @@ func (m *Manager) Delete(id string) error {
 		wg.Add(1)
 		go func(l leg.Leg) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					m.log.Error("panic hanging up leg during room delete",
+						"leg_id", l.ID(),
+						"panic", r,
+						"stack", string(debug.Stack()),
+					)
+				}
+			}()
 			l.Hangup(context.Background())
 		}(l)
 	}
