@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -242,6 +243,142 @@ func TestAnalyzer_InitialSilenceThenHuman(t *testing.T) {
 	if det.InitialSilenceMs < 900 {
 		t.Errorf("initial_silence_ms=%d, expected ~1000", det.InitialSilenceMs)
 	}
+}
+
+// feedChunked drives the push surface with audio delivered in chunkSize-byte
+// chunks, returning the first terminal Detection and whether one was reached.
+func feedChunked(a *Analyzer, audio []byte, chunkSize int) (Detection, bool) {
+	for off := 0; off < len(audio); off += chunkSize {
+		end := off + chunkSize
+		if end > len(audio) {
+			end = len(audio)
+		}
+		if det, done := a.Feed(audio[off:end]); done {
+			return det, true
+		}
+	}
+	return Detection{}, false
+}
+
+// TestAnalyzer_Feed_MatchesRun asserts the push surface classifies identically
+// to the synchronous core over the same audio, regardless of how the bytes are
+// chunked — including chunk sizes that never align to a 640-byte frame.
+func TestAnalyzer_Feed_MatchesRun(t *testing.T) {
+	defaults := DefaultParams()
+	loud := makeToneFrame(5000)
+	silent := makeSilentFrame()
+
+	scenarios := []struct {
+		name   string
+		params Params
+		audio  []byte
+		want   Result
+	}{
+		{
+			name:   "human",
+			params: defaults,
+			audio: buildAudio(
+				loud, framesForDuration(500*time.Millisecond),
+				silent, framesForDuration(defaults.AfterGreetingSilence)+speechOffFrames+10,
+			),
+			want: ResultHuman,
+		},
+		{
+			name:   "machine",
+			params: defaults,
+			audio:  buildAudio(loud, framesForDuration(defaults.GreetingDuration)+10),
+			want:   ResultMachine,
+		},
+		{
+			name:   "no_speech",
+			params: defaults,
+			audio:  buildAudio(silent, framesForDuration(defaults.InitialSilenceTimeout)+10),
+			want:   ResultNoSpeech,
+		},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			// The synchronous core is the oracle.
+			want := New(sc.params).Run(context.Background(), bytes.NewReader(sc.audio))
+			if want.Result != sc.want {
+				t.Fatalf("Run: expected %s, got %s", sc.want, want.Result)
+			}
+
+			// 1 byte and 1000 bytes never align to a 640-byte frame, so these
+			// exercise the trailing-remainder path.
+			for _, chunk := range []int{1, frameSizeBytes, 1000, len(sc.audio)} {
+				t.Run(fmt.Sprintf("chunk_%d", chunk), func(t *testing.T) {
+					got, done := feedChunked(New(sc.params), sc.audio, chunk)
+					if !done {
+						t.Fatalf("Feed reached no terminal classification")
+					}
+					if got != want {
+						t.Errorf("Feed detection %+v != Run detection %+v", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAnalyzer_OnDeadline(t *testing.T) {
+	params := DefaultParams()
+
+	t.Run("pre-speech with no greeting reports no_speech", func(t *testing.T) {
+		a := New(params)
+		// 500 ms of silence — well under initial_silence_timeout, so the FSM is
+		// still waiting for speech and yields no frame-driven verdict.
+		audio := buildAudio(makeSilentFrame(), framesForDuration(500*time.Millisecond))
+		if _, done := feedChunked(a, audio, frameSizeBytes); done {
+			t.Fatal("did not expect a terminal classification yet")
+		}
+
+		det := a.OnDeadline()
+		if det.Result != ResultNoSpeech {
+			t.Fatalf("expected no_speech, got %s", det.Result)
+		}
+		if det.InitialSilenceMs != 500 {
+			t.Errorf("initial_silence_ms=%d, want 500", det.InitialSilenceMs)
+		}
+		if det.TotalAnalysisMs != 500 {
+			t.Errorf("total_analysis_ms=%d, want 500", det.TotalAnalysisMs)
+		}
+		if det.GreetingDurationMs != 0 {
+			t.Errorf("greeting_duration_ms=%d, want 0", det.GreetingDurationMs)
+		}
+	})
+
+	t.Run("mid-greeting reports not_sure", func(t *testing.T) {
+		a := New(params)
+		// 500 ms of speech — too short for machine, with no trailing silence to
+		// declare human, so the FSM is stuck mid-greeting.
+		audio := buildAudio(makeToneFrame(5000), framesForDuration(500*time.Millisecond))
+		if _, done := feedChunked(a, audio, frameSizeBytes); done {
+			t.Fatal("did not expect a terminal classification yet")
+		}
+
+		det := a.OnDeadline()
+		if det.Result != ResultNotSure {
+			t.Fatalf("expected not_sure, got %s", det.Result)
+		}
+		if det.GreetingDurationMs <= 0 {
+			t.Errorf("greeting_duration_ms=%d, want > 0", det.GreetingDurationMs)
+		}
+		if det.TotalAnalysisMs != 500 {
+			t.Errorf("total_analysis_ms=%d, want 500", det.TotalAnalysisMs)
+		}
+	})
+
+	t.Run("reports no_speech before any audio is fed", func(t *testing.T) {
+		det := New(params).OnDeadline()
+		if det.Result != ResultNoSpeech {
+			t.Fatalf("expected no_speech, got %s", det.Result)
+		}
+		if det.TotalAnalysisMs != 0 {
+			t.Errorf("total_analysis_ms=%d, want 0", det.TotalAnalysisMs)
+		}
+	})
 }
 
 func TestParams_Validate(t *testing.T) {

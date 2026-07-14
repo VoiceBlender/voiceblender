@@ -51,8 +51,27 @@ type BeepResult struct {
 }
 
 // Analyzer performs answering machine detection on a 16 kHz PCM audio stream.
+// It exposes two drive modes over the same classification FSM: a synchronous
+// Run(ctx, io.Reader) core, and a frame-by-frame push surface
+// (Feed/OnDeadline/FeedBeep) for callers that pump PCM frames in from an
+// existing goroutine and must never park on a blocking read.
+//
+// An Analyzer is not safe for concurrent use. Run and WaitForBeep keep their
+// own local state, but the push surface mutates state held on the Analyzer, so
+// the caller must serialize Feed/FeedBeep/OnDeadline. A single Analyzer drives
+// exactly one call's analysis window.
 type Analyzer struct {
 	params Params
+
+	// Push-mode classification state, mutated by Feed/OnDeadline. Run does not
+	// touch these — it keeps its own local fsmState.
+	feedState fsmState
+	feedAccum []byte
+
+	// Push-mode beep state, mutated by FeedBeep. WaitForBeep does not touch these.
+	beepDet    *beepDetector
+	beepAccum  []byte
+	beepWaited time.Duration
 }
 
 // New creates an Analyzer with the given parameters.
@@ -240,6 +259,54 @@ func (a *Analyzer) Run(ctx context.Context, reader io.Reader) Detection {
 		if det, done := st.step(a.params, samples); done {
 			return det
 		}
+	}
+}
+
+// Feed advances the classification FSM with a chunk of 16 kHz PCM bytes
+// without blocking. It appends the bytes to an internal accumulator, drains
+// every complete 640-byte (320-sample) frame through the FSM, and returns
+// (Detection, true) on the first terminal classification. A short trailing
+// remainder is retained for the next Feed — it is never decoded past the
+// buffer, so chunk boundaries do not affect classification. Feed performs no
+// io.ReadFull, so a stalled feed cannot hang here.
+//
+// The caller must serialize Feed against OnDeadline and FeedBeep.
+func (a *Analyzer) Feed(pcm []byte) (Detection, bool) {
+	a.feedAccum = append(a.feedAccum, pcm...)
+	samples := make([]int16, samplesPerFrame)
+
+	for len(a.feedAccum) >= frameSizeBytes {
+		frame := a.feedAccum[:frameSizeBytes]
+		for i := range samples {
+			samples[i] = int16(binary.LittleEndian.Uint16(frame[i*2 : i*2+2]))
+		}
+		a.feedAccum = a.feedAccum[frameSizeBytes:]
+
+		if det, done := a.feedState.step(a.params, samples); done {
+			return det, true
+		}
+	}
+
+	return Detection{}, false
+}
+
+// OnDeadline returns the terminal Detection to publish when the analysis
+// window closes without a frame-driven verdict — the wall-clock deadline fired
+// or the feed stalled. It reports no_speech when the FSM never left the
+// pre-speech phase and counted no greeting, and not_sure otherwise. The timing
+// measurements reflect the state accumulated by Feed so far.
+//
+// The caller must serialize OnDeadline against Feed and FeedBeep.
+func (a *Analyzer) OnDeadline() Detection {
+	result := ResultNotSure
+	if a.feedState.phase == phaseWaitingForSpeech && a.feedState.greetingDur == 0 {
+		result = ResultNoSpeech
+	}
+	return Detection{
+		Result:             result,
+		InitialSilenceMs:   ms(a.feedState.initialSilence),
+		GreetingDurationMs: ms(a.feedState.greetingDur),
+		TotalAnalysisMs:    ms(a.feedState.elapsed),
 	}
 }
 
