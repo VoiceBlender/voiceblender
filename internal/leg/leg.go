@@ -112,6 +112,20 @@ type Leg interface {
 	ClaimDisconnect() bool
 }
 
+// RootSpanEnder is implemented by leg types that carry an OpenTelemetry root
+// span covering their lifecycle. Terminal paths type-assert for it and call
+// EndRootSpan so the span is closed (and therefore exported) exactly once.
+//
+// It is deliberately not part of Leg: only SIP legs carry a root span, and
+// folding it into Leg would force the other implementations — and every test
+// mock — to grow a method for a feature they do not have.
+type RootSpanEnder interface {
+	// EndRootSpan ends the leg's root span with the given disconnect
+	// reason. It is safe to call from any goroutine and any number of
+	// times; only the first call takes effect.
+	EndRootSpan(reason string)
+}
+
 // ErrRTTNotNegotiated is returned by SendText when RTT was not agreed in the
 // SDP offer/answer exchange (or the leg type does not support RTT).
 var ErrRTTNotNegotiated = errors.New("RTT not negotiated for this leg")
