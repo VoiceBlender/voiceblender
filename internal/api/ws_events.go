@@ -91,6 +91,12 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 			// Buffer full → drop. Log on the leading edge of a drop burst
 			// (transition from 0 → 1) and on each power-of-10 threshold so
 			// sustained backpressure is visible without flooding the log.
+			// The counter, unlike the log, records every drop. This runs on
+			// the publisher's goroutine (Bus.Publish is synchronous), so it
+			// must stay non-blocking — a counter increment is.
+			if s.Metrics != nil {
+				s.Metrics.ObserveVSIDropped()
+			}
 			n := dropped.Add(1)
 			if isDropLogThreshold(n) {
 				s.Log.Warn("vsi: event buffer full, dropping event",
