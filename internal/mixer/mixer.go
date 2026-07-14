@@ -390,23 +390,43 @@ func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 }
 
 func (m *Mixer) RemoveParticipant(id string) {
+	m.removeParticipant(id)
+}
+
+// removeParticipant detaches a participant and reports whether this call was
+// the one that removed it. The map delete under m.mu is the exactly-once
+// gate: concurrent callers race on the lookup, but only the goroutine that
+// observed ok == true owns teardown, so close(p.done) can never double-close
+// and any caller-side follow-up (see recoverParticipant) fires once even if
+// both IO loops fail for the same participant.
+//
+// Teardown itself runs outside m.mu: guard.Close and the Reader's Close are
+// foreign code — the reader in particular is arbitrary third-party IO — and
+// the mixer lock is never held across a call out of this package.
+func (m *Mixer) removeParticipant(id string) bool {
 	m.mu.Lock()
 	p, ok := m.participants[id]
 	if ok {
 		delete(m.participants, id)
-		if p.guard != nil {
-			p.guard.Close() // prevent any further writes to the network
-		}
-		// Closing p.done alone does not unblock readLoop when it is parked
-		// inside p.Reader.Read (the select runs only between iterations).
-		// If the reader implements io.Closer, close it so the in-flight
-		// Read returns and readLoop observes p.done on the next iteration.
-		if rc, ok := p.Reader.(io.Closer); ok {
-			_ = rc.Close()
-		}
-		close(p.done) // signal readLoop/writeLoop to stop
 	}
 	m.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	if p.guard != nil {
+		p.guard.Close() // prevent any further writes to the network
+	}
+	// Closing p.done alone does not unblock readLoop when it is parked
+	// inside p.Reader.Read (the select runs only between iterations).
+	// If the reader implements io.Closer, close it so the in-flight
+	// Read returns and readLoop observes p.done on the next iteration.
+	if rc, ok := p.Reader.(io.Closer); ok {
+		_ = rc.Close()
+	}
+	close(p.done) // signal readLoop/writeLoop to stop
+	return true
 }
 
 func (m *Mixer) ParticipantCount() int {
