@@ -349,3 +349,152 @@ func TestEnvOr_Override(t *testing.T) {
 		t.Errorf("envOr = %q, want override", got)
 	}
 }
+
+// otelEnvKeys are every OTEL_* var Load reads; cleared so an exported value
+// in the developer's shell cannot mask a default.
+var otelEnvKeys = []string{
+	"OTEL_TRACES_ENABLED", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_TRACES_INSECURE", "OTEL_EXPORTER_OTLP_HEADERS",
+	"OTEL_SERVICE_NAME", "OTEL_SERVICE_NAMESPACE", "OTEL_PROPAGATORS",
+	"OTEL_TRACES_SAMPLER_ARG",
+}
+
+func clearOTELEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range otelEnvKeys {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoad_OTELDefaults(t *testing.T) {
+	clearOTELEnv(t)
+
+	cfg := Load()
+
+	// The default must be off: this is the flag that keeps the exporter from
+	// being constructed at all.
+	if cfg.OTELTracesEnabled {
+		t.Error("OTELTracesEnabled = true, want false — traces must be off by default")
+	}
+	if cfg.OTELTracesEndpoint != "" {
+		t.Errorf("OTELTracesEndpoint = %q, want empty", cfg.OTELTracesEndpoint)
+	}
+	if cfg.OTELTracesInsecure {
+		t.Error("OTELTracesInsecure = true, want false")
+	}
+	if cfg.OTELServiceName != "voiceblender" {
+		t.Errorf("OTELServiceName = %q, want voiceblender", cfg.OTELServiceName)
+	}
+	if cfg.OTELPropagators != "tracecontext,baggage" {
+		t.Errorf("OTELPropagators = %q, want tracecontext,baggage", cfg.OTELPropagators)
+	}
+	if cfg.OTELSamplerRatio != 1.0 {
+		t.Errorf("OTELSamplerRatio = %v, want 1.0", cfg.OTELSamplerRatio)
+	}
+}
+
+func TestLoad_OTELFromEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   map[string]string
+		check func(*testing.T, Config)
+	}{
+		{
+			name: "enabled with endpoint",
+			env: map[string]string{
+				"OTEL_TRACES_ENABLED":                "true",
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "collector:4317",
+			},
+			check: func(t *testing.T, c Config) {
+				if !c.OTELTracesEnabled {
+					t.Error("OTELTracesEnabled = false, want true")
+				}
+				if c.OTELTracesEndpoint != "collector:4317" {
+					t.Errorf("OTELTracesEndpoint = %q, want collector:4317", c.OTELTracesEndpoint)
+				}
+			},
+		},
+		{
+			name: "enabled but endpoint missing stays empty for Setup to reject",
+			env:  map[string]string{"OTEL_TRACES_ENABLED": "1"},
+			check: func(t *testing.T, c Config) {
+				if !c.OTELTracesEnabled {
+					t.Error("OTELTracesEnabled = false, want true")
+				}
+				if c.OTELTracesEndpoint != "" {
+					t.Errorf("OTELTracesEndpoint = %q, want empty", c.OTELTracesEndpoint)
+				}
+			},
+		},
+		{
+			name: "insecure toggle",
+			env:  map[string]string{"OTEL_EXPORTER_OTLP_TRACES_INSECURE": "yes"},
+			check: func(t *testing.T, c Config) {
+				if !c.OTELTracesInsecure {
+					t.Error("OTELTracesInsecure = false, want true")
+				}
+			},
+		},
+		{
+			name: "headers pass through verbatim",
+			env:  map[string]string{"OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer t,x=1"},
+			check: func(t *testing.T, c Config) {
+				if c.OTELHeaders != "authorization=Bearer t,x=1" {
+					t.Errorf("OTELHeaders = %q", c.OTELHeaders)
+				}
+			},
+		},
+		{
+			name: "service name and namespace override",
+			env: map[string]string{
+				"OTEL_SERVICE_NAME":      "vb-edge",
+				"OTEL_SERVICE_NAMESPACE": "telephony",
+			},
+			check: func(t *testing.T, c Config) {
+				if c.OTELServiceName != "vb-edge" {
+					t.Errorf("OTELServiceName = %q, want vb-edge", c.OTELServiceName)
+				}
+				if c.OTELServiceNamespace != "telephony" {
+					t.Errorf("OTELServiceNamespace = %q, want telephony", c.OTELServiceNamespace)
+				}
+			},
+		},
+		{
+			name: "sampler ratio parsed",
+			env:  map[string]string{"OTEL_TRACES_SAMPLER_ARG": "0.25"},
+			check: func(t *testing.T, c Config) {
+				if c.OTELSamplerRatio != 0.25 {
+					t.Errorf("OTELSamplerRatio = %v, want 0.25", c.OTELSamplerRatio)
+				}
+			},
+		},
+		{
+			name: "unparseable sampler ratio falls back to default",
+			env:  map[string]string{"OTEL_TRACES_SAMPLER_ARG": "not-a-number"},
+			check: func(t *testing.T, c Config) {
+				if c.OTELSamplerRatio != 1.0 {
+					t.Errorf("OTELSamplerRatio = %v, want 1.0", c.OTELSamplerRatio)
+				}
+			},
+		},
+		{
+			name: "propagators override",
+			env:  map[string]string{"OTEL_PROPAGATORS": "tracecontext"},
+			check: func(t *testing.T, c Config) {
+				if c.OTELPropagators != "tracecontext" {
+					t.Errorf("OTELPropagators = %q, want tracecontext", c.OTELPropagators)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearOTELEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			tc.check(t, Load())
+		})
+	}
+}

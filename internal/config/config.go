@@ -111,6 +111,19 @@ type Config struct {
 	LiveKitAPIKey              string // required when LiveKitTokenSigningEnabled=true
 	LiveKitAPISecret           string // required when LiveKitTokenSigningEnabled=true; redact in logs
 	LiveKitDefaultTokenTTL     time.Duration
+
+	// OpenTelemetry traces. Off by default; no exporter is constructed and
+	// nothing is dialed unless OTELTracesEnabled is true. Traces only —
+	// there is no OTel metrics or logs pipeline (Prometheus and slog cover
+	// those).
+	OTELTracesEnabled    bool
+	OTELTracesEndpoint   string // OTLP/gRPC collector host:port; required when enabled
+	OTELTracesInsecure   bool
+	OTELHeaders          string // comma-separated k=v pairs sent with each export
+	OTELServiceName      string
+	OTELServiceNamespace string
+	OTELPropagators      string  // comma-separated; empty = tracecontext,baggage
+	OTELSamplerRatio     float64 // head-sampling probability, clamped to [0,1]
 }
 
 func Load() Config {
@@ -201,6 +214,15 @@ func Load() Config {
 		LiveKitAPIKey:              os.Getenv("LIVEKIT_API_KEY"),
 		LiveKitAPISecret:           os.Getenv("LIVEKIT_API_SECRET"),
 		LiveKitDefaultTokenTTL:     envDuration("LIVEKIT_DEFAULT_TOKEN_TTL", 6*time.Hour),
+
+		OTELTracesEnabled:    envBool("OTEL_TRACES_ENABLED", false),
+		OTELTracesEndpoint:   os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+		OTELTracesInsecure:   envBool("OTEL_EXPORTER_OTLP_TRACES_INSECURE", false),
+		OTELHeaders:          os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"),
+		OTELServiceName:      envOr("OTEL_SERVICE_NAME", "voiceblender"),
+		OTELServiceNamespace: os.Getenv("OTEL_SERVICE_NAMESPACE"),
+		OTELPropagators:      envOr("OTEL_PROPAGATORS", "tracecontext,baggage"),
+		OTELSamplerRatio:     envFloat("OTEL_TRACES_SAMPLER_ARG", 1.0),
 	}
 }
 
