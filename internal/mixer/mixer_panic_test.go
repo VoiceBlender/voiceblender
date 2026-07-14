@@ -1,6 +1,7 @@
 package mixer
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"runtime"
@@ -337,6 +338,137 @@ func TestMixer_ParticipantPanicHookNilIsNoop(t *testing.T) {
 	waitFor(t, 2*time.Second, "victim removed with no hook registered", func() bool {
 		return m.ParticipantCount() == 0
 	})
+}
+
+// alwaysPanicWriter panics on every Write, simulating a deterministically
+// bad frame that makes every single mix tick panic.
+type alwaysPanicWriter struct{}
+
+func (alwaysPanicWriter) Write(p []byte) (int, error) { panic("simulated tap panic") }
+
+// countingHandler records how many log records carried a "stack" attribute
+// and how many were emitted in total.
+type countingHandler struct {
+	mu          sync.Mutex
+	total       int
+	withStack   int
+	lastMessage string
+}
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler            { return h }
+
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.total++
+	h.lastMessage = r.Message
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "stack" {
+			h.withStack++
+			return false
+		}
+		return true
+	})
+	return nil
+}
+
+func (h *countingHandler) counts() (total, withStack int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.total, h.withStack
+}
+
+// TestMixer_TickPanicLogsAreRateLimited verifies that a deterministically
+// panicking frame does not flood the log. A bad frame recurs on every tick,
+// so an unbounded recoverTick would emit a multi-KB stack ~50x a second
+// forever. Exactly one stack-bearing line may be emitted; the rest collapse
+// into at most one stackless summary per interval.
+func TestMixer_TickPanicLogsAreRateLimited(t *testing.T) {
+	h := &countingHandler{}
+	m := New(slog.New(h), DefaultSampleRate)
+
+	gw := &guardedWriter{w: io.Discard}
+	p := &Participant{
+		ID:       "listener",
+		Writer:   gw,
+		incoming: make(chan []byte, 3),
+		outgoing: make(chan []byte, 3),
+		inject:   make(chan []byte, 3),
+		done:     make(chan struct{}),
+		guard:    gw,
+		tap:      alwaysPanicWriter{},
+	}
+	m.mu.Lock()
+	m.participants["listener"] = p
+	m.mu.Unlock()
+
+	// Far more consecutive panicking ticks than a 5s interval could ever
+	// permit a second log line for.
+	const ticks = 500
+	for i := 0; i < ticks; i++ {
+		m.safeMixTick()
+	}
+
+	total, withStack := h.counts()
+	if withStack != 1 {
+		t.Errorf("stack-bearing log lines = %d, want exactly 1 (got %d lines total)", withStack, total)
+	}
+	if total != 1 {
+		t.Errorf("log lines = %d, want 1 — %d ticks inside one interval must collapse", total, ticks)
+	}
+	if got := m.tickPanics.Load(); got != ticks {
+		t.Errorf("tickPanics = %d, want %d — every panic must still be counted", got, ticks)
+	}
+}
+
+// TestMixer_TickPanicSummaryLogsAfterInterval verifies the rate limit lets a
+// stackless summary through once the interval has elapsed, so an ongoing
+// fault stays visible rather than going silent after the first line.
+func TestMixer_TickPanicSummaryLogsAfterInterval(t *testing.T) {
+	h := &countingHandler{}
+	m := New(slog.New(h), DefaultSampleRate)
+
+	gw := &guardedWriter{w: io.Discard}
+	p := &Participant{
+		ID:       "listener",
+		Writer:   gw,
+		incoming: make(chan []byte, 3),
+		outgoing: make(chan []byte, 3),
+		inject:   make(chan []byte, 3),
+		done:     make(chan struct{}),
+		guard:    gw,
+		tap:      alwaysPanicWriter{},
+	}
+	m.mu.Lock()
+	m.participants["listener"] = p
+	m.mu.Unlock()
+
+	m.safeMixTick() // first panic: full stack
+	m.safeMixTick() // suppressed
+
+	if total, withStack := h.counts(); total != 1 || withStack != 1 {
+		t.Fatalf("after 2 ticks: total=%d withStack=%d, want 1 and 1", total, withStack)
+	}
+
+	// Age the last-log stamp past the interval rather than sleeping for it.
+	m.tickPanicLastLog.Store(time.Now().Add(-2 * tickPanicLogInterval).UnixNano())
+	m.safeMixTick()
+
+	total, withStack := h.counts()
+	if total != 2 {
+		t.Errorf("log lines = %d, want 2 — a summary is due after the interval", total)
+	}
+	if withStack != 1 {
+		t.Errorf("stack-bearing lines = %d, want 1 — the summary must not carry a stack", withStack)
+	}
+	h.mu.Lock()
+	msg := h.lastMessage
+	h.mu.Unlock()
+	if msg != "mixTick panic, skipping tick (repeating)" {
+		t.Errorf("summary message = %q", msg)
+	}
 }
 
 // TestMixer_ReadLoopPanicGoroutinesExit verifies that after a read-panic

@@ -123,6 +123,12 @@ type Mixer struct {
 	hookMu             sync.Mutex
 	onParticipantPanic func(participantID, loop string)
 
+	// tickPanics counts recovered mixTick panics; tickPanicLastLog is the
+	// unix-nanos of the last one logged. Both drive recoverTick's rate limit
+	// and are atomic so it stays lock-free on the mix loop's hot path.
+	tickPanics       atomic.Uint64
+	tickPanicLastLog atomic.Int64
+
 	comfortNoise *comfortnoise.Generator
 }
 
@@ -504,18 +510,51 @@ func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 	}
 }
 
+// tickPanicLogInterval bounds how often a repeating mixTick panic is logged
+// after the first occurrence.
+const tickPanicLogInterval = 5 * time.Second
+
 // recoverTick logs a panic from a single mixTick invocation and lets the
 // mix loop continue to the next tick. Must be deferred at the per-tick call
 // site (mixLoop's ticker case), never around mixLoop itself — recovering the
 // loop would stop the whole room instead of skipping one tick. Frame
 // contents are deliberately not logged.
+//
+// Logging is rate-limited because a deterministically panicking frame recurs
+// every tick: at Ptime cadence that is ~50 multi-KB stack traces a second,
+// forever. The first panic carries the full stack — that is the one worth
+// diagnosing — and subsequent ones collapse into at most one stackless line
+// per tickPanicLogInterval carrying the running total.
 func (m *Mixer) recoverTick() {
-	if r := recover(); r != nil {
+	r := recover()
+	if r == nil {
+		return
+	}
+
+	total := m.tickPanics.Add(1)
+	if total == 1 {
+		m.tickPanicLastLog.Store(time.Now().UnixNano())
 		m.log.Error("mixTick panic, skipping tick",
 			"panic", r,
 			"stack", string(debug.Stack()),
 		)
+		return
 	}
+
+	now := time.Now().UnixNano()
+	last := m.tickPanicLastLog.Load()
+	if now-last < int64(tickPanicLogInterval) {
+		return
+	}
+	// Whichever caller wins the swap logs the summary; the rest stay silent
+	// until the next interval.
+	if !m.tickPanicLastLog.CompareAndSwap(last, now) {
+		return
+	}
+	m.log.Error("mixTick panic, skipping tick (repeating)",
+		"panic", r,
+		"total_panics", total,
+	)
 }
 
 // readLoop continuously reads PCM frames from a participant's Reader
