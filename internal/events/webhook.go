@@ -202,6 +202,11 @@ func (r *WebhookRegistry) deliver(job deliveryJob) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if job.event.EventID != "" {
+			// Constant across all attempts: the id lives on the shared event,
+			// assigned at publish, so a receiver can dedupe retries on it.
+			req.Header.Set("X-Event-Id", job.event.EventID)
+		}
 
 		if job.hook.Secret != "" {
 			mac := hmac.New(sha256.New, []byte(job.hook.Secret))

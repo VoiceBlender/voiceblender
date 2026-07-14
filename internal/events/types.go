@@ -78,7 +78,11 @@ const (
 )
 
 type Event struct {
-	Type       EventType `json:"type"`
+	Type EventType `json:"type"`
+	// EventID is a stable per-event idempotency key assigned once at publish.
+	// It is identical across every subscriber of an event and across every
+	// webhook delivery attempt, so an at-least-once consumer can dedupe on it.
+	EventID    string    `json:"event_id,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
 	InstanceID string    `json:"instance_id,omitempty"`
 	Data       EventData `json:"-"`
@@ -90,6 +94,9 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	envelope := map[string]interface{}{
 		"type":      e.Type,
 		"timestamp": e.Timestamp,
+	}
+	if e.EventID != "" {
+		envelope["event_id"] = e.EventID
 	}
 	if e.InstanceID != "" {
 		envelope["instance_id"] = e.InstanceID
