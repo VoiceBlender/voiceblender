@@ -313,7 +313,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		return
 	}
 
-	newLeg := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Log)
+	newLeg := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Tracer, s.Log)
 	newLeg.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 	s.LegMgr.Add(newLeg)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
