@@ -1145,8 +1145,149 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	s.publishDisconnect(l, "caller_cancel")
 }
 
+// amdLeg is the slice of a leg the AMD driver needs: identity to scope its
+// events, and tap teardown once the analysis finishes.
+type amdLeg interface {
+	ID() string
+	AppID() string
+	ClearAMDTap()
+}
+
+// amdDriver drives an AMD analyzer in push mode. Its Write is installed as the
+// leg's AMD tap, so frames are classified inline on the leg's readLoop — the
+// goroutine that already stops on teardown — and no AMD goroutine ever parks on
+// a read. A single watch goroutine bounds the analysis in wall-clock time.
+//
+// The analyzer's push surface is single-threaded by design, so mu serializes
+// every Feed/FeedBeep/OnDeadline call between the readLoop and watch. mu is
+// held only across those analyzer calls: publishing and clearing the tap reach
+// into other subsystems with their own locks, and are done after it is
+// released.
+type amdDriver struct {
+	s        *Server
+	l        amdLeg
+	analyzer *amd.Analyzer
+
+	mu      sync.Mutex
+	beeping bool // classified as machine; now waiting for the voicemail beep
+	done    bool // terminal state reached; later frames are ignored
+
+	// resultOnce gates the terminal classification event, which the readLoop
+	// and watch race to publish. Exactly one amd.result is emitted per call.
+	resultOnce sync.Once
+}
+
+// Write feeds decoded PCM into the analyzer. It runs on the leg's readLoop, so
+// it never blocks: Feed and FeedBeep drain whole frames and return.
+func (d *amdDriver) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	if d.done {
+		d.mu.Unlock()
+		return len(p), nil
+	}
+
+	if d.beeping {
+		beep, ok := d.analyzer.FeedBeep(p)
+		if !ok {
+			d.mu.Unlock()
+			return len(p), nil
+		}
+		d.done = true
+		d.mu.Unlock()
+
+		if beep.Detected {
+			d.publishBeep(beep)
+		}
+		d.clearTap()
+		return len(p), nil
+	}
+
+	det, ok := d.analyzer.Feed(p)
+	if !ok {
+		d.mu.Unlock()
+		return len(p), nil
+	}
+	// A machine verdict with beep detection enabled keeps the tap installed
+	// through the beep window; every other verdict is terminal.
+	waitBeep := det.Result == amd.ResultMachine && d.analyzer.Params().BeepTimeout > 0
+	d.beeping = waitBeep
+	d.done = !waitBeep
+	d.mu.Unlock()
+
+	d.publishResult(det)
+	if !waitBeep {
+		d.clearTap()
+	}
+	return len(p), nil
+}
+
+// watch bounds the analysis in wall-clock time. It is the only goroutine AMD
+// starts, and it selects purely on a timer and the leg's context — it never
+// touches a reader, so it cannot outlive the leg.
+func (d *amdDriver) watch(ctx context.Context, budget time.Duration) {
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		// The leg is gone. Drop the tap and publish nothing: a verdict for a
+		// torn-down call is noise, and the leg reports its own disconnect.
+		d.mu.Lock()
+		d.done = true
+		d.mu.Unlock()
+		d.clearTap()
+		return
+	}
+
+	d.mu.Lock()
+	if d.done {
+		d.mu.Unlock()
+		return
+	}
+	d.done = true
+	// Mid-beep-window the classification was already published and only the
+	// beep is outstanding, so the budget expiring means no beep arrived.
+	publish := !d.beeping
+	var det amd.Detection
+	if publish {
+		det = d.analyzer.OnDeadline()
+	}
+	d.mu.Unlock()
+
+	if publish {
+		d.publishResult(det)
+	}
+	d.clearTap()
+}
+
+// publishResult emits the terminal classification at most once, whichever of
+// the readLoop or watch reaches it first.
+func (d *amdDriver) publishResult(det amd.Detection) {
+	d.resultOnce.Do(func() {
+		d.s.Bus.Publish(events.AMDResult, &events.AMDResultData{
+			LegScope:           events.LegScope{LegID: d.l.ID(), AppID: d.l.AppID()},
+			Result:             string(det.Result),
+			InitialSilenceMs:   det.InitialSilenceMs,
+			GreetingDurationMs: det.GreetingDurationMs,
+			TotalAnalysisMs:    det.TotalAnalysisMs,
+		})
+	})
+}
+
+func (d *amdDriver) publishBeep(beep amd.BeepResult) {
+	d.s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
+		LegScope: events.LegScope{LegID: d.l.ID(), AppID: d.l.AppID()},
+		BeepMs:   beep.BeepMs,
+	})
+}
+
+// clearTap stops the leg feeding a finished analysis. It takes the leg's own
+// lock, so it is never called while holding d.mu.
+func (d *amdDriver) clearTap() { d.l.ClearAMDTap() }
+
 // prepareAMD creates an AMD analyzer and returns a function that, when called,
-// installs the tap and starts the analyzer goroutine. The returned function is
+// installs the tap and starts the deadline goroutine. The returned function is
 // safe to call multiple times (only the first call has effect).
 func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 	params := amd.MergeMillis(
@@ -1162,38 +1303,18 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 		return nil, fmt.Errorf("invalid AMD params: %w", err)
 	}
 
-	analyzer := amd.New(params)
-	buf := newAMDBuffer(256) // ~5s of 20ms frames
+	d := &amdDriver{s: s, l: l, analyzer: amd.New(params)}
 
 	var once sync.Once
 	start := func() {
 		once.Do(func() {
-			l.SetAMDTap(buf)
-			go func() {
-				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.DefaultSampleRate)
-				detection := analyzer.Run(l.Context(), resampleReader)
-
-				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
-					LegScope:           events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-					Result:             string(detection.Result),
-					InitialSilenceMs:   detection.InitialSilenceMs,
-					GreetingDurationMs: detection.GreetingDurationMs,
-					TotalAnalysisMs:    detection.TotalAnalysisMs,
-				})
-
-				if detection.Result == amd.ResultMachine && analyzer.Params().BeepTimeout > 0 {
-					beep := analyzer.WaitForBeep(l.Context(), resampleReader)
-					if beep.Detected {
-						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
-							LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-							BeepMs:   beep.BeepMs,
-						})
-					}
-				}
-
-				l.ClearAMDTap()
-				buf.Close()
-			}()
+			// The leg decodes at its native rate; the AMD FSM expects 16 kHz.
+			l.SetAMDTap(mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate))
+			// One timer covers both windows. FeedBeep's own timeout advances
+			// only as frames arrive, so an RTP stall during the beep window
+			// would otherwise leave the tap installed with no timer to remove
+			// it — the same leak this driver exists to prevent.
+			go d.watch(l.Context(), params.TotalAnalysisTime+params.BeepTimeout)
 		})
 	}
 	return start, nil
