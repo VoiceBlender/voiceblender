@@ -1,0 +1,28 @@
+name: integration
+
+# Manual-only for now. The loopback SIP/WebRTC/WS integration suite has a
+# pre-existing cross-test flake (VSI/SIP resource accumulation across many
+# sequential engine create/teardown cycles) that makes it unreliable as an
+# automatic gate. Run it on demand from the Actions tab while investigating,
+# and once it is stable, trigger it from ci.yml (or add a pull_request trigger
+# here) and make it a required check.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # TestConcurrentRoomsScale is a load benchmark run separately
+      # (make test-benchmark), not a correctness gate.
+      - name: integration suite
+        run: go test -tags integration -timeout 12m -skip TestConcurrentRoomsScale ./tests/integration/
