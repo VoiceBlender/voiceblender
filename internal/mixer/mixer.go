@@ -538,9 +538,18 @@ func (m *Mixer) mixLoop() {
 		case <-m.stopCh:
 			return
 		case <-ticker.C:
-			m.mixTick()
+			m.safeMixTick()
 		}
 	}
+}
+
+// safeMixTick runs mixTick with a per-tick panic recover. A panic here
+// skips only this tick (recoverTick logs and returns) — mixLoop is not
+// wrapped, so the room's ticker keeps running and the next tick proceeds
+// normally.
+func (m *Mixer) safeMixTick() {
+	defer m.recoverTick()
+	m.mixTick()
 }
 
 // mixTick reads one frame from each participant, computes per-listener
