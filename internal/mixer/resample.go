@@ -43,10 +43,11 @@ const resampleSlack = 128
 // which is audibly worse than no filtering at all. A PCMResampler is not safe
 // for concurrent use.
 //
-// Filtering costs group delay: OutputLatency reports it, and it is real (10 ms
-// per conversion between 8 kHz and 16 kHz at the current quality). Sample
-// counts are unaffected — N ms of input still yields N ms of output; only the
-// phase shifts.
+// Filtering costs group delay: OutputLatency reports it, and it is real (4 ms
+// per conversion between 8 kHz and 16 kHz at resamplerQuality 4). It is a
+// constant offset, not a per-frame cost — the filter's output lags its input
+// once and then tracks it. Sample counts are unaffected — N ms of input still
+// yields N ms of output; only the phase shifts.
 //
 // NewPCMResampler returns nil when the rates match. A nil *PCMResampler is a
 // valid passthrough, so equal-rate paths allocate no filter and callers need no
