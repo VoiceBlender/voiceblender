@@ -24,6 +24,8 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func toLegView(l leg.Leg) LegView {
@@ -931,6 +933,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		SIPHeaders: req.Headers,
 		TrunkID:    trunkIDForLeg,
 	})
+	// Waterfall markers on the leg's root span. One-shot per call on the
+	// originate goroutine — never on a media or mix path.
+	l.RootSpan().AddEvent("ringing", trace.WithAttributes(attribute.String("sip.target", target)))
 
 	go func() {
 		// Derive invite context from the leg's context so that
@@ -970,6 +975,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			}
 		})
 
+		l.RootSpan().AddEvent("connected")
 		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
