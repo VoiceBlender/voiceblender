@@ -1188,6 +1188,8 @@ For legs in a room, recording is stereo at 16kHz:
 
 When `s3_bucket` is provided, a per-request S3 backend is created using the supplied config. Otherwise the server-level S3 backend (from env vars) is used.
 
+Creating a per-request backend probes the bucket (bounded `HeadBucket`, requires `s3:ListBucket`), so a missing bucket or unreachable endpoint returns `400` here instead of failing later at upload; an `http://` `s3_endpoint` also returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`.
+
 **Response:** `200 OK`
 
 ```json
@@ -2053,6 +2055,8 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
 
 When `s3_bucket` is provided, a per-request S3 backend is created. Otherwise the server-level S3 backend (from env vars) is used.
+
+Creating a per-request backend probes the bucket (bounded `HeadBucket`, requires `s3:ListBucket`), so a missing bucket or unreachable endpoint returns `400` here instead of failing later at upload; an `http://` `s3_endpoint` also returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`.
 
 **Response:** `200 OK`
 

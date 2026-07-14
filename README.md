@@ -83,10 +83,11 @@ All configuration is via environment variables:
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
-| `S3_BUCKET` | | S3 bucket for recording uploads |
+| `S3_BUCKET` | | S3 bucket for recording uploads. The bucket is probed with a bounded (10s) `HeadBucket` call when the backend is built — at startup, and again per request when `s3_bucket` is supplied — so a missing bucket or unreachable endpoint fails immediately (startup: exit 1; per request: `400`) instead of after a recording has already been captured. **IAM:** `HeadBucket` requires the `s3:ListBucket` action on the bucket; credentials scoped to `s3:PutObject` alone will now fail this check. |
 | `S3_REGION` | `us-east-1` | AWS region |
 | `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.) |
 | `S3_PREFIX` | | Key prefix for S3 objects |
+| `S3_ALLOW_INSECURE_ENDPOINT` | `false` | Allow a plaintext `http://` `S3_ENDPOINT`. Off by default: an `http://` endpoint is rejected when the backend is built (startup: exit 1; per request: `400`) rather than shipping recording audio in cleartext. Set `true` only when the endpoint is reachable over a trusted network (e.g. a local MinIO). Only an explicit `http://` scheme is rejected — `https://` and scheme-less endpoints such as `minio.internal:9000` cannot be classified and are accepted. This is an operator-level decision and governs both the startup backend and per-request `s3_*` uploads; there is no per-request override. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | | AWS credentials for S3 uploads and AWS Polly TTS. Resolved by the AWS SDK's default credential chain (env vars → `~/.aws/credentials` → EC2/ECS/EKS instance role), not by VoiceBlender directly. `AWS_REGION` is honored only when `S3_REGION` is empty. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Path to a Google Cloud service-account JSON file used by Google Cloud TTS when no per-request `api_key` is supplied. Resolved by Google's Application Default Credentials chain (env var → `~/.config/gcloud/application_default_credentials.json` → GCE/Cloud Run/GKE metadata), not by VoiceBlender directly. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |

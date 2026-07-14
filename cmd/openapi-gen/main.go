@@ -438,6 +438,7 @@ func configVars() *seq {
 		{Name: "S3_REGION", Default: "us-east-1", Description: "AWS region for S3"},
 		{Name: "S3_ENDPOINT", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},
 		{Name: "S3_PREFIX", Default: "", Description: "Key prefix applied to all S3 objects"},
+		{Name: "S3_ALLOW_INSECURE_ENDPOINT", Default: "false", Description: "Allow a plaintext http:// S3_ENDPOINT. Off by default: recording uploads to an http:// endpoint are refused at startup (exit 1) and per request (400) rather than sent in cleartext. Set true only for a trusted network, e.g. a local MinIO."},
 		{Name: "AWS_ACCESS_KEY_ID", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN."},
 		{Name: "AWS_SECRET_ACCESS_KEY", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID."},
 		{Name: "AWS_SESSION_TOKEN", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET."},
