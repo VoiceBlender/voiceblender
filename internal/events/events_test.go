@@ -330,9 +330,15 @@ func TestWebhookRegistry_Delivery(t *testing.T) {
 }
 
 func TestWebhookRegistry_HMAC(t *testing.T) {
-	var sigHeader string
+	// The signature is captured on the httptest server goroutine and asserted
+	// on the test goroutine; hand it over via a channel so the read is
+	// synchronized with the write (buffered + non-blocking send tolerates retries).
+	sigCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sigHeader = r.Header.Get("X-Signature-256")
+		select {
+		case sigCh <- r.Header.Get("X-Signature-256"):
+		default:
+		}
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -344,7 +350,12 @@ func TestWebhookRegistry_HMAC(t *testing.T) {
 
 	bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})
 
-	time.Sleep(500 * time.Millisecond)
+	var sigHeader string
+	select {
+	case sigHeader = <-sigCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for webhook delivery")
+	}
 
 	if sigHeader == "" {
 		t.Fatal("expected X-Signature-256 header")
