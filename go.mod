@@ -31,7 +31,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/quic-go/quic-go v0.53.0
 	github.com/quic-go/webtransport-go v0.9.0
-	github.com/thesyncim/gopus v0.0.0-20260503150644-7eb668a5cc59
+	github.com/thesyncim/gopus v0.1.1
 	github.com/zaf/g711 v1.4.0
 	golang.org/x/sync v0.20.0
 	google.golang.org/api v0.247.0

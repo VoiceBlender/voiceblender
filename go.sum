@@ -274,8 +274,8 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/thesyncim/gopus v0.0.0-20260503150644-7eb668a5cc59 h1:lGawMcSidv5v+bb9vNzVtuI05kfb59E7eIJNgt6Xpxc=
-github.com/thesyncim/gopus v0.0.0-20260503150644-7eb668a5cc59/go.mod h1:1S9YXgyoUhzXcJHIU06SF0cg2HV/z0eCPBxtmyqITBQ=
+github.com/thesyncim/gopus v0.1.1 h1:SM58S7VZGnEZ3ZR0pX5AoC33//LBxJhKkvm15MbBmik=
+github.com/thesyncim/gopus v0.1.1/go.mod h1:orRqwrGs5gqYRRnhqwI0Y3liqQTeDkreUpra+Kv9bQc=
 github.com/twitchtv/twirp v8.1.3+incompatible h1:+F4TdErPgSUbMZMwp13Q/KgDVuI7HJXP61mNV3/7iuU=
 github.com/twitchtv/twirp v8.1.3+incompatible/go.mod h1:RRJoFSAmTEh2weEqWtpPE3vFK5YBhA6bqp2l1kfCC5A=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
