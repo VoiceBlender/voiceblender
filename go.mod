@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
 	github.com/aws/aws-sdk-go-v2/service/polly v1.54.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.96.3
-	github.com/emiago/sipgo v1.3.0
+	github.com/emiago/sipgo v1.4.3
 	github.com/go-audio/audio v1.0.0
 	github.com/go-audio/wav v1.1.0
 	github.com/go-chi/chi/v5 v5.2.5
