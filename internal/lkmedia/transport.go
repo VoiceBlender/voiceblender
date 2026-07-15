@@ -174,14 +174,10 @@ func NewTransport(ctx context.Context, cfg Config, signalCfg SignalConfig, peer 
 	}
 	t.cb.Store(&cb)
 
-	pub, sub, localTrack, err := t.buildPeerConnections(join.IceServers)
-	if err != nil {
+	if err := t.buildPeerConnections(join.IceServers); err != nil {
 		t.cleanup(err, "livekit_pc_setup_failed")
 		return nil, err
 	}
-	t.publisher = pub
-	t.subscriber = sub
-	t.localTrack = localTrack
 	t.localCID = "voiceblender-audio-" + uuid.New().String()
 
 	go t.signalLoop()
@@ -216,14 +212,14 @@ var dialSignal = func(ctx context.Context, cfg SignalConfig) (*SignalClient, err
 // buildPeerConnections wires up the publisher + subscriber pion PCs and
 // the local audio track. The MediaEngine registers Opus at PT 111 (the
 // LiveKit-conventional payload type for audio).
-func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrtc.PeerConnection, *webrtc.PeerConnection, *webrtc.TrackLocalStaticSample, error) {
+func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) error {
 	ice := mergeICEServers(t.peer.ICEServers, serverICE)
 	pcCfg := webrtc.Configuration{ICEServers: ice}
 
 	se := webrtc.SettingEngine{}
 	if t.peer.RTPPortMin > 0 && t.peer.RTPPortMax > 0 {
 		if err := se.SetEphemeralUDPPortRange(uint16(t.peer.RTPPortMin), uint16(t.peer.RTPPortMax)); err != nil {
-			return nil, nil, nil, fmt.Errorf("set port range: %w", err)
+			return fmt.Errorf("set port range: %w", err)
 		}
 	}
 
@@ -239,7 +235,7 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 	// finally kicks the participant with NEGOTIATE_FAILED. The OnTrack
 	// handler still discards anything non-Opus.
 	if err := me.RegisterDefaultCodecs(); err != nil {
-		return nil, nil, nil, fmt.Errorf("register default codecs: %w", err)
+		return fmt.Errorf("register default codecs: %w", err)
 	}
 	// Negotiate the RFC 6464 audio-level extension on the publisher side
 	// so LK's ActiveSpeakerUpdate has data to work from.
@@ -247,7 +243,7 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 		webrtc.RTPHeaderExtensionCapability{URI: sdp.AudioLevelURI},
 		webrtc.RTPCodecTypeAudio,
 	); err != nil {
-		return nil, nil, nil, fmt.Errorf("register audio-level extension: %w", err)
+		return fmt.Errorf("register audio-level extension: %w", err)
 	}
 
 	ir := &interceptor.Registry{}
@@ -261,12 +257,12 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 
 	publisher, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("new publisher PC: %w", err)
+		return fmt.Errorf("new publisher PC: %w", err)
 	}
 	subscriber, err := api.NewPeerConnection(pcCfg)
 	if err != nil {
 		_ = publisher.Close()
-		return nil, nil, nil, fmt.Errorf("new subscriber PC: %w", err)
+		return fmt.Errorf("new subscriber PC: %w", err)
 	}
 
 	localTrack, err := webrtc.NewTrackLocalStaticSample(
@@ -276,15 +272,22 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 	if err != nil {
 		_ = publisher.Close()
 		_ = subscriber.Close()
-		return nil, nil, nil, fmt.Errorf("new local track: %w", err)
+		return fmt.Errorf("new local track: %w", err)
 	}
 	if _, err := publisher.AddTransceiverFromTrack(localTrack, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionSendonly,
 	}); err != nil {
 		_ = publisher.Close()
 		_ = subscriber.Close()
-		return nil, nil, nil, fmt.Errorf("add transceiver: %w", err)
+		return fmt.Errorf("add transceiver: %w", err)
 	}
+
+	// Assign the handles before registering OnNegotiationNeeded below: pion
+	// may fire onPublisherNegotiationNeeded from its own goroutine the moment
+	// the handler is set, and that callback reads t.publisher.
+	t.publisher = publisher
+	t.subscriber = subscriber
+	t.localTrack = localTrack
 
 	publisher.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -315,7 +318,7 @@ func (t *Transport) buildPeerConnections(serverICE []*livekit.ICEServer) (*webrt
 
 	publisher.OnNegotiationNeeded(t.onPublisherNegotiationNeeded)
 
-	return publisher, subscriber, localTrack, nil
+	return nil
 }
 
 // signalLoop consumes typed events from the signaling client and reacts.

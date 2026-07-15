@@ -10,10 +10,30 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/zaf/g711"
 )
+
+// syncBuffer is a goroutine-safe io.Writer used by the cancel-context tests,
+// where a watcher goroutine polls Len() while the player writes frames.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
 
 // buildWAV constructs a minimal WAV file in memory with the given parameters.
 func buildWAV(format uint16, channels uint16, sampleRate uint32, bitsPerSample uint16, audioData []byte) []byte {
@@ -582,7 +602,7 @@ func TestStreamWAV_CancelContext(t *testing.T) {
 	p := NewPlayer(slog.Default())
 
 	// Cancel after writing starts
-	var output bytes.Buffer
+	var output syncBuffer
 	go func() {
 		// Wait a bit then cancel
 		for output.Len() == 0 {
@@ -758,7 +778,7 @@ func TestStreamMP3_CancelContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := NewPlayer(slog.Default())
 
-	var output bytes.Buffer
+	var output syncBuffer
 	go func() {
 		for output.Len() == 0 {
 			// spin until first frame written
@@ -887,7 +907,7 @@ func TestRepeat_InfiniteStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := NewPlayer(slog.Default())
 
-	var output bytes.Buffer
+	var output syncBuffer
 	go func() {
 		// Wait until a few frames have been written, then cancel.
 		for output.Len() < 320*2 {

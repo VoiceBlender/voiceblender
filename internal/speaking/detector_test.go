@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -224,9 +225,11 @@ func TestDetector_StopEmitsSpeakingStopped(t *testing.T) {
 func TestDetector_MuteSuppressesSpeaking(t *testing.T) {
 	var mu sync.Mutex
 	var evts []Event
-	muted := false
+	// muted is read from the detector's tick goroutine and written from this
+	// test goroutine, so it must be accessed atomically.
+	var muted atomic.Bool
 
-	det := New("leg-3", 16000, func() bool { return muted }, func(e Event) {
+	det := New("leg-3", 16000, func() bool { return muted.Load() }, func(e Event) {
 		mu.Lock()
 		evts = append(evts, e)
 		mu.Unlock()
@@ -242,7 +245,7 @@ func TestDetector_MuteSuppressesSpeaking(t *testing.T) {
 	}
 
 	// Mute the leg — should emit speaking stopped
-	muted = true
+	muted.Store(true)
 
 	// Feed more loud frames while muted — should not emit speaking started
 	for i := 0; i < OnFrames+5; i++ {
