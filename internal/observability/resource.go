@@ -3,7 +3,6 @@ package observability
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -23,14 +22,21 @@ func CreateResource(ctx context.Context, cfg Config) (*resource.Resource, error)
 		resource.WithTelemetrySDK(),
 		resource.WithFromEnv(),
 	)
-	if err != nil {
+	// Guard on the resource, not the error. resource.New returns a usable
+	// resource alongside a partial-detection error — an unresolvable process
+	// owner (distroless/scratch, where user.Current() fails) or a malformed
+	// OTEL_RESOURCE_ATTRIBUTES entry both land here with every other
+	// attribute intact. A cosmetic detector failure must not disable the
+	// pipeline the operator explicitly enabled, matching Ratio()'s clamp and
+	// ParseHeaders' skip-malformed.
+	if res == nil {
 		return nil, fmt.Errorf("create resource: %w", err)
 	}
 	return res, nil
 }
 
 func collectAttributes(cfg Config) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 5)
+	attrs := make([]attribute.KeyValue, 0, 4)
 	if cfg.ServiceName != "" {
 		attrs = append(attrs, semconv.ServiceNameKey.String(cfg.ServiceName))
 	}
@@ -43,8 +49,7 @@ func collectAttributes(cfg Config) []attribute.KeyValue {
 	if cfg.InstanceID != "" {
 		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(cfg.InstanceID))
 	}
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		attrs = append(attrs, semconv.HostNameKey.String(hostname))
-	}
+	// host.name is deliberately absent: resource.WithHost() detects it with
+	// the identical key, value and source, at the SDK's own semconv version.
 	return attrs
 }
