@@ -1529,6 +1529,7 @@ var normalDisconnectReasons = map[string]bool{
 	"room_deleted":       true, // room torn down
 	"transfer_completed": true, // referrer released after a successful transfer
 	"shutdown":           true, // process is stopping
+	"challenged":         true, // credentialed re-INVITE follows; the challenge succeeded
 }
 
 // isFailureReason reports whether a disconnect reason represents a leg that
