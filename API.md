@@ -3074,7 +3074,8 @@ logs stay on stdout (`LOG_LEVEL`) — there is no OTel metrics or logs pipeline.
 
 **What you get.** Every SIP leg — inbound and outbound — emits exactly one root
 span named `sip.leg` covering its whole lifecycle. This is what makes the async
-originate flow followable: `POST /v1/legs/sip` returns `201 Created` before the
+originate flow followable: `POST /v1/legs` with `type: "sip"` returns
+`201 Created` before the
 INVITE is even sent, and the real outcome only arrives seconds later as
 `leg.connected` or `leg.disconnected`. The span opens when the leg is created
 and closes when it disconnects, so one trace ties the accept to what actually
@@ -3088,7 +3089,7 @@ happened to the call.
 | `leg.type` | `sip_inbound` or `sip_outbound` |
 | `leg.disconnect_reason` | The same reason string as the `leg.disconnected` event (`remote_bye`, `api_hangup`, `ring_timeout`, …) |
 | Status | `Error` for failure reasons; `Ok` for orderly ones |
-| Events | `ringing` (with `sip.target`), `connected` |
+| Events | `ringing` (with `sip.target`), `connected` — outbound legs originated via `POST /v1/legs` only; inbound and REFER-originated legs carry no span events |
 
 Legs still up when the process shuts down get their span ended with reason
 `shutdown` and flushed before exit.
