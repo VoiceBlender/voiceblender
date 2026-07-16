@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -133,7 +132,9 @@ func TestAMDDriver_PublishesExactlyOneResultUnderConcurrency(t *testing.T) {
 // TestAMDDriver_WatchExitsOnLegTeardown is the regression for the goroutine
 // leak: the analysis goroutine used to park forever on a read once the leg
 // stopped feeding it. The watch goroutine selects only on a timer and the leg
-// context, so teardown mid-analysis must return the count to baseline.
+// context, so teardown mid-analysis must make it return. Its return is observed
+// directly on watchDone rather than inferred from the process-wide goroutine
+// count, which other tests' stragglers can satisfy whether or not watch leaked.
 func TestAMDDriver_WatchExitsOnLegTeardown(t *testing.T) {
 	s := newTestServer(t)
 	rec := recordAMDEvents(t, s)
@@ -147,11 +148,11 @@ func TestAMDDriver_WatchExitsOnLegTeardown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Let any lazily-started server goroutines settle before snapshotting.
-	waitForGoroutines(t, runtime.NumGoroutine())
-	baseline := runtime.NumGoroutine()
-
-	go d.watch(ctx, params.TotalAnalysisTime+params.BeepTimeout)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		d.watch(ctx, params.TotalAnalysisTime+params.BeepTimeout)
+	}()
 
 	// Analysis is genuinely in flight: frames fed, no verdict reached.
 	frame := amdSpeechFrame()
@@ -167,9 +168,10 @@ func TestAMDDriver_WatchExitsOnLegTeardown(t *testing.T) {
 	// The leg tears down mid-analysis.
 	cancel()
 
-	if !waitForGoroutines(t, baseline) {
-		t.Fatalf("goroutine count did not return to baseline %d, still %d — watch leaked",
-			baseline, runtime.NumGoroutine())
+	select {
+	case <-watchDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not return after the leg was torn down — the AMD goroutine leaked")
 	}
 	if l.clearedCount() == 0 {
 		t.Error("expected the AMD tap to be cleared on teardown")
@@ -180,20 +182,6 @@ func TestAMDDriver_WatchExitsOnLegTeardown(t *testing.T) {
 	if got := rec.count(events.AMDBeep); got != 0 {
 		t.Errorf("expected no amd.beep for a torn-down leg, got %d", got)
 	}
-}
-
-// waitForGoroutines polls until the goroutine count drops to at most want,
-// reporting whether it got there.
-func waitForGoroutines(t *testing.T, want int) bool {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= want {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return runtime.NumGoroutine() <= want
 }
 
 // TestAMDDriver_MachineKeepsTapUntilBeepResolves pins the corrected beep
