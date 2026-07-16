@@ -21,9 +21,9 @@ import (
 // playbackReason classifies why a playback or TTS utterance stopped, for the
 // finished events. It is only called on the non-error path, which is reached for
 // a nil error (the audio reached its end) or for context.Canceled. Anything that
-// is not a clean end is reported as "stopped" — an app-initiated stop, a
-// barge-in, and a leg teardown all cancel the same context and cannot be told
-// apart here; consumers use the co-emitted leg.disconnected event for that.
+// is not a clean end is reported as "stopped" — an app-initiated stop and a leg
+// teardown both cancel the same context and cannot be told apart here;
+// consumers use the co-emitted leg.disconnected event for that.
 func playbackReason(err error) string {
 	if err == nil {
 		return "completed"
