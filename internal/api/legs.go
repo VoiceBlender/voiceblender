@@ -74,14 +74,18 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 // webhook. Order matters: the clear must follow publish so the event has
 // a route. ClaimDisconnect gates racing termination paths.
 func (s *Server) publishDisconnect(l leg.Leg, reason string) {
-	// End the leg's root span ahead of the gate, so a path that loses the
-	// ClaimDisconnect race still closes the span (EndRootSpan has its own
-	// once). Only SIP legs carry a span; the assertion misses the rest.
-	if e, ok := l.(leg.RootSpanEnder); ok {
-		e.EndRootSpan(reason)
-	}
 	if !l.ClaimDisconnect() {
 		return
+	}
+	// End the span behind the gate so the reason stamped on it is the CAS
+	// winner's — the span and the leg.disconnected event must carry the same
+	// reason. Ending ahead of the gate let a loser's reason win the span
+	// while the event said otherwise. publishDisconnect is the only
+	// ClaimDisconnect caller, so a path that ever claims a disconnect
+	// without publishing must end the span itself. Only SIP legs carry a
+	// span; the assertion misses the rest.
+	if e, ok := l.(leg.RootSpanEnder); ok {
+		e.EndRootSpan(reason)
 	}
 	s.Bus.Publish(events.LegDisconnected, disconnectData(l, reason))
 	s.Webhooks.ClearLegWebhook(l.ID())
