@@ -1,6 +1,7 @@
 package mixer
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -431,6 +432,32 @@ func TestMixer_ParticipantPanicClosesWriterToWakeOwner(t *testing.T) {
 	waitFor(t, 2*time.Second, "the panicked participant's writer to be closed so its owner wakes", func() bool {
 		return victimWriter.closed.Load()
 	})
+}
+
+// TestMixer_OrdinaryRemovalLeavesWriterOpen is the counterpart to
+// TestMixer_ParticipantPanicClosesWriterToWakeOwner, and the two together are
+// the whole contract: a panic closes the writer, an ordinary removal must not.
+//
+// A removal is not a hangup. The room layer detaches a participant to move it
+// between rooms and expects a live one back, and a leg's writer is frequently
+// the leg's own egress pipe — closing it is precisely what Hangup does. Waking
+// the owner is right when the participant died; doing it when the owner is
+// still using the participant kills a healthy call.
+func TestMixer_OrdinaryRemovalLeavesWriterOpen(t *testing.T) {
+	m := New(testLog(), DefaultSampleRate)
+	m.Start()
+	defer m.Stop()
+
+	w := &closeSpyWriter{}
+	m.AddParticipant("mover", bytes.NewReader(nil), w)
+	m.RemoveParticipant("mover")
+
+	waitFor(t, 2*time.Second, "participant removed", func() bool {
+		return m.ParticipantCount() == 0
+	})
+	if w.closed.Load() {
+		t.Error("an ordinary removal closed the participant's writer; for a ws/MoQ leg that is its egress pipe, so a room-leave or MoveLeg would end the call")
+	}
 }
 
 // TestMixer_StaleLoopPanicDoesNotEvictSuccessor pins teardown to the

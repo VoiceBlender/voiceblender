@@ -452,3 +452,56 @@ func TestManager_Events(t *testing.T) {
 		t.Error("expected room.created event")
 	}
 }
+
+// TestRoom_RemoveLegLeavesWSEgressOpen pins the leg-level consequence of the
+// mixer's teardown, at the sample rate the default configuration actually runs.
+//
+// A WebSocket leg's AudioWriter is its egress pipe, and addLegLocked hands that
+// pipe to the mixer through NewResampleWriter, which is a passthrough when the
+// leg and the room agree on a rate. So any writer.Close() inside mixer teardown
+// arrives at the leg as the same call Hangup makes: the transport's send loop
+// reads EOF and drops the client's socket.
+//
+// Leaving a room is not leaving the call. DetachLeg exists so Manager.MoveLeg
+// can hand a live leg to another room, and RemoveLeg is the DELETE endpoint,
+// after which the leg is still the caller's to use.
+//
+// The rate is the whole point: at a mismatched rate the writer is wrapped in a
+// *resampleWriter, which has no Close and hides the bug. This test runs the
+// matched rate on purpose.
+func TestRoom_RemoveLegLeavesWSEgressOpen(t *testing.T) {
+	const rate = 16000
+
+	for _, tc := range []struct {
+		name   string
+		remove func(r *Room, id string)
+	}{
+		{"RemoveLeg", func(r *Room, id string) { r.RemoveLeg(id) }},
+		{"DetachLeg", func(r *Room, id string) { r.DetachLeg(id) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRoom("r1", "app", rate, slog.Default())
+			r.Mixer().Start()
+			defer r.Mixer().Stop()
+
+			l := leg.NewWebSocketOutboundPendingLeg(rate, false, slog.Default())
+			r.AddLeg(l)
+
+			tc.remove(r, l.ID())
+
+			// A closed pipe fails the write immediately; a live one blocks for
+			// want of a reader, which is what a healthy detached leg does.
+			werr := make(chan error, 1)
+			go func() {
+				_, err := l.AudioWriter().Write(make([]byte, 320))
+				werr <- err
+			}()
+			select {
+			case err := <-werr:
+				t.Fatalf("%s closed the leg's egress pipe (%v); the ws client's send loop takes that as EOF and drops the call", tc.name, err)
+			case <-time.After(200 * time.Millisecond):
+				// Still open: the leg survived the room, as it must.
+			}
+		})
+	}
+}

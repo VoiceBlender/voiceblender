@@ -468,27 +468,45 @@ func (m *Mixer) removeParticipantIf(p *Participant) bool {
 	return true
 }
 
+// closeWriterForPanic closes p's writer if it can be closed, so that an owner
+// parked on the read end observes EOF and runs its own teardown.
+//
+// This belongs to the panic path alone. Muting the guard stops writes but
+// tells the owner nothing, and the mixer is a leaf: it cannot call the API
+// layer. For a participant whose owner is not the room layer — a WebSocket
+// client, an agent, a playback or TTS source — EOF on the writer is the only
+// notification it will ever get that its participant died.
+//
+// An ordinary removal must not come through here. There the participant is
+// alive and its owner keeps using it: Room.DetachLeg hands the leg to
+// Manager.MoveLeg, which adds it to another room. Closing the writer on that
+// path closes a ws/MoQ leg's egress pipe, which is exactly what Hangup does,
+// so the leg would arrive at its new room already dead.
+func (m *Mixer) closeWriterForPanic(p *Participant) {
+	if p.guard == nil {
+		return
+	}
+	if wc, ok := p.guard.w.(io.Closer); ok {
+		_ = wc.Close()
+	}
+}
+
 // teardownParticipant releases p's IO and stops its loops. Reachable only via
 // a map delete that returned ok, which is what makes close(p.done) exactly
 // once.
 //
-// It runs outside m.mu: guard.Close and the Reader's/Writer's Close are
-// foreign code — the reader in particular is arbitrary third-party IO — and
-// the mixer lock is never held across a call out of this package.
+// It does not close p's writer. A removal is not a hangup: the room layer
+// detaches a leg to move it between rooms and expects to hand back a live leg,
+// and a leg's writer is often the leg's own egress pipe, so closing it here
+// would end the call. Only the panic path closes the writer — see
+// closeWriterForPanic.
+//
+// It runs outside m.mu: guard.Close and the Reader's Close are foreign code —
+// the reader in particular is arbitrary third-party IO — and the mixer lock is
+// never held across a call out of this package.
 func (m *Mixer) teardownParticipant(p *Participant) {
 	if p.guard != nil {
 		p.guard.Close() // prevent any further writes to the network
-		// Muting the guard stops writes but tells the owner nothing: an owner
-		// parked on the read end of the writer it handed us would wait for
-		// audio that is never coming again. If that writer is an io.Closer,
-		// close it so the owner observes EOF and runs its own teardown. This
-		// is the only notification a participant whose owner is not the room
-		// layer (a WebSocket client, say) ever gets — the mixer is a leaf and
-		// cannot call them. Owner-initiated removals have already closed it;
-		// every writer reaching here is idempotent on Close.
-		if wc, ok := p.guard.w.(io.Closer); ok {
-			_ = wc.Close()
-		}
 	}
 	// Closing p.done alone does not unblock readLoop when it is parked
 	// inside p.Reader.Read (the select runs only between iterations).
@@ -549,6 +567,7 @@ func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 			"stack", string(debug.Stack()),
 		)
 		if m.removeParticipantIf(p) {
+			m.closeWriterForPanic(p)
 			m.hookMu.Lock()
 			hook := m.onParticipantPanic
 			m.hookMu.Unlock()
