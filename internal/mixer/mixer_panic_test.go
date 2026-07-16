@@ -371,6 +371,84 @@ func TestMixer_ParticipantPanicHookFiresExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestMixer_StaleLoopPanicDoesNotEvictSuccessor pins teardown to the
+// participant *instance* rather than to its ID.
+//
+// AddParticipant overwrites m.participants[id] without stopping the previous
+// instance's loops, and the mixer's unblock trick (closing a Reader that is an
+// io.Closer) misses a rate-mismatched leg entirely — NewResampleReader wraps it
+// in a *resampleReader, which has no Close. So an orphaned readLoop can stay
+// parked in Read long after its replacement is live. When that orphan finally
+// panics, keying removal on the ID would delete the healthy successor and fire
+// the hook for it, escalating into a RemoveLeg + Hangup on a good call.
+//
+// Driving recoverParticipant directly keeps this deterministic — no real
+// panicking reader, no timing.
+func TestMixer_StaleLoopPanicDoesNotEvictSuccessor(t *testing.T) {
+	m := New(testLog(), DefaultSampleRate)
+
+	var fired atomic.Int32
+	m.SetOnParticipantPanic(func(id, loop string) {
+		fired.Add(1)
+	})
+
+	// pOld is the orphaned instance: registered under "victim", then replaced.
+	gwOld := &guardedWriter{w: io.Discard}
+	pOld := &Participant{
+		ID:       "victim",
+		Reader:   &silenceReader{frame: make([]byte, m.frameSizeBytes)},
+		Writer:   gwOld,
+		incoming: make(chan []byte, 3),
+		outgoing: make(chan []byte, 3),
+		inject:   make(chan []byte, 3),
+		done:     make(chan struct{}),
+		guard:    gwOld,
+	}
+	m.mu.Lock()
+	m.participants["victim"] = pOld
+	m.mu.Unlock()
+
+	// The re-add: overwrites "victim" with a live instance, orphaning pOld.
+	m.AddParticipant("victim", &silenceReader{frame: make([]byte, m.frameSizeBytes)}, io.Discard)
+
+	m.mu.Lock()
+	pNew := m.participants["victim"]
+	m.mu.Unlock()
+	if pNew == pOld {
+		t.Fatal("AddParticipant did not replace the registered instance")
+	}
+	defer m.removeParticipantIf(pNew)
+
+	// The orphan's parked Read finally panics.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer m.recoverParticipant(pOld, "readLoop")
+		panic("stale loop")
+	}()
+	<-done
+
+	if got := fired.Load(); got != 0 {
+		t.Errorf("hook fired %d times for a stale loop, want 0 — the owner must not be told to tear down a live call", got)
+	}
+	if got := m.ParticipantCount(); got != 1 {
+		t.Fatalf("participant count = %d, want 1 — the successor must survive", got)
+	}
+
+	m.mu.Lock()
+	cur := m.participants["victim"]
+	m.mu.Unlock()
+	if cur != pNew {
+		t.Fatal("the stale loop's panic evicted the live successor")
+	}
+
+	select {
+	case <-pNew.done:
+		t.Fatal("the successor's done was closed by the stale loop's teardown")
+	default:
+	}
+}
+
 // TestMixer_ParticipantPanicHookNilIsNoop verifies a mixer with no hook
 // registered (the mixer is usable standalone) still recovers and removes.
 func TestMixer_ParticipantPanicHookNilIsNoop(t *testing.T) {

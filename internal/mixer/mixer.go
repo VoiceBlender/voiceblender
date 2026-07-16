@@ -420,16 +420,16 @@ func (m *Mixer) RemoveParticipant(id string) {
 	m.removeParticipant(id)
 }
 
-// removeParticipant detaches a participant and reports whether this call was
-// the one that removed it. The map delete under m.mu is the exactly-once
-// gate: concurrent callers race on the lookup, but only the goroutine that
-// observed ok == true owns teardown, so close(p.done) can never double-close
-// and any caller-side follow-up (see recoverParticipant) fires once even if
-// both IO loops fail for the same participant.
+// removeParticipant detaches whatever participant is registered under id and
+// reports whether this call was the one that removed it. The map delete under
+// m.mu is the exactly-once gate: concurrent callers race on the lookup, but
+// only the goroutine that observed ok == true owns teardown, so close(p.done)
+// can never double-close.
 //
-// Teardown itself runs outside m.mu: guard.Close and the Reader's Close are
-// foreign code — the reader in particular is arbitrary third-party IO — and
-// the mixer lock is never held across a call out of this package.
+// This resolves the ID to an instance, so it removes whichever participant is
+// registered *now* — the right semantics for RemoveParticipant's callers, who
+// mean "whatever is under this ID". A caller that holds a specific instance
+// and must not evict its successor wants removeParticipantIf instead.
 func (m *Mixer) removeParticipant(id string) bool {
 	m.mu.Lock()
 	p, ok := m.participants[id]
@@ -442,6 +442,40 @@ func (m *Mixer) removeParticipant(id string) bool {
 		return false
 	}
 
+	m.teardownParticipant(p)
+	return true
+}
+
+// removeParticipantIf detaches p only if p is still the instance registered
+// under p.ID, and reports whether this call was the one that removed it.
+//
+// AddParticipant overwrites m.participants[id] without stopping the previous
+// instance's loops, so an orphaned loop can outlive its replacement. Keying
+// teardown on the ID alone would let that orphan evict the live successor and
+// escalate — via the panic hook — into hanging up a healthy call. Matching on
+// the pointer makes the delete elect one owner per participant *instance*.
+func (m *Mixer) removeParticipantIf(p *Participant) bool {
+	m.mu.Lock()
+	cur, ok := m.participants[p.ID]
+	if !ok || cur != p {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.participants, p.ID)
+	m.mu.Unlock()
+
+	m.teardownParticipant(p)
+	return true
+}
+
+// teardownParticipant releases p's IO and stops its loops. Reachable only via
+// a map delete that returned ok, which is what makes close(p.done) exactly
+// once.
+//
+// It runs outside m.mu: guard.Close and the Reader's/Writer's Close are
+// foreign code — the reader in particular is arbitrary third-party IO — and
+// the mixer lock is never held across a call out of this package.
+func (m *Mixer) teardownParticipant(p *Participant) {
 	if p.guard != nil {
 		p.guard.Close() // prevent any further writes to the network
 	}
@@ -453,7 +487,6 @@ func (m *Mixer) removeParticipant(id string) bool {
 		_ = rc.Close()
 	}
 	close(p.done) // signal readLoop/writeLoop to stop
-	return true
 }
 
 func (m *Mixer) ParticipantCount() int {
@@ -488,10 +521,15 @@ func (m *Mixer) Stop() {
 // The panicking goroutine is not restarted.
 //
 // Removing the participant from the mixer is only half of teardown: the owner
-// still has the leg registered and would leave a live call connected but deaf
-// and mute. removeParticipant's returned bool is the exactly-once gate — if
-// both IO loops panic for the same participant, only one of them notifies the
-// owner. The hook is read under hookMu but invoked with no lock held.
+// still has the participant registered and would leave a live call connected
+// but deaf and mute. removeParticipantIf's returned bool is the exactly-once
+// gate — if both IO loops panic for the same participant, only one of them
+// notifies the owner. The hook is read under hookMu but invoked with no lock
+// held.
+//
+// The removal is identity-scoped, not ID-scoped: this goroutine's participant
+// may already have been replaced under the same ID, and a dead loop must never
+// tear down its live successor.
 func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 	if r := recover(); r != nil {
 		m.log.Error(loop+" panic",
@@ -499,7 +537,7 @@ func (m *Mixer) recoverParticipant(p *Participant, loop string) {
 			"panic", r,
 			"stack", string(debug.Stack()),
 		)
-		if m.removeParticipant(p.ID) {
+		if m.removeParticipantIf(p) {
 			m.hookMu.Lock()
 			hook := m.onParticipantPanic
 			m.hookMu.Unlock()
