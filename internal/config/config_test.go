@@ -265,6 +265,7 @@ func TestLoad_BooleanFields(t *testing.T) {
 	t.Setenv("TTS_CACHE_ENABLED", "true")
 	t.Setenv("TTS_CACHE_INCLUDE_API_KEY", "true")
 	t.Setenv("SIP_USE_SOURCE_SOCKET", "true")
+	t.Setenv("S3_ALLOW_INSECURE_ENDPOINT", "true")
 
 	cfg := Load()
 
@@ -277,12 +278,16 @@ func TestLoad_BooleanFields(t *testing.T) {
 	if !cfg.SIPUseSourceSocket {
 		t.Error("SIPUseSourceSocket should be true")
 	}
+	if !cfg.S3AllowInsecureEndpoint {
+		t.Error("S3AllowInsecureEndpoint should be true")
+	}
 }
 
 func TestLoad_BooleanFields_False(t *testing.T) {
 	t.Setenv("TTS_CACHE_ENABLED", "false")
 	t.Setenv("TTS_CACHE_INCLUDE_API_KEY", "")
 	t.Setenv("SIP_USE_SOURCE_SOCKET", "")
+	t.Setenv("S3_ALLOW_INSECURE_ENDPOINT", "")
 
 	cfg := Load()
 
@@ -294,6 +299,9 @@ func TestLoad_BooleanFields_False(t *testing.T) {
 	}
 	if cfg.SIPUseSourceSocket {
 		t.Error("SIPUseSourceSocket should be false")
+	}
+	if cfg.S3AllowInsecureEndpoint {
+		t.Error("S3AllowInsecureEndpoint should be false")
 	}
 }
 
