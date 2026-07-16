@@ -452,6 +452,56 @@ func TestMergeMillis(t *testing.T) {
 	}
 }
 
+// TestMergeMillis_RejectsNegativeOverrides composes MergeMillis with Validate
+// the way the API layer does, rather than building Params directly. That
+// composition is the point: a negative override is only observable as an error
+// if MergeMillis carries it through to Validate, so a test that constructs
+// Params itself would pass even while every real caller silently defaulted.
+func TestMergeMillis_RejectsNegativeOverrides(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    [6]int
+		wantErr string
+	}{
+		{"negative initial silence", [6]int{-1, 0, 0, 0, 0, 0}, "initial_silence_timeout must be positive"},
+		{"negative greeting", [6]int{0, -1, 0, 0, 0, 0}, "greeting_duration must be positive"},
+		{"negative after greeting", [6]int{0, 0, -1, 0, 0, 0}, "after_greeting_silence must be positive"},
+		{"negative total", [6]int{0, 0, 0, -1, 0, 0}, "total_analysis_time must be positive"},
+		{"negative min word", [6]int{0, 0, 0, 0, -1, 0}, "minimum_word_length must be positive"},
+		{"negative beep timeout", [6]int{0, 0, 0, 0, 0, -1}, "beep_timeout must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := tt.args
+			p := MergeMillis(DefaultParams(), a[0], a[1], a[2], a[3], a[4], a[5])
+			err := p.Validate()
+			if err == nil {
+				t.Fatalf("negative override silently defaulted, got %+v", p)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestMergeMillis_ZeroKeepsDefault pins the `0 = use the default` contract that
+// the API documents, so the negative-rejection above is never "fixed" by also
+// rejecting zero.
+func TestMergeMillis_ZeroKeepsDefault(t *testing.T) {
+	p := MergeMillis(DefaultParams(), 0, 0, 0, 0, 0, 0)
+	if p != DefaultParams() {
+		t.Errorf("explicit zeros should keep every default, got %+v", p)
+	}
+	if err := p.Validate(); err != nil {
+		t.Errorf("all-default params must validate, got %v", err)
+	}
+	// beep_timeout: 0 means "beep detection disabled", not "invalid".
+	if p.BeepTimeout != 0 {
+		t.Errorf("beep_timeout should stay 0 (disabled), got %v", p.BeepTimeout)
+	}
+}
+
 func TestComputeRMS(t *testing.T) {
 	// Silence
 	silence := make([]int16, samplesPerFrame)

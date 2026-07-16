@@ -18,7 +18,9 @@ func DefaultParams() Params {
 	}
 }
 
-// Validate checks that all parameters are positive and internally consistent.
+// Validate checks that the threshold parameters are positive, that BeepTimeout
+// is non-negative (0 disables beep detection), and that the windows are
+// internally consistent.
 func (p Params) Validate() error {
 	if p.InitialSilenceTimeout <= 0 {
 		return errors.New("initial_silence_timeout must be positive")
@@ -34,6 +36,11 @@ func (p Params) Validate() error {
 	}
 	if p.MinimumWordLength <= 0 {
 		return errors.New("minimum_word_length must be positive")
+	}
+	// BeepTimeout is the one field where 0 is legal: it means beep detection
+	// is disabled (see DefaultParams). So this guard is `< 0`, not `<= 0`.
+	if p.BeepTimeout < 0 {
+		return errors.New("beep_timeout must not be negative")
 	}
 	if p.TotalAnalysisTime < p.InitialSilenceTimeout {
 		return errors.New("total_analysis_time must be >= initial_silence_timeout")
@@ -51,24 +58,30 @@ func (p Params) Validate() error {
 
 // MergeMillis builds Params by starting from defaults, then overriding with
 // any non-zero millisecond values from the per-call API request.
+//
+// Zero means "not supplied", so it keeps the default. Negative values are
+// deliberately carried through rather than ignored: Validate then rejects
+// them, so a caller that sends garbage gets an error instead of a silent
+// default. Do not narrow these gates back to `> 0` — that hides a negative
+// behind the default and makes it indistinguishable from an omitted field.
 func MergeMillis(defaults Params, initialSilenceMs, greetingMs, afterGreetingMs, totalMs, minWordMs, beepTimeoutMs int) Params {
 	p := defaults
-	if initialSilenceMs > 0 {
+	if initialSilenceMs != 0 {
 		p.InitialSilenceTimeout = time.Duration(initialSilenceMs) * time.Millisecond
 	}
-	if greetingMs > 0 {
+	if greetingMs != 0 {
 		p.GreetingDuration = time.Duration(greetingMs) * time.Millisecond
 	}
-	if afterGreetingMs > 0 {
+	if afterGreetingMs != 0 {
 		p.AfterGreetingSilence = time.Duration(afterGreetingMs) * time.Millisecond
 	}
-	if totalMs > 0 {
+	if totalMs != 0 {
 		p.TotalAnalysisTime = time.Duration(totalMs) * time.Millisecond
 	}
-	if minWordMs > 0 {
+	if minWordMs != 0 {
 		p.MinimumWordLength = time.Duration(minWordMs) * time.Millisecond
 	}
-	if beepTimeoutMs > 0 {
+	if beepTimeoutMs != 0 {
 		p.BeepTimeout = time.Duration(beepTimeoutMs) * time.Millisecond
 	}
 	return p

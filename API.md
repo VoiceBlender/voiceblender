@@ -126,7 +126,7 @@ Originate an outbound SIP call.
 
 **Constraints** — params that cannot produce a verdict are rejected with `400` rather than silently analysing to `not_sure`: `total_analysis_time` must be greater than or equal to each of `initial_silence_timeout`, `greeting_duration` and `after_greeting_silence`. A threshold longer than the whole analysis window can never be reached, so such a call would always end `not_sure`.
 
-Omitted values fall back to the defaults above, and so do non-positive ones — a zero or negative value is indistinguishable from an omitted one and is not rejected.
+Omitted or `0` values fall back to the defaults above (for `beep_timeout`, `0` means beep detection is disabled); a negative value on any field is rejected with `400`.
 
 Examples:
 
@@ -2660,7 +2660,7 @@ All AMD parameters are optional. An empty request body `{}` enables AMD with all
 ```
 
 **Errors:**
-- `400` — Invalid AMD params (a `total_analysis_time` below `initial_silence_timeout`, `greeting_duration` or `after_greeting_silence`) or leg is not a SIP leg
+- `400` — Invalid AMD params (a negative value on any field, or a `total_analysis_time` below `initial_silence_timeout`, `greeting_duration` or `after_greeting_silence`) or leg is not a SIP leg
 - `404` — Leg not found
 - `409` — Leg is not in `connected` state (AMD can only start on answered calls)
 
