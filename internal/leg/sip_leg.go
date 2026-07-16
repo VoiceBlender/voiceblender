@@ -69,12 +69,19 @@ type SIPLeg struct {
 	// never called while holding one.
 	//
 	// spanEndOnce is deliberately its own gate rather than disconnectDone:
-	// span-end is not coupled to ClaimDisconnect. Two leg-terminating paths
-	// (process shutdown and panic recovery) hang the leg up without ever
-	// publishing leg.disconnected, so they never reach ClaimDisconnect —
-	// tying the span to it would leave those spans unended, and an unended
-	// span is never exported. Routing them through ClaimDisconnect instead
-	// would emit a leg.disconnected event where none exists today.
+	// span-end is not coupled to ClaimDisconnect. Terminal paths that hang
+	// the leg up without ever publishing leg.disconnected never reach
+	// ClaimDisconnect — tying the span to it would leave those spans
+	// unended, and an unended span is never exported. Routing them through
+	// ClaimDisconnect instead would emit a leg.disconnected event where none
+	// exists today.
+	//
+	// Any terminal path that calls neither Hangup nor publishDisconnect must
+	// therefore end the span itself. Enumerate that set by walking every SIP
+	// leg CONSTRUCTION site, not the Hangup callers: two paths that abandon a
+	// leg without touching Hangup at all (the inbound answer failure and the
+	// AMD param reject) were invisible to a Hangup-based walk and leaked
+	// their spans until a construction-site walk found them.
 	rootSpan     trace.Span
 	spanEndOnce  sync.Once
 	lastDTMFTS   uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)

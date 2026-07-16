@@ -842,6 +842,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		var err error
 		startAMD, err = s.prepareAMD(l, req.AMD)
 		if err != nil {
+			// The constructor already opened the leg's root span, and this
+			// return is before LegMgr.Add — nothing else can ever reach this
+			// leg to close it, so an unended span would never be exported.
+			l.EndRootSpan("bad_amd_params")
 			return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 		}
 	} else {
@@ -1124,6 +1128,11 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	case <-l.AnswerCh():
 		if err := l.Answer(context.Background()); err != nil {
 			s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
+			// This path publishes no disconnect and calls no Hangup, and the
+			// Remove below takes the leg out of reach of the shutdown sweep,
+			// so the span must be closed here or the call that rang and
+			// failed to answer exports no trace at all.
+			l.EndRootSpan("answer_failed")
 			s.LegMgr.Remove(l.ID())
 			s.Webhooks.ClearLegWebhook(l.ID())
 			return

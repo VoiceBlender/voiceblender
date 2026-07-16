@@ -26,10 +26,16 @@ func newTestTracer(t *testing.T) (trace.Tracer, *tracetest.InMemoryExporter) {
 	return tp.Tracer("test"), exp
 }
 
-// TestSIPLegEndRootSpanExactlyOnce is criterion 2's guard. Concurrent
-// terminal paths race to end the same leg's span; exactly one span must be
-// exported. "At least once" is not the property — a double End would be
-// swallowed by the SDK, so only counting exports catches it.
+// TestSIPLegEndRootSpanExactlyOnce is an end-to-end export check: real
+// constructor -> real tracer -> exporter, with concurrent terminal paths
+// racing to end the same leg's span.
+//
+// It CANNOT discriminate spanEndOnce, and must not be read as doing so. The
+// SDK's recordingSpan.End checks isRecording() under its own lock and
+// silently returns on a second call, so the exporter sees exactly one span
+// whether or not our Once is there. The exactly-once guard is
+// TestEndRootSpanCallsEndExactlyOnce{Concurrent,Sequential} below, which
+// assert at the call boundary where it is our property.
 func TestSIPLegEndRootSpanExactlyOnce(t *testing.T) {
 	tracer, exp := newTestTracer(t)
 
@@ -137,6 +143,11 @@ func TestEndRootSpanStatus(t *testing.T) {
 		{"cancelled", false},
 		{"invite_failed", true},
 		{"ring_timeout", true},
+		// Reasons the API's two publish-less terminal paths stamp. Both are
+		// deliberately failures: a leg that rang and could not be answered,
+		// or params rejected outright, did not end normally.
+		{"answer_failed", true},
+		{"bad_amd_params", true},
 		{"rtp_timeout", true},
 		{"session_expired", true},
 		{"panic", true},
