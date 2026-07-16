@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/recording"
 )
 
@@ -119,5 +120,102 @@ func TestMultiChannelStopAll_AllLegsDiscardedFails(t *testing.T) {
 
 	if _, err := mc.stopAll(fakeMixer{}); err == nil {
 		t.Fatal("stopAll reported success though no leg published any audio")
+	}
+}
+
+// TestStopRoomRecordingIfEmpty_PublishesOmittedLegs covers the auto-stop exit.
+// A room recording has two ways to finish — the API stop and this one, taken
+// when the last leg leaves — and only the API stop is reachable from a request,
+// so the merge result reaching the event on this path has no other coverage.
+// Naming the lost leg is the whole point of salvaging the survivors: a listener
+// that is told a partial recording is complete has been misinformed.
+func TestStopRoomRecordingIfEmpty_PublishesOmittedLegs(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s := newTestServer(t)
+
+	const roomID = "auto-stop-room"
+	if _, err := s.RoomMgr.Create(roomID, "test-app", 8000); err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	// The room is empty, which is the precondition this exit tests for; a leg
+	// still present would make it return before publishing anything.
+
+	// The room mix recorder: cleanupRoomRecording reports no recording at all
+	// without one, and the auto-stop returns silently.
+	mix := recording.NewRecorder(slog.Default())
+	if _, err := mix.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+		t.Fatalf("start room mix recorder: %v", err)
+	}
+	roomRecorders.Lock()
+	roomRecorders.m[roomID] = mix
+	roomRecorders.Unlock()
+	t.Cleanup(func() {
+		roomRecorders.Lock()
+		delete(roomRecorders.m, roomID)
+		roomRecorders.Unlock()
+	})
+
+	good := recording.NewRecorder(slog.Default())
+	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+		t.Fatalf("start good leg: %v", err)
+	}
+	good.Wait()
+	if !good.Published() {
+		t.Fatal("precondition: the good leg did not publish, so this test proves nothing")
+	}
+
+	bad := recording.NewRecorder(slog.Default())
+	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000); err != nil {
+		t.Fatalf("start bad leg: %v", err)
+	}
+	bad.Wait()
+	if bad.Published() {
+		t.Fatal("precondition: the bad leg published, so this test proves nothing")
+	}
+
+	mc := &multiChannelState{
+		active:           true,
+		startTime:        time.Now().Add(-time.Second),
+		sampleRate:       8000,
+		dir:              dir,
+		recorders:        map[string]*recording.Recorder{"good": good, "bad": bad},
+		pipes:            map[string]*pipeWriter{},
+		files:            map[string]string{},
+		joinOffsets:      map[string]time.Duration{},
+		leaveOffsets:     map[string]time.Duration{},
+		participantOrder: []string{"good", "bad"},
+		log:              slog.Default(),
+	}
+	roomMultiChannel.Lock()
+	roomMultiChannel.m[roomID] = mc
+	roomMultiChannel.Unlock()
+	t.Cleanup(func() {
+		roomMultiChannel.Lock()
+		delete(roomMultiChannel.m, roomID)
+		roomMultiChannel.Unlock()
+	})
+
+	var got *events.RecordingFinishedData
+	unsub := s.Bus.Subscribe(func(e events.Event) {
+		if e.Type != events.RecordingFinished {
+			return
+		}
+		if d, ok := e.Data.(*events.RecordingFinishedData); ok {
+			got = d
+		}
+	})
+	defer unsub()
+
+	s.stopRoomRecordingIfEmpty(roomID)
+
+	if got == nil {
+		t.Fatal("the auto-stop published no recording.finished, so this test proves nothing")
+	}
+	if _, ok := got.Channels["good"]; !ok {
+		t.Errorf("the healthy leg is missing from the event; channels = %v", got.Channels)
+	}
+	if names := got.OmittedLegs; len(names) != 1 || names[0] != "bad" {
+		t.Errorf("OmittedLegs = %v, want [bad] — the auto-stop reported a partial recording as complete", names)
 	}
 }

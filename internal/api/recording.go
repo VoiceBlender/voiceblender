@@ -855,6 +855,7 @@ func (s *Server) stopRoomRecordingIfEmpty(roomID string) {
 	if mcResult != nil {
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	s.Log.Info("auto-stopped room recording (empty room)", "room_id", roomID, "file", location)
