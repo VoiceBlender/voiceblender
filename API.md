@@ -3083,7 +3083,7 @@ happened to the call.
 | Span field | Value |
 |---|---|
 | Name | `sip.leg` |
-| Kind | `server` |
+| Kind | `server` for `sip_inbound`, `client` for `sip_outbound` |
 | `leg.id` | The leg ID returned by the API |
 | `leg.type` | `sip_inbound` or `sip_outbound` |
 | `leg.disconnect_reason` | The same reason string as the `leg.disconnected` event (`remote_bye`, `api_hangup`, `ring_timeout`, …) |
