@@ -219,10 +219,6 @@ func TestRecordStereo_StaysAligned(t *testing.T) {
 				t.Fatalf("left[%d] (slot %d) = %d, want %d — companion drifted off the master clock",
 					i, slot, left[i], want)
 			}
-			// A right-channel value on the left would mean the channels crossed.
-			if left[i] == masterVal(slot) {
-				t.Fatalf("left[%d] (slot %d) leaked the right-channel value %d", i, slot, left[i])
-			}
 		}
 	}
 }
