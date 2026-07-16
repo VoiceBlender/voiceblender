@@ -785,6 +785,11 @@ func applyVolume(samples []int16, volume int) {
 //
 // A function-local is exactly the "history across frames, fresh per stream"
 // lifetime this needs, with no ownership question and no concurrency exposure.
+//
+// "Stream" is narrower than "playback": a repeat playback calls the stream
+// function once per iteration and so builds one filter per iteration, by
+// design. Each iteration reseeks to the start of the file, so carrying history
+// across the loop boundary would smear the file's tail into its head.
 func newStreamResampler(srcRate, dstRate uint32) *mixer.PCMResampler {
 	return mixer.NewPCMResampler(int(srcRate), int(dstRate))
 }

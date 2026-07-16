@@ -259,8 +259,8 @@ func TestStreamResampler_Passthrough(t *testing.T) {
 
 // TestStreamResampler_8kTo16k pins what the player's resampler owes its
 // callers: the 1:1 duration mapping, and a passband that survives the trip.
-// The old assert here checked linear interpolation's exact output samples,
-// which the anti-aliasing filter is meant to change.
+// It deliberately does not pin exact output samples — those are the filter's
+// to choose, and an anti-aliasing filter is meant to change them.
 func TestStreamResampler_8kTo16k(t *testing.T) {
 	const (
 		srcRate, dstRate = 8000, 16000
@@ -315,9 +315,8 @@ func TestStreamWAV_PCM_Mono_SameRate(t *testing.T) {
 
 func TestStreamWAV_Ulaw_Stereo_8kTo16k(t *testing.T) {
 	// A stereo mu-law WAV at 8 kHz carrying a 440 Hz tone, played out at 16 kHz.
-	// The old assert compared every sample against resampleLinear's output; the
-	// anti-aliasing filter deliberately produces different samples, so this
-	// asserts what actually matters — the tone arrives, at the right level.
+	// This asserts what matters — the tone arrives, at the right level — not the
+	// individual output samples, which are the anti-aliasing filter's to choose.
 	const (
 		numFrames   = 160 // one 20 ms frame at 8 kHz
 		toneHz, amp = 440.0, 0.8
@@ -528,14 +527,14 @@ func (rw *roundTripWriter) Write(p []byte) (int, error) {
 // a 16 kHz room and back down again returns the same audio: same pitch, same
 // level, no corruption.
 //
-// The old assert demanded a bit-exact round trip. That only ever held because
-// linear interpolation copied the original samples through untouched at even
-// indices, so dropping the odd ones recovered them exactly — and it demanded it
-// of a test-side "downsample" that drops every other sample, the same
-// unfiltered decimation this item removed from production. An anti-aliasing
-// filter reconstructs the waveform instead of copying samples through, and
-// costs group delay on each conversion, so bit-identity is the wrong question
-// now. What must still hold is that the tone survives the trip.
+// It does not demand a bit-exact round trip. Bit-identity only ever held under
+// linear interpolation, which copied the original samples through untouched at
+// even indices so that dropping the odd ones recovered them exactly — and it
+// held only against a test-side "downsample" that drops every other sample, the
+// same unfiltered decimation the anti-aliasing filter replaces. That filter
+// reconstructs the waveform instead of copying samples through, and costs group
+// delay on each conversion, so bit-identity is the wrong question. What must
+// hold is that the tone survives the trip.
 func TestStreamWAV_Ulaw_RoundTrip_8k_16k_8k(t *testing.T) {
 	const (
 		numSamples  = 800 // 100 ms at 8 kHz
