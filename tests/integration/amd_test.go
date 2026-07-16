@@ -213,10 +213,14 @@ func TestAMD_Disabled(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
 }
 
-// TestAMD_TeardownMidAnalysis hangs a call up while AMD is still analysing.
-// The analysis must stop with the leg and emit nothing: no verdict is
-// meaningful for a torn-down call. This is the integration-level regression for
-// the AMD goroutine leak, where analysis outlived the leg entirely.
+// TestAMD_TeardownMidAnalysis hangs a call up while AMD is still analysing and
+// pins the no-publish-on-teardown contract: a verdict for a torn-down call is
+// noise, and the leg already reports its own disconnect. It reddens if the
+// deadline goroutine's teardown path ever starts publishing.
+//
+// It is not the leak regression — a leaked analysis publishes nothing either,
+// so these assertions hold with or without the leak. The leak proof is
+// TestAMDDriver_WatchExitsOnLegTeardown, which observes the goroutine's return.
 func TestAMD_TeardownMidAnalysis(t *testing.T) {
 	instA := newTestInstance(t, "amd-teardown-a")
 	instB := newTestInstance(t, "amd-teardown-b")
