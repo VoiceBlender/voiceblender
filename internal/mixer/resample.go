@@ -14,15 +14,20 @@ import (
 // constant is a latency budget as much as a quality knob: the room bridge wraps
 // both directions and pays the delay twice on a rate-crossing call.
 //
-// 4 is the knee of BenchmarkPCMResampler. The alias this item exists to remove
-// is already below the int16 quantization floor from quality 2 up, so stopband
-// attenuation does not choose the value; passband flatness at the top of the
-// telephony band does. 4 is the lowest quality that holds 3.4 kHz flat
-// (measured 0.898 of input at 16k<->8k, versus 0.798 at quality 3 and 0.667 at
-// quality 2) while costing 4 ms of group delay. Higher qualities only extend
-// the response past 3.4 kHz — above the band a G.711 leg carries at all — and
-// charge for it: quality 8 measures the same passband and the same alias for
-// 10 ms of delay and 3x the CPU.
+// The alias the filter removes is already below the int16 quantization floor
+// from quality 2 up, so stopband attenuation does not choose the value;
+// passband flatness at the top of the telephony band does.
+//
+// The floor comes from the passband measurement TestResample_Passband pins: 4
+// is the lowest quality that holds 3.4 kHz flat at 16k<->8k, measuring 0.898
+// full scale of a 0.9-amplitude input (0.998 of input), versus 0.798 (0.886 of
+// input, ~1 dB of droop) at quality 3 and 0.667 (0.741) at quality 2. That
+// costs 4 ms of group delay, which TestResample_GroupDelay brackets.
+//
+// The ceiling comes from BenchmarkPCMResampler, which measures delay and alias
+// only: quality 8 buys identical alias and identical passband for 10 ms of
+// delay and ~3x the CPU, because higher qualities only extend the response past
+// 3.4 kHz — above the band a G.711 leg carries at all. So do not go above 4.
 const resamplerQuality = 4
 
 // resampleSlack is the headroom added to the filter's output buffer, in
