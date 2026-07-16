@@ -141,6 +141,10 @@ func TestEndRootSpanStatus(t *testing.T) {
 		{"transfer_completed", false},
 		{"shutdown", false},
 		{"cancelled", false},
+		// A digest challenge is the successful outcome of the challenge
+		// endpoint — the credentialed re-INVITE arrives as a fresh leg. In an
+		// auth-gated deployment every inbound call passes through it.
+		{"challenged", false},
 		{"invite_failed", true},
 		{"ring_timeout", true},
 		// Reasons the API's two publish-less terminal paths stamp. Both are
