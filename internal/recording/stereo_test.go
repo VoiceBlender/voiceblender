@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 )
 
 const (
@@ -392,6 +393,64 @@ func TestRecordStereo_ClosedCompanionKeepsRecording(t *testing.T) {
 		if left[i] != want {
 			t.Fatalf("left[%d] = %d, want %d — a closed companion must silence-fill", i, left[i], want)
 		}
+	}
+}
+
+// endlessMaster is a paced master that never EOFs. The stereo loop checks
+// ctx.Done() only between slots and then blocks in ReadFull, so a master that
+// blocks forever would hang Wait() even on correct code; this one keeps
+// producing so the loop can always reach the cancel check.
+type endlessMaster struct {
+	frame []byte
+	buf   []byte
+}
+
+func (m *endlessMaster) Read(p []byte) (int, error) {
+	if len(m.buf) == 0 {
+		// Pace the stream so the recording does not spin the CPU flat out.
+		time.Sleep(time.Millisecond)
+		m.buf = m.frame
+	}
+	n := copy(p, m.buf)
+	m.buf = m.buf[n:]
+	return n, nil
+}
+
+// TestRecordStereo_ContextCancel_StopsRecording proves the stereo recording
+// goroutine unwinds on teardown. Both production call sites terminate on master
+// EOF, so without this nothing pins that a cancelled recording of a still-live
+// master ever exits.
+func TestRecordStereo_ContextCancel_StopsRecording(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(slog.Default())
+	leftPR, _ := newSyncPipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := r.StartStereo(ctx, leftPR, &endlessMaster{frame: pcmFrame(0x2222, stereoSlotBytes)}, dir, stereoRate); err != nil {
+		t.Fatalf("StartStereo: %v", err)
+	}
+
+	// Let it clock a few slots so cancel lands mid-recording.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	// The master never EOFs, so only the cancel check can end the loop. Guard
+	// with a timeout: a leaked goroutine must fail this test, not hang the suite.
+	done := make(chan struct{})
+	go func() {
+		r.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait() did not return after context cancel — the stereo recording goroutine leaked")
+	}
+
+	if r.IsRecording() {
+		t.Error("IsRecording() = true after context cancel, want false")
 	}
 }
 
