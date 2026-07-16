@@ -221,6 +221,7 @@ var DisconnectReasonEnum = []string{
 	"busy", "unavailable", "not_found", "forbidden", "unauthorized", "timeout",
 	"cancelled", "not_acceptable", "service_unavailable", "declined",
 	"rtp_timeout", "session_expired", "invite_failed", "connect_failed", "ice_failure",
+	"mixer_panic",
 }
 
 // QualityDescription is the description for the quality object in leg.disconnected.

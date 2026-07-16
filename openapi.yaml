@@ -4124,6 +4124,7 @@ x-webhooks:
                                                     - invite_failed
                                                     - connect_failed
                                                     - ice_failure
+                                                    - mixer_panic
                                             duration_total:
                                                 type: number
                                                 description: Seconds from leg creation to disconnect
