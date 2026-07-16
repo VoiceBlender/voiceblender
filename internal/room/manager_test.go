@@ -3,6 +3,7 @@ package room
 import (
 	"errors"
 	"io"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -85,6 +86,39 @@ func TestManager_MixerParticipantPanicTearsDownLeg(t *testing.T) {
 			}
 		}
 		return false
+	})
+}
+
+// TestManager_PanickedLegTeardownGoroutineExits asserts the hook's teardown
+// goroutine actually returns. It is the only goroutine the panic path spawns,
+// and nothing else in this package observes its exit: mockLeg.Hangup records
+// hungUp on entry, so waiting on that proves the goroutine started, not that
+// it finished.
+func TestManager_PanickedLegTeardownGoroutineExits(t *testing.T) {
+	legMgr := leg.NewManager()
+	mgr := NewManager(legMgr, newTestBus(), newTestLog())
+	if _, err := mgr.Create("r1", "", 0); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Let the room settle before sampling, so the baseline does not include
+	// goroutines that are still winding up.
+	time.Sleep(50 * time.Millisecond)
+	before := runtime.NumGoroutine()
+
+	l := addPanickingLeg(t, mgr, legMgr, "r1", "leg-1")
+
+	r, _ := mgr.Get("r1")
+	waitFor(t, 2*time.Second, "panicked leg removed from the room", func() bool {
+		return r.ParticipantCount() == 0
+	})
+	waitFor(t, 2*time.Second, "panicked leg hung up", func() bool {
+		return l.hungUp.Load()
+	})
+	// Generous, because the room's mixLoop is also winding down via
+	// syncMixerLocked; a bare assertion here would be flaky.
+	waitFor(t, 2*time.Second, "teardown goroutine to exit", func() bool {
+		return runtime.NumGoroutine() <= before
 	})
 }
 
