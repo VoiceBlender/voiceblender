@@ -420,8 +420,15 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	if err != nil {
 		return fmt.Errorf("mp3 decode: %w", err)
 	}
+	return p.streamMP3PCM(ctx, dec, uint32(dec.SampleRate()), dec.Length(), writer, targetRate)
+}
 
-	srcRate := uint32(dec.SampleRate())
+// streamMP3PCM writes decoded MP3 frames — interleaved stereo 16-bit LE at
+// srcRate — out as mono PCM at targetRate. It is split from streamMP3 so the
+// frame loop can be driven without an encoder: every MP3 fixture in the tree
+// decodes to silence, and silence cannot tell a per-frame filter from a
+// persistent one, which is the one thing this loop's resampler must get right.
+func (p *Player) streamMP3PCM(ctx context.Context, dec io.Reader, srcRate uint32, totalBytes int64, writer io.Writer, targetRate uint32) error {
 	const srcChannels = 2 // go-mp3 always outputs stereo
 
 	// Source bytes per ptime frame: stereo 16-bit samples.
@@ -432,7 +439,6 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	outSamplesPerFrame := int(targetRate) * mixer.Ptime / 1000
 	outFrameSize := outSamplesPerFrame * 2
 
-	totalBytes := dec.Length()
 	totalFrames := int(totalBytes) / srcReadSize
 
 	p.log.Info("MP3 playback starting",

@@ -143,6 +143,36 @@ func TestStreamWAV_NoSeamDiscontinuity(t *testing.T) {
 	assertFramesContinuous(t, decodePCM16(out.Bytes()), dstRate*20/1000, seamTone, dstRate, seamAmp)
 }
 
+// TestStreamMP3_NoSeamDiscontinuity is the same guard on the MP3 loop, the
+// third streaming site that owns a resampler and the one that had no proof.
+//
+// It drives streamMP3PCM rather than streamMP3 because there is no MP3 encoder
+// on this box or in the module graph, and makeTestMP3 decodes to pure silence —
+// which cannot distinguish a per-frame filter from a persistent one. The seam
+// takes already-decoded frames, so the tone reaches the loop that matters.
+// 44.1 kHz into an 8 kHz G.711 leg is the real prompt case.
+func TestStreamMP3_NoSeamDiscontinuity(t *testing.T) {
+	const (
+		srcRate, dstRate = 44100, 8000
+		frames           = 12
+	)
+	// go-mp3 always decodes to interleaved stereo. pcmToMono averages the two
+	// channels, so an identical tone in L and R round-trips unchanged.
+	mono := toneSamples(srcRate*frames*20/1000, 0, seamTone, srcRate, seamAmp)
+	stereo := make([]byte, len(mono)*4)
+	for i, s := range mono {
+		binary.LittleEndian.PutUint16(stereo[i*4:], uint16(s))
+		binary.LittleEndian.PutUint16(stereo[i*4+2:], uint16(s))
+	}
+
+	p := NewPlayer(slog.Default())
+	var out bytes.Buffer
+	if err := p.streamMP3PCM(context.Background(), bytes.NewReader(stereo), srcRate, int64(len(stereo)), &out, dstRate); err != nil {
+		t.Fatalf("streamMP3PCM: %v", err)
+	}
+	assertFramesContinuous(t, decodePCM16(out.Bytes()), dstRate*20/1000, seamTone, dstRate, seamAmp)
+}
+
 // TestStreamRawPCM_ResamplerIsPerStream is the other half of the ownership
 // contract, and it fails in the opposite direction from the seam guards.
 //
