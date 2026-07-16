@@ -52,6 +52,9 @@ func (l *amdFakeLeg) clearedCount() int {
 type amdRecorder struct {
 	mu     sync.Mutex
 	counts map[events.EventType]int
+	// results keeps the published payloads, so a test can assert the verdict
+	// itself and not merely that some event was emitted.
+	results []*events.AMDResultData
 }
 
 func recordAMDEvents(t *testing.T, s *Server) *amdRecorder {
@@ -63,6 +66,9 @@ func recordAMDEvents(t *testing.T, s *Server) *amdRecorder {
 		}
 		r.mu.Lock()
 		r.counts[e.Type]++
+		if data, ok := e.Data.(*events.AMDResultData); ok {
+			r.results = append(r.results, data)
+		}
 		r.mu.Unlock()
 	})
 	t.Cleanup(unsub)
@@ -73,6 +79,12 @@ func (r *amdRecorder) count(typ events.EventType) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.counts[typ]
+}
+
+func (r *amdRecorder) resultData() []*events.AMDResultData {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*events.AMDResultData(nil), r.results...)
 }
 
 // amdSilentFrame returns 20 ms of 16 kHz silence.
@@ -409,6 +421,19 @@ func TestAMDDriver_DeadlinePublishesAccumulatedVerdict(t *testing.T) {
 
 	if got := rec.count(events.AMDResult); got != 1 {
 		t.Fatalf("expected the deadline to publish exactly 1 amd.result, got %d", got)
+	}
+	// The verdict must carry the state Feed accumulated, not an empty struct:
+	// 10 silent frames leave the FSM waiting for speech with no greeting, which
+	// OnDeadline reports as no_speech after 200 ms of initial silence.
+	got := rec.resultData()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 recorded amd.result payload, got %d", len(got))
+	}
+	if got[0].Result != string(amd.ResultNoSpeech) {
+		t.Errorf("expected result %q, got %q", amd.ResultNoSpeech, got[0].Result)
+	}
+	if got[0].InitialSilenceMs != 200 {
+		t.Errorf("expected initial_silence_ms 200, got %d", got[0].InitialSilenceMs)
 	}
 	if l.clearedCount() == 0 {
 		t.Error("expected the tap to be cleared once the deadline fires")
