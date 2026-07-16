@@ -1473,8 +1473,15 @@ func startRootSpan(ctx context.Context, tracer trace.Tracer, legType LegType, le
 	if tracer == nil {
 		tracer = noop.NewTracerProvider().Tracer(tracerName)
 	}
+	// An outbound leg is a call this process initiates; SERVER would make it
+	// look like an inbound entrypoint in the backend's service map and RED
+	// metrics, both of which are computed off SpanKind.
+	kind := trace.SpanKindServer
+	if legType == TypeSIPOutbound {
+		kind = trace.SpanKindClient
+	}
 	_, span := tracer.Start(ctx, "sip.leg",
-		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithSpanKind(kind),
 		trace.WithAttributes(
 			attribute.String("leg.id", legID),
 			attribute.String("leg.type", string(legType)),

@@ -9,6 +9,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -62,6 +63,11 @@ func TestNewSIPInboundLegStartsRootSpan(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("exported %d spans for an inbound leg, want exactly 1", len(spans))
 	}
+	// An inbound leg IS a request this process handles, so SERVER is honest
+	// and the backend's service map shows it as an entrypoint.
+	if spans[0].SpanKind != trace.SpanKindServer {
+		t.Errorf("SpanKind = %v, want server for an inbound leg", spans[0].SpanKind)
+	}
 	attrs := spanAttrs(t, exp)
 	if got := attrs["leg.type"]; got != string(TypeSIPInbound) {
 		t.Errorf("leg.type = %q, want %q", got, TypeSIPInbound)
@@ -91,6 +97,12 @@ func TestNewSIPOutboundPendingLegStartsRootSpan(t *testing.T) {
 	spans := exp.GetSpans()
 	if len(spans) != 1 {
 		t.Fatalf("exported %d spans, want exactly 1", len(spans))
+	}
+	// An outbound leg is a call this process initiates. SERVER would make
+	// every outbound call render as an inbound entrypoint in service maps
+	// and RED metrics, which backends compute off SpanKind.
+	if spans[0].SpanKind != trace.SpanKindClient {
+		t.Errorf("SpanKind = %v, want client for an outbound leg", spans[0].SpanKind)
 	}
 	if got := spanAttrs(t, exp)["leg.type"]; got != string(TypeSIPOutbound) {
 		t.Errorf("leg.type = %q, want %q", got, TypeSIPOutbound)
