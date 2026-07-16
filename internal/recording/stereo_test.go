@@ -51,9 +51,10 @@ func (m *scriptedMaster) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// pcmFrame builds one slot of little-endian PCM whose every sample is v.
-func pcmFrame(v int16) []byte {
-	b := make([]byte, stereoSlotBytes)
+// pcmFrame builds one slotBytes-long slot of little-endian PCM whose every
+// sample is v.
+func pcmFrame(v int16, slotBytes int) []byte {
+	b := make([]byte, slotBytes)
 	for i := 0; i+1 < len(b); i += 2 {
 		binary.LittleEndian.PutUint16(b[i:], uint16(v))
 	}
@@ -78,9 +79,10 @@ func readStereoWAV(t *testing.T, path string) (left, right []int16) {
 	return left, right
 }
 
-// runStereo records a scripted master alongside a companion pipe and returns
-// the resulting channels. Hooks are invoked per master frame.
-func runStereo(t *testing.T, frames [][]byte, hook func(k int, leftPW *syncPipeWriter, r *Recorder)) (left, right []int16) {
+// runStereo records a scripted master alongside a companion pipe at the given
+// sample rate and returns the resulting channels. Hooks are invoked per master
+// frame.
+func runStereo(t *testing.T, rate int, frames [][]byte, hook func(k int, leftPW *syncPipeWriter, r *Recorder)) (left, right []int16) {
 	t.Helper()
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
@@ -93,7 +95,7 @@ func runStereo(t *testing.T, frames [][]byte, hook func(k int, leftPW *syncPipeW
 	}
 	master := &scriptedMaster{frames: frames, hooks: hooks}
 
-	fpath, err := r.StartStereo(context.Background(), leftPR, master, dir, stereoRate)
+	fpath, err := r.StartStereo(context.Background(), leftPR, master, dir, uint32(rate))
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -109,12 +111,12 @@ func runStereo(t *testing.T, frames [][]byte, hook func(k int, leftPW *syncPipeW
 	return readStereoWAV(t, fpath)
 }
 
-// masterRamp builds n distinct, strictly positive master frames so that a
-// dropped or duplicated master frame is detectable by value.
-func masterRamp(n int) [][]byte {
+// masterRamp builds n distinct, strictly positive master frames of slotBytes
+// each, so that a dropped or duplicated master frame is detectable by value.
+func masterRamp(n, slotBytes int) [][]byte {
 	frames := make([][]byte, n)
 	for k := range frames {
-		frames[k] = pcmFrame(masterVal(k))
+		frames[k] = pcmFrame(masterVal(k), slotBytes)
 	}
 	return frames
 }
@@ -135,13 +137,13 @@ func TestRecordStereo_SilenceFillOnCompanionStall(t *testing.T) {
 
 	frames := make([][]byte, nSlots)
 	for k := range frames {
-		frames[k] = pcmFrame(masterSample)
+		frames[k] = pcmFrame(masterSample, stereoSlotBytes)
 	}
 
-	left, right := runStereo(t, frames, func(k int, leftPW *syncPipeWriter, _ *Recorder) {
+	left, right := runStereo(t, stereoRate, frames, func(k int, leftPW *syncPipeWriter, _ *Recorder) {
 		// The companion delivers a few frames and then goes quiet for good.
 		if k < companionSlots {
-			leftPW.Write(pcmFrame(compSample))
+			leftPW.Write(pcmFrame(compSample, stereoSlotBytes))
 		}
 	})
 
@@ -184,12 +186,12 @@ func TestRecordStereo_StaysAligned(t *testing.T) {
 		burst  = 8 // ahead of the master, but within the accumulator bound
 	)
 
-	left, right := runStereo(t, masterRamp(nSlots), func(k int, leftPW *syncPipeWriter, _ *Recorder) {
+	left, right := runStereo(t, stereoRate, masterRamp(nSlots, stereoSlotBytes), func(k int, leftPW *syncPipeWriter, _ *Recorder) {
 		// The companion dumps its whole burst before the first master slot,
 		// then never speaks again.
 		if k == 0 {
 			for c := 0; c < burst; c++ {
-				leftPW.Write(pcmFrame(companionVal(c)))
+				leftPW.Write(pcmFrame(companionVal(c), stereoSlotBytes))
 			}
 		}
 	})
@@ -228,60 +230,72 @@ func TestRecordStereo_StaysAligned(t *testing.T) {
 // TestRecordStereo_DropOldestBound proves the companion accumulator is bounded:
 // a companion that floods far past the bound loses its oldest audio, and the
 // master stream is untouched by the flood.
+//
+// It runs at every rate the mixer admits (mixer.go's 8000/16000/48000), which
+// is what pins the slot size to the sample rate. companionMaxSlots is a slot
+// COUNT — the one quantity in the design that does not scale with slotBytes —
+// so a slot size that stops tracking the rate shifts which companion frames
+// survive the flood, and the retained audio no longer starts at firstKept.
 func TestRecordStereo_DropOldestBound(t *testing.T) {
-	const (
-		nSlots = 24
-		flood  = 40 // far beyond companionMaxSlots
-	)
+	for _, rate := range []int{8000, 16000, 48000} {
+		t.Run(rateName(rate), func(t *testing.T) {
+			const (
+				nSlots = 24
+				flood  = 40 // far beyond companionMaxSlots
+			)
+			slotBytes := rate / 50 * 2 // one real 20 ms frame at this rate
+			slotSamples := slotBytes / 2
 
-	left, right := runStereo(t, masterRamp(nSlots), func(k int, leftPW *syncPipeWriter, _ *Recorder) {
-		if k == 0 {
-			for c := 0; c < flood; c++ {
-				leftPW.Write(pcmFrame(companionVal(c)))
+			left, right := runStereo(t, rate, masterRamp(nSlots, slotBytes), func(k int, leftPW *syncPipeWriter, _ *Recorder) {
+				if k == 0 {
+					for c := 0; c < flood; c++ {
+						leftPW.Write(pcmFrame(companionVal(c), slotBytes))
+					}
+				}
+			})
+
+			if want := nSlots * slotSamples; len(right) != want {
+				t.Fatalf("recorded %d frames, want %d", len(right), want)
 			}
-		}
-	})
 
-	if want := nSlots * stereoSlotSamples; len(right) != want {
-		t.Fatalf("recorded %d frames, want %d", len(right), want)
-	}
+			// Only the newest companionMaxSlots survive the flood; the rest are
+			// dropped oldest-first, so the retained audio starts at this frame.
+			firstKept := flood - companionMaxSlots
 
-	// Only the newest companionMaxSlots survive the flood; the rest are dropped
-	// oldest-first, so the retained audio starts at this frame.
-	firstKept := flood - companionMaxSlots
+			for slot := 0; slot < nSlots; slot++ {
+				base := slot * slotSamples
 
-	for slot := 0; slot < nSlots; slot++ {
-		base := slot * stereoSlotSamples
+				// The flood must not perturb the master stream at all.
+				for i := base; i < base+slotSamples; i++ {
+					if right[i] != masterVal(slot) {
+						t.Fatalf("right[%d] (slot %d) = %d, want %d — companion flood disturbed the master",
+							i, slot, right[i], masterVal(slot))
+					}
+				}
 
-		// The flood must not perturb the master stream at all.
-		for i := base; i < base+stereoSlotSamples; i++ {
-			if right[i] != masterVal(slot) {
-				t.Fatalf("right[%d] (slot %d) = %d, want %d — companion flood disturbed the master",
-					i, slot, right[i], masterVal(slot))
+				want := int16(0)
+				if slot < companionMaxSlots {
+					want = companionVal(firstKept + slot)
+				}
+				for i := base; i < base+slotSamples; i++ {
+					if left[i] != want {
+						t.Fatalf("left[%d] (slot %d) = %d, want %d — accumulator did not bound at %d slots dropping oldest",
+							i, slot, left[i], want, companionMaxSlots)
+					}
+				}
 			}
-		}
 
-		want := int16(0)
-		if slot < companionMaxSlots {
-			want = companionVal(firstKept + slot)
-		}
-		for i := base; i < base+stereoSlotSamples; i++ {
-			if left[i] != want {
-				t.Fatalf("left[%d] (slot %d) = %d, want %d — accumulator did not bound at %d slots dropping oldest",
-					i, slot, left[i], want, companionMaxSlots)
+			// The dropped frames must be gone entirely, not merely reordered.
+			dropped := make(map[int16]bool, firstKept)
+			for c := 0; c < firstKept; c++ {
+				dropped[companionVal(c)] = true
 			}
-		}
-	}
-
-	// The dropped frames must be gone entirely, not merely reordered.
-	dropped := make(map[int16]bool, firstKept)
-	for c := 0; c < firstKept; c++ {
-		dropped[companionVal(c)] = true
-	}
-	for i, s := range left {
-		if dropped[s] {
-			t.Fatalf("left[%d] = %d — a companion frame past the bound was retained", i, s)
-		}
+			for i, s := range left {
+				if dropped[s] {
+					t.Fatalf("left[%d] = %d — a companion frame past the bound was retained", i, s)
+				}
+			}
+		})
 	}
 }
 
@@ -296,9 +310,9 @@ func TestRecordStereo_Pause_ZeroesBothChannels(t *testing.T) {
 		compSample = int16(0x1111)
 	)
 
-	left, right := runStereo(t, masterRamp(nSlots), func(k int, leftPW *syncPipeWriter, r *Recorder) {
+	left, right := runStereo(t, stereoRate, masterRamp(nSlots, stereoSlotBytes), func(k int, leftPW *syncPipeWriter, r *Recorder) {
 		// The companion keeps talking throughout, including while paused.
-		leftPW.Write(pcmFrame(compSample))
+		leftPW.Write(pcmFrame(compSample, stereoSlotBytes))
 
 		// The hook runs after slot k-1 is written and before slot k is read,
 		// so these land exactly on a slot boundary.
@@ -334,44 +348,6 @@ func TestRecordStereo_Pause_ZeroesBothChannels(t *testing.T) {
 				t.Fatalf("right[%d] (slot %d, paused=%v) = %d, want %d", i, slot, paused, right[i], wantRight)
 			}
 		}
-	}
-}
-
-// TestRecordStereo_SlotBytesFollowSampleRate proves a slot is one real 20 ms
-// frame at whatever rate the recording runs at, rather than a fixed byte count.
-func TestRecordStereo_SlotBytesFollowSampleRate(t *testing.T) {
-	for _, rate := range []int{8000, 16000, 48000} {
-		t.Run(rateName(rate), func(t *testing.T) {
-			slotBytes := rate / 50 * 2
-			const nSlots = 4
-
-			dir := t.TempDir()
-			r := NewRecorder(slog.Default())
-			leftPR, leftPW := newSyncPipe()
-
-			frames := make([][]byte, nSlots)
-			hooks := make(map[int]func(), nSlots)
-			for k := range frames {
-				frames[k] = make([]byte, slotBytes)
-				for i := 0; i+1 < slotBytes; i += 2 {
-					binary.LittleEndian.PutUint16(frames[k][i:], uint16(masterVal(k)))
-				}
-				hooks[k] = func() { leftPW.Write(make([]byte, slotBytes)) }
-			}
-
-			fpath, err := r.StartStereo(context.Background(), leftPR, &scriptedMaster{frames: frames, hooks: hooks}, dir, uint32(rate))
-			if err != nil {
-				t.Fatalf("StartStereo: %v", err)
-			}
-			r.Wait()
-
-			_, right := readStereoWAV(t, fpath)
-			// Every 20 ms master frame must produce exactly one slot of output.
-			if want := nSlots * (slotBytes / 2); len(right) != want {
-				t.Fatalf("at %d Hz recorded %d frames, want %d — slot size must track the sample rate",
-					rate, len(right), want)
-			}
-		})
 	}
 }
 
