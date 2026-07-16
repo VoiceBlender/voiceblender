@@ -218,7 +218,11 @@ var (
 // resolveStorage returns the appropriate storage backend for the request.
 // If the request includes per-request S3 config (s3_bucket), a new S3Backend
 // is created on the fly. Otherwise, falls back to the server-level S3 backend.
-func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
+//
+// ctx bounds the S3 bucket preflight, so a caller that goes away (HTTP client
+// disconnect) stops waiting on an unreachable endpoint instead of burning the
+// full preflight budget.
+func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage.Backend, error) {
 	switch req.Storage {
 	case "", "file":
 		return storage.FileBackend{}, nil
@@ -232,7 +236,7 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 			// The insecure-endpoint escape hatch is an operator-level trust
 			// decision, not a caller-supplied one: a per-request field would let
 			// any API caller downgrade the transport.
-			backend, err := storage.NewS3Backend(context.Background(), storage.S3Config{
+			backend, err := storage.NewS3Backend(ctx, storage.S3Config{
 				Bucket:        req.S3Bucket,
 				Region:        region,
 				Endpoint:      req.S3Endpoint,
@@ -261,12 +265,12 @@ type RecordingStartResult struct {
 	File   string `json:"file"`
 }
 
-func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingStartResult, error) {
+func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordRequest) (*RecordingStartResult, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -347,7 +351,7 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordLeg(id, req)
+	res, err := s.doStartRecordLeg(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return
@@ -521,12 +525,12 @@ func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) doStartRecordRoom(roomID string, req RecordRequest) (*RecordingStartResult, error) {
+func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req RecordRequest) (*RecordingStartResult, error) {
 	rm, ok := s.RoomMgr.Get(roomID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -593,7 +597,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordRoom(id, req)
+	res, err := s.doStartRecordRoom(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return

@@ -655,7 +655,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		res, err := s.doStartRecordLeg(p.ID, p.RecordRequest)
+		res, err := s.doStartRecordLeg(context.Background(), p.ID, p.RecordRequest)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
@@ -666,7 +666,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		res, err := s.doStartRecordRoom(p.ID, p.RecordRequest)
+		res, err := s.doStartRecordRoom(context.Background(), p.ID, p.RecordRequest)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
