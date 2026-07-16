@@ -2810,7 +2810,7 @@ Every delivery carries an `X-Event-Id` header equal to the `event_id` field in t
 X-Event-Id: 550e8400-e29b-41d4-a716-446655440000
 ```
 
-`event_id` is a UUID assigned once when the event is published, so it is **stable across all 3 delivery attempts** of the same event and identical for every subscriber that receives it (webhook and VSI alike). Delivery is at-least-once, so a receiver should treat `event_id` as an idempotency key: record it and ignore an event whose id has already been processed. Distinct events never share an id.
+`event_id` is a UUID assigned once when the event is published, so it is **stable across all 3 delivery attempts** of the same event and identical for every subscriber that receives it (webhook and VSI alike). The same event may be delivered more than once (retry attempts, and once per subscriber), so a receiver should treat `event_id` as an idempotency key: record it and ignore an event whose id has already been processed. Delivery is best-effort, not guaranteed — an event dropped by a full queue or abandoned after 3 failed attempts (see Delivery above) is not redelivered. Distinct events never share an id.
 
 ### Event Envelope
 
