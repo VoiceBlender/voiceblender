@@ -88,10 +88,16 @@ func (r *Room) addLegLocked(l leg.Leg) {
 		// When rates match (e.g. G.722 at 16kHz = mixer rate), this is a passthrough.
 		legRate := l.SampleRate()
 		mixRate := r.SampleRate
-		r.legParts[l.ID()] = r.mix.AddParticipant(l.ID(),
+		p := r.mix.AddParticipant(l.ID(),
 			mixer.NewResampleReader(reader, legRate, mixRate),
 			mixer.NewResampleWriter(writer, mixRate, legRate),
 		)
+		// A leg's writer is its egress pipe, closed by Hangup during teardown
+		// and reused across a MoveLeg. Keep the mixer's panic path from closing
+		// it, or a stale loop's recover racing a move would silence the leg on
+		// its fresh participant. The room's panic hook closes it via Hangup.
+		p.MarkOwnerClosesEgress()
+		r.legParts[l.ID()] = p
 		// Sync mute/deaf state so legs muted/deafened before room join stay that way in mixer.
 		if l.IsMuted() {
 			r.mix.SetParticipantMuted(l.ID(), true)

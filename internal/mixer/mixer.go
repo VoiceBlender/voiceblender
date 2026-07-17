@@ -61,6 +61,18 @@ type Participant struct {
 	// guard wraps Writer to prevent writes after removal.
 	guard *guardedWriter
 
+	// ownerClosesEgress marks a participant whose writer is closed by its own
+	// owner during teardown — a leg, whose Hangup closes the egress pipe. For
+	// such a participant the mixer's panic path must NOT close the writer: the
+	// writer is often the leg's shared egress, and by the time a dead loop's
+	// recover runs the leg may have moved onto a fresh participant over that
+	// same pipe, so closing it here would silence the live successor. The
+	// room's identity-gated panic hook tears the dead leg down via Hangup,
+	// which closes the egress. A source whose owner has no other wakeup — a ws
+	// or agent participant — leaves this false and relies on the panic path's
+	// close. Read on the panic path, set once right after AddParticipant.
+	ownerClosesEgress atomic.Bool
+
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
 	Muted atomic.Bool
@@ -404,6 +416,14 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *P
 	return p
 }
 
+// MarkOwnerClosesEgress records that p's writer is closed by its own owner
+// during teardown, so the mixer's panic path leaves the writer alone. The room
+// layer calls this for legs, whose Hangup closes a shared egress the leg may
+// since have moved onto a fresh participant. See ownerClosesEgress.
+func (p *Participant) MarkOwnerClosesEgress() {
+	p.ownerClosesEgress.Store(true)
+}
+
 // AddPlaybackSource adds a read-only source into the mix (e.g. audio file).
 // It is mixed into everyone's output but receives no mixed-minus-self back.
 // Playback is room-wide audio and bypasses the routing matrix.
@@ -494,7 +514,16 @@ func (m *Mixer) removeParticipantIf(p *Participant) bool {
 // Manager.MoveLeg, which adds it to another room. Closing the writer on that
 // path closes a ws/MoQ leg's egress pipe, which is exactly what Hangup does,
 // so the leg would arrive at its new room already dead.
+//
+// The panic path has the same hazard: a leg's writer is closed by its own
+// owner during teardown, and a stale loop's recover can race a MoveLeg, so the
+// leg may already be live on a fresh participant over that same egress. A
+// participant flagged ownerClosesEgress is therefore skipped here and left to
+// the room's identity-gated hook.
 func (m *Mixer) closeWriterForPanic(p *Participant) {
+	if p.ownerClosesEgress.Load() {
+		return
+	}
 	if p.guard == nil {
 		return
 	}
