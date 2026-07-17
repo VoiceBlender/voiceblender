@@ -3,6 +3,7 @@ package recording
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-audio/audio"
 	"github.com/go-audio/wav"
 )
 
@@ -444,4 +446,118 @@ func TestRecorder_ZeroFrameStereoCaptureIsNotPublished(t *testing.T) {
 	r.Wait()
 
 	assertDiscarded(t, r, dir, fpath)
+}
+
+// closeAfterFrameReader hands over one full frame and then closes the file the
+// encoder writes to before ending the capture. The frame's write lands on a
+// healthy fd and only the encoder's trailing header rewrite fails, which is the
+// shape of a disk that fills after a call has been recording for a while.
+//
+// It is only ever read by the capture loop.
+type closeAfterFrameReader struct {
+	f    *os.File
+	sent bool
+}
+
+func (c *closeAfterFrameReader) Read(p []byte) (int, error) {
+	if !c.sent {
+		c.sent = true
+		return copy(p, bytes.Repeat([]byte{0x11}, 640)), nil
+	}
+	c.f.Close()
+	return 0, io.EOF
+}
+
+// TestRecorder_CloseErrorAfterFramesIsCaptureError pins the pair that
+// TestRecorder_HeaderRewriteFailureIsDiscarded then feeds to finish: a capture
+// can report wrote==true and an error at the same time. Nothing else in the
+// suite produces that combination — the other close-failure case never reaches
+// its first write — so without this the discard gate's error half would look
+// like a state the capture loops cannot actually reach.
+func TestRecorder_CloseErrorAfterFramesIsCaptureError(t *testing.T) {
+	staged, err := createStagedFile(filepath.Join(t.TempDir(), "rewrite.wav"))
+	if err != nil {
+		t.Fatalf("createStagedFile: %v", err)
+	}
+	defer os.Remove(staged.tmpPath)
+
+	r := NewRecorder(slog.Default())
+	wrote, err := r.recordMono(context.Background(), &closeAfterFrameReader{f: staged.f}, staged.f, 8000)
+	if !wrote {
+		t.Error("recordMono reported no frames though one was encoded before the failure")
+	}
+	if err == nil {
+		t.Error("recordMono reported success though the WAV size header could not be rewritten")
+	}
+}
+
+// decodedSamples reports how many samples a decoder reads out of path. That is
+// what the WAV's size header claims, which is not the same as what was written
+// to it when the header rewrite never ran.
+func decodedSamples(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+
+	buf, err := wav.NewDecoder(f).FullPCMBuffer()
+	if err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	return len(buf.Data)
+}
+
+// TestRecorder_HeaderRewriteFailureIsDiscarded pins the discard gate's error
+// half for a capture that did write frames. A leg records normally, then the
+// disk fills and enc.Close — the sole writer of the real RIFF/data sizes —
+// fails. Every frame is on disk and the fd is healthy, so nothing downstream of
+// the gate would object: the sync, chmod and rename all succeed and the file
+// lands at its published name. The capture error is the only thing that knows
+// the header is still a placeholder.
+//
+// The staged file is built the way a failed Close leaves one — frames encoded,
+// enc.Close deliberately not run — so the fd handed to finish is genuinely
+// publishable and the gate is the only thing standing between it and the
+// published name. A staging file broken by closing its fd would not test the
+// gate at all: publishFile would fail on its own and discard the file anyway.
+func TestRecorder_HeaderRewriteFailureIsDiscarded(t *testing.T) {
+	const frameSamples = 320
+
+	dir := t.TempDir()
+	fpath := filepath.Join(dir, "rewrite-failed.wav")
+
+	staged, err := createStagedFile(fpath)
+	if err != nil {
+		t.Fatalf("createStagedFile: %v", err)
+	}
+
+	enc := wav.NewEncoder(staged.f, 8000, 16, 1, 1)
+	if err := enc.Write(&audio.IntBuffer{
+		Format: &audio.Format{SampleRate: 8000, NumChannels: 1},
+		Data:   make([]int, frameSamples),
+	}); err != nil {
+		t.Fatalf("encode frame: %v", err)
+	}
+
+	// The harm the gate prevents, stated as an assertion: the file still decodes,
+	// so no consumer errors on it — it just silently yields a fraction of the
+	// audio the capture actually wrote.
+	if got := decodedSamples(t, staged.tmpPath); got >= frameSamples {
+		t.Fatalf("staging file decodes to %d of the %d samples written: its header is not a "+
+			"placeholder, so this test no longer reproduces a failed header rewrite", got, frameSamples)
+	}
+
+	r := NewRecorder(slog.Default())
+	r.finish(staged, true, fmt.Errorf("close recording: %w", os.ErrClosed))
+
+	if _, err := os.Stat(fpath); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a capture whose header rewrite failed, os.Stat err = %v — "+
+			"a recording nothing can fully read was published at its advertised path", fpath, err)
+	}
+	if r.Published() {
+		t.Error("Published() is true after a capture whose header rewrite failed")
+	}
+	assertNoStagingResidue(t, dir)
 }

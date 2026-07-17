@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/recording"
+	"github.com/go-audio/wav"
 )
 
 // TestPipeReader_TryRead covers the non-blocking read contract: nothing ready
@@ -101,20 +101,57 @@ func TestPipeReader_TryRead(t *testing.T) {
 	})
 }
 
+// masterGate wraps the master pipe and reports once the recorder has read every
+// frame the test queued into it. That is a direct observation of the recorder
+// having consumed the pipe, which is what makes closing the writers safe:
+// pipeReader.Read selects between a queued frame and the closed-writer signal,
+// and Go picks uniformly at random when both are ready, so a close that
+// overtakes queued frames discards them and ends the capture early.
+//
+// It delegates to the real pipeReader, and the companion pipe — the linkage
+// under test — is handed to the recorder unwrapped.
+//
+// It is read only by the recording goroutine; the test only receives on drained.
+type masterGate struct {
+	r       *pipeReader
+	want    int
+	read    int
+	sent    bool
+	drained chan struct{}
+}
+
+func (g *masterGate) Read(p []byte) (int, error) {
+	n, err := g.r.Read(p)
+	g.read += n
+	if !g.sent && g.read >= g.want {
+		g.sent = true
+		close(g.drained)
+	}
+	return n, err
+}
+
 // TestStartStereo_CompanionAudioReachesLeftChannel wires the real recording
 // pipes into the real stereo recorder, which is the linkage the recording
 // package's own tests cannot cover: they stand in their own pipe double, so
 // they would stay green if this pipe stopped satisfying the recorder's
 // non-blocking-read requirement and every recording's left channel silently
 // went mute.
+//
+// Every companion frame carries its own marker, so the left channel is checked
+// slot by slot for order and completeness rather than for the mere presence of
+// companion audio. Frames that all looked alike would let a pop that advances by
+// the wrong stride — repeating or skipping frames — still produce a left channel
+// indistinguishable from a correct one.
 func TestStartStereo_CompanionAudioReachesLeftChannel(t *testing.T) {
 	const (
 		rate         = 8000
 		slotBytes    = rate / 50 * 2 // one 20 ms frame, as the taps emit
+		slotSamples  = slotBytes / 2
 		nFrames      = 8
 		masterSample = int16(0x2222)
-		compSample   = int16(0x1111)
 	)
+
+	compSample := func(k int) int16 { return int16(0x1000 + k) }
 
 	frameOf := func(v int16) []byte {
 		b := make([]byte, slotBytes)
@@ -128,45 +165,66 @@ func TestStartStereo_CompanionAudioReachesLeftChannel(t *testing.T) {
 	// Exactly the wiring doStartRecordLeg uses for a standalone SIP leg.
 	leftPR, leftPW := createPipe()
 	rightPR, rightPW := createPipe()
+	gate := &masterGate{r: rightPR, want: nFrames * slotBytes, drained: make(chan struct{})}
 
 	rec := recording.NewRecorder(slog.Default())
-	fpath, err := rec.StartStereo(context.Background(), leftPR, rightPR, dir, rate)
+	fpath, err := rec.StartStereo(context.Background(), leftPR, gate, dir, rate)
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
 
+	// Queue every companion frame before the first master frame. The recorder
+	// reads the master before it drains the companion, so with no master frame
+	// written it cannot have touched the companion pipe yet: all nFrames are
+	// queued by the time the first slot drains it, and each slot pops one. That
+	// makes the slot-to-frame mapping below exact rather than timing-dependent.
 	for k := 0; k < nFrames; k++ {
-		leftPW.Write(frameOf(compSample))
+		leftPW.Write(frameOf(compSample(k)))
+	}
+	for k := 0; k < nFrames; k++ {
 		rightPW.Write(frameOf(masterSample))
 	}
-	// Let the recorder drain before the close races the queued frames.
-	time.Sleep(200 * time.Millisecond)
+
+	// Every master frame is provably out of the pipe, so the close races nothing.
+	<-gate.drained
 	leftPW.Close()
 	rightPW.Close()
 	rec.Wait()
 
-	data, err := os.ReadFile(fpath)
+	f, err := os.Open(fpath)
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		t.Fatalf("open recording: %v — the recorder wrote nothing, so it rejected these pipes", err)
 	}
-	if len(data) < 44 {
-		t.Fatalf("WAV is %d bytes: the recorder wrote nothing, so it rejected these pipes", len(data))
-	}
-	pcm := data[44:]
+	defer f.Close()
 
-	var sawMaster, sawCompanion bool
-	for i := 0; i+3 < len(pcm); i += 4 {
-		if int16(binary.LittleEndian.Uint16(pcm[i:])) == compSample {
-			sawCompanion = true
-		}
-		if int16(binary.LittleEndian.Uint16(pcm[i+2:])) == masterSample {
-			sawMaster = true
-		}
+	dec := wav.NewDecoder(f)
+	buf, err := dec.FullPCMBuffer()
+	if err != nil {
+		t.Fatalf("decode recording: %v", err)
 	}
-	if !sawMaster {
-		t.Error("right channel carries no master audio: the paced pipe is not clocking the recorder")
+	if got := int(dec.NumChans); got != 2 {
+		t.Fatalf("recording has %d channels, want 2", got)
 	}
-	if !sawCompanion {
-		t.Error("left channel is silent: audio written to the companion pipe never reached the recording")
+
+	// The master clocks one slot per frame and nothing else ends the capture, so
+	// the slot count is exact.
+	if got, want := len(buf.Data), nFrames*slotSamples*2; got != want {
+		t.Fatalf("recording holds %d interleaved samples, want %d (%d slots of %d)",
+			got, want, nFrames, slotSamples)
+	}
+
+	for k := 0; k < nFrames; k++ {
+		for i := 0; i < slotSamples; i++ {
+			j := (k*slotSamples + i) * 2
+			if got := int16(buf.Data[j]); got != compSample(k) {
+				t.Fatalf("left channel slot %d sample %d = %#04x, want companion frame %d (%#04x): "+
+					"the companion frames did not reach the recording one per slot in order",
+					k, i, got, k, compSample(k))
+			}
+			if got := int16(buf.Data[j+1]); got != masterSample {
+				t.Fatalf("right channel slot %d sample %d = %#04x, want master (%#04x): "+
+					"the paced pipe is not clocking the recorder", k, i, got, masterSample)
+			}
+		}
 	}
 }
