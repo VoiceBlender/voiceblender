@@ -13,6 +13,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -101,6 +102,10 @@ func InstallTracing(ctx context.Context, cfg config.Config, version string, log 
 // Compile-time proof that the SDK provider satisfies Flusher.
 var _ Flusher = (*sdktrace.TracerProvider)(nil)
 
+// flushBudget bounds the final trace flush. It is spent after the caller's
+// budget, not inside it, so it extends worst-case shutdown by this much.
+const flushBudget = 2 * time.Second
+
 // ShutdownDeps are the process components the shutdown sequence touches.
 // Every field is optional; a nil field is skipped.
 type ShutdownDeps struct {
@@ -149,7 +154,17 @@ func GracefulShutdown(ctx context.Context, deps ShutdownDeps) {
 	}
 
 	if deps.Tracer != nil {
-		if err := deps.Tracer.Shutdown(ctx); err != nil && deps.Log != nil {
+		// Every step above shares the caller's budget and any of them can
+		// exhaust it — an unreachable registrar blocks Trunks.Shutdown until
+		// the deadline. The batch span processor's Shutdown selects on
+		// ctx.Done(), so a spent context makes it return before exporting and
+		// silently discards the leg spans the loop above just ended. The flush
+		// therefore gets a deadline of its own rather than the caller's
+		// remainder; WithoutCancel keeps the caller's values while shedding a
+		// deadline that may already be gone.
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), flushBudget)
+		defer cancel()
+		if err := deps.Tracer.Shutdown(flushCtx); err != nil && deps.Log != nil {
 			deps.Log.Error("flush traces on shutdown", "error", err)
 		}
 	}

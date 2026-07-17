@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/observability"
@@ -170,6 +171,71 @@ func TestGracefulShutdownNonSpanLegSkipped(t *testing.T) {
 type plainLeg struct{ rec *recorder }
 
 func (p *plainLeg) Hangup(context.Context) error { p.rec.add("hangup:plain"); return nil }
+
+// ctxFlusher snapshots the state of the context the flush is handed, which is
+// what decides whether the batch span processor exports or discards its queue.
+// The state is read inside Shutdown because the caller cancels the flush
+// context on return; the live context object is useless afterwards.
+type ctxFlusher struct {
+	called    bool
+	err       error
+	remaining time.Duration
+	unbounded bool
+}
+
+func (f *ctxFlusher) Shutdown(ctx context.Context) error {
+	f.called = true
+	f.err = ctx.Err()
+	deadline, ok := ctx.Deadline()
+	f.unbounded = !ok
+	if ok {
+		f.remaining = time.Until(deadline)
+	}
+	return nil
+}
+
+// hungTrunks models a registrar that is unreachable with no RST: its shutdown
+// blocks until the caller's budget is gone, exactly as the real one does.
+type hungTrunks struct{}
+
+func (hungTrunks) Shutdown(ctx context.Context) { <-ctx.Done() }
+
+// TestGracefulShutdownFlushSurvivesSpentBudget is the guard on the flush
+// budget. An earlier step burning the caller's whole deadline must not reach
+// the flush: sdktrace's Shutdown selects on ctx.Done() and returns without
+// exporting, so a spent context silently discards every leg span the hangup
+// loop just ended — the trace an operator most wants from a sick process.
+func TestGracefulShutdownFlushSurvivesSpentBudget(t *testing.T) {
+	flusher := &ctxFlusher{}
+	rec := &recorder{}
+
+	// A budget small enough that hungTrunks consumes all of it, mirroring the
+	// 5s in main.go being eaten before the flush is reached.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	GracefulShutdown(ctx, ShutdownDeps{
+		Trunks: hungTrunks{},
+		Legs:   func() []ShutdownLeg { return []ShutdownLeg{&fakeLeg{name: "a", rec: rec}} },
+		Tracer: flusher,
+	})
+
+	if !flusher.called {
+		t.Fatal("flush was never called")
+	}
+	if flusher.err != nil {
+		t.Fatalf("flush got an already-dead context (%v) — sdktrace returns on ctx.Done() and drops every queued span", flusher.err)
+	}
+
+	// The fresh deadline must still be bounded, or a hung collector would hang
+	// the process past its termination grace period instead of the budget.
+	if flusher.unbounded {
+		t.Fatal("flush context has no deadline — a hung collector would block shutdown forever")
+	}
+	if flusher.remaining <= 0 || flusher.remaining > flushBudget {
+		t.Errorf("flush budget = %v, want (0, %v]", flusher.remaining, flushBudget)
+	}
+}
 
 // --- InstallTracing ---
 
