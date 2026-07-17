@@ -386,9 +386,17 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 }
 
 // watchLegDialogEnd blocks until the leg's dialog ends, then disconnects the
-// leg unless it was already torn down locally.
+// leg unless it was already torn down locally. It also returns when the leg's
+// own context is cancelled: a local teardown (an API hangup, or a room delete)
+// hangs the leg up and cancels its context, but our BYE to a vanished peer may
+// never get the 200 that ends the sipgo dialog, so waiting on the dialog alone
+// would block for the process lifetime. The local teardown already published
+// the disconnect, so the state guard skips a second one.
 func (s *Server) watchLegDialogEnd(l *leg.SIPLeg, dialogCtx context.Context) {
-	<-dialogCtx.Done()
+	select {
+	case <-dialogCtx.Done():
+	case <-l.Context().Done():
+	}
 	if l.State() != leg.StateHungUp {
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, "remote_bye")

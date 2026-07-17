@@ -90,11 +90,15 @@ func TestWatchLegDialogEndDisconnectsOnRemoteBye(t *testing.T) {
 	}
 }
 
-// TestWatchLegDialogEndSkipsAlreadyHungUpLeg pins the state guard. A leg torn
-// down through the API (or by the RTP-timeout hook) has already claimed its
-// disconnect; the dialog context then ends as a consequence, and the monitor
-// must not publish a second, contradictory disconnect.
-func TestWatchLegDialogEndSkipsAlreadyHungUpLeg(t *testing.T) {
+// TestWatchLegDialogEndExitsOnLocalTeardown pins the local-teardown exit. A leg
+// torn down through the API (or by the RTP-timeout hook) hangs up locally and
+// sends a BYE, but a vanished peer may never return the 200 that ends the
+// sipgo dialog — so the dialog context never fires. The monitor must still
+// exit off the leg's own cancelled context, and must not publish a second,
+// contradictory disconnect on top of the one the local teardown already
+// claimed. With the dialog context wired as the only wake-up, the monitor
+// blocks for the process lifetime and this test fails.
+func TestWatchLegDialogEndExitsOnLocalTeardown(t *testing.T) {
 	s := newTestServer(t)
 	tracer, exp := newSpanTestTracer(t)
 	s.Tracer = tracer
@@ -103,7 +107,9 @@ func TestWatchLegDialogEndSkipsAlreadyHungUpLeg(t *testing.T) {
 	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Tracer, s.Log)
 	s.LegMgr.Add(l)
 
-	// Local teardown wins first, exactly as DELETE /legs/{id} would.
+	// Local teardown wins first, exactly as DELETE /legs/{id} would: cleanupLeg
+	// hangs the leg up (cancelling its context) and publishDisconnect claims
+	// the sole disconnect.
 	s.cleanupLeg(l)
 	s.publishDisconnect(l, "api_hangup")
 
@@ -115,9 +121,19 @@ func TestWatchLegDialogEndSkipsAlreadyHungUpLeg(t *testing.T) {
 	})
 	t.Cleanup(unsub)
 
-	dialogCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	s.watchLegDialogEnd(l, dialogCtx)
+	// The peer never answers our BYE, so the dialog context never ends.
+	dialogCtx := context.Background()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchLegDialogEnd(l, dialogCtx)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLegDialogEnd did not exit after local teardown — it leaks when the peer never answers the BYE")
+	}
 
 	if extra != 0 {
 		t.Errorf("watchLegDialogEnd published %d extra leg.disconnected events, want 0", extra)
