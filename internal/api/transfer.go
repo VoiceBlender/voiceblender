@@ -315,6 +315,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 
 	newLeg := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Tracer, s.Log)
 	newLeg.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
+	s.setupLegEventForwarding(newLeg)
 	s.LegMgr.Add(newLeg)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
@@ -354,6 +355,14 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		return
 	}
 
+	// Wire session timer expiry to hangup + event.
+	newLeg.OnSessionExpired(func() {
+		if newLeg.State() != leg.StateHungUp {
+			s.cleanupLeg(newLeg)
+			s.publishDisconnect(newLeg, "session_expired")
+		}
+	})
+
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
 		LegType:  string(newLeg.Type()),
@@ -370,6 +379,20 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 
 	s.cleanupLeg(referrer)
 	s.publishDisconnect(referrer, "transfer_completed")
+
+	// The referrer is gone, so nothing else observes the transferred leg's
+	// dialog: the engine's BYE handling publishes no event of its own.
+	s.watchLegDialogEnd(newLeg, call.Dialog.Context())
+}
+
+// watchLegDialogEnd blocks until the leg's dialog ends, then disconnects the
+// leg unless it was already torn down locally.
+func (s *Server) watchLegDialogEnd(l *leg.SIPLeg, dialogCtx context.Context) {
+	<-dialogCtx.Done()
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "remote_bye")
+	}
 }
 
 func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason string) {
