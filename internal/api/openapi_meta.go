@@ -1,6 +1,10 @@
 package api
 
-import sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+import (
+	"strings"
+
+	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+)
 
 // RouteMeta describes a single API endpoint for OpenAPI generation.
 type RouteMeta struct {
@@ -205,7 +209,7 @@ func WebhookFieldDescriptions() map[string]string {
 // fields in webhook events (e.g. cdr.reason, cdr.duration_total).
 func WebhookNestedFieldDescriptions() map[string]string {
 	return map[string]string{
-		"CallCDR.reason":                   "Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}.",
+		"CallCDR.reason":                   disconnectReasonDescription(),
 		"CallCDR.duration_total":           "Seconds from leg creation to disconnect",
 		"CallCDR.duration_answered":        "Seconds from answer to disconnect (0 if never answered)",
 		"CallQuality.mos_score":            "Mean Opinion Score (1.0–5.0) estimated via simplified E-model (ITU-T G.107) from packet loss and jitter",
@@ -215,13 +219,62 @@ func WebhookNestedFieldDescriptions() map[string]string {
 	}
 }
 
-// DisconnectReasonEnum lists all possible disconnect reason values.
-var DisconnectReasonEnum = []string{
-	"api_hangup", "remote_bye", "caller_cancel", "ring_timeout", "max_duration",
-	"busy", "unavailable", "not_found", "forbidden", "unauthorized", "timeout",
-	"cancelled", "not_acceptable", "service_unavailable", "declined",
-	"rtp_timeout", "session_expired", "invite_failed", "connect_failed", "ice_failure",
+// KnownDisconnectReasons lists the disconnect reasons the code can produce
+// today, grouped by the path that produces them. The value set is open: an
+// unmapped SIP failure yields sip_{code} for any 4xx/5xx/6xx code, so this
+// list documents the named reasons rather than constraining the field.
+// TestKnownDisconnectReasonsTest keeps it in step with the producing code.
+var KnownDisconnectReasons = []string{
+	// Lifecycle and API-driven teardown.
+	"api_hangup", "room_deleted", "remote_bye", "caller_cancel",
+	"max_duration", "session_expired", "rtp_timeout",
+	// DELETE /legs/{id} rejection reasons (rejectionMapping).
+	"busy", "declined", "rejected", "unavailable", "not_found", "forbidden",
+	"server_error",
+	// Outbound INVITE failures (inviteFailureReason).
+	"ring_timeout", "unauthorized", "timeout", "cancelled", "not_acceptable",
+	"service_unavailable", "invite_failed", "connect_failed",
+	// Inbound authentication.
+	"challenged",
+	// Transfer.
+	"transfer_completed", "transfer_originate_failed", "transfer_connect_failed",
+	// WhatsApp.
+	"bad_answer",
+	// Room mixer teardown.
 	"mixer_panic",
+	// WebSocket legs (classifyWSReason, classifyWSDialError).
+	"hangup", "peer_slow", "connection_reset", "ws_error", "ws_dial_failed",
+	// MoQ legs.
+	"moq_error",
+	// WebRTC/ICE.
+	"ice_failure", "ice_failed", "ice_disconnected",
+	// LiveKit legs (lkmedia leaveReasonString and signal close paths).
+	"livekit_client_initiated", "livekit_duplicate_identity",
+	"livekit_server_shutdown", "livekit_kicked", "livekit_room_deleted",
+	"livekit_state_mismatch", "livekit_join_failure", "livekit_migration",
+	"livekit_signal_close", "livekit_room_closed", "livekit_user_unavailable",
+	"livekit_user_rejected", "livekit_token_expired", "livekit_media_failure",
+	"livekit_disconnected", "livekit_client_closed", "livekit_signal_closed",
+	"livekit_signal_error",
+	// LiveKit transport teardown (lkmedia Transport.cleanup), surfaced
+	// through Transport.CloseReason().
+	"livekit_pc_setup_failed", "livekit_add_track_failed",
+	"livekit_publisher_failed", "livekit_subscriber_failed",
+	"livekit_signal_loop_exit", "livekit_set_remote_desc_failed",
+	"livekit_create_answer_failed", "livekit_set_local_desc_failed",
+	"livekit_signal_send_failed", "livekit_set_publisher_remote_failed",
+	// LiveKit participant legs torn down under the umbrella leg.
+	"livekit_participant_left",
+}
+
+// disconnectReasonDescription documents the known reasons inline, since
+// cdr.reason carries no enum.
+func disconnectReasonDescription() string {
+	return "Disconnect reason. Common SIP failures are mapped to named " +
+		"reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}. This is " +
+		"an open set — treat an unrecognized value as a new reason rather " +
+		"than an error. Known values: " +
+		strings.Join(KnownDisconnectReasons, ", ") + "."
 }
 
 // QualityDescription is the description for the quality object in leg.disconnected.
