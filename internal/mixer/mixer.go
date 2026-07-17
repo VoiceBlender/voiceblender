@@ -486,9 +486,26 @@ func (m *Mixer) closeWriterForPanic(p *Participant) {
 	if p.guard == nil {
 		return
 	}
-	if wc, ok := p.guard.w.(io.Closer); ok {
-		_ = wc.Close()
+	_ = closeWriter(p.guard.w)
+}
+
+// closeWriter closes w under either Close shape the mixer is handed, and is a
+// no-op for a writer that has neither.
+//
+// io.Closer alone is not enough: the writers registered through AddParticipant
+// close both ways. *io.PipeWriter (a ws leg) and bridge.Endpoint report an
+// error; the API layer's egress pipe writer, which an agent registers, closes
+// with no return value and so satisfies only the second shape. Testing for
+// io.Closer by itself silently skips exactly the writers whose owners have no
+// other wakeup.
+func closeWriter(w io.Writer) error {
+	switch c := w.(type) {
+	case io.Closer:
+		return c.Close()
+	case interface{ Close() }:
+		c.Close()
 	}
+	return nil
 }
 
 // teardownParticipant releases p's IO and stops its loops. Reachable only via
