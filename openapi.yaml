@@ -145,6 +145,9 @@ info:
         - name: S3_PREFIX
           default: ""
           description: Key prefix applied to all S3 objects
+        - name: S3_ALLOW_INSECURE_ENDPOINT
+          default: "false"
+          description: 'Allow a plaintext http:// S3_ENDPOINT. Off by default: recording uploads to an http:// endpoint are refused at startup (exit 1) and per request (400) rather than sent in cleartext. Set true only for a trusted network, e.g. a local MinIO.'
         - name: AWS_ACCESS_KEY_ID
           default: ""
           description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'

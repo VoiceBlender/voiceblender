@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,7 +183,10 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	// Recv loop with typed dispatch. Returns when the client sends a "stop"
 	// command, the WebSocket frame parse fails, or the read deadline
 	// elapses (zombie connection / network partition).
-	reason := s.vsiRecvLoop(conn, lw, &closed)
+	connCtx, cancelConn := context.WithCancel(r.Context())
+	defer cancelConn()
+
+	reason := s.vsiRecvLoop(connCtx, conn, lw, &closed)
 
 	close(done)
 	s.Log.Info("vsi client disconnected",
@@ -197,7 +201,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 // "reason" field of the structured shutdown log: "stop" (client sent stop
 // command), "read_timeout" (idle deadline elapsed — zombie connection),
 // "peer_close" (clean WS close), or "error" (other read/parse error).
-func (s *Server) vsiRecvLoop(conn net.Conn, lw *wsLockedWriter, closed *atomic.Bool) string {
+func (s *Server) vsiRecvLoop(ctx context.Context, conn net.Conn, lw *wsLockedWriter, closed *atomic.Bool) string {
 	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
 	rd := &wsutil.Reader{
 		Source: conn,
@@ -248,7 +252,7 @@ func (s *Server) vsiRecvLoop(conn net.Conn, lw *wsLockedWriter, closed *atomic.B
 			closed.Store(true)
 			return "stop"
 		default:
-			s.wsHandleCommand(lw, msg)
+			s.wsHandleCommand(ctx, lw, msg)
 		}
 	}
 }

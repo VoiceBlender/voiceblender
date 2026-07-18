@@ -163,10 +163,11 @@ func main() {
 	var s3Backend storage.Backend
 	if cfg.S3Bucket != "" {
 		b, err := storage.NewS3Backend(ctx, storage.S3Config{
-			Bucket:   cfg.S3Bucket,
-			Region:   cfg.S3Region,
-			Endpoint: cfg.S3Endpoint,
-			Prefix:   cfg.S3Prefix,
+			Bucket:        cfg.S3Bucket,
+			Region:        cfg.S3Region,
+			Endpoint:      cfg.S3Endpoint,
+			Prefix:        cfg.S3Prefix,
+			AllowInsecure: cfg.S3AllowInsecureEndpoint,
 		})
 		if err != nil {
 			log.Error("failed to create S3 backend", "error", err)

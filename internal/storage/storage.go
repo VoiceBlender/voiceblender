@@ -2,15 +2,45 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// Errors returned by NewS3Backend when the target store is unusable.
+var (
+	// ErrBucketMissing reports that the configured bucket does not exist or is
+	// not visible to the supplied credentials.
+	ErrBucketMissing = errors.New("s3 bucket does not exist")
+	// ErrInsecureEndpoint reports that the configured endpoint would ship
+	// recording audio over plaintext HTTP.
+	ErrInsecureEndpoint = errors.New("s3 endpoint is plaintext http")
+)
+
+// bucketPreflightTimeout bounds the bucket-existence probe performed at
+// backend construction, so a black-holed endpoint cannot stall boot or an
+// API request indefinitely.
+const bucketPreflightTimeout = 10 * time.Second
+
+// endpointIsInsecure reports whether the endpoint explicitly requests
+// plaintext HTTP. Only an explicit "http://" scheme is classified as
+// insecure: an empty endpoint means the SDK default (AWS, always TLS) and is
+// accepted. A scheme-less endpoint such as "minio.internal:9000" cannot be
+// classified by this guard and so is not rejected here, but the SDK then
+// rejects it at the preflight as an invalid URI — it is not a usable
+// configuration either way.
+func endpointIsInsecure(endpoint string) bool {
+	return strings.HasPrefix(strings.ToLower(endpoint), "http://")
+}
 
 // Backend abstracts where a recording file is stored after capture.
 type Backend interface {
@@ -32,6 +62,10 @@ type S3Config struct {
 	Prefix    string
 	AccessKey string // optional; if set, used instead of default credential chain
 	SecretKey string // optional; must be set together with AccessKey
+	// AllowInsecure permits a plaintext http:// endpoint. Off by default:
+	// recording audio must not leave the host in cleartext unless the operator
+	// explicitly opts in.
+	AllowInsecure bool
 }
 
 // S3Backend uploads recordings to an S3-compatible store.
@@ -44,6 +78,12 @@ type S3Backend struct {
 // NewS3Backend creates an S3Backend from the given config.
 // If AccessKey/SecretKey are set, they are used directly; otherwise
 // credentials are resolved via the standard AWS SDK chain.
+//
+// Construction fails fast rather than deferring the failure to the first
+// upload: a plaintext endpoint is rejected with ErrInsecureEndpoint unless
+// cfg.AllowInsecure is set, and a bounded HeadBucket probe reports a missing
+// bucket as ErrBucketMissing and any other probe failure as a wrapped error.
+// The probe requires the s3:ListBucket permission on the bucket.
 func NewS3Backend(ctx context.Context, cfg S3Config) (*S3Backend, error) {
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
@@ -70,6 +110,21 @@ func NewS3Backend(ctx context.Context, cfg S3Config) (*S3Backend, error) {
 	}
 
 	client := s3.NewFromConfig(awsCfg, s3Opts...)
+
+	if endpointIsInsecure(cfg.Endpoint) && !cfg.AllowInsecure {
+		return nil, fmt.Errorf("%w: %q (set S3_ALLOW_INSECURE_ENDPOINT=true to override)", ErrInsecureEndpoint, cfg.Endpoint)
+	}
+
+	preflightCtx, cancel := context.WithTimeout(ctx, bucketPreflightTimeout)
+	defer cancel()
+
+	if _, err := client.HeadBucket(preflightCtx, &s3.HeadBucketInput{Bucket: aws.String(cfg.Bucket)}); err != nil {
+		var notFound *types.NotFound
+		if errors.As(err, &notFound) {
+			return nil, fmt.Errorf("%w: %q", ErrBucketMissing, cfg.Bucket)
+		}
+		return nil, fmt.Errorf("preflight s3 bucket %q: %w", cfg.Bucket, err)
+	}
 
 	return &S3Backend{
 		client: client,

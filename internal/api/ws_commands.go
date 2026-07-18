@@ -251,7 +251,11 @@ type deleteRegistrationPayload struct {
 	Contact string `json:"contact,omitempty"`
 }
 
-func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
+// ctx is scoped to the WebSocket connection. It bounds the per-command work
+// that reaches out over the network — notably the S3 bucket preflight behind
+// leg_record_start / room_record_start — so that work cannot outlive the
+// connection that asked for it.
+func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
 	// ── Leg queries ─────────────────────────────────────────────────
@@ -655,7 +659,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		res, err := s.doStartRecordLeg(p.ID, p.RecordRequest)
+		res, err := s.doStartRecordLeg(ctx, p.ID, p.RecordRequest)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
@@ -666,7 +670,7 @@ func (s *Server) wsHandleCommand(lw *wsLockedWriter, msg vsiInMsg) {
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		res, err := s.doStartRecordRoom(p.ID, p.RecordRequest)
+		res, err := s.doStartRecordRoom(ctx, p.ID, p.RecordRequest)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

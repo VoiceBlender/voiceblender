@@ -11,45 +11,48 @@ import (
 )
 
 type Config struct {
-	InstanceID            string
-	SIPBindIP             string
-	SIPBindIPV6           string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
-	SIPListenIP           string
-	SIPListenIPV6         string // IPv6 socket bind; falls back to SIPBindIPV6
-	SIPExternalIP         string
-	SIPPort               string
-	SIPTLSPort            string // "" = TLS disabled
-	SIPTLSCert            string // path to CA-signed cert (fullchain.pem)
-	SIPTLSKey             string // path to private key (privkey.pem)
-	SIPDebug              bool   // dump full SIP message content for every request and response
-	SIPDomain             string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
-	SIPHost               string
-	HTTPAddr              string
-	AllowedIPs            string // comma-separated IPs and CIDR ranges; empty = allow all
-	TrustProxyHeaders     bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
-	ICEServers            []string
-	WebRTCExternalIPs     []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
-	RecordingDir          string
-	LogLevel              string
-	WebhookURL            string
-	WebhookSecret         string
-	ElevenLabsAPIKey      string
-	VAPIAPIKey            string
-	DeepgramAPIKey        string
-	AzureSpeechKey        string
-	AzureSpeechRegion     string
-	S3Bucket              string
-	S3Region              string
-	S3Endpoint            string
-	S3Prefix              string
-	TTSCacheEnabled       bool
-	TTSCacheDir           string
-	TTSCacheIncludeAPIKey bool
-	RTPPortMin            int
-	RTPPortMax            int
-	SIPJitterBufferMs     int
-	SIPJitterBufferMaxMs  int
-	SIPReferAutoDial      bool
+	InstanceID        string
+	SIPBindIP         string
+	SIPBindIPV6       string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
+	SIPListenIP       string
+	SIPListenIPV6     string // IPv6 socket bind; falls back to SIPBindIPV6
+	SIPExternalIP     string
+	SIPPort           string
+	SIPTLSPort        string // "" = TLS disabled
+	SIPTLSCert        string // path to CA-signed cert (fullchain.pem)
+	SIPTLSKey         string // path to private key (privkey.pem)
+	SIPDebug          bool   // dump full SIP message content for every request and response
+	SIPDomain         string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
+	SIPHost           string
+	HTTPAddr          string
+	AllowedIPs        string // comma-separated IPs and CIDR ranges; empty = allow all
+	TrustProxyHeaders bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
+	ICEServers        []string
+	WebRTCExternalIPs []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
+	RecordingDir      string
+	LogLevel          string
+	WebhookURL        string
+	WebhookSecret     string
+	ElevenLabsAPIKey  string
+	VAPIAPIKey        string
+	DeepgramAPIKey    string
+	AzureSpeechKey    string
+	AzureSpeechRegion string
+	S3Bucket          string
+	S3Region          string
+	S3Endpoint        string
+	S3Prefix          string
+	// S3AllowInsecureEndpoint permits a plaintext http:// S3 endpoint. Off by
+	// default: recording uploads are refused rather than sent in cleartext.
+	S3AllowInsecureEndpoint bool
+	TTSCacheEnabled         bool
+	TTSCacheDir             string
+	TTSCacheIncludeAPIKey   bool
+	RTPPortMin              int
+	RTPPortMax              int
+	SIPJitterBufferMs       int
+	SIPJitterBufferMaxMs    int
+	SIPReferAutoDial        bool
 	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
 	// awaiting an app accept/decline decision (via the transfer commands) before
 	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
@@ -150,6 +153,7 @@ func Load() Config {
 		S3Region:                 envOr("S3_REGION", "us-east-1"),
 		S3Endpoint:               os.Getenv("S3_ENDPOINT"),
 		S3Prefix:                 os.Getenv("S3_PREFIX"),
+		S3AllowInsecureEndpoint:  envBool("S3_ALLOW_INSECURE_ENDPOINT", false),
 		TTSCacheEnabled:          os.Getenv("TTS_CACHE_ENABLED") == "true",
 		TTSCacheDir:              envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
 		TTSCacheIncludeAPIKey:    os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
