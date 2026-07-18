@@ -24,6 +24,8 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func toLegView(l leg.Leg) LegView {
@@ -74,6 +76,16 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 func (s *Server) publishDisconnect(l leg.Leg, reason string) {
 	if !l.ClaimDisconnect() {
 		return
+	}
+	// End the span behind the gate so the reason stamped on it is the CAS
+	// winner's — the span and the leg.disconnected event must carry the same
+	// reason. Ending ahead of the gate let a loser's reason win the span
+	// while the event said otherwise. publishDisconnect is the only
+	// ClaimDisconnect caller, so a path that ever claims a disconnect
+	// without publishing must end the span itself. Only SIP legs carry a
+	// span; the assertion misses the rest.
+	if e, ok := l.(leg.RootSpanEnder); ok {
+		e.EndRootSpan(reason)
 	}
 	s.Bus.Publish(events.LegDisconnected, disconnectData(l, reason))
 	s.Webhooks.ClearLegWebhook(l.ID())
@@ -790,7 +802,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		}
 	}
 
-	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Log)
+	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Tracer, s.Log)
 
 	// Apply server-default jitter buffer. No per-request override: jitter
 	// buffer tuning is operator-driven via the SIP_JITTER_BUFFER_MS env var.
@@ -828,6 +840,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		var err error
 		startAMD, err = s.prepareAMD(l, req.AMD)
 		if err != nil {
+			// The constructor already opened the leg's root span, and this
+			// return is before LegMgr.Add — nothing else can ever reach this
+			// leg to close it, so an unended span would never be exported.
+			l.EndRootSpan("bad_amd_params")
 			return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 		}
 	} else {
@@ -923,6 +939,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		SIPHeaders: req.Headers,
 		TrunkID:    trunkIDForLeg,
 	})
+	// Waterfall markers on the leg's root span. One-shot per call on the
+	// originate goroutine — never on a media or mix path.
+	l.RootSpan().AddEvent("ringing", trace.WithAttributes(attribute.String("sip.target", target)))
 
 	go func() {
 		// Derive invite context from the leg's context so that
@@ -962,6 +981,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			}
 		})
 
+		l.RootSpan().AddEvent("connected")
 		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
@@ -1043,7 +1063,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		}
 	}
 
-	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
+	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Tracer, s.Log)
 	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
 		l.SetAppID(appID)
 	}
@@ -1103,6 +1123,11 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	case <-l.AnswerCh():
 		if err := l.Answer(context.Background()); err != nil {
 			s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
+			// This path publishes no disconnect and calls no Hangup, and the
+			// Remove below takes the leg out of reach of the shutdown sweep,
+			// so the span must be closed here or the call that rang and
+			// failed to answer exports no trace at all.
+			l.EndRootSpan("answer_failed")
 			s.LegMgr.Remove(l.ID())
 			s.Webhooks.ClearLegWebhook(l.ID())
 			return

@@ -22,7 +22,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/quic-go/webtransport-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracerName is the instrumentation scope for every span VoiceBlender emits.
+const tracerName = "voiceblender"
 
 type Server struct {
 	Router     *chi.Mux
@@ -38,6 +43,13 @@ type Server struct {
 	Config     config.Config
 	AllowedIPs []netip.Prefix
 	Log        *slog.Logger
+
+	// Tracer creates the spans covering leg lifecycles. Injected rather than
+	// fetched from the otel global on each use so tests stay hermetic: a test
+	// can point it at a tracetest provider without touching process state.
+	// Never nil — NewServer defaults it, and a disabled pipeline yields a
+	// noop tracer that returns non-nil noop spans.
+	Tracer trace.Tracer
 
 	// MoQWebTransport is set by main.go when MoQ is enabled. The MoQ leg
 	// handler (s.moqLeg) returns 503 if this is nil.
@@ -87,6 +99,7 @@ func NewServer(
 		Config:         cfg,
 		AllowedIPs:     allowedIPs,
 		Log:            log,
+		Tracer:         otel.Tracer(tracerName),
 		speakDets:      make(map[string]*speaking.Detector),
 		speechOverride: make(map[string]*bool),
 		transfers:      newTransferStore(),

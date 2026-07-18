@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
+	"github.com/VoiceBlender/voiceblender/internal/app"
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -57,6 +58,14 @@ func main() {
 
 	log.Info("starting voiceblender", "version", version)
 	log.Info("config loaded", "default_sample_rate", cfg.DefaultSampleRate)
+
+	// Trace pipeline. Off unless OTEL_TRACES_ENABLED=true, in which case
+	// tracerFlusher is non-nil and the shutdown sequence flushes it. A setup
+	// failure is non-fatal: the process runs on with the noop tracer.
+	tracerFlusher, err := app.InstallTracing(ctx, cfg, version, log)
+	if err != nil {
+		log.Error("otel tracing setup failed; continuing without traces", "error", err)
+	}
 
 	// Resolve "auto" WebRTC external IPs via STUN. An empty value stays
 	// empty (no NAT1To1 rewrite); the literal "auto" triggers discovery
@@ -285,21 +294,27 @@ func main() {
 		<-gCtx.Done()
 		log.Info("shutting down")
 
-		// Shutdown HTTP
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		httpSrv.Shutdown(shutdownCtx)
+
+		deps := app.ShutdownDeps{
+			HTTP:   httpSrv,
+			Trunks: engine.Trunks(),
+			Legs: func() []app.ShutdownLeg {
+				live := legMgr.List()
+				out := make([]app.ShutdownLeg, len(live))
+				for i, l := range live {
+					out[i] = l
+				}
+				return out
+			},
+			Tracer: tracerFlusher,
+			Log:    log,
+		}
 		if moqSrv != nil {
-			_ = moqSrv.Close()
+			deps.MoQ = moqSrv
 		}
-
-		// Unregister all outbound SIP trunks in parallel.
-		engine.Trunks().Shutdown(shutdownCtx)
-
-		// Hangup all active legs
-		for _, l := range legMgr.List() {
-			l.Hangup(shutdownCtx)
-		}
+		app.GracefulShutdown(shutdownCtx, deps)
 		return nil
 	})
 

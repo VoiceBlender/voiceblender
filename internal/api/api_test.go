@@ -47,6 +47,17 @@ func doRequest(s *Server, method, path string, body string) *httptest.ResponseRe
 	return w
 }
 
+// TestNewServerInjectsTracer pins the single point where the real tracer
+// enters all three SIP leg constructors. Nothing else is red if it goes: a
+// nil Server.Tracer makes startRootSpan substitute a noop tracer, so every
+// leg builds and every test passes while zero spans are ever exported.
+func TestNewServerInjectsTracer(t *testing.T) {
+	s := newTestServer(t)
+	if s.Tracer == nil {
+		t.Fatal("NewServer left Tracer nil; every SIP leg would fall back to a noop span and export nothing")
+	}
+}
+
 // --- Helper tests ---
 
 func TestWriteJSON(t *testing.T) {

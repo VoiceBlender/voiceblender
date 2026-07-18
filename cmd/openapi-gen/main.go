@@ -462,6 +462,14 @@ func configVars() *seq {
 		{Name: "LIVEKIT_API_KEY", Default: "", Description: "LiveKit API key used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true."},
 		{Name: "LIVEKIT_API_SECRET", Default: "", Description: "LiveKit API secret used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true. Treat as a high-value secret; redact in logs."},
 		{Name: "LIVEKIT_DEFAULT_TOKEN_TTL", Default: "6h", Description: "Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours."},
+		{Name: "OTEL_TRACES_ENABLED", Default: "false", Description: "Enable the OpenTelemetry trace pipeline. When false (the default) no exporter is constructed and nothing is dialed. Traces only — VoiceBlender exposes Prometheus metrics at /metrics and logs to stdout; there is no OTel metrics or logs pipeline."},
+		{Name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", Default: "", Description: "OTLP/gRPC collector address as host:port (e.g. otel-collector:4317). Required when OTEL_TRACES_ENABLED=true; startup logs an error and continues untraced if it is missing."},
+		{Name: "OTEL_EXPORTER_OTLP_TRACES_INSECURE", Default: "false", Description: "Disable transport security on the collector connection. Use only for a collector reached over a trusted network."},
+		{Name: "OTEL_EXPORTER_OTLP_HEADERS", Default: "", Description: "Comma-separated key=value pairs sent with every export request, e.g. authorization=Bearer <token>. Malformed entries are skipped."},
+		{Name: "OTEL_SERVICE_NAME", Default: "voiceblender", Description: "service.name resource attribute on exported spans."},
+		{Name: "OTEL_SERVICE_NAMESPACE", Default: "", Description: "service.namespace resource attribute on exported spans."},
+		{Name: "OTEL_PROPAGATORS", Default: "tracecontext,baggage", Description: "Comma-separated context propagators. Recognized: tracecontext, baggage. Unknown names are ignored, and an empty result falls back to the default pair."},
+		{Name: "OTEL_TRACES_SAMPLER_ARG", Default: "1.0", Description: "Head-sampling probability, clamped to [0,1]. 1.0 samples every leg."},
 	}
 	s := newSeq()
 	for _, v := range vars {

@@ -3052,6 +3052,52 @@ All errors return:
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio is stored on disk and persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files. |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
+| `OTEL_TRACES_ENABLED` | `false` | Enable the OpenTelemetry trace pipeline (see [Tracing](#tracing)) |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | _(none)_ | OTLP/gRPC collector address (`host:port`). Required when `OTEL_TRACES_ENABLED=true` |
+| `OTEL_EXPORTER_OTLP_TRACES_INSECURE` | `false` | Disable transport security on the collector connection |
+| `OTEL_EXPORTER_OTLP_HEADERS` | _(none)_ | Comma-separated `key=value` pairs sent with every export request |
+| `OTEL_SERVICE_NAME` | `voiceblender` | `service.name` resource attribute on exported spans |
+| `OTEL_SERVICE_NAMESPACE` | _(none)_ | `service.namespace` resource attribute |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Comma-separated context propagators (`tracecontext`, `baggage`) |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Head-sampling probability, clamped to `[0,1]` |
+
+---
+
+## Tracing
+
+VoiceBlender can export OpenTelemetry **traces** over OTLP/gRPC. The pipeline is
+off by default: with `OTEL_TRACES_ENABLED=false` no exporter is constructed and
+no collector is dialed.
+
+Traces are the only OTel signal. Metrics stay on Prometheus (`GET /metrics`) and
+logs stay on stdout (`LOG_LEVEL`) — there is no OTel metrics or logs pipeline.
+
+**What you get.** Every SIP leg — inbound and outbound — emits exactly one root
+span named `sip.leg` covering its whole lifecycle. This is what makes the async
+originate flow followable: `POST /v1/legs` with `type: "sip"` returns
+`201 Created` before the
+INVITE is even sent, and the real outcome only arrives seconds later as
+`leg.connected` or `leg.disconnected`. The span opens when the leg is created
+and closes when it disconnects, so one trace ties the accept to what actually
+happened to the call.
+
+| Span field | Value |
+|---|---|
+| Name | `sip.leg` |
+| Kind | `server` for `sip_inbound`, `client` for `sip_outbound` |
+| `leg.id` | The leg ID returned by the API |
+| `leg.type` | `sip_inbound` or `sip_outbound` |
+| `leg.disconnect_reason` | The same reason string as the `leg.disconnected` event (`remote_bye`, `api_hangup`, `ring_timeout`, …) |
+| Status | `Error` for failure reasons; `Ok` for orderly ones |
+| Events | `ringing` (with `sip.target`), `connected` — outbound legs originated via `POST /v1/legs` only; inbound and REFER-originated legs carry no span events |
+
+Legs still up when the process shuts down get their span ended with reason
+`shutdown` and flushed before exit.
+
+Only SIP legs are traced. WebRTC, WhatsApp, WebSocket, MoQ, and LiveKit legs
+emit no spans.
+
+Enabling tracing does not change any event, webhook, or endpoint.
 
 ---
 
