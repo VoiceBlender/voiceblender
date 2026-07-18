@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -244,6 +246,142 @@ func TestAnalyzer_InitialSilenceThenHuman(t *testing.T) {
 	}
 }
 
+// feedChunked drives the push surface with audio delivered in chunkSize-byte
+// chunks, returning the first terminal Detection and whether one was reached.
+func feedChunked(a *Analyzer, audio []byte, chunkSize int) (Detection, bool) {
+	for off := 0; off < len(audio); off += chunkSize {
+		end := off + chunkSize
+		if end > len(audio) {
+			end = len(audio)
+		}
+		if det, done := a.Feed(audio[off:end]); done {
+			return det, true
+		}
+	}
+	return Detection{}, false
+}
+
+// TestAnalyzer_Feed_MatchesRun asserts the push surface classifies identically
+// to the synchronous core over the same audio, regardless of how the bytes are
+// chunked — including chunk sizes that never align to a 640-byte frame.
+func TestAnalyzer_Feed_MatchesRun(t *testing.T) {
+	defaults := DefaultParams()
+	loud := makeToneFrame(5000)
+	silent := makeSilentFrame()
+
+	scenarios := []struct {
+		name   string
+		params Params
+		audio  []byte
+		want   Result
+	}{
+		{
+			name:   "human",
+			params: defaults,
+			audio: buildAudio(
+				loud, framesForDuration(500*time.Millisecond),
+				silent, framesForDuration(defaults.AfterGreetingSilence)+speechOffFrames+10,
+			),
+			want: ResultHuman,
+		},
+		{
+			name:   "machine",
+			params: defaults,
+			audio:  buildAudio(loud, framesForDuration(defaults.GreetingDuration)+10),
+			want:   ResultMachine,
+		},
+		{
+			name:   "no_speech",
+			params: defaults,
+			audio:  buildAudio(silent, framesForDuration(defaults.InitialSilenceTimeout)+10),
+			want:   ResultNoSpeech,
+		},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			// The synchronous core is the oracle.
+			want := New(sc.params).Run(context.Background(), bytes.NewReader(sc.audio))
+			if want.Result != sc.want {
+				t.Fatalf("Run: expected %s, got %s", sc.want, want.Result)
+			}
+
+			// 1 byte and 1000 bytes never align to a 640-byte frame, so these
+			// exercise the trailing-remainder path.
+			for _, chunk := range []int{1, frameSizeBytes, 1000, len(sc.audio)} {
+				t.Run(fmt.Sprintf("chunk_%d", chunk), func(t *testing.T) {
+					got, done := feedChunked(New(sc.params), sc.audio, chunk)
+					if !done {
+						t.Fatalf("Feed reached no terminal classification")
+					}
+					if got != want {
+						t.Errorf("Feed detection %+v != Run detection %+v", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAnalyzer_OnDeadline(t *testing.T) {
+	params := DefaultParams()
+
+	t.Run("pre-speech with no greeting reports no_speech", func(t *testing.T) {
+		a := New(params)
+		// 500 ms of silence — well under initial_silence_timeout, so the FSM is
+		// still waiting for speech and yields no frame-driven verdict.
+		audio := buildAudio(makeSilentFrame(), framesForDuration(500*time.Millisecond))
+		if _, done := feedChunked(a, audio, frameSizeBytes); done {
+			t.Fatal("did not expect a terminal classification yet")
+		}
+
+		det := a.OnDeadline()
+		if det.Result != ResultNoSpeech {
+			t.Fatalf("expected no_speech, got %s", det.Result)
+		}
+		if det.InitialSilenceMs != 500 {
+			t.Errorf("initial_silence_ms=%d, want 500", det.InitialSilenceMs)
+		}
+		if det.TotalAnalysisMs != 500 {
+			t.Errorf("total_analysis_ms=%d, want 500", det.TotalAnalysisMs)
+		}
+		if det.GreetingDurationMs != 0 {
+			t.Errorf("greeting_duration_ms=%d, want 0", det.GreetingDurationMs)
+		}
+	})
+
+	t.Run("mid-greeting reports not_sure", func(t *testing.T) {
+		a := New(params)
+		// 500 ms of speech — too short for machine, with no trailing silence to
+		// declare human, so the FSM is stuck mid-greeting.
+		audio := buildAudio(makeToneFrame(5000), framesForDuration(500*time.Millisecond))
+		if _, done := feedChunked(a, audio, frameSizeBytes); done {
+			t.Fatal("did not expect a terminal classification yet")
+		}
+
+		det := a.OnDeadline()
+		if det.Result != ResultNotSure {
+			t.Fatalf("expected not_sure, got %s", det.Result)
+		}
+		if det.GreetingDurationMs <= 0 {
+			t.Errorf("greeting_duration_ms=%d, want > 0", det.GreetingDurationMs)
+		}
+		if det.TotalAnalysisMs != 500 {
+			t.Errorf("total_analysis_ms=%d, want 500", det.TotalAnalysisMs)
+		}
+	})
+
+	t.Run("reports no_speech before any audio is fed", func(t *testing.T) {
+		det := New(params).OnDeadline()
+		if det.Result != ResultNoSpeech {
+			t.Fatalf("expected no_speech, got %s", det.Result)
+		}
+		if det.TotalAnalysisMs != 0 {
+			t.Errorf("total_analysis_ms=%d, want 0", det.TotalAnalysisMs)
+		}
+	})
+}
+
 func TestParams_Validate(t *testing.T) {
 	valid := DefaultParams()
 	if err := valid.Validate(); err != nil {
@@ -253,24 +391,43 @@ func TestParams_Validate(t *testing.T) {
 	tests := []struct {
 		name   string
 		modify func(*Params)
+		// wantErr, when set, is a substring the error must contain. It pins
+		// down which check rejected the params rather than just that one did.
+		wantErr string
 	}{
-		{"zero initial silence", func(p *Params) { p.InitialSilenceTimeout = 0 }},
-		{"negative greeting", func(p *Params) { p.GreetingDuration = -1 }},
-		{"zero after greeting", func(p *Params) { p.AfterGreetingSilence = 0 }},
-		{"zero total", func(p *Params) { p.TotalAnalysisTime = 0 }},
-		{"zero min word", func(p *Params) { p.MinimumWordLength = 0 }},
+		{"zero initial silence", func(p *Params) { p.InitialSilenceTimeout = 0 }, ""},
+		{"negative greeting", func(p *Params) { p.GreetingDuration = -1 }, ""},
+		{"zero after greeting", func(p *Params) { p.AfterGreetingSilence = 0 }, ""},
+		{"zero total", func(p *Params) { p.TotalAnalysisTime = 0 }, ""},
+		{"zero min word", func(p *Params) { p.MinimumWordLength = 0 }, ""},
 		{"total < initial silence", func(p *Params) {
 			p.TotalAnalysisTime = 1000 * time.Millisecond
 			p.InitialSilenceTimeout = 2000 * time.Millisecond
-		}},
+		}, "initial_silence_timeout"},
+		{"total < greeting", func(p *Params) {
+			// Keep every other cross-field check satisfied so only the
+			// greeting_duration check can reject these params.
+			p.InitialSilenceTimeout = 500 * time.Millisecond
+			p.TotalAnalysisTime = 2000 * time.Millisecond
+			p.GreetingDuration = 3000 * time.Millisecond
+		}, "greeting_duration"},
+		{"total < after greeting", func(p *Params) {
+			p.InitialSilenceTimeout = 500 * time.Millisecond
+			p.TotalAnalysisTime = 2000 * time.Millisecond
+			p.AfterGreetingSilence = 3000 * time.Millisecond
+		}, "after_greeting_silence"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := DefaultParams()
 			tt.modify(&p)
-			if err := p.Validate(); err == nil {
-				t.Error("expected validation error")
+			err := p.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should mention %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -292,6 +449,56 @@ func TestMergeMillis(t *testing.T) {
 	}
 	if p.GreetingDuration != defaults.GreetingDuration {
 		t.Error("non-overridden field should stay default")
+	}
+}
+
+// TestMergeMillis_RejectsNegativeOverrides composes MergeMillis with Validate
+// the way the API layer does, rather than building Params directly. That
+// composition is the point: a negative override is only observable as an error
+// if MergeMillis carries it through to Validate, so a test that constructs
+// Params itself would pass even while every real caller silently defaulted.
+func TestMergeMillis_RejectsNegativeOverrides(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    [6]int
+		wantErr string
+	}{
+		{"negative initial silence", [6]int{-1, 0, 0, 0, 0, 0}, "initial_silence_timeout must be positive"},
+		{"negative greeting", [6]int{0, -1, 0, 0, 0, 0}, "greeting_duration must be positive"},
+		{"negative after greeting", [6]int{0, 0, -1, 0, 0, 0}, "after_greeting_silence must be positive"},
+		{"negative total", [6]int{0, 0, 0, -1, 0, 0}, "total_analysis_time must be positive"},
+		{"negative min word", [6]int{0, 0, 0, 0, -1, 0}, "minimum_word_length must be positive"},
+		{"negative beep timeout", [6]int{0, 0, 0, 0, 0, -1}, "beep_timeout must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := tt.args
+			p := MergeMillis(DefaultParams(), a[0], a[1], a[2], a[3], a[4], a[5])
+			err := p.Validate()
+			if err == nil {
+				t.Fatalf("negative override silently defaulted, got %+v", p)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q should mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestMergeMillis_ZeroKeepsDefault pins the `0 = use the default` contract that
+// the API documents, so the negative-rejection above is never "fixed" by also
+// rejecting zero.
+func TestMergeMillis_ZeroKeepsDefault(t *testing.T) {
+	p := MergeMillis(DefaultParams(), 0, 0, 0, 0, 0, 0)
+	if p != DefaultParams() {
+		t.Errorf("explicit zeros should keep every default, got %+v", p)
+	}
+	if err := p.Validate(); err != nil {
+		t.Errorf("all-default params must validate, got %v", err)
+	}
+	// beep_timeout: 0 means "beep detection disabled", not "invalid".
+	if p.BeepTimeout != 0 {
+		t.Errorf("beep_timeout should stay 0 (disabled), got %v", p.BeepTimeout)
 	}
 }
 
@@ -521,6 +728,84 @@ func TestAnalyzer_MachineNoBeepTimeout(t *testing.T) {
 	if beep.Detected {
 		t.Fatal("expected no beep detection (timeout)")
 	}
+}
+
+// feedBeepChunked drives the push-mode beep surface with audio delivered in
+// chunkSize-byte chunks, returning the first terminal BeepResult.
+func feedBeepChunked(a *Analyzer, audio []byte, chunkSize int) (BeepResult, bool) {
+	for off := 0; off < len(audio); off += chunkSize {
+		end := off + chunkSize
+		if end > len(audio) {
+			end = len(audio)
+		}
+		if beep, done := a.FeedBeep(audio[off:end]); done {
+			return beep, true
+		}
+	}
+	return BeepResult{}, false
+}
+
+func TestAnalyzer_FeedBeep(t *testing.T) {
+	silent := makeSilentFrame()
+	beepTone := makeSineFrame(1000, 10000)
+
+	t.Run("detects a beep tone", func(t *testing.T) {
+		params := DefaultParams()
+		params.BeepTimeout = 3000 * time.Millisecond
+
+		// 200 ms gap, then 200 ms of 1000 Hz beep (well over the 4-frame minimum).
+		audio := buildAudio(silent, 10, beepTone, 10, silent, 10)
+
+		beep, done := feedBeepChunked(New(params), audio, frameSizeBytes)
+		if !done {
+			t.Fatal("expected a terminal beep result")
+		}
+		if !beep.Detected {
+			t.Fatal("expected beep to be detected")
+		}
+		if beep.BeepMs <= 0 {
+			t.Errorf("beep_ms=%d, want > 0", beep.BeepMs)
+		}
+	})
+
+	t.Run("terminates at BeepTimeout without a beep", func(t *testing.T) {
+		params := DefaultParams()
+		params.BeepTimeout = 500 * time.Millisecond
+
+		// 600 ms of silence — outlasts the beep timeout with no tone present.
+		audio := buildAudio(silent, framesForDuration(600*time.Millisecond))
+
+		beep, done := feedBeepChunked(New(params), audio, frameSizeBytes)
+		if !done {
+			t.Fatal("expected FeedBeep to terminate at the beep timeout")
+		}
+		if beep.Detected {
+			t.Fatal("expected no beep detection (timeout)")
+		}
+	})
+
+	t.Run("matches WaitForBeep across chunkings", func(t *testing.T) {
+		params := DefaultParams()
+		params.BeepTimeout = 3000 * time.Millisecond
+		audio := buildAudio(silent, 10, beepTone, 10, silent, 10)
+
+		want := New(params).WaitForBeep(context.Background(), bytes.NewReader(audio))
+		if !want.Detected {
+			t.Fatalf("WaitForBeep: expected beep to be detected")
+		}
+
+		for _, chunk := range []int{1, frameSizeBytes, 1000, len(audio)} {
+			t.Run(fmt.Sprintf("chunk_%d", chunk), func(t *testing.T) {
+				got, done := feedBeepChunked(New(params), audio, chunk)
+				if !done {
+					t.Fatal("expected a terminal beep result")
+				}
+				if got != want {
+					t.Errorf("FeedBeep result %+v != WaitForBeep result %+v", got, want)
+				}
+			})
+		}
+	})
 }
 
 func TestAnalyzer_MachineBeepDisabled(t *testing.T) {

@@ -1523,11 +1523,29 @@ func (l *SIPLeg) SetAMDTap(w io.Writer) {
 	l.amdTap = w
 }
 
-// ClearAMDTap removes the AMD tap.
-func (l *SIPLeg) ClearAMDTap() {
+// ClearAMDTapIf removes the AMD tap only if w is the writer currently
+// installed, reporting whether it was. A second AMD start replaces the tap
+// outright, so an unconditional clear would let the superseded analysis rip out
+// the live one's tap when its own deadline expires. The identity check makes
+// the clear a no-op for a writer that no longer owns the slot.
+func (l *SIPLeg) ClearAMDTapIf(w io.Writer) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.amdTap != w {
+		return false
+	}
 	l.amdTap = nil
+	return true
+}
+
+// OwnsAMDTap reports whether w is the AMD tap currently installed, without
+// clearing it. A machine verdict keeps its tap installed through the beep
+// window, so it gates its publish on ownership through this check rather than
+// the clearing ClearAMDTapIf.
+func (l *SIPLeg) OwnsAMDTap(w io.Writer) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.amdTap == w
 }
 
 // SetSpeakingTap sets a writer that receives decoded incoming PCM for

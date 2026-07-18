@@ -213,25 +213,119 @@ func TestAMD_Disabled(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
 }
 
-// TestAMD_InvalidParams verifies that invalid AMD parameters are rejected.
-func TestAMD_InvalidParams(t *testing.T) {
-	instA := newTestInstance(t, "amd-invalid-a")
-	instB := newTestInstance(t, "amd-invalid-b")
+// TestAMD_TeardownMidAnalysis hangs a call up while AMD is still analysing and
+// pins the no-publish-on-teardown contract: a verdict for a torn-down call is
+// noise, and the leg already reports its own disconnect. It reddens if the
+// deadline goroutine's teardown path ever starts publishing.
+//
+// It is not the leak regression — a leaked analysis publishes nothing either,
+// so these assertions hold with or without the leak. The leak proof is
+// TestAMDDriver_WatchExitsOnLegTeardown, which observes the goroutine's return.
+func TestAMD_TeardownMidAnalysis(t *testing.T) {
+	instA := newTestInstance(t, "amd-teardown-a")
+	instB := newTestInstance(t, "amd-teardown-b")
 
-	// total_analysis_time < initial_silence_timeout should fail validation.
+	// Windows far longer than the call lives, so no threshold can be reached
+	// before the hangup — only teardown can end this analysis.
 	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
 		"type":   "sip",
 		"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
 		"codecs": []string{"PCMU"},
 		"amd": map[string]interface{}{
-			"initial_silence_timeout": 5000,
-			"total_analysis_time":     2000,
+			"initial_silence_timeout": 20000,
+			"greeting_duration":       20000,
+			"after_greeting_silence":  20000,
+			"total_analysis_time":     30000,
 		},
 	})
-	if createResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
 	}
-	createResp.Body.Close()
+	var outboundLeg legView
+	decodeJSON(t, createResp, &outboundLeg)
+
+	inboundLeg := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	answerResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inboundLeg.ID), nil)
+	if answerResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("answer: unexpected status %d", answerResp.StatusCode)
+	}
+	answerResp.Body.Close()
+
+	waitForLegState(t, instA.baseURL(), outboundLeg.ID, "connected", 5*time.Second)
+	waitForLegState(t, instB.baseURL(), inboundLeg.ID, "connected", 5*time.Second)
+
+	// Let RTP flow so the analysis is genuinely in flight, then hang up.
+	time.Sleep(500 * time.Millisecond)
+	if instA.collector.hasEvent(events.AMDResult, nil) {
+		t.Fatal("AMD reached a verdict before teardown — test cannot prove anything")
+	}
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundLeg.ID))
+
+	// Well past the point where a leaked analysis would have published.
+	time.Sleep(3 * time.Second)
+
+	if instA.collector.hasEvent(events.AMDResult, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundLeg.ID
+	}) {
+		t.Error("expected no amd.result after the leg was torn down mid-analysis")
+	}
+	if instA.collector.hasEvent(events.AMDBeep, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundLeg.ID
+	}) {
+		t.Error("expected no amd.beep after the leg was torn down mid-analysis")
+	}
+}
+
+// TestAMD_InvalidParams verifies that invalid AMD parameters are rejected.
+func TestAMD_InvalidParams(t *testing.T) {
+	instA := newTestInstance(t, "amd-invalid-a")
+	instB := newTestInstance(t, "amd-invalid-b")
+
+	tests := []struct {
+		name string
+		amd  map[string]interface{}
+	}{
+		{
+			name: "total < initial_silence",
+			amd: map[string]interface{}{
+				"initial_silence_timeout": 5000,
+				"total_analysis_time":     2000,
+			},
+		},
+		{
+			// A greeting window longer than the whole analysis window can never
+			// be reached, so the machine verdict is unreachable.
+			name: "total < greeting",
+			amd: map[string]interface{}{
+				"initial_silence_timeout": 1000,
+				"greeting_duration":       5000,
+				"total_analysis_time":     2000,
+			},
+		},
+		{
+			name: "total < after_greeting",
+			amd: map[string]interface{}{
+				"initial_silence_timeout": 1000,
+				"after_greeting_silence":  5000,
+				"total_analysis_time":     2000,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+				"type":   "sip",
+				"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+				"codecs": []string{"PCMU"},
+				"amd":    tt.amd,
+			})
+			if createResp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", createResp.StatusCode)
+			}
+			createResp.Body.Close()
+		})
+	}
 }
 
 // TestAMD_DefaultParams verifies that "amd": {} uses all defaults and produces a result.
@@ -389,14 +483,44 @@ func TestAMD_PostEndpoint_InvalidParams(t *testing.T) {
 
 	outID, _ := establishCall(t, instA, instB)
 
-	amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), map[string]interface{}{
-		"initial_silence_timeout": 5000,
-		"total_analysis_time":     2000,
-	})
-	if amdResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", amdResp.StatusCode)
+	tests := []struct {
+		name string
+		body map[string]interface{}
+	}{
+		{
+			name: "total < initial_silence",
+			body: map[string]interface{}{
+				"initial_silence_timeout": 5000,
+				"total_analysis_time":     2000,
+			},
+		},
+		{
+			name: "total < greeting",
+			body: map[string]interface{}{
+				"initial_silence_timeout": 1000,
+				"greeting_duration":       5000,
+				"total_analysis_time":     2000,
+			},
+		},
+		{
+			name: "total < after_greeting",
+			body: map[string]interface{}{
+				"initial_silence_timeout": 1000,
+				"after_greeting_silence":  5000,
+				"total_analysis_time":     2000,
+			},
+		},
 	}
-	amdResp.Body.Close()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), tt.body)
+			if amdResp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", amdResp.StatusCode)
+			}
+			amdResp.Body.Close()
+		})
+	}
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
 }

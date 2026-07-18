@@ -120,9 +120,13 @@ Originate an outbound SIP call.
 | `initial_silence_timeout` | integer | 2500 | Max milliseconds of silence before declaring `no_speech`. |
 | `greeting_duration` | integer | 1500 | Speech duration threshold (ms). Continuous/cumulative speech exceeding this value classifies the answerer as `machine`. |
 | `after_greeting_silence` | integer | 800 | Silence duration (ms) after initial speech to declare `human`. |
-| `total_analysis_time` | integer | 5000 | Hard analysis deadline (ms). If no determination is made within this window, the result is `not_sure`. |
+| `total_analysis_time` | integer | 5000 | Hard analysis deadline (ms). If no determination is made within this window, the result is `not_sure`. When `beep_timeout` is non-zero and the media stream stalls, the terminal event can be delayed by up to `beep_timeout` beyond this deadline: a single timer covers both the analysis and beep windows. |
 | `minimum_word_length` | integer | 100 | Minimum speech burst duration (ms) to count as a word. Shorter bursts are treated as noise. |
 | `beep_timeout` | integer | 0 | After detecting `machine`, continue listening up to this many ms for the voicemail beep tone (800–1200 Hz). `0` = beep detection disabled. |
+
+**Constraints** — params that cannot produce a verdict are rejected with `400` rather than silently analysing to `not_sure`: `total_analysis_time` must be greater than or equal to each of `initial_silence_timeout`, `greeting_duration` and `after_greeting_silence`. A threshold longer than the whole analysis window can never be reached, so such a call would always end `not_sure`.
+
+Omitted or `0` values fall back to the defaults above (for `beep_timeout`, `0` means beep detection is disabled); a negative value on any field is rejected with `400`.
 
 Examples:
 
@@ -2637,7 +2641,7 @@ The same request body is accepted by the VSI `webrtc_offer` command.
 
 Start answering machine detection on an already-connected SIP leg. This is an alternative to including the `amd` object in `POST /v1/legs` — use this endpoint when AMD was not enabled at call creation time.
 
-All AMD parameters are optional. An empty request body `{}` enables AMD with all defaults. See **AMD Parameters** above for the full parameter reference.
+All AMD parameters are optional. An empty request body `{}` enables AMD with all defaults. See **AMD Parameters** above for the full parameter reference, including the `total_analysis_time` constraints that reject self-defeating params with `400`.
 
 **Request:**
 
@@ -2656,7 +2660,7 @@ All AMD parameters are optional. An empty request body `{}` enables AMD with all
 ```
 
 **Errors:**
-- `400` — Invalid AMD params or leg is not a SIP leg
+- `400` — Invalid AMD params (a negative value on any field, or a `total_analysis_time` below `initial_silence_timeout`, `greeting_duration` or `after_greeting_silence`) or leg is not a SIP leg
 - `404` — Leg not found
 - `409` — Leg is not in `connected` state (AMD can only start on answered calls)
 
