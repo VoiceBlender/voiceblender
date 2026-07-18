@@ -504,3 +504,21 @@ func trimLeadingSilence(p []byte) []byte {
 	}
 	return p[start*2:]
 }
+
+func TestPlaybackReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"reached end of audio", nil, "completed"},
+		{"cancelled", context.Canceled, "stopped"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := playbackReason(tt.err); got != tt.want {
+				t.Errorf("playbackReason(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}

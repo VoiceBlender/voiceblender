@@ -300,6 +300,14 @@ type PlaybackStartedData struct {
 type PlaybackFinishedData struct {
 	LegRoomScope
 	PlaybackID string `json:"playback_id"`
+	// Reason is "completed" when the audio reached its end, or "stopped" when it
+	// did not — for any reason, including an app-initiated stop, a barge-in, or a
+	// leg teardown. Use the co-emitted leg.disconnected event to tell those apart.
+	Reason string `json:"reason"`
+	// PlayedMs is how much audio was actually written to the leg or room, in
+	// milliseconds. It counts output frames, so a repeated playback accumulates
+	// across iterations and this is not the source file's duration.
+	PlayedMs int `json:"played_ms"`
 }
 
 type PlaybackErrorData struct {
@@ -318,6 +326,13 @@ type TTSStartedData struct {
 type TTSFinishedData struct {
 	LegRoomScope
 	TTSID string `json:"tts_id"`
+	// Reason is "completed" when the utterance reached its end, or "stopped" when
+	// it did not — for any reason, including an app-initiated stop, a barge-in, or
+	// a leg teardown. Use the co-emitted leg.disconnected event to tell those apart.
+	Reason string `json:"reason"`
+	// PlayedMs is how much audio was actually written to the leg or room, in
+	// milliseconds. It counts output frames, not the synthesized audio's duration.
+	PlayedMs int `json:"played_ms"`
 }
 
 type TTSErrorData struct {

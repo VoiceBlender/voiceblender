@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/zaf/g711"
 )
 
@@ -890,6 +891,21 @@ func TestRepeat_ThreePlaysThreeTimes(t *testing.T) {
 	if output.Len() != 320*3 {
 		t.Errorf("output size = %d, want %d", output.Len(), 320*3)
 	}
+	// The count accumulates across every repeat iteration rather than resetting
+	// per iteration: 3 iterations x one 20ms frame.
+	if got := p.PlayedMillis(); got != 60 {
+		t.Errorf("PlayedMillis() = %d, want 60 (3 iterations x one 20ms frame)", got)
+	}
+
+	// Replaying on the same Player resets the count instead of accumulating
+	// across plays.
+	output.Reset()
+	if err := p.PlayAt8kHz(context.Background(), &output, ts.URL+"/audio.wav", "audio/wav", 1); err != nil {
+		t.Fatalf("second play: unexpected error: %v", err)
+	}
+	if got := p.PlayedMillis(); got != 20 {
+		t.Errorf("PlayedMillis() after second play = %d, want 20 - counter did not reset", got)
+	}
 }
 
 func TestRepeat_InfiniteStopsOnCancel(t *testing.T) {
@@ -1024,4 +1040,131 @@ func BenchmarkResampleLinear_8kTo16k(b *testing.B) {
 func init() {
 	// Suppress unused import error
 	_ = io.Discard
+}
+
+// TestPlayedMillis covers one case per stream function, matching the three
+// counter sites in the player, so the table and the player cannot drift apart.
+// Each case derives the expected duration from the bytes actually written, so a
+// missing increment at any one site fails that case and only that case.
+func TestPlayedMillis(t *testing.T) {
+	tests := []struct {
+		name      string
+		frameSize int // output bytes per ptime frame at the target rate
+		stream    func(p *Player, w io.Writer) error
+	}{
+		{
+			name:      "raw PCM",
+			frameSize: 640, // 16kHz: 320 samples
+			stream: func(p *Player, w io.Writer) error {
+				// 3200 samples of 16kHz mono PCM = 200ms = 10 frames.
+				audio := make([]byte, 3200*2)
+				return p.streamRawPCM(context.Background(), bytes.NewReader(audio), w, 16000, 16000)
+			},
+		},
+		{
+			name:      "MP3",
+			frameSize: 640, // 16kHz: 320 samples
+			stream: func(p *Player, w io.Writer) error {
+				return p.streamMP3(context.Background(), bytes.NewReader(makeTestMP3(4)), w, 16000)
+			},
+		},
+		{
+			name:      "WAV",
+			frameSize: 320, // 8kHz: 160 samples
+			stream: func(p *Player, w io.Writer) error {
+				// 1600 samples of 8kHz mono PCM = 200ms = 10 frames.
+				wav := buildWAV(1, 1, 8000, 16, make([]byte, 1600*2))
+				return p.streamWAV(context.Background(), bytes.NewReader(wav), w, 8000)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPlayer(slog.Default())
+			var output bytes.Buffer
+			if err := tt.stream(p, &output); err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			frames := output.Len() / tt.frameSize
+			if frames == 0 {
+				t.Fatal("expected at least one output frame")
+			}
+			want := frames * mixer.Ptime
+			if got := p.PlayedMillis(); got != want {
+				t.Errorf("PlayedMillis() = %d, want %d (%d frames written)", got, want, frames)
+			}
+		})
+	}
+}
+
+// TestPlayedMillis_MidStreamCancel proves a truncated play reports only what it
+// actually wrote, not the source audio's full duration.
+func TestPlayedMillis_MidStreamCancel(t *testing.T) {
+	const outFrameSize = 640 // 16kHz
+	// 100 MP3 frames is ~2.6s of source audio — far more than we will play.
+	mp3Data := makeTestMP3(100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p := NewPlayer(slog.Default())
+
+	var output syncBuffer
+	go func() {
+		for output.Len() < 5*outFrameSize {
+			// spin until several frames are written
+		}
+		cancel()
+	}()
+
+	err := p.streamMP3(ctx, bytes.NewReader(mp3Data), &output, 16000)
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+
+	frames := output.Len() / outFrameSize
+	played := p.PlayedMillis()
+	if played == 0 {
+		t.Fatal("expected non-zero played time before cancel")
+	}
+	// Every write is followed by exactly one increment on the same goroutine, so
+	// this is an exact equality, not an approximation.
+	if want := frames * mixer.Ptime; played != want {
+		t.Errorf("PlayedMillis() = %d, want %d (%d frames written)", played, want, frames)
+	}
+	// The whole point: a cut-short play must not report the full source duration.
+	if played >= 2000 {
+		t.Errorf("PlayedMillis() = %d, expected a truncated play well under the ~2600ms source", played)
+	}
+}
+
+// TestPlayedMillis_ResetsBetweenPlays proves the counter does not accumulate
+// across separate plays on the same Player.
+func TestPlayedMillis_ResetsBetweenPlays(t *testing.T) {
+	const outFrameSize = 320                                  // 8kHz
+	longWAV := buildWAV(1, 1, 8000, 16, make([]byte, 1600*2)) // 200ms
+	shortWAV := buildWAV(1, 1, 8000, 16, make([]byte, 480*2)) // 60ms
+
+	p := NewPlayer(slog.Default())
+	var output bytes.Buffer
+
+	if err := p.PlayReaderAtRate(context.Background(), &output, bytes.NewReader(longWAV), "audio/wav", 8000); err != nil {
+		t.Fatalf("first play: %v", err)
+	}
+	first := p.PlayedMillis()
+	if first == 0 {
+		t.Fatal("first play reported 0ms")
+	}
+
+	output.Reset()
+	if err := p.PlayReaderAtRate(context.Background(), &output, bytes.NewReader(shortWAV), "audio/wav", 8000); err != nil {
+		t.Fatalf("second play: %v", err)
+	}
+	second := p.PlayedMillis()
+
+	if want := (output.Len() / outFrameSize) * mixer.Ptime; second != want {
+		t.Errorf("PlayedMillis() after second play = %d, want %d — counter did not reset", second, want)
+	}
+	if second >= first {
+		t.Errorf("second (shorter) play reported %dms, want less than the first play's %dms", second, first)
+	}
 }

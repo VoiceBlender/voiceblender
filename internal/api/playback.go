@@ -18,6 +18,19 @@ import (
 	"github.com/google/uuid"
 )
 
+// playbackReason classifies why a playback or TTS utterance stopped, for the
+// finished events. It is only called on the non-error path, which is reached for
+// a nil error (the audio reached its end) or for context.Canceled. Anything that
+// is not a clean end is reported as "stopped" — an app-initiated stop and a leg
+// teardown both cancel the same context and cannot be told apart here;
+// consumers use the co-emitted leg.disconnected event for that.
+func playbackReason(err error) string {
+	if err == nil {
+		return "completed"
+	}
+	return "stopped"
+}
+
 // playbackState tracks per-leg and per-room playback players.
 // Nested map: entity_id → playback_id → *Player
 var (
@@ -131,6 +144,8 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
 				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 				PlaybackID:   playbackID,
+				Reason:       playbackReason(err),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()
@@ -264,6 +279,8 @@ func (s *Server) doStartRoomPlay(roomID string, req PlaybackRequest) (*PlaybackS
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
 				LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 				PlaybackID:   playbackID,
+				Reason:       playbackReason(err),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()
