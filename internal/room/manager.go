@@ -2,13 +2,16 @@ package room
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/bridge"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/google/uuid"
 )
 
@@ -19,6 +22,48 @@ type Manager struct {
 	legMgr  *leg.Manager
 	bus     *events.Bus
 	log     *slog.Logger
+
+	// onLegPanicTeardown, when set, is notified after a leg was torn down
+	// following a mixer IO panic. hookMu guards it alone — never take it and
+	// m.mu together, and never call the hook under either.
+	hookMu             sync.Mutex
+	onLegPanicTeardown func(l leg.Leg, roomID, reason string)
+}
+
+// legPanicReason is the disconnect reason reported for a leg torn down after
+// its mixer IO loop panicked. It reaches the wire as cdr.reason on
+// leg.disconnected, so it is a public value (documented in API.md).
+const legPanicReason = "mixer_panic"
+
+// SetOnLegPanicTeardown registers a callback invoked after a leg has been
+// removed from its room and hung up because its mixer IO loop panicked.
+// Passing nil disables it.
+//
+// This is NOT a general leg-termination notification: it fires on exactly one
+// path, tearDownPanickedLeg, and never for Delete, an API hangup or shutdown —
+// those have an API-layer caller already positioned to finish the job. The
+// mixer-panic teardown is the only leg-terminal path the room layer triggers
+// asynchronously by itself, which is why it needs the owner told. A future
+// room-side terminal path is NOT covered by this hook.
+//
+// The manager holds no lock while invoking fn. fn runs on the teardown
+// goroutine inside its recover(), so a panicking callback is contained.
+//
+// fn receives the room the leg was removed from. The removal has already
+// cleared the leg's own RoomID, so the hook is the only place that still knows
+// it — without it the owner cannot run the room-scoped half of the teardown.
+func (m *Manager) SetOnLegPanicTeardown(fn func(l leg.Leg, roomID, reason string)) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	m.onLegPanicTeardown = fn
+}
+
+// legPanicTeardownHook snapshots the hook under hookMu and returns it, so the
+// caller can invoke it with no lock held.
+func (m *Manager) legPanicTeardownHook() func(l leg.Leg, roomID, reason string) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	return m.onLegPanicTeardown
 }
 
 func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager {
@@ -36,18 +81,184 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 		id = uuid.New().String()
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Built before the lock: NewRoom only allocates and the mixer starts no
+	// goroutines until a participant joins, so a candidate that loses the
+	// exists-check costs an allocation and nothing else. Wiring the panic hook
+	// out here also keeps Mixer.hookMu out of m.mu's lock order, and means the
+	// room is never reachable without its hook.
+	r := NewRoom(id, appID, sampleRate, m.log)
+	m.wireMixerPanicHook(r)
 
+	m.mu.Lock()
 	if _, exists := m.rooms[id]; exists {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("room %s already exists", id)
 	}
-
-	r := NewRoom(id, appID, sampleRate, m.log)
 	m.rooms[id] = r
+	m.mu.Unlock()
+
+	// Publish with m.mu released. Bus.Publish runs every handler synchronously
+	// on this goroutine and sync.RWMutex is not reentrant, so a subscriber that
+	// calls back into the manager — Get, List — would block forever. The insert
+	// above already happened, so the room is discoverable before the event
+	// announces it. Same shape as CreateBridge/DeleteBridge.
 	m.log.Info("room created", "room_id", id, "sample_rate", r.SampleRate)
 	m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: id, AppID: appID}})
 	return r, nil
+}
+
+// wireMixerPanicHook makes the room's mixer report a participant whose IO
+// loop panicked, so whoever owns that participant can tear it down instead of
+// leaving a dead audio path wired into a live room. Must be called for every
+// room the manager owns, right after NewRoom.
+//
+// The hook fires on the panicking mixer goroutine as its last act before that
+// goroutine exits, so teardown must not run inline: RemoveLeg and DeleteBridge
+// publish on the bus, and WhatsAppLeg.Hangup hands ctx straight to Bye and can
+// block on a non-responsive peer. (SIPLeg.Hangup returns immediately — its BYE
+// is fire-and-forget — but it is not the only implementation.) Dispatch
+// asynchronously, the same way Delete fans its hangups out.
+func (m *Manager) wireMixerPanicHook(r *Room) {
+	roomID := r.ID
+	r.Mixer().SetOnParticipantPanic(func(p *mixer.Participant, loop string) {
+		go m.tearDownPanickedParticipant(roomID, p, loop)
+	})
+}
+
+// tearDownPanickedParticipant routes a panicking mixer participant to the
+// component that owns it.
+//
+// The mixer's participant map is not leg-only: synthetic bridge endpoints
+// (attachBridge) and the API layer's WebSocket, agent, playback and TTS
+// sources all register there too, and each class is owned — and cleaned up —
+// by something different. Treating every participant as a leg would fabricate
+// leg.left_room, a documented webhook, for IDs that were never legs, while
+// cleaning up nothing that actually leaked.
+func (m *Manager) tearDownPanickedParticipant(roomID string, p *mixer.Participant, loop string) {
+	participantID := p.ID
+
+	// This runs on its own goroutine, so a panic here — Hangup reaching into
+	// a wedged SIP stack, say — would take the process down. That is the exact
+	// failure this teardown exists to contain, so it must contain its own.
+	defer func() {
+		if rec := recover(); rec != nil {
+			m.log.Error("panic tearing down panicked mixer participant",
+				"room_id", roomID,
+				"participant_id", participantID,
+				"panic", rec,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
+	if bridgeID, ok := bridgeIDFromParticipant(participantID); ok {
+		m.tearDownPanickedBridge(roomID, bridgeID, loop)
+		return
+	}
+	if l, ok := m.legMgr.Get(participantID); ok {
+		m.tearDownPanickedLeg(roomID, l, p, loop)
+		return
+	}
+
+	// A ws/agent/playback/TTS source: owned by the API layer, which the room
+	// package cannot call into. The mixer has already closed the participant's
+	// reader and writer, which is what unblocks those owners — a closed egress
+	// pipe drops a ws client's send loop, a closed playback pipe fails the
+	// player's next write — so each runs its own cleanup and publishes its own
+	// event. There is nothing for the room layer to remove or hang up.
+	m.log.Warn("mixer participant panicked; no leg or bridge owns it",
+		"room_id", roomID,
+		"participant_id", participantID,
+		"loop", loop,
+	)
+}
+
+// tearDownPanickedLeg removes a leg whose mixer IO loop panicked from its
+// room and hangs it up. Further operation of that leg is unsafe: its audio
+// path is gone, so leaving it connected would strand the caller on a deaf,
+// mute call with no operator signal.
+//
+// p is the participant instance that panicked, and teardown is elected on it,
+// not on the leg's presence in roomID. This runs on its own goroutine, so the
+// leg may since have moved rooms, or left and returned to roomID, and be live
+// on a fresh participant; the leg would then still be a member here and a
+// membership-keyed election would hang up that healthy call and report it as
+// a mixer panic. RemoveLegIfParticipant resolves the identity and removes
+// under the room's lock in one step, so nothing lands in between.
+//
+// Removing nothing means the panicked path is already detached — by a move,
+// a room delete, or an API removal — and each of those owns its own teardown.
+// This path then does nothing at all: no hangup, no event, no hook.
+func (m *Manager) tearDownPanickedLeg(roomID string, l leg.Leg, p *mixer.Participant, loop string) {
+	legID := l.ID()
+
+	r, ok := m.Get(roomID)
+	if !ok {
+		m.log.Debug("room of panicked leg already deleted",
+			"room_id", roomID, "leg_id", legID)
+		return
+	}
+	if !r.RemoveLegIfParticipant(legID, p) {
+		m.log.Debug("panicked leg's audio path already replaced or detached",
+			"room_id", roomID, "leg_id", legID, "loop", loop)
+		return
+	}
+
+	m.log.Warn("tearing down leg after mixer IO panic",
+		"room_id", roomID,
+		"leg_id", legID,
+		"loop", loop,
+	)
+
+	// RemoveLegIfParticipant did the removal RemoveLeg would have; this is the
+	// event that goes with it.
+	m.bus.Publish(events.LegLeftRoom, &events.LegLeftRoomData{
+		LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: l.AppID()},
+	})
+	if err := l.Hangup(context.Background()); err != nil {
+		m.log.Error("hanging up panicked leg",
+			"room_id", roomID, "leg_id", legID, "error", err)
+	}
+
+	// Tell the owner, if one registered. RemoveLeg and Hangup above keep the
+	// room layer self-sufficient with no hook installed; the owner adds the
+	// teardown the room package cannot reach — the CDR, the span, the per-leg
+	// webhook and the leg manager entry, plus the room-scoped cleanup that
+	// hangs off roomID (the room agent and the room recording).
+	if fn := m.legPanicTeardownHook(); fn != nil {
+		fn(l, roomID, legPanicReason)
+	}
+}
+
+// tearDownPanickedBridge tears down the whole bridge behind a panicking
+// synthetic bridge participant.
+//
+// Letting the mixer drop the participant is not enough: only detachBridge
+// decrements the room's bridgeRefs, so a dead endpoint would keep
+// mixerShouldRun() true and this room's mixer ticking forever behind an
+// endpoint nobody reads, and the peer room would keep pushing audio into a
+// conduit with no far side. DeleteBridge does the whole job — deregister,
+// detach from both rooms, close both endpoints, publish room.unbridged — and
+// its registry delete is the exactly-once gate for the case where both
+// endpoints panic at once.
+func (m *Manager) tearDownPanickedBridge(roomID, bridgeID, loop string) {
+	m.log.Warn("tearing down bridge after mixer IO panic",
+		"room_id", roomID,
+		"bridge_id", bridgeID,
+		"loop", loop,
+	)
+
+	err := m.DeleteBridge(bridgeID)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrBridgeNotFound):
+		// The peer endpoint's panic, or a concurrent delete, got there first.
+		m.log.Debug("panicked bridge already torn down",
+			"room_id", roomID, "bridge_id", bridgeID)
+	default:
+		m.log.Error("deleting panicked bridge",
+			"room_id", roomID, "bridge_id", bridgeID, "error", err)
+	}
 }
 
 func (m *Manager) Get(id string) (*Room, bool) {
@@ -98,6 +309,15 @@ func (m *Manager) Delete(id string) error {
 		wg.Add(1)
 		go func(l leg.Leg) {
 			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					m.log.Error("panic hanging up leg during room delete",
+						"leg_id", l.ID(),
+						"panic", rec,
+						"stack", string(debug.Stack()),
+					)
+				}
+			}()
 			l.Hangup(context.Background())
 		}(l)
 	}
@@ -246,15 +466,32 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 		return fmt.Errorf("room %s not found", fromRoomID)
 	}
 
-	// Get or create target room.
-	m.mu.Lock()
-	toRoom, ok := m.rooms[toRoomID]
+	// Get or create target room. Moving into a room that already exists is the
+	// common path, so take the read fast path first and only allocate on a
+	// miss; a candidate that loses the race below is safe to drop because
+	// nothing has been started on it.
+	toRoom, ok := m.Get(toRoomID)
+	created := false
 	if !ok {
-		toRoom = NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
-		m.rooms[toRoomID] = toRoom
+		candidate := NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
+		m.wireMixerPanicHook(candidate)
+
+		m.mu.Lock()
+		// Re-check under the lock: without it, two concurrent moves into the
+		// same absent room would both insert and both publish room.created.
+		if toRoom, ok = m.rooms[toRoomID]; !ok {
+			toRoom = candidate
+			m.rooms[toRoomID] = candidate
+			created = true
+		}
+		m.mu.Unlock()
+	}
+	// Publish with m.mu released, for the reason Create documents. Only the
+	// goroutine that actually inserted publishes, which keeps room.created
+	// exactly-once.
+	if created {
 		m.bus.Publish(events.RoomCreated, &events.RoomCreatedData{RoomScope: events.RoomScope{RoomID: toRoomID, AppID: toRoom.AppID}})
 	}
-	m.mu.Unlock()
 
 	l, ok := fromRoom.DetachLeg(legID)
 	if !ok {

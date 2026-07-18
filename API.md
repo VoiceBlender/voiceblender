@@ -3012,6 +3012,7 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `room_deleted` | Leg was in a room that was deleted via `DELETE /v1/rooms/{id}` |
 | `transfer_completed` | Leg ended because a transfer it initiated reached terminal 2xx |
 | `rejected` | Inbound leg rejected by API via `DELETE /v1/legs/{id}` with `reason` (also see other reason values from the rejection mapping table) |
+| `mixer_panic` | The leg's audio path failed inside the mixer and the leg was torn down. The leg had already left its room (`leg.left_room`); it is deaf and mute at this point, so it is hung up rather than left connected. Its room, and any other legs in it, are unaffected |
 
 ---
 

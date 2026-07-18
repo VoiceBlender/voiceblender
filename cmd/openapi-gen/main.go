@@ -772,14 +772,6 @@ func webhookNestedSchema(t reflect.Type, nullable bool, parentFieldName string) 
 		if desc, ok := webhookNestedFieldDescs[descKey]; ok {
 			fieldSchema.set("description", desc)
 		}
-		// Apply disconnect reason enum.
-		if typeName == "CallCDR" && jsonName == "reason" {
-			enumSeq := newSeq()
-			for _, v := range api.DisconnectReasonEnum {
-				enumSeq.add(v)
-			}
-			fieldSchema.set("enum", enumSeq)
-		}
 		props.set(jsonName, fieldSchema)
 		if !omit {
 			requiredSeq.add(jsonName)
