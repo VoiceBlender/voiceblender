@@ -338,6 +338,9 @@ type RecordingFinishedData struct {
 	File             string                           `json:"file"`
 	MultiChannelFile string                           `json:"multi_channel_file,omitempty"`
 	Channels         map[string]recording.ChannelInfo `json:"channels,omitempty"`
+	// OmittedLegs names participants whose audio is missing from the merged
+	// file because their capture failed. Absent when the recording is complete.
+	OmittedLegs []string `json:"omitted_legs,omitempty"`
 }
 
 type RecordingPausedData struct {

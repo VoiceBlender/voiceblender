@@ -31,6 +31,15 @@ type MultiChannelInput struct {
 type MultiChannelResult struct {
 	FilePath string
 	Channels map[string]ChannelInfo
+	// OmittedLegs names participants who took part but are absent from the
+	// merged file, because their capture produced nothing to merge. It is empty
+	// when every participant made it in.
+	//
+	// MergeMultiChannel never sets this: it merges exactly the inputs it is
+	// given and has no way to know a participant was dropped before it was
+	// called. Whoever selects the inputs fills it in, and only that caller can
+	// distinguish a complete recording from a partial one — so it must say.
+	OmittedLegs []string
 }
 
 // MergeMultiChannel reads per-participant mono WAV files and produces a single
@@ -83,14 +92,25 @@ func MergeMultiChannel(dir string, inputs []MultiChannelInput, totalDuration tim
 	filename := fmt.Sprintf("%s_multichannel_%s.wav",
 		time.Now().Format("20060102_150405"), uuid.New().String()[:8])
 	outPath := filepath.Join(dir, filename)
-	outFile, err := os.Create(outPath)
+	// The merged output is staged next to its final name and only renamed there
+	// once its bytes are durable, so a caller listing the directory never sees a
+	// half-written merge at outPath.
+	staged, err := createStagedFile(outPath)
 	if err != nil {
 		return nil, fmt.Errorf("create output: %w", err)
 	}
-	defer outFile.Close()
+	outFile := staged.f
 
 	enc := wav.NewEncoder(outFile, sampleRate, 16, numChannels, 1)
-	defer enc.Close()
+	// Until the merge reaches its finalize step below, any return is a failure
+	// and must leave nothing behind at either name.
+	finalized := false
+	defer func() {
+		if !finalized {
+			enc.Close()
+			discardTemp(outFile, staged.tmpPath)
+		}
+	}()
 
 	// Read buffers — one per channel.
 	const frameSamples = 320 // 20ms at 16kHz
@@ -159,6 +179,17 @@ func MergeMultiChannel(dir string, inputs []MultiChannelInput, totalDuration tim
 		if werr := enc.Write(outBuf); werr != nil {
 			return nil, fmt.Errorf("write merged frame: %w", werr)
 		}
+	}
+
+	// enc.Close rewrites the RIFF/data size header, so it has to complete before
+	// the file is synced and renamed into place.
+	finalized = true
+	if err := enc.Close(); err != nil {
+		discardTemp(outFile, staged.tmpPath)
+		return nil, fmt.Errorf("close merged output: %w", err)
+	}
+	if err := publishFile(outFile, staged.tmpPath, staged.finalPath); err != nil {
+		return nil, fmt.Errorf("publish merged output: %w", err)
 	}
 
 	// Build channel metadata.

@@ -4536,7 +4536,7 @@ x-webhooks:
                                         type: string
                                     file:
                                         type: string
-                                        description: Recording file path or S3 URI
+                                        description: Recording file path or S3 URI — does not exist yet; the path only appears when the recording stops
     recording.finished:
         post:
             summary: Recording ended
@@ -4564,6 +4564,11 @@ x-webhooks:
                                         type: object
                                         additionalProperties:
                                             $ref: '#/components/schemas/ChannelInfo'
+                                    omitted_legs:
+                                        type: array
+                                        items:
+                                            type: string
+                                        description: Participants whose audio is missing from multi_channel_file because their capture failed. Absent when the recording is complete
     recording.paused:
         post:
             summary: Recording paused (audio replaced with silence)

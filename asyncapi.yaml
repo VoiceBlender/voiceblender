@@ -5160,7 +5160,6 @@ components:
                     type: string
             required:
                 - status
-                - file
         RecordingStopRoomResult:
             type: object
             properties:
@@ -5174,9 +5173,12 @@ components:
                     type: object
                     additionalProperties:
                         $ref: '#/components/schemas/ChannelInfo'
+                omitted_legs:
+                    type: array
+                    items:
+                        type: string
             required:
                 - status
-                - file
         RegistrationView:
             type: object
             properties:

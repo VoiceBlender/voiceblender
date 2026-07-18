@@ -28,11 +28,14 @@ func TestRecorder_StartStop(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	// Provide PCM data to read.
-	pcm := generatePCM(8000, 1) // 1 second of silence
-	reader := bytes.NewReader(pcm)
+	// The reader hands over one frame and then never ends, so the capture is
+	// still running when IsRecording is checked, and a frame has provably
+	// reached the encoder before Stop — a capture that wrote nothing is
+	// discarded, so without the handover this would be racing the guard rather
+	// than pinning the happy path.
+	rd := &cancelOnlyReader{first: make(chan struct{})}
 
-	fpath, err := r.Start(context.Background(), reader, dir)
+	fpath, err := r.Start(context.Background(), rd, dir)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -42,6 +45,8 @@ func TestRecorder_StartStop(t *testing.T) {
 	if !r.IsRecording() {
 		t.Error("expected IsRecording=true")
 	}
+
+	<-rd.first
 
 	path := r.Stop()
 	r.Wait()
@@ -61,6 +66,8 @@ func TestRecorder_StartStop(t *testing.T) {
 	if info.Size() == 0 {
 		t.Error("expected non-empty WAV file")
 	}
+	assertNoStagingResidue(t, dir)
+	assertPublishedMode(t, fpath)
 }
 
 func TestRecorder_DoubleStart(t *testing.T) {
@@ -416,6 +423,35 @@ func (r *syncPipeReader) Read(p []byte) (int, error) {
 		return n, nil
 	case <-r.done:
 		return 0, io.EOF
+	}
+}
+
+// TryRead mirrors the api package's pipeReader.TryRead: non-blocking, buffered
+// remainder first, io.EOF only once closed and drained. It makes syncPipeReader
+// usable as a stereo companion channel.
+func (r *syncPipeReader) TryRead(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	select {
+	case data, ok := <-r.ch:
+		if !ok {
+			return 0, io.EOF
+		}
+		n := copy(p, data)
+		if n < len(data) {
+			r.buf = data[n:]
+		}
+		return n, nil
+	default:
+	}
+	select {
+	case <-r.done:
+		return 0, io.EOF
+	default:
+		return 0, nil
 	}
 }
 

@@ -106,16 +106,17 @@ func WebhookFieldDescriptions() map[string]string {
 		"tts.error.error":      "Error message",
 
 		// recording
-		"recording.started.leg_id":   "Leg identifier",
-		"recording.started.room_id":  "Room identifier",
-		"recording.started.file":     "Recording file path or S3 URI",
-		"recording.finished.leg_id":  "Leg identifier",
-		"recording.finished.room_id": "Room identifier",
-		"recording.finished.file":    "Recording file path or S3 URI",
-		"recording.paused.leg_id":    "Leg identifier",
-		"recording.paused.room_id":   "Room identifier",
-		"recording.resumed.leg_id":   "Leg identifier",
-		"recording.resumed.room_id":  "Room identifier",
+		"recording.started.leg_id":        "Leg identifier",
+		"recording.started.room_id":       "Room identifier",
+		"recording.started.file":          "Recording file path or S3 URI — does not exist yet; the path only appears when the recording stops",
+		"recording.finished.leg_id":       "Leg identifier",
+		"recording.finished.room_id":      "Room identifier",
+		"recording.finished.file":         "Recording file path or S3 URI",
+		"recording.finished.omitted_legs": "Participants whose audio is missing from multi_channel_file because their capture failed. Absent when the recording is complete",
+		"recording.paused.leg_id":         "Leg identifier",
+		"recording.paused.room_id":        "Room identifier",
+		"recording.resumed.leg_id":        "Leg identifier",
+		"recording.resumed.room_id":       "Room identifier",
 
 		// room
 		"room.created.room_id": "Room identifier",

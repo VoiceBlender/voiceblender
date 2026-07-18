@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,20 @@ type multiChannelState struct {
 	log          *slog.Logger
 }
 
+// noteParticipant gives legID a channel position, at most one across every
+// path that reaches it. A leg is recorded here even when its start failed, so
+// stopAll's walk can find it and report it omitted; the recorders guard in
+// startLeg cannot stand in for this check, because a failed start never enters
+// recorders and so a retry — failing or succeeding — reaches this again. A
+// second position would duplicate the leg's channel in the merge and leave
+// Channels, which is keyed by leg ID, naming only the later index.
+// Callers must hold mc.mu.
+func (mc *multiChannelState) noteParticipant(legID string) {
+	if !slices.Contains(mc.participantOrder, legID) {
+		mc.participantOrder = append(mc.participantOrder, legID)
+	}
+}
+
 // startLeg begins recording a single participant's audio via the mixer's recordTap.
 func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 	mc.mu.Lock()
@@ -69,6 +84,11 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 		mc.log.Error("multi-channel: failed to start per-leg recording", "leg_id", legID, "error", err)
 		m.ClearParticipantRecordTap(legID)
 		pw.Close()
+		// A leg that never started has no recorder and no file, so
+		// participantOrder is the only place stopAll's walk can find it —
+		// without this it vanishes from both the merge and omitted_legs, and
+		// the room looks complete.
+		mc.noteParticipant(legID)
 		return
 	}
 
@@ -81,7 +101,7 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 
 	mc.recorders[legID] = rec
 	mc.pipes[legID] = pw
-	mc.participantOrder = append(mc.participantOrder, legID)
+	mc.noteParticipant(legID)
 	mc.joinOffsets[legID] = time.Since(mc.startTime)
 	mc.log.Info("multi-channel: started per-leg recording", "leg_id", legID, "file", fpath)
 }
@@ -108,6 +128,19 @@ func (mc *multiChannelState) stopLeg(legID string, m mixerIface) {
 	fpath := rec.Stop()
 	rec.Wait()
 
+	// Stop reports the path the recording was headed for whether or not it got
+	// there: a capture that failed is discarded, so nothing exists at fpath.
+	// Recording it anyway would hand the merge a path it cannot open, and the
+	// merge fails on the first unreadable input — so one leg's failure would
+	// destroy every other participant's audio too. Leave it out instead; stopAll
+	// reports which legs went missing. Finalized, not Published, is the gate: a
+	// recording whose only failure was the closing directory sync is present and
+	// readable at fpath and belongs in the merge.
+	if !rec.Finalized() {
+		mc.log.Error("multi-channel: leg capture was discarded, dropping it from the merge", "leg_id", legID, "file", fpath)
+		return
+	}
+
 	mc.mu.Lock()
 	mc.files[legID] = fpath
 	mc.mu.Unlock()
@@ -133,21 +166,38 @@ func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResul
 	}
 
 	mc.mu.Lock()
-	// Build merge inputs in channel order.
-	inputs := make([]recording.MultiChannelInput, len(mc.participantOrder))
-	for i, legID := range mc.participantOrder {
-		inputs[i] = recording.MultiChannelInput{
-			LegID:      legID,
-			FilePath:   mc.files[legID],
-			JoinOffset: mc.joinOffsets[legID],
+	// Build merge inputs in channel order, over the legs that actually published.
+	// A leg whose capture was discarded has no file to merge; including it would
+	// fail the merge on its first unreadable input and take the whole room's
+	// audio down with it. The survivors are merged and the losses reported, so
+	// the caller can tell a complete recording from a partial one.
+	inputs := make([]recording.MultiChannelInput, 0, len(mc.participantOrder))
+	var omitted []string
+	for _, legID := range mc.participantOrder {
+		fpath, ok := mc.files[legID]
+		if !ok {
+			omitted = append(omitted, legID)
+			continue
 		}
+		inputs = append(inputs, recording.MultiChannelInput{
+			LegID:      legID,
+			FilePath:   fpath,
+			JoinOffset: mc.joinOffsets[legID],
+		})
 	}
 	mc.mu.Unlock()
 
+	// If nothing published, there is no recording to salvage: MergeMultiChannel
+	// refuses an empty input set, which fails the stop loudly rather than
+	// reporting an empty room as a success.
 	result, err := recording.MergeMultiChannel(mc.dir, inputs, totalDuration, mc.sampleRate)
 	if err != nil {
-		mc.log.Error("multi-channel: merge failed", "error", err)
+		mc.log.Error("multi-channel: merge failed", "error", err, "omitted_legs", omitted)
 		return nil, err
+	}
+	result.OmittedLegs = omitted
+	if len(omitted) > 0 {
+		mc.log.Warn("multi-channel: merged without the legs whose captures were discarded", "omitted_legs", omitted)
 	}
 
 	// Upload the merged file if storage backend is set.
@@ -399,19 +449,30 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	fpath := rec.Stop()
 	rec.Wait()
 
-	// Upload to storage backend if not plain file.
-	var backend storage.Backend
-	if info != nil {
-		backend = info.storage
-	}
-	location := fpath
-	if backend != nil {
-		loc, err := backend.Upload(context.Background(), fpath)
-		if err != nil {
-			s.Log.Error("storage upload failed", "leg_id", legID, "error", err)
-			// Keep local file and use local path.
-		} else {
-			location = loc
+	// Stop reports the path the capture was headed for whether or not it got
+	// there: a discarded capture leaves nothing at fpath, so there is no file to
+	// upload and none to name. Report the stop without a location rather than
+	// hand the caller a path that cannot be opened. Finalized, not Published, is
+	// the gate: a capture whose only failure was the closing directory sync is
+	// present and readable at fpath, so it is still reported and uploaded.
+	var location string
+	if !rec.Finalized() {
+		s.Log.Error("leg capture was discarded, stopping without a file", "leg_id", legID, "file", fpath)
+	} else {
+		// Upload to storage backend if not plain file.
+		var backend storage.Backend
+		if info != nil {
+			backend = info.storage
+		}
+		location = fpath
+		if backend != nil {
+			loc, err := backend.Upload(context.Background(), fpath)
+			if err != nil {
+				s.Log.Error("storage upload failed", "leg_id", legID, "error", err)
+				// Keep local file and use local path.
+			} else {
+				location = loc
+			}
 		}
 	}
 
@@ -429,7 +490,9 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 // RecordingStopLegResult is the success payload for stopping a leg recording.
 type RecordingStopLegResult struct {
 	Status string `json:"status"`
-	File   string `json:"file"`
+	// File is the path/URI of the capture. Absent when the capture was discarded
+	// and nothing was written — the stop still succeeded, but there is no file.
+	File string `json:"file,omitempty"`
 }
 
 // RecordingPauseResumeResult is the success payload for pause/resume on a leg
@@ -645,6 +708,16 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 	fpath := rec.Stop()
 	rec.Wait()
 
+	// A discarded capture leaves nothing at fpath — see stopLegRecording. The
+	// stop still succeeded, and any multi-channel result stands on its own, so
+	// report it without a location rather than as "no recording in progress".
+	// Finalized, not Published, is the gate: a capture whose only failure was the
+	// closing directory sync is present and readable at fpath.
+	if !rec.Finalized() {
+		s.Log.Error("room mix capture was discarded, stopping without a file", "room_id", id, "file", fpath)
+		return "", mcResult, true
+	}
+
 	location = fpath
 	if backend != nil {
 		loc, err := backend.Upload(context.Background(), fpath)
@@ -662,10 +735,15 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 // recording. multi_channel_file/channels are present only when the recording
 // was started with multi_channel=true.
 type RecordingStopRoomResult struct {
-	Status           string                           `json:"status"`
-	File             string                           `json:"file"`
+	Status string `json:"status"`
+	// File is the path/URI of the full mix. Absent when that capture was
+	// discarded and nothing was written; multi_channel_file may still be present.
+	File             string                           `json:"file,omitempty"`
 	MultiChannelFile string                           `json:"multi_channel_file,omitempty"`
 	Channels         map[string]recording.ChannelInfo `json:"channels,omitempty"`
+	// OmittedLegs names participants whose audio is missing from the merged
+	// file because their capture failed. Absent when the recording is complete.
+	OmittedLegs []string `json:"omitted_legs,omitempty"`
 }
 
 func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, error) {
@@ -685,8 +763,10 @@ func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, erro
 	if mcResult != nil {
 		res.MultiChannelFile = mcResult.FilePath
 		res.Channels = mcResult.Channels
+		res.OmittedLegs = mcResult.OmittedLegs
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	return res, nil
@@ -822,6 +902,7 @@ func (s *Server) stopRoomRecordingIfEmpty(roomID string) {
 	if mcResult != nil {
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	s.Log.Info("auto-stopped room recording (empty room)", "room_id", roomID, "file", location)
@@ -888,6 +969,37 @@ func (r *pipeReader) Read(p []byte) (int, error) {
 		return n, nil
 	case <-r.done:
 		return 0, io.EOF
+	}
+}
+
+// TryRead is a non-blocking counterpart to Read. It serves any buffered
+// remainder first, then one frame if the writer already queued it, and
+// otherwise returns (0, nil) rather than waiting for one. io.EOF is reported
+// only once the writer is closed and nothing is left buffered or queued.
+//
+// Callers that must keep to their own clock use this to drain the pipe for
+// whatever it has right now, so a silent writer never stalls the reader.
+func (r *pipeReader) TryRead(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	select {
+	case data := <-r.ch:
+		n := copy(p, data)
+		if n < len(data) {
+			r.buf = data[n:]
+		}
+		return n, nil
+	default:
+	}
+	// Nothing buffered and nothing queued: EOF only once the writer is gone.
+	select {
+	case <-r.done:
+		return 0, io.EOF
+	default:
+		return 0, nil
 	}
 }
 
