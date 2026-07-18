@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs clean vet test test-integration test-all download-greetings gen-human-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs clean vet test test-race check-static test-integration test-all download-greetings gen-human-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -22,6 +22,15 @@ vet:
 
 test: vet
 	go test ./internal/... -count=1 -timeout=60s
+
+# Mirrors the CI race gate. Needs cgo in the test toolchain (independent of the
+# static shipped binary).
+test-race: vet
+	go test -race ./internal/... -count=1 -timeout=180s
+
+# Mirrors the CI cgo-off guard: the whole default build tree must stay static.
+check-static:
+	CGO_ENABLED=0 go build ./...
 
 test-integration:
 	go test -tags integration -v -timeout 5m -skip TestConcurrentRoomsScale ./tests/integration/

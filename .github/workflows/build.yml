@@ -35,6 +35,10 @@ jobs:
 
   docker:
     needs: test
+    # Publishing needs DOCKERHUB_* secrets, which forks do not inherit. Run on the
+    # upstream repo, or on a fork that opts in by setting repo variable
+    # ENABLE_DOCKER_PUBLISH=true and adding its own DOCKERHUB_USERNAME/TOKEN secrets.
+    if: ${{ github.repository_owner == 'VoiceBlender' || vars.ENABLE_DOCKER_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
