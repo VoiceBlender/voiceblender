@@ -819,10 +819,13 @@ func main() {
 	schemaRegistry["WebhookEvent"] = newMap().set("type", "object").
 		set("description", "Event envelope delivered via HTTP POST to registered webhook URLs. "+
 			"Event-specific fields are flattened into the top-level object (no \"data\" wrapper). "+
-			"Includes X-Signature-256 header when a secret is configured.").
+			"Includes X-Signature-256 header when a secret is configured, and an X-Event-Id header "+
+			"equal to the event_id field.").
 		set("properties", newMap().
 			set("type", schemaRef("WebhookEventType")).
 			set("timestamp", newMap().set("type", "string").set("format", "date-time")).
+			set("event_id", newMap().set("type", "string").set("format", "uuid").
+				set("description", "Stable per-event idempotency key; identical across webhook retries and all subscribers.")).
 			set("instance_id", newMap().set("type", "string").set("description", "Instance identifier"))).
 		set("required", newSeq().add("type").add("timestamp"))
 

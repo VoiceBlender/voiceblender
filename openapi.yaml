@@ -3919,13 +3919,17 @@ components:
                 - sdp
         WebhookEvent:
             type: object
-            description: Event envelope delivered via HTTP POST to registered webhook URLs. Event-specific fields are flattened into the top-level object (no "data" wrapper). Includes X-Signature-256 header when a secret is configured.
+            description: Event envelope delivered via HTTP POST to registered webhook URLs. Event-specific fields are flattened into the top-level object (no "data" wrapper). Includes X-Signature-256 header when a secret is configured, and an X-Event-Id header equal to the event_id field.
             properties:
                 type:
                     $ref: '#/components/schemas/WebhookEventType'
                 timestamp:
                     type: string
                     format: date-time
+                event_id:
+                    type: string
+                    format: uuid
+                    description: Stable per-event idempotency key; identical across webhook retries and all subscribers.
                 instance_id:
                     type: string
                     description: Instance identifier

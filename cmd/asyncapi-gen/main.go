@@ -444,13 +444,13 @@ func eventMessage(ev api.EventMeta) *omap {
 		set("name", eventMsgName(string(ev.Type))).
 		set("title", ev.Summary).
 		set("summary", ev.Summary).
-		set("description", "Event payload shape is documented in openapi.yaml under x-webhooks/"+string(ev.Type)+". Full envelope: {type, timestamp, instance_id, ...event-specific fields}.").
+		set("description", "Event payload shape is documented in openapi.yaml under x-webhooks/"+string(ev.Type)+". Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.").
 		set("payload", newMap().set("$ref", openapiPath))
 }
 
 func lifecycleMessage(lf api.VSILifecycleFrame) *omap {
 	switch lf.Name {
-	case "connected", "ping":
+	case "connected":
 		return newMap().
 			set("name", lifecycleMsgName(lf.Name)).
 			set("title", lf.Description).
@@ -459,6 +459,16 @@ func lifecycleMessage(lf api.VSILifecycleFrame) *omap {
 				set("properties", newMap().
 					set("type", newMap().set("const", lf.Name))).
 				set("required", newSeq().add("type")))
+	case "ping":
+		return newMap().
+			set("name", lifecycleMsgName(lf.Name)).
+			set("title", lf.Description).
+			set("payload", newMap().
+				set("type", "object").
+				set("properties", newMap().
+					set("type", newMap().set("const", "ping")).
+					set("seq", newMap().set("type", "integer").set("description", "Per-connection monotonic counter starting at 1; resets on reconnect."))).
+				set("required", newSeq().add("type").add("seq")))
 	case "events_dropped":
 		return newMap().
 			set("name", lifecycleMsgName(lf.Name)).

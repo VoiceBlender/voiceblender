@@ -31,6 +31,11 @@ type WebhookRegistry struct {
 	workCh        chan deliveryJob
 	stopOnce      sync.Once
 	stopCh        chan struct{}
+
+	// obs is an optional, non-blocking observer for egress metrics. Guarded by
+	// r.mu: it is attached after construction, when events can already be in
+	// flight — see SetMetricsObserver. Nil when no collector is wired.
+	obs MetricsObserver
 }
 
 type deliveryJob struct {
@@ -65,6 +70,29 @@ func (r *WebhookRegistry) Stop() {
 	r.stopOnce.Do(func() { close(r.stopCh) })
 }
 
+// SetMetricsObserver attaches o as the egress metrics observer. It exists as
+// a setter rather than a constructor argument because the registry is built
+// before the metrics collector during startup. o must be non-blocking (see
+// MetricsObserver).
+//
+// The registry subscribes to the bus and starts its workers at construction,
+// so events can already be in flight when this is called; obs is therefore
+// guarded by r.mu like the webhook maps.
+func (r *WebhookRegistry) SetMetricsObserver(o MetricsObserver) {
+	r.mu.Lock()
+	r.obs = o
+	r.mu.Unlock()
+}
+
+// observer returns the current observer (possibly nil) without holding the
+// lock across the caller's use of it.
+func (r *WebhookRegistry) observer() MetricsObserver {
+	r.mu.RLock()
+	o := r.obs
+	r.mu.RUnlock()
+	return o
+}
+
 func (r *WebhookRegistry) SetLegWebhook(legID, url, secret string) {
 	r.mu.Lock()
 	r.legWebhooks[legID] = &Webhook{ID: legID, URL: url, Secret: secret}
@@ -90,11 +118,20 @@ func (r *WebhookRegistry) ClearRoomWebhook(roomID string) {
 }
 
 func (r *WebhookRegistry) enqueue(w *Webhook, e Event) {
+	obs := r.observer()
 	select {
 	case r.workCh <- deliveryJob{hook: w, event: e}:
+		if obs != nil {
+			obs.OnWebhookEnqueued(w.ID, string(e.Type))
+		}
 	case <-r.stopCh:
+		// Shutdown: the job is abandoned without an outcome. Deliberately
+		// uncounted — see the note on OnWebhookDelivered.
 	default:
 		r.log.Warn("webhook delivery queue full, dropping event", "webhook_id", w.ID, "event", e.Type)
+		if obs != nil {
+			obs.OnWebhookDropped(w.ID, string(e.Type))
+		}
 	}
 }
 
@@ -131,10 +168,24 @@ func (r *WebhookRegistry) worker() {
 	}
 }
 
+// deliver attempts a webhook POST with up to 3 tries and reports exactly one
+// terminal outcome to the metrics observer. Every path that leaves this
+// function increments exactly one outcome: "marshal_error", "request_error",
+// "success", or "exhausted". Note this is not a global
+// enqueued == sum(outcomes) identity — enqueue and worker abandon jobs at
+// shutdown without an outcome — but no exit from deliver is uncounted.
 func (r *WebhookRegistry) deliver(job deliveryJob) {
+	obs := r.observer()
+	outcome := func(o string) {
+		if obs != nil {
+			obs.OnWebhookDelivered(job.hook.ID, string(job.event.Type), o)
+		}
+	}
+
 	body, err := json.Marshal(job.event)
 	if err != nil {
 		r.log.Error("failed to marshal event", "error", err)
+		outcome("marshal_error")
 		return
 	}
 
@@ -147,9 +198,15 @@ func (r *WebhookRegistry) deliver(job deliveryJob) {
 		req, err := http.NewRequest(http.MethodPost, job.hook.URL, bytes.NewReader(body))
 		if err != nil {
 			r.log.Error("failed to create webhook request", "error", err)
+			outcome("request_error")
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if job.event.EventID != "" {
+			// Constant across all attempts: the id lives on the shared event,
+			// assigned at publish, so a receiver can dedupe retries on it.
+			req.Header.Set("X-Event-Id", job.event.EventID)
+		}
 
 		if job.hook.Secret != "" {
 			mac := hmac.New(sha256.New, []byte(job.hook.Secret))
@@ -165,9 +222,11 @@ func (r *WebhookRegistry) deliver(job deliveryJob) {
 		}
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			outcome("success")
 			return
 		}
 		r.log.Warn("webhook delivery got non-2xx", "url", job.hook.URL, "status", resp.StatusCode, "attempt", attempt+1)
 	}
 	r.log.Error("webhook delivery exhausted retries", "url", job.hook.URL, "event", job.event.Type)
+	outcome("exhausted")
 }

@@ -52,6 +52,18 @@ func isDropLogThreshold(n int64) bool {
 	return true
 }
 
+// vsiPingFrame builds the keepalive ping frame the VSI ping loop emits. The
+// counter field is named "seq" rather than "event_id": streamed events on this
+// socket carry an "event_id" of their own (the per-event idempotency key), and
+// one socket must not advertise two meanings for that name.
+func vsiPingFrame(seq int64) []byte {
+	b, _ := json.Marshal(map[string]interface{}{
+		"type": "ping",
+		"seq":  seq,
+	})
+	return b
+}
+
 func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	// Parse optional app_id regex filter before upgrade so we can reject with 400.
 	var appFilter *regexp.Regexp
@@ -91,6 +103,12 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 			// Buffer full → drop. Log on the leading edge of a drop burst
 			// (transition from 0 → 1) and on each power-of-10 threshold so
 			// sustained backpressure is visible without flooding the log.
+			// The counter, unlike the log, records every drop. This runs on
+			// the publisher's goroutine (Bus.Publish is synchronous), so it
+			// must stay non-blocking — a counter increment is.
+			if s.Metrics != nil {
+				s.Metrics.ObserveVSIDropped()
+			}
 			n := dropped.Add(1)
 			if isDropLogThreshold(n) {
 				s.Log.Warn("vsi: event buffer full, dropping event",
@@ -156,7 +174,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 
 	// Ping loop.
 	go func() {
-		var eventID int64
+		var seq int64
 		ticker := time.NewTicker(wsPingInterval)
 		defer ticker.Stop()
 		for {
@@ -165,11 +183,8 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 				if closed.Load() {
 					return
 				}
-				eventID++
-				msg, _ := json.Marshal(map[string]interface{}{
-					"type":     "ping",
-					"event_id": eventID,
-				})
+				seq++
+				msg := vsiPingFrame(seq)
 				if err := lw.writeText(msg); err != nil {
 					return
 				}

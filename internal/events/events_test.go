@@ -2,12 +2,15 @@ package events
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestNewBus(t *testing.T) {
@@ -95,9 +98,64 @@ func TestBus_PublishSetsTimestamp(t *testing.T) {
 	}
 }
 
+func TestBus_PublishSetsEventID(t *testing.T) {
+	bus := NewBus("test")
+	var got Event
+	bus.Subscribe(func(e Event) { got = e })
+
+	bus.Publish(RoomCreated, nil)
+
+	if _, err := uuid.Parse(got.EventID); err != nil {
+		t.Fatalf("EventID %q is not a UUID: %v", got.EventID, err)
+	}
+}
+
+// TestBus_EventIDUniquePerPublish guards uniqueness: distinct events must not
+// collide, or a consumer deduping on the key would discard real events.
+func TestBus_EventIDUniquePerPublish(t *testing.T) {
+	bus := NewBus("test")
+	var ids []string
+	bus.Subscribe(func(e Event) { ids = append(ids, e.EventID) })
+
+	const n = 100
+	for i := 0; i < n; i++ {
+		bus.Publish(RoomCreated, nil)
+	}
+
+	seen := make(map[string]struct{}, n)
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate EventID %q across distinct publishes", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != n {
+		t.Fatalf("got %d distinct ids across %d publishes", len(seen), n)
+	}
+}
+
+// TestBus_EventIDStableAcrossSubscribers guards the "assign once, before
+// fan-out" invariant: every subscriber of one Publish must observe the same id.
+func TestBus_EventIDStableAcrossSubscribers(t *testing.T) {
+	bus := NewBus("test")
+	var a, b Event
+	bus.Subscribe(func(e Event) { a = e })
+	bus.Subscribe(func(e Event) { b = e })
+
+	bus.Publish(RoomCreated, nil)
+
+	if a.EventID == "" || b.EventID == "" {
+		t.Fatal("expected both subscribers to receive an EventID")
+	}
+	if a.EventID != b.EventID {
+		t.Errorf("subscribers saw different ids for one event: %q vs %q", a.EventID, b.EventID)
+	}
+}
+
 func TestEvent_MarshalJSON(t *testing.T) {
 	e := Event{
 		Type:       LegConnected,
+		EventID:    "ev-1",
 		Timestamp:  time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		InstanceID: "inst-1",
 		Data:       &LegConnectedData{LegScope: LegScope{LegID: "leg-1"}, LegType: "sip_inbound"},
@@ -116,6 +174,9 @@ func TestEvent_MarshalJSON(t *testing.T) {
 	if m["type"] != "leg.connected" {
 		t.Errorf("type = %v", m["type"])
 	}
+	if m["event_id"] != "ev-1" {
+		t.Errorf("event_id = %v, want ev-1", m["event_id"])
+	}
 	if m["instance_id"] != "inst-1" {
 		t.Errorf("instance_id = %v", m["instance_id"])
 	}
@@ -128,7 +189,7 @@ func TestEvent_MarshalJSON(t *testing.T) {
 }
 
 func TestEvent_MarshalJSON_NilData(t *testing.T) {
-	e := Event{Type: RoomCreated, Timestamp: time.Now()}
+	e := Event{Type: RoomCreated, EventID: "ev-2", Timestamp: time.Now()}
 	data, err := json.Marshal(e)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -139,6 +200,29 @@ func TestEvent_MarshalJSON_NilData(t *testing.T) {
 	}
 	if m["type"] != "room.created" {
 		t.Errorf("type = %v", m["type"])
+	}
+	// The nil-data branch skips the merge loop; event_id must survive it.
+	if m["event_id"] != "ev-2" {
+		t.Errorf("event_id = %v, want ev-2", m["event_id"])
+	}
+}
+
+// TestEvent_MarshalJSON_NoEventID pins the omitempty contract: an event with no
+// id (e.g. one constructed outside Bus.Publish, or an older replayed payload)
+// omits the key rather than emitting an empty string, keeping it schema-valid
+// against a WebhookEvent that does not list event_id as required.
+func TestEvent_MarshalJSON_NoEventID(t *testing.T) {
+	e := Event{Type: RoomCreated, Timestamp: time.Now()}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["event_id"]; ok {
+		t.Errorf("expected event_id to be omitted when unset, got %v", m["event_id"])
 	}
 }
 
@@ -362,6 +446,98 @@ func TestWebhookRegistry_HMAC(t *testing.T) {
 	}
 	if len(sigHeader) < 10 || sigHeader[:7] != "sha256=" {
 		t.Errorf("invalid signature header: %q", sigHeader)
+	}
+}
+
+// TestWebhookRegistry_EventIDHeader asserts the X-Event-Id header agrees with
+// the body's event_id for the same delivery — a receiver must be able to dedupe
+// on the header without parsing the body.
+func TestWebhookRegistry_EventIDHeader(t *testing.T) {
+	type delivery struct {
+		header string
+		body   string
+	}
+	ch := make(chan delivery, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var m map[string]interface{}
+		_ = json.Unmarshal(body, &m)
+		id, _ := m["event_id"].(string)
+		select {
+		case ch <- delivery{header: r.Header.Get("X-Event-Id"), body: id}:
+		default:
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	bus := NewBus("test")
+	reg := NewWebhookRegistry(bus, slog.Default(), srv.URL, "")
+	defer reg.Stop()
+
+	bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})
+
+	var d delivery
+	select {
+	case d = <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for webhook delivery")
+	}
+
+	if _, err := uuid.Parse(d.header); err != nil {
+		t.Fatalf("X-Event-Id %q is not a UUID: %v", d.header, err)
+	}
+	if d.header != d.body {
+		t.Errorf("X-Event-Id %q != body event_id %q", d.header, d.body)
+	}
+}
+
+// TestWebhookRegistry_EventIDStableAcrossRetries is the core stability guard:
+// the id is assigned once at publish, so all three at-least-once delivery
+// attempts of one event must carry the identical key. Re-stamping per attempt
+// would defeat the whole point — the receiver could not dedupe.
+//
+// Slow (~6 s) by construction: the retry backoff is a real time.Sleep and this
+// test deliberately drives it rather than adding a knob that would weaken the
+// production path.
+func TestWebhookRegistry_EventIDStableAcrossRetries(t *testing.T) {
+	const attempts = 3
+	ids := make(chan string, attempts)
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids <- r.Header.Get("X-Event-Id")
+		// 500 on the first two attempts, 200 on the third.
+		if atomic.AddInt32(&n, 1) < attempts {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	bus := NewBus("test")
+	reg := NewWebhookRegistry(bus, slog.Default(), srv.URL, "")
+	defer reg.Stop()
+
+	bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})
+
+	got := make([]string, 0, attempts)
+	for i := 0; i < attempts; i++ {
+		select {
+		case id := <-ids:
+			got = append(got, id)
+		case <-time.After(15 * time.Second):
+			t.Fatalf("timeout waiting for attempt %d of %d", i+1, attempts)
+		}
+	}
+
+	if _, err := uuid.Parse(got[0]); err != nil {
+		t.Fatalf("X-Event-Id %q is not a UUID: %v", got[0], err)
+	}
+	for i, id := range got {
+		if id != got[0] {
+			t.Errorf("attempt %d carried X-Event-Id %q, want %q (id must be stable across retries)", i+1, id, got[0])
+		}
 	}
 }
 

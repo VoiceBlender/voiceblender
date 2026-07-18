@@ -3,6 +3,8 @@ package events
 import (
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Handler func(Event)
@@ -35,9 +37,18 @@ func (b *Bus) Subscribe(h Handler) func() {
 	}
 }
 
+// Publish builds the event envelope and invokes every subscribed handler
+// synchronously on the caller's goroutine, so handlers must not block.
+//
+// The event is stamped with a fresh EventID here, before the handler snapshot
+// is taken and before any sink retries. That ordering is what makes the id
+// identical across all subscribers and constant across a webhook's delivery
+// attempts: it is assigned once per event, never per fan-out and never per
+// attempt.
 func (b *Bus) Publish(typ EventType, data EventData) {
 	e := Event{
 		Type:       typ,
+		EventID:    uuid.NewString(),
 		Timestamp:  time.Now().UTC(),
 		InstanceID: b.instanceID,
 		Data:       data,

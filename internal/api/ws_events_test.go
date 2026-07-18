@@ -1,6 +1,45 @@
 package api
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// TestVSIPingFrame_UsesSeq is the only executable proof that the VSI keepalive
+// counter is named "seq" on the wire. It asserts on vsiPingFrame — the helper
+// the ping loop actually calls — so reverting the emitted field name back to
+// "event_id" reddens it. It must not restate the frame as a map literal, which
+// would only assert on itself.
+//
+// The name matters: streamed events on this same socket now carry an "event_id"
+// (the per-event idempotency key), so a ping using that name would advertise two
+// different meanings for one field.
+func TestVSIPingFrame_UsesSeq(t *testing.T) {
+	raw := vsiPingFrame(1)
+
+	if strings.Contains(string(raw), "event_id") {
+		t.Errorf("ping frame must not mention event_id, got %s", raw)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal ping frame: %v", err)
+	}
+	if m["type"] != "ping" {
+		t.Errorf("type = %v, want ping", m["type"])
+	}
+	seq, ok := m["seq"].(float64)
+	if !ok {
+		t.Fatalf("expected numeric seq field, got %#v (frame: %s)", m["seq"], raw)
+	}
+	if seq != 1 {
+		t.Errorf("seq = %v, want 1", seq)
+	}
+	if _, ok := m["event_id"]; ok {
+		t.Errorf("ping frame carries event_id: %s", raw)
+	}
+}
 
 func TestIsDropLogThreshold(t *testing.T) {
 	cases := []struct {

@@ -291,7 +291,7 @@ type VSILifecycleFrame struct {
 func VSILifecycleFramesMetadata() []VSILifecycleFrame {
 	return []VSILifecycleFrame{
 		{Name: "connected", Direction: "send", Description: "First frame the server sends after the WebSocket upgrade completes. Carries no data."},
-		{Name: "ping", Direction: "send", Description: "Periodic application-level keepalive (every ~30 s). Clients may reply with `pong` or ignore."},
+		{Name: "ping", Direction: "send", Description: "Periodic application-level keepalive (every ~30 s), carrying a monotonic counter in `seq`. Clients may reply with `pong` or ignore."},
 		{Name: "pong", Direction: "receive", Description: "Optional client keepalive reply to a `ping`. Currently a no-op on the server side."},
 		{Name: "stop", Direction: "receive", Description: "Client-initiated graceful close. The server stops the recv loop and closes the connection."},
 		{Name: "events_dropped", Direction: "send", Description: "Sent when the per-connection event buffer overflowed. The accompanying `count` indicates how many events were dropped since the last notification. Clients should resync via REST after seeing this."},
