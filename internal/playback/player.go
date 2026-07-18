@@ -359,6 +359,7 @@ func (p *Player) streamRawPCM(ctx context.Context, body io.Reader, writer io.Wri
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(srcRate, targetRate)
 
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
 	defer ticker.Stop()
@@ -392,7 +393,7 @@ func (p *Player) streamRawPCM(ctx context.Context, body io.Reader, writer io.Wri
 		}
 
 		// Resample if needed.
-		resampled := resampleLinear(samples, srcRate, targetRate)
+		resampled := rs.ResampleSamples(samples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized.
@@ -419,8 +420,15 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	if err != nil {
 		return fmt.Errorf("mp3 decode: %w", err)
 	}
+	return p.streamMP3PCM(ctx, dec, uint32(dec.SampleRate()), dec.Length(), writer, targetRate)
+}
 
-	srcRate := uint32(dec.SampleRate())
+// streamMP3PCM writes decoded MP3 frames — interleaved stereo 16-bit LE at
+// srcRate — out as mono PCM at targetRate. It is split from streamMP3 so the
+// frame loop can be driven without an encoder: every MP3 fixture in the tree
+// decodes to silence, and silence cannot tell a per-frame filter from a
+// persistent one, which is the one thing this loop's resampler must get right.
+func (p *Player) streamMP3PCM(ctx context.Context, dec io.Reader, srcRate uint32, totalBytes int64, writer io.Writer, targetRate uint32) error {
 	const srcChannels = 2 // go-mp3 always outputs stereo
 
 	// Source bytes per ptime frame: stereo 16-bit samples.
@@ -431,7 +439,6 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	outSamplesPerFrame := int(targetRate) * mixer.Ptime / 1000
 	outFrameSize := outSamplesPerFrame * 2
 
-	totalBytes := dec.Length()
 	totalFrames := int(totalBytes) / srcReadSize
 
 	p.log.Info("MP3 playback starting",
@@ -445,6 +452,7 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(srcRate, targetRate)
 
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
 	defer ticker.Stop()
@@ -474,7 +482,7 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 		monoSamples := pcmToMono(srcBuf[:n], srcChannels)
 
 		// Resample to target rate.
-		resampled := resampleLinear(monoSamples, srcRate, targetRate)
+		resampled := rs.ResampleSamples(monoSamples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized.
@@ -635,6 +643,7 @@ func (p *Player) streamWAV(ctx context.Context, body io.Reader, writer io.Writer
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(hdr.SampleRate, targetRate)
 
 	// Pace output at real-time: one frame every ptime interval.
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
@@ -665,7 +674,7 @@ func (p *Player) streamWAV(ctx context.Context, body io.Reader, writer io.Writer
 		monoSamples := decodeToMono(srcBuf[:n], hdr)
 
 		// Resample to target rate
-		resampled := resampleLinear(monoSamples, hdr.SampleRate, targetRate)
+		resampled := rs.ResampleSamples(monoSamples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized
@@ -758,29 +767,29 @@ func applyVolume(samples []int16, volume int) {
 	}
 }
 
-// resampleLinear performs linear interpolation to convert between sample rates.
-func resampleLinear(samples []int16, srcRate, dstRate uint32) []int16 {
-	if srcRate == dstRate {
-		return samples
-	}
-
-	ratio := float64(srcRate) / float64(dstRate)
-	outLen := int(float64(len(samples)) / ratio)
-	out := make([]int16, outLen)
-
-	for i := 0; i < outLen; i++ {
-		srcPos := float64(i) * ratio
-		idx := int(srcPos)
-		frac := srcPos - float64(idx)
-
-		if idx+1 < len(samples) {
-			s0 := int32(samples[idx])
-			s1 := int32(samples[idx+1])
-			out[i] = int16(s0 + int32(float64(s1-s0)*frac))
-		} else if idx < len(samples) {
-			out[i] = samples[idx]
-		}
-	}
-
-	return out
+// newStreamResampler builds the anti-aliasing resampler for one playback
+// stream, or returns nil when the rates already match (a nil resampler is a
+// passthrough).
+//
+// The result belongs to the single streamRawPCM/streamMP3/streamWAV call that
+// built it: constructed once before the frame loop, reused by every frame of
+// that stream, and dropped when the stream returns. The filter is stateful, and
+// both ways of getting that lifetime wrong are silent:
+//
+//   - Building one per frame re-zeroes the filter memory, so every frame leads
+//     with the filter's zero history instead of audio — a gap at the frame rate,
+//     and worse than doing no filtering at all.
+//   - Hanging one on Player leaks the filter's memory the other way. Player is
+//     long-lived and reused across playbacks, so the tail of one prompt would
+//     bleed into the head of the next.
+//
+// A function-local is exactly the "history across frames, fresh per stream"
+// lifetime this needs, with no ownership question and no concurrency exposure.
+//
+// "Stream" is narrower than "playback": a repeat playback calls the stream
+// function once per iteration and so builds one filter per iteration, by
+// design. Each iteration reseeks to the start of the file, so carrying history
+// across the loop boundary would smear the file's tail into its head.
+func newStreamResampler(srcRate, dstRate uint32) *mixer.PCMResampler {
+	return mixer.NewPCMResampler(int(srcRate), int(dstRate))
 }

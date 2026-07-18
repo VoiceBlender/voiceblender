@@ -22,6 +22,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/livekit/protocol v1.46.6
 	github.com/mengelbart/moqtransport v0.5.0
+	github.com/oov/audio v0.0.0-20171004131523-88a2be6dbe38
 	github.com/pion/interceptor v0.1.44
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtp v1.10.1
