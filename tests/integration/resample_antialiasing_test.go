@@ -48,7 +48,7 @@ func TestResampleAntiAliasing(t *testing.T) {
 	dial := func(label string) (net.Conn, string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		conn, _, _, err := ws.Dial(ctx, wsURL)
+		conn, err := wsDial(ctx, wsURL)
 		if err != nil {
 			t.Fatalf("dial %s: %v", label, err)
 		}

@@ -56,7 +56,7 @@ func TestWSLegInboundAutoConnect(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, _, err := dialCfg.Dial(ctx, wsURL)
+	conn, err := wsDialWith(ctx, wsURL, dialCfg)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestWSLegAudioFlows(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, err := wsDial(ctx, wsURL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestWSLegAudioFlowsBidirectional(t *testing.T) {
 	dial := func(label string) (net.Conn, string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		conn, _, _, err := ws.Dial(ctx, wsURL)
+		conn, err := wsDial(ctx, wsURL)
 		if err != nil {
 			t.Fatalf("dial %s: %v", label, err)
 		}
@@ -522,7 +522,7 @@ func TestRoomWSCompatibleWithLegWS(t *testing.T) {
 		"/v1/legs/websocket?sample_rate=16000&wire_format=json_base64&room_id=compat-room"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	legConn, _, _, err := ws.Dial(ctx, legURL)
+	legConn, err := wsDial(ctx, legURL)
 	if err != nil {
 		t.Fatalf("dial leg WS: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestRoomWSCompatibleWithLegWS(t *testing.T) {
 
 	// Room WS client (listener).
 	roomURL := "ws://" + inst.httpAddr + "/v1/rooms/compat-room/ws"
-	roomConn, _, _, err := ws.Dial(ctx, roomURL)
+	roomConn, err := wsDial(ctx, roomURL)
 	if err != nil {
 		t.Fatalf("dial room WS: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestWSLegPing(t *testing.T) {
 		"/v1/legs/websocket?sample_rate=16000&wire_format=binary"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, err := wsDial(ctx, wsURL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

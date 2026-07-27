@@ -90,13 +90,13 @@ func TestPCMedia_Loopback(t *testing.T) {
 		t.Skip("loopback test involves real ICE/DTLS; skipped in -short")
 	}
 
-	caller, err := NewPCMedia(PCMediaConfig{Codec: codec.CodecPCMU, Log: testLogger()})
+	caller, err := NewPCMedia(PCMediaConfig{Codec: codec.CodecPCMU, Log: testLogger(), LoopbackICE: true})
 	if err != nil {
 		t.Fatalf("caller NewPCMedia: %v", err)
 	}
 	defer caller.Close()
 
-	callee, err := NewPCMedia(PCMediaConfig{Codec: codec.CodecPCMU, Log: testLogger()})
+	callee, err := NewPCMedia(PCMediaConfig{Codec: codec.CodecPCMU, Log: testLogger(), LoopbackICE: true})
 	if err != nil {
 		t.Fatalf("callee NewPCMedia: %v", err)
 	}
@@ -147,8 +147,10 @@ func TestPCMedia_Loopback(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if caller.PC().ICEConnectionState() != webrtc.ICEConnectionStateConnected {
-		t.Fatalf("caller ICE state = %s", caller.PC().ICEConnectionState())
+	if caller.PC().ICEConnectionState() != webrtc.ICEConnectionStateConnected ||
+		callee.PC().ICEConnectionState() != webrtc.ICEConnectionStateConnected {
+		t.Fatalf("ICE not connected: caller = %s, callee = %s",
+			caller.PC().ICEConnectionState(), callee.PC().ICEConnectionState())
 	}
 
 	// Write one PCM frame on the caller (320 bytes = 160 samples @ 8kHz).

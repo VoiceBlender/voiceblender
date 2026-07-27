@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,13 @@ type PCMediaConfig struct {
 	// EnableTelephoneEvent advertises RFC 4733 DTMF (PT 126) in the
 	// answer and routes inbound telephone-event packets to OnDTMF.
 	EnableTelephoneEvent bool
+
+	// LoopbackICE gathers host candidates on loopback only. Intended for
+	// same-process tests: gathering on every interface of a developer or
+	// CI host (docker bridges, VPN tunnels, VM adapters) yields hundreds
+	// of candidate pairs and lets ICE nominate a virtual interface that
+	// carries STUN but drops the DTLS handshake.
+	LoopbackICE bool
 }
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
@@ -131,6 +139,10 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 	if len(cfg.ExternalIPs) > 0 {
 		se.SetNAT1To1IPs(cfg.ExternalIPs, webrtc.ICECandidateTypeHost)
+	}
+	if cfg.LoopbackICE {
+		se.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+		se.SetIncludeLoopbackCandidate(true)
 	}
 	if cfg.AnsweringDTLSRole != 0 {
 		if err := se.SetAnsweringDTLSRole(cfg.AnsweringDTLSRole); err != nil {
