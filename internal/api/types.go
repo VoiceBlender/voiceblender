@@ -193,7 +193,7 @@ var amdParamsFields = map[string]FieldEnrichment{
 	"initial_silence_timeout": {Description: "Max milliseconds of silence before declaring no_speech", Default: 2500},
 	"greeting_duration":       {Description: "Speech duration threshold (ms) above which answerer is classified as machine", Default: 1500},
 	"after_greeting_silence":  {Description: "Silence duration (ms) after initial speech to declare human", Default: 800},
-	"total_analysis_time":     {Description: "Max analysis window in milliseconds", Default: 5000},
+	"total_analysis_time":     {Description: "Max analysis window in milliseconds. A threshold longer than this window suppresses that verdict; a window shorter than all of initial_silence_timeout, greeting_duration and after_greeting_silence is rejected, since the call could only end not_sure.", Default: 5000},
 	"minimum_word_length":     {Description: "Minimum speech burst duration (ms) to count as a word", Default: 100},
 	"beep_timeout":            {Description: "Max time (ms) to wait for the voicemail beep after machine detection. 0 or omitted = disabled.", Default: 0},
 }

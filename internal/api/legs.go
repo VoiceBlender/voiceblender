@@ -1145,8 +1145,208 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	s.publishDisconnect(l, "caller_cancel")
 }
 
+// amdLeg is the slice of a leg the AMD driver needs: identity to scope its
+// events, and tap teardown once the analysis finishes.
+type amdLeg interface {
+	ID() string
+	AppID() string
+	ClearAMDTapIf(w io.Writer) bool
+	OwnsAMDTap(w io.Writer) bool
+}
+
+// amdDriver drives an AMD analyzer in push mode. Its Write is installed as the
+// leg's AMD tap, so frames are classified inline on the leg's readLoop — the
+// goroutine that already stops on teardown — and no AMD goroutine ever parks on
+// a read. A single watch goroutine bounds the analysis in wall-clock time.
+//
+// The analyzer's push surface is single-threaded by design, so mu serializes
+// every Feed/FeedBeep/OnDeadline call between the readLoop and watch. mu is
+// held only across those analyzer calls: publishing and clearing the tap reach
+// into other subsystems with their own locks, and are done after it is
+// released.
+type amdDriver struct {
+	s        *Server
+	l        amdLeg
+	analyzer *amd.Analyzer
+
+	// tap is the writer this driver installed on the leg. It is written before
+	// the tap is published to the leg and never mutated after, so the
+	// SetAMDTap/go-watch statements that follow supply the happens-before.
+	tap io.Writer
+
+	mu      sync.Mutex
+	beeping bool // classified as machine; now waiting for the voicemail beep
+	done    bool // terminal state reached; later frames are ignored
+	pending bool // machine verdict resolving its tap ownership; watch defers to it
+}
+
+// Write feeds decoded PCM into the analyzer. It runs on the leg's readLoop, so
+// it never blocks: Feed and FeedBeep drain whole frames and return.
+func (d *amdDriver) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	if d.done {
+		d.mu.Unlock()
+		return len(p), nil
+	}
+
+	if d.beeping {
+		beep, ok := d.analyzer.FeedBeep(p)
+		if !ok {
+			d.mu.Unlock()
+			return len(p), nil
+		}
+		d.done = true
+		d.mu.Unlock()
+
+		if !d.clearTap() {
+			return len(p), nil
+		}
+		if beep.Detected {
+			d.publishBeep(beep)
+		}
+		return len(p), nil
+	}
+
+	det, ok := d.analyzer.Feed(p)
+	if !ok {
+		d.mu.Unlock()
+		return len(p), nil
+	}
+	// A machine verdict with beep detection enabled keeps the tap installed
+	// through the beep window; every other verdict is terminal.
+	waitBeep := det.Result == amd.ResultMachine && d.analyzer.Params().BeepTimeout > 0
+	if !waitBeep {
+		d.done = true
+		d.mu.Unlock()
+		// A terminal verdict claims ownership by clearing the tap: the readLoop
+		// snapshots the tap and releases the leg's lock before writing, so a
+		// frame in flight can reach a superseded driver after a later AMD start
+		// replaced the tap, and that analysis owns no verdict for the leg.
+		if !d.clearTap() {
+			return len(p), nil
+		}
+		d.publishResult(det)
+		return len(p), nil
+	}
+	// A machine verdict keeps the tap installed for the beep window, so it gates
+	// its publish on ownership without clearing. pending marks the window
+	// between here and that publish: if watch's deadline fires in it, watch
+	// leaves the tap and the publish to this goroutine rather than clearing the
+	// tap — which would sink the ownership check below — or publishing twice.
+	d.beeping = true
+	d.pending = true
+	d.mu.Unlock()
+
+	owns := d.ownsTap()
+
+	d.mu.Lock()
+	d.pending = false
+	deadlinePassed := d.done
+	if !owns {
+		// A later AMD start replaced the tap; this analysis owns no verdict.
+		d.done = true
+		d.beeping = false
+		d.mu.Unlock()
+		return len(p), nil
+	}
+	d.mu.Unlock()
+
+	d.publishResult(det)
+	if deadlinePassed {
+		// watch's deadline fired while this verdict was resolving and deferred
+		// the tap to it; the beep window is over, so end the analysis now.
+		d.clearTap()
+	}
+	return len(p), nil
+}
+
+// watch bounds the analysis in wall-clock time. It is the only goroutine AMD
+// starts, and it selects purely on a timer and the leg's context — it never
+// touches a reader, so it cannot outlive the leg.
+func (d *amdDriver) watch(ctx context.Context, budget time.Duration) {
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		// The leg is gone. Drop the tap and publish nothing: a verdict for a
+		// torn-down call is noise, and the leg reports its own disconnect.
+		d.mu.Lock()
+		d.done = true
+		d.mu.Unlock()
+		d.clearTap()
+		return
+	}
+
+	d.mu.Lock()
+	if d.done {
+		d.mu.Unlock()
+		return
+	}
+	d.done = true
+	if d.pending {
+		// The readLoop reached a machine verdict and is still resolving its tap
+		// ownership. The beep window is over, but clearing the tap here would
+		// sink that ownership check and drop the verdict, so leave the tap and
+		// the publish to it.
+		d.mu.Unlock()
+		return
+	}
+	// Mid-beep-window the classification was already published and only the
+	// beep is outstanding, so the budget expiring means no beep arrived.
+	publish := !d.beeping
+	var det amd.Detection
+	if publish {
+		det = d.analyzer.OnDeadline()
+	}
+	d.mu.Unlock()
+
+	// Ownership gates the verdict, not just the clear: a later AMD start
+	// replaced the tap, so this analysis was superseded and its frozen state
+	// owns no verdict for the leg.
+	if !d.clearTap() {
+		return
+	}
+	if publish {
+		d.publishResult(det)
+	}
+}
+
+// publishResult emits the terminal classification. Exactly one amd.result is
+// emitted per call: the done flag under d.mu elects a single deadline-or-
+// terminal publisher, and the pending handshake hands a machine verdict's
+// publish to the readLoop alone.
+func (d *amdDriver) publishResult(det amd.Detection) {
+	d.s.Bus.Publish(events.AMDResult, &events.AMDResultData{
+		LegScope:           events.LegScope{LegID: d.l.ID(), AppID: d.l.AppID()},
+		Result:             string(det.Result),
+		InitialSilenceMs:   det.InitialSilenceMs,
+		GreetingDurationMs: det.GreetingDurationMs,
+		TotalAnalysisMs:    det.TotalAnalysisMs,
+	})
+}
+
+func (d *amdDriver) publishBeep(beep amd.BeepResult) {
+	d.s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
+		LegScope: events.LegScope{LegID: d.l.ID(), AppID: d.l.AppID()},
+		BeepMs:   beep.BeepMs,
+	})
+}
+
+// clearTap stops the leg feeding a finished analysis, reporting whether this
+// driver still owned the tap. False means a later AMD start replaced it. It
+// takes the leg's own lock, so it is never called while holding d.mu.
+func (d *amdDriver) clearTap() bool { return d.l.ClearAMDTapIf(d.tap) }
+
+// ownsTap reports whether this driver still owns the leg's tap without clearing
+// it, so a machine verdict can gate its publish on ownership yet keep the tap
+// installed for the beep window. It takes the leg's own lock, so it is never
+// called while holding d.mu.
+func (d *amdDriver) ownsTap() bool { return d.l.OwnsAMDTap(d.tap) }
+
 // prepareAMD creates an AMD analyzer and returns a function that, when called,
-// installs the tap and starts the analyzer goroutine. The returned function is
+// installs the tap and starts the deadline goroutine. The returned function is
 // safe to call multiple times (only the first call has effect).
 func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 	params := amd.MergeMillis(
@@ -1162,38 +1362,22 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 		return nil, fmt.Errorf("invalid AMD params: %w", err)
 	}
 
-	analyzer := amd.New(params)
-	buf := newAMDBuffer(256) // ~5s of 20ms frames
+	d := &amdDriver{s: s, l: l, analyzer: amd.New(params)}
 
 	var once sync.Once
 	start := func() {
 		once.Do(func() {
-			l.SetAMDTap(buf)
-			go func() {
-				resampleReader := mixer.NewResampleReader(buf, l.SampleRate(), mixer.DefaultSampleRate)
-				detection := analyzer.Run(l.Context(), resampleReader)
-
-				s.Bus.Publish(events.AMDResult, &events.AMDResultData{
-					LegScope:           events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-					Result:             string(detection.Result),
-					InitialSilenceMs:   detection.InitialSilenceMs,
-					GreetingDurationMs: detection.GreetingDurationMs,
-					TotalAnalysisMs:    detection.TotalAnalysisMs,
-				})
-
-				if detection.Result == amd.ResultMachine && analyzer.Params().BeepTimeout > 0 {
-					beep := analyzer.WaitForBeep(l.Context(), resampleReader)
-					if beep.Detected {
-						s.Bus.Publish(events.AMDBeep, &events.AMDBeepData{
-							LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-							BeepMs:   beep.BeepMs,
-						})
-					}
-				}
-
-				l.ClearAMDTap()
-				buf.Close()
-			}()
+			// The leg decodes at its native rate; the AMD FSM expects 16 kHz.
+			// Record the writer before installing it, so the driver can prove
+			// ownership of the tap before clearing it or publishing a verdict.
+			w := mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate)
+			d.tap = w
+			l.SetAMDTap(w)
+			// One timer covers both windows. FeedBeep's own timeout advances
+			// only as frames arrive, so an RTP stall during the beep window
+			// would otherwise leave the tap installed with no timer to remove
+			// it — the same leak this driver exists to prevent.
+			go d.watch(l.Context(), params.TotalAnalysisTime+params.BeepTimeout)
 		})
 	}
 	return start, nil
@@ -1234,71 +1418,6 @@ func (s *Server) startAMDLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
-}
-
-// amdBuffer is a channel-backed buffer that implements io.Writer (non-blocking,
-// drops overflow) and io.Reader (blocking). This prevents the readLoop from
-// blocking when writing to the AMD tap.
-type amdBuffer struct {
-	ch     chan []byte
-	closed chan struct{}
-	buf    []byte // leftover from partial Read
-}
-
-func newAMDBuffer(cap int) *amdBuffer {
-	return &amdBuffer{
-		ch:     make(chan []byte, cap),
-		closed: make(chan struct{}),
-	}
-}
-
-// Write copies p and enqueues it. Non-blocking: drops if buffer full.
-func (b *amdBuffer) Write(p []byte) (int, error) {
-	frame := make([]byte, len(p))
-	copy(frame, p)
-	select {
-	case <-b.closed:
-		return len(p), nil
-	default:
-	}
-	select {
-	case b.ch <- frame:
-	default:
-		// drop on overflow
-	}
-	return len(p), nil
-}
-
-// Read blocks until data is available or the buffer is closed.
-func (b *amdBuffer) Read(p []byte) (int, error) {
-	// Serve leftover first.
-	if len(b.buf) > 0 {
-		n := copy(p, b.buf)
-		b.buf = b.buf[n:]
-		return n, nil
-	}
-	select {
-	case frame, ok := <-b.ch:
-		if !ok {
-			return 0, io.EOF
-		}
-		n := copy(p, frame)
-		if n < len(frame) {
-			b.buf = frame[n:]
-		}
-		return n, nil
-	case <-b.closed:
-		return 0, io.EOF
-	}
-}
-
-// Close signals the reader that no more data will arrive.
-func (b *amdBuffer) Close() {
-	select {
-	case <-b.closed:
-	default:
-		close(b.closed)
-	}
 }
 
 // resolveSpeechDetection returns the effective speech-detection enable state

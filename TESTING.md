@@ -58,7 +58,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 
 | Package | Tests | Description |
 |---------|-------|-------------|
-| `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
+| `internal/amd` | 31 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation; push-mode `Feed`/`OnDeadline`/`FeedBeep` (chunk-boundary independence, accumulator draining), and verdict-reachability guards pinned against the real FSM (per-verdict sub-frame edges, rejection only when no verdict is reachable) |
 | `internal/mixer` | 21 | Audio mixing, configurable sample rate (8/16/48 kHz), anti-aliasing polyphase resampler (stopband attenuation, passband flatness, group-delay budget, seam continuity, full-scale clamp), playback sources, tap recording, per-listener routing whitelist (full mesh / supervisor-whisper / isolated / mute+deaf interaction) |
 | `internal/resampler` | 10 | Vendored pure-Go Speex/Opus polyphase resampler (MIT); upstream tests: same-rate, direct and interpolated up/down-sampling for float32 and float64 |
 | `internal/bridge` | 9 | Duplex conduit: pair wiring, blocking Read, EOF/idempotent Close, drop-oldest backpressure, leftover handling, buffer-copy |
@@ -77,6 +77,8 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/sip` (inbound auth) | 12 | `recordChallenge` WWW-Authenticate shape + nonce uniqueness; `VerifyInboundAuth` valid digest (MD5/SHA-256, password and HA1), wrong password/username → invalid, no/unknown/expired challenge → none, single-use nonce consumption, `max_expires` TTL cap round-trips through the pending challenge |
 | `internal/api` (inbound auth) | 12 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, applies the configured fallback when undecided (reject by default, accept when configured), propagates a challenge decision (incl. `max_expires`), accept decision carries `max_expires`; `registerConsultFallback` mapping (unset/unknown → reject, `accept` case-insensitive); `ChallengeRequest` validation (realm + password/ha1 required, non-negative `max_expires`) |
 | `internal/api` (inbound transfer) | 2 | `pendingReferStore` state machine (accept vs decline/timeout are mutually exclusive; progress/complete require a prior accept; unknown-leg misses); `sipReasonPhrase` default reason phrases |
+| `internal/api` (amd driver) | 11 | Push-mode `amdDriver`: frames classified inline on the leg's readLoop, the wall-clock `watch` goroutine exits on leg teardown without publishing, exactly one `amd.result` per call, the machine+beep `pending` handshake (deadline firing mid-verdict defers the publish rather than dropping it), and tap-ownership gating so a superseded analysis publishes nothing and cannot clear the live tap |
+| `internal/leg` (amd tap) | 1 | `ClearAMDTapIf` only clears the writer it was given, so a superseded AMD analysis cannot rip out the tap a later start installed |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
@@ -197,7 +199,8 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestAMD_Machine` | AMD classifies continuous tone as `machine` |
 | `TestAMD_NoSpeech` | AMD returns `no_speech` when no audio is played |
 | `TestAMD_Disabled` | No AMD event when `amd` field is omitted |
-| `TestAMD_InvalidParams` | Invalid AMD parameters are rejected with 400 |
+| `TestAMD_InvalidParams` | A window too short to reach any verdict and a negative override are rejected with 400; suppressing a single verdict with one oversized threshold stays valid |
+| `TestAMD_TeardownMidAnalysis` | Hanging up mid-analysis ends AMD with no `amd.result` event and leaks no goroutine |
 | `TestAMD_DefaultParams` | Empty `"amd": {}` uses all defaults |
 | `TestDTMFBroadcast_Default` | DTMF received on one leg is forwarded to other legs in the same room |
 | `TestDTMFBroadcast_RejectAtRuntime` | `POST /v1/legs/{id}/dtmf/reject` blocks reception; `accept` re-enables it |

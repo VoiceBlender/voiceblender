@@ -3618,7 +3618,7 @@ components:
                     default: 800
                 total_analysis_time:
                     type: integer
-                    description: Max analysis window in milliseconds
+                    description: Max analysis window in milliseconds. A threshold longer than this window suppresses that verdict; a window shorter than all of initial_silence_timeout, greeting_duration and after_greeting_silence is rejected, since the call could only end not_sure.
                     default: 5000
                 minimum_word_length:
                     type: integer
