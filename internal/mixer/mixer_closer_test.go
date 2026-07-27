@@ -21,19 +21,6 @@ type voidClosePanicWriter struct {
 func (w *voidClosePanicWriter) Write([]byte) (int, error) { panic("simulated write panic") }
 func (w *voidClosePanicWriter) Close()                    { w.once.Do(func() { close(w.closed) }) }
 
-// errClosePanicWriter is the same stand-in with an error-returning Close, used
-// as the destination a rate-crossing leg's resampleWriter wraps.
-type errClosePanicWriter struct {
-	once   sync.Once
-	closed chan struct{}
-}
-
-func (w *errClosePanicWriter) Write([]byte) (int, error) { panic("simulated write panic") }
-func (w *errClosePanicWriter) Close() error {
-	w.once.Do(func() { close(w.closed) })
-	return nil
-}
-
 // parkedReader keeps readLoop blocked instead of spinning, so the write loop is
 // the only one that panics.
 type parkedReader struct{ release chan struct{} }
@@ -85,23 +72,4 @@ func TestCloseWriterForPanicClosesVoidCloseWriter(t *testing.T) {
 	pushOutgoing(t, m, "agent-1")
 
 	awaitClose(t, w.closed, "a writer whose Close returns no error")
-}
-
-// Any rate-crossing leg (an 8 kHz PCMU call) is registered as a *resampleWriter.
-// Closing it must reach the leg's egress underneath.
-func TestCloseWriterForPanicClosesResampleWriter(t *testing.T) {
-	m := newClosertestMixer()
-	rd := &parkedReader{release: make(chan struct{})}
-	t.Cleanup(func() { close(rd.release) })
-	dst := &errClosePanicWriter{closed: make(chan struct{})}
-
-	rw := NewResampleWriter(dst, DefaultSampleRate, 8000)
-	if _, ok := rw.(*resampleWriter); !ok {
-		t.Fatalf("NewResampleWriter(16000 -> 8000) = %T, want *resampleWriter", rw)
-	}
-
-	m.AddParticipant("leg-1", rd, rw)
-	pushOutgoing(t, m, "leg-1")
-
-	awaitClose(t, dst.closed, "the writer wrapped by a resampleWriter")
 }

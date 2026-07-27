@@ -221,11 +221,13 @@ type resampleWriter struct {
 	buf        []byte // accumulate partial samples
 }
 
-// Close closes the wrapped writer, so that closing a rate-crossing leg's
-// writer reaches the leg's egress rather than stopping at the resampler.
-// Without it every 8 kHz leg is unclosable and the mixer's panic path cannot
-// wake its owner. Buffered partial samples are dropped: the frame they would
-// complete is worthless on a writer that is being torn down.
+// Close propagates to the wrapped writer so the decorator does not swallow it.
+// Buffered partial samples are dropped — the frame they would complete is
+// worthless on a writer being torn down.
+//
+// The mixer's panic path does not reach here today: every participant built on
+// a resampleWriter is a leg, and legs are marked ownerClosesEgress precisely so
+// the mixer leaves their egress alone.
 func (w *resampleWriter) Close() error {
 	return closeWriter(w.dst)
 }

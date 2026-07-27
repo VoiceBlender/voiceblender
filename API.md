@@ -3501,6 +3501,7 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_disconnect_reasons_total` | Counter | `type`, `reason` | Total disconnected legs by type and reason (e.g. `remote_bye`, `api_hangup`, `rtp_timeout`) |
 | `voiceblender_call_duration_seconds` | Histogram | `type` | Answered call duration (time from answer to hangup). Use `rate(sum)/rate(count)` for ACD |
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
+| `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
 | Go runtime metrics | — | — | Standard `go_*` and `process_*` metrics from the Prometheus Go client |
 
 #### PromQL Examples
@@ -3510,6 +3511,12 @@ Compute the Average Call Duration (ACD) over a 5-minute window:
 ```promql
 rate(voiceblender_call_duration_seconds_sum[5m])
   / rate(voiceblender_call_duration_seconds_count[5m])
+```
+
+Alert on audio-path panics being contained (each one drops a participant or a frame):
+
+```promql
+sum by (component, site) (rate(voiceblender_recovered_panics_total[5m])) > 0
 ```
 
 ### Profiling (pprof)
