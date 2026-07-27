@@ -2,6 +2,7 @@ package room
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/bridge"
 )
@@ -63,6 +64,17 @@ type Bridge struct {
 	pid      string // synthetic participant id in both mixers
 }
 
+// bridgeParticipantPrefix marks a mixer participant as a synthetic bridge
+// endpoint rather than a leg. The mixer's participant map is not leg-only, so
+// teardown has to be able to tell the classes apart by ID.
+const bridgeParticipantPrefix = "__bridge:"
+
 func bridgeParticipantID(bridgeID string) string {
-	return "__bridge:" + bridgeID
+	return bridgeParticipantPrefix + bridgeID
+}
+
+// bridgeIDFromParticipant reports the bridge behind a synthetic bridge
+// participant ID, and whether participantID is one at all.
+func bridgeIDFromParticipant(participantID string) (string, bool) {
+	return strings.CutPrefix(participantID, bridgeParticipantPrefix)
 }

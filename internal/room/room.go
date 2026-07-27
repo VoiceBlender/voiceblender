@@ -18,6 +18,13 @@ type Room struct {
 	mix          *mixer.Mixer
 	log          *slog.Logger
 
+	// legParts[legID] is the mixer participant instance currently carrying
+	// that leg's audio. The mixer drops a participant from its own map before
+	// reporting that its IO loop panicked, so once that report arrives this is
+	// the only record of which instance the leg was on — see
+	// RemoveLegIfParticipant. Guarded by r.mu, in step with participants.
+	legParts map[string]*mixer.Participant
+
 	bridgeRefs   int  // synthetic bridge participants keeping the mixer alive
 	mixerRunning bool // tracks whether r.mix is currently started
 
@@ -36,6 +43,7 @@ func NewRoom(id, appID string, sampleRate int, log *slog.Logger) *Room {
 		AppID:        appID,
 		SampleRate:   sampleRate,
 		participants: make(map[string]leg.Leg),
+		legParts:     make(map[string]*mixer.Participant),
 		mix:          mixer.New(log, sampleRate),
 		log:          log,
 	}
@@ -73,15 +81,23 @@ func (r *Room) addLegLocked(l leg.Leg) {
 
 	reader := l.AudioReader()
 	writer := l.AudioWriter()
-	if reader != nil && writer != nil {
+	if reader == nil || writer == nil {
+		delete(r.legParts, l.ID())
+	} else {
 		// Wrap with rate-aware resamplers to bridge leg↔mixer rate difference.
 		// When rates match (e.g. G.722 at 16kHz = mixer rate), this is a passthrough.
 		legRate := l.SampleRate()
 		mixRate := r.SampleRate
-		r.mix.AddParticipant(l.ID(),
+		p := r.mix.AddParticipant(l.ID(),
 			mixer.NewResampleReader(reader, legRate, mixRate),
 			mixer.NewResampleWriter(writer, mixRate, legRate),
 		)
+		// A leg's writer is its egress pipe, closed by Hangup during teardown
+		// and reused across a MoveLeg. Keep the mixer's panic path from closing
+		// it, or a stale loop's recover racing a move would silence the leg on
+		// its fresh participant. The room's panic hook closes it via Hangup.
+		p.MarkOwnerClosesEgress()
+		r.legParts[l.ID()] = p
 		// Sync mute/deaf state so legs muted/deafened before room join stay that way in mixer.
 		if l.IsMuted() {
 			r.mix.SetParticipantMuted(l.ID(), true)
@@ -101,9 +117,7 @@ func (r *Room) DetachLeg(legID string) (leg.Leg, bool) {
 	if !ok {
 		return nil, false
 	}
-	l.SetRoomID("")
-	delete(r.participants, legID)
-	r.mix.RemoveParticipant(legID)
+	r.removeLegLocked(l)
 
 	r.applyRoutingLocked()
 	r.syncMixerLocked()
@@ -115,13 +129,47 @@ func (r *Room) RemoveLeg(legID string) {
 	defer r.mu.Unlock()
 
 	if l, ok := r.participants[legID]; ok {
-		l.SetRoomID("")
-		delete(r.participants, legID)
-		r.mix.RemoveParticipant(legID)
+		r.removeLegLocked(l)
 	}
 
 	r.applyRoutingLocked()
 	r.syncMixerLocked()
+}
+
+func (r *Room) removeLegLocked(l leg.Leg) {
+	l.SetRoomID("")
+	delete(r.participants, l.ID())
+	delete(r.legParts, l.ID())
+	r.mix.RemoveParticipant(l.ID())
+}
+
+// RemoveLegIfParticipant removes legID from the room only if p is still the
+// mixer participant carrying that leg's audio, and reports whether this call
+// removed it.
+//
+// This is the room-membership half of the mixer's removeParticipantIf, for the
+// panic teardown that runs asynchronously: by the time it acts, the leg may
+// have left and rejoined — including leaving and returning to this same room —
+// behind a fresh participant over a live ingress. Only p identifies the
+// instance that died; legID does not, and neither does the leg's presence
+// here. The lookup and the removal share r.mu, which is the lock every
+// membership change takes, so no join or move can land between them.
+func (r *Room) RemoveLegIfParticipant(legID string, p *mixer.Participant) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if cur, ok := r.legParts[legID]; !ok || cur != p {
+		return false
+	}
+	l, ok := r.participants[legID]
+	if !ok {
+		return false
+	}
+	r.removeLegLocked(l)
+
+	r.applyRoutingLocked()
+	r.syncMixerLocked()
+	return true
 }
 
 func (r *Room) Participants() []leg.Leg {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +60,18 @@ type Participant struct {
 	done chan struct{}
 	// guard wraps Writer to prevent writes after removal.
 	guard *guardedWriter
+
+	// ownerClosesEgress marks a participant whose writer is closed by its own
+	// owner during teardown — a leg, whose Hangup closes the egress pipe. For
+	// such a participant the mixer's panic path must NOT close the writer: the
+	// writer is often the leg's shared egress, and by the time a dead loop's
+	// recover runs the leg may have moved onto a fresh participant over that
+	// same pipe, so closing it here would silence the live successor. The
+	// room's identity-gated panic hook tears the dead leg down via Hangup,
+	// which closes the egress. A source whose owner has no other wakeup — a ws
+	// or agent participant — leaves this false and relies on the panic path's
+	// close. Read on the panic path, set once right after AddParticipant.
+	ownerClosesEgress atomic.Bool
 
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
@@ -115,7 +128,41 @@ type Mixer struct {
 	tapMu  sync.Mutex
 	tapOut io.Writer
 
+	// onParticipantPanic, when set, is notified after a participant's IO
+	// loop panicked and the participant was removed. It lets the owner (the
+	// room layer) finish the teardown the mixer cannot see — the mixer is a
+	// leaf and knows nothing about legs, rooms or events.
+	hookMu             sync.Mutex
+	onParticipantPanic func(p *Participant, loop string)
+
+	// tickPanics counts recovered mixTick panics; tickPanicLastLog is the
+	// unix-nanos of the last one logged. Both drive recoverTick's rate limit
+	// and are atomic so it stays lock-free on the mix loop's hot path.
+	tickPanics       atomic.Uint64
+	tickPanicLastLog atomic.Int64
+
 	comfortNoise *comfortnoise.Generator
+}
+
+// SetOnParticipantPanic registers a callback invoked once per participant
+// whose readLoop or writeLoop panicked, after the mixer has removed it.
+// loop is "readLoop" or "writeLoop". Passing nil disables the hook.
+//
+// fn receives the participant instance that panicked, not just its ID. By the
+// time fn — or anything it defers to — acts, the same ID may already carry a
+// replacement instance over a live audio path, and the mixer has removed the
+// panicked one from its own map, so this pointer is the only remaining handle
+// on which instance died. An owner that keyed teardown on the ID would tear
+// down that replacement instead.
+//
+// The mixer holds no lock — neither m.mu nor hookMu — while invoking fn, so
+// fn may call back into the mixer. fn runs on the panicking goroutine as its
+// last act before exiting; if fn does anything that blocks, it must hand off
+// to its own goroutine.
+func (m *Mixer) SetOnParticipantPanic(fn func(p *Participant, loop string)) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	m.onParticipantPanic = fn
 }
 
 func New(log *slog.Logger, sampleRate int) *Mixer {
@@ -336,7 +383,11 @@ func (m *Mixer) ClearParticipantOutTap(id string) {
 	}
 }
 
-func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) {
+// AddParticipant registers id's audio path and returns the instance created
+// for it. Callers that must later distinguish this instance from a
+// replacement registered under the same ID — see removeParticipantIf — keep
+// the returned pointer; the rest may ignore it.
+func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *Participant {
 	gw := &guardedWriter{w: writer}
 	p := &Participant{
 		ID:       id,
@@ -362,6 +413,15 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) {
 
 	go m.readLoop(p)
 	go m.writeLoop(p)
+	return p
+}
+
+// MarkOwnerClosesEgress records that p's writer is closed by its own owner
+// during teardown, so the mixer's panic path leaves the writer alone. The room
+// layer calls this for legs, whose Hangup closes a shared egress the leg may
+// since have moved onto a fresh participant. See ownerClosesEgress.
+func (p *Participant) MarkOwnerClosesEgress() {
+	p.ownerClosesEgress.Store(true)
 }
 
 // AddPlaybackSource adds a read-only source into the mix (e.g. audio file).
@@ -389,23 +449,131 @@ func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 }
 
 func (m *Mixer) RemoveParticipant(id string) {
+	m.removeParticipant(id)
+}
+
+// removeParticipant detaches whatever participant is registered under id and
+// reports whether this call was the one that removed it. The map delete under
+// m.mu is the exactly-once gate: concurrent callers race on the lookup, but
+// only the goroutine that observed ok == true owns teardown, so close(p.done)
+// can never double-close.
+//
+// This resolves the ID to an instance, so it removes whichever participant is
+// registered *now* — the right semantics for RemoveParticipant's callers, who
+// mean "whatever is under this ID". A caller that holds a specific instance
+// and must not evict its successor wants removeParticipantIf instead.
+func (m *Mixer) removeParticipant(id string) bool {
 	m.mu.Lock()
 	p, ok := m.participants[id]
 	if ok {
 		delete(m.participants, id)
-		if p.guard != nil {
-			p.guard.Close() // prevent any further writes to the network
-		}
-		// Closing p.done alone does not unblock readLoop when it is parked
-		// inside p.Reader.Read (the select runs only between iterations).
-		// If the reader implements io.Closer, close it so the in-flight
-		// Read returns and readLoop observes p.done on the next iteration.
-		if rc, ok := p.Reader.(io.Closer); ok {
-			_ = rc.Close()
-		}
-		close(p.done) // signal readLoop/writeLoop to stop
 	}
 	m.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	m.teardownParticipant(p)
+	return true
+}
+
+// removeParticipantIf detaches p only if p is still the instance registered
+// under p.ID, and reports whether this call was the one that removed it.
+//
+// AddParticipant overwrites m.participants[id] without stopping the previous
+// instance's loops, so an orphaned loop can outlive its replacement. Keying
+// teardown on the ID alone would let that orphan evict the live successor and
+// escalate — via the panic hook — into hanging up a healthy call. Matching on
+// the pointer makes the delete elect one owner per participant *instance*.
+func (m *Mixer) removeParticipantIf(p *Participant) bool {
+	m.mu.Lock()
+	cur, ok := m.participants[p.ID]
+	if !ok || cur != p {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.participants, p.ID)
+	m.mu.Unlock()
+
+	m.teardownParticipant(p)
+	return true
+}
+
+// closeWriterForPanic closes p's writer if it can be closed, so that an owner
+// parked on the read end observes EOF and runs its own teardown.
+//
+// This belongs to the panic path alone. Muting the guard stops writes but
+// tells the owner nothing, and the mixer is a leaf: it cannot call the API
+// layer. For a participant whose owner is not the room layer — a WebSocket
+// client, an agent, a playback or TTS source — EOF on the writer is the only
+// notification it will ever get that its participant died.
+//
+// An ordinary removal must not come through here. There the participant is
+// alive and its owner keeps using it: Room.DetachLeg hands the leg to
+// Manager.MoveLeg, which adds it to another room. Closing the writer on that
+// path closes a ws/MoQ leg's egress pipe, which is exactly what Hangup does,
+// so the leg would arrive at its new room already dead.
+//
+// The panic path has the same hazard: a leg's writer is closed by its own
+// owner during teardown, and a stale loop's recover can race a MoveLeg, so the
+// leg may already be live on a fresh participant over that same egress. A
+// participant flagged ownerClosesEgress is therefore skipped here and left to
+// the room's identity-gated hook.
+func (m *Mixer) closeWriterForPanic(p *Participant) {
+	if p.ownerClosesEgress.Load() {
+		return
+	}
+	if p.guard == nil {
+		return
+	}
+	_ = closeWriter(p.guard.w)
+}
+
+// closeWriter closes w under either Close shape the mixer is handed, and is a
+// no-op for a writer that has neither.
+//
+// io.Closer alone is not enough: the writers registered through AddParticipant
+// close both ways. *io.PipeWriter (a ws leg) and bridge.Endpoint report an
+// error; the API layer's egress pipe writer, which an agent registers, closes
+// with no return value and so satisfies only the second shape. Testing for
+// io.Closer by itself silently skips exactly the writers whose owners have no
+// other wakeup.
+func closeWriter(w io.Writer) error {
+	switch c := w.(type) {
+	case io.Closer:
+		return c.Close()
+	case interface{ Close() }:
+		c.Close()
+	}
+	return nil
+}
+
+// teardownParticipant releases p's IO and stops its loops. Reachable only via
+// a map delete that returned ok, which is what makes close(p.done) exactly
+// once.
+//
+// It does not close p's writer. A removal is not a hangup: the room layer
+// detaches a leg to move it between rooms and expects to hand back a live leg,
+// and a leg's writer is often the leg's own egress pipe, so closing it here
+// would end the call. Only the panic path closes the writer — see
+// closeWriterForPanic.
+//
+// It runs outside m.mu: guard.Close and the Reader's Close are foreign code —
+// the reader in particular is arbitrary third-party IO — and the mixer lock is
+// never held across a call out of this package.
+func (m *Mixer) teardownParticipant(p *Participant) {
+	if p.guard != nil {
+		p.guard.Close() // prevent any further writes to the network
+	}
+	// Closing p.done alone does not unblock readLoop when it is parked
+	// inside p.Reader.Read (the select runs only between iterations).
+	// If the reader implements io.Closer, close it so the in-flight
+	// Read returns and readLoop observes p.done on the next iteration.
+	if rc, ok := p.Reader.(io.Closer); ok {
+		_ = rc.Close()
+	}
+	close(p.done) // signal readLoop/writeLoop to stop
 }
 
 func (m *Mixer) ParticipantCount() int {
@@ -435,9 +603,95 @@ func (m *Mixer) Stop() {
 	close(m.stopCh)
 }
 
+// recoverParticipant logs a panic on a per-participant IO loop (readLoop or
+// writeLoop) and removes the participant, mirroring SIPLeg.recoverLoopAndHangup.
+// The panicking goroutine is not restarted.
+//
+// Removing the participant from the mixer is only half of teardown: the owner
+// still has the participant registered and would leave a live call connected
+// but deaf and mute. removeParticipantIf's returned bool is the exactly-once
+// gate — if both IO loops panic for the same participant, only one of them
+// notifies the owner. The hook is read under hookMu but invoked with no lock
+// held.
+//
+// The removal is identity-scoped, not ID-scoped: this goroutine's participant
+// may already have been replaced under the same ID, and a dead loop must never
+// tear down its live successor.
+func (m *Mixer) recoverParticipant(p *Participant, loop string) {
+	if r := recover(); r != nil {
+		m.log.Error(loop+" panic",
+			"participant_id", p.ID,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+		if m.removeParticipantIf(p) {
+			m.closeWriterForPanic(p)
+			m.hookMu.Lock()
+			hook := m.onParticipantPanic
+			m.hookMu.Unlock()
+			if hook != nil {
+				hook(p, loop)
+			}
+		}
+	}
+}
+
+// tickPanicLogInterval bounds how often a repeating mixTick panic is logged
+// after the first occurrence.
+const tickPanicLogInterval = 5 * time.Second
+
+// recoverTick logs a panic from a single mixTick invocation and lets the
+// mix loop continue to the next tick. Must be deferred at the per-tick call
+// site (mixLoop's ticker case), never around mixLoop itself — recovering the
+// loop would stop the whole room instead of skipping one tick. Frame
+// contents are deliberately not logged.
+//
+// Logging is rate-limited because a deterministically panicking frame recurs
+// every tick: at Ptime cadence that is ~50 multi-KB stack traces a second,
+// forever. Only the first tick panic of this Mixer's whole lifetime carries a
+// stack; every later one collapses into at most one stackless line per
+// tickPanicLogInterval, carrying the panic value and the running total.
+//
+// The counter is never re-armed, and a Mixer lives as long as its room — hours.
+// So a second, unrelated tick panic long after the first is permanently
+// stackless and still labelled "(repeating)". That is degraded diagnosability,
+// not lost: the panic value still reaches the log every interval.
+func (m *Mixer) recoverTick() {
+	r := recover()
+	if r == nil {
+		return
+	}
+
+	total := m.tickPanics.Add(1)
+	if total == 1 {
+		m.tickPanicLastLog.Store(time.Now().UnixNano())
+		m.log.Error("mixTick panic, skipping tick",
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+		return
+	}
+
+	now := time.Now().UnixNano()
+	last := m.tickPanicLastLog.Load()
+	if now-last < int64(tickPanicLogInterval) {
+		return
+	}
+	// Whichever caller wins the swap logs the summary; the rest stay silent
+	// until the next interval.
+	if !m.tickPanicLastLog.CompareAndSwap(last, now) {
+		return
+	}
+	m.log.Error("mixTick panic, skipping tick (repeating)",
+		"panic", r,
+		"total_panics", total,
+	)
+}
+
 // readLoop continuously reads PCM frames from a participant's Reader
 // and buffers them for the mix loop. Blocks on IO (RTP receive).
 func (m *Mixer) readLoop(p *Participant) {
+	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
 	for {
 		select {
@@ -480,6 +734,7 @@ func (m *Mixer) readLoop(p *Participant) {
 // and writes to the participant's Writer. Blocks on IO (RTP send).
 // This runs on its own goroutine so the mix tick never blocks.
 func (m *Mixer) writeLoop(p *Participant) {
+	defer m.recoverParticipant(p, "writeLoop")
 	for {
 		select {
 		case <-m.stopCh:
@@ -506,9 +761,18 @@ func (m *Mixer) mixLoop() {
 		case <-m.stopCh:
 			return
 		case <-ticker.C:
-			m.mixTick()
+			m.safeMixTick()
 		}
 	}
+}
+
+// safeMixTick runs mixTick with a per-tick panic recover. A panic here
+// skips only this tick (recoverTick logs and returns) — mixLoop is not
+// wrapped, so the room's ticker keeps running and the next tick proceeds
+// normally.
+func (m *Mixer) safeMixTick() {
+	defer m.recoverTick()
+	m.mixTick()
 }
 
 // mixTick reads one frame from each participant, computes per-listener
