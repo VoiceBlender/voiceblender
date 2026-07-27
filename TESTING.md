@@ -59,14 +59,15 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | Package | Tests | Description |
 |---------|-------|-------------|
 | `internal/amd` | 21 | AMD state machine (human/machine/no\_speech/not\_sure), beep detection (Goertzel), parameter validation |
-| `internal/mixer` | 15 | Audio mixing, configurable sample rate (8/16/48 kHz), resampling, playback sources, tap recording, per-listener routing whitelist (full mesh / supervisor-whisper / isolated / mute+deaf interaction) |
+| `internal/mixer` | 21 | Audio mixing, configurable sample rate (8/16/48 kHz), anti-aliasing polyphase resampler (stopband attenuation, passband flatness, group-delay budget, seam continuity, full-scale clamp), playback sources, tap recording, per-listener routing whitelist (full mesh / supervisor-whisper / isolated / mute+deaf interaction) |
+| `internal/resampler` | 10 | Vendored pure-Go Speex/Opus polyphase resampler (MIT); upstream tests: same-rate, direct and interpolated up/down-sampling for float32 and float64 |
 | `internal/bridge` | 9 | Duplex conduit: pair wiring, blocking Read, EOF/idempotent Close, drop-oldest backpressure, leftover handling, buffer-copy |
 | `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
 | `internal/room` (routing) | 6 | Role-based routing matrix: supervisor-whisper no-bleed at join, mid-call role change recomputes allow-sets, unroled legs default to full mesh, removing a leg prunes others' whitelists, `UpdateRoutingRow` with null clears row, matrix round-trip via `RoutingMatrix()` |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
 | `internal/codec` | 17 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB and AMR-NB type registration + factory + RFC 4867 round-trip (both payload formats) |
 | `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
-| `internal/playback` | 22 | WAV/MP3 parsing, format detection, streaming, resampling, repeat, cancellation |
+| `internal/playback` | 48 | WAV/MP3 parsing, format detection, streaming, anti-aliasing resampler with per-stream filter lifetime (seam continuity across frames, fresh filter per stream, no cross-playback bleed), repeat, cancellation |
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
@@ -253,6 +254,7 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestRoomWSCompatibleWithLegWS` | Confirms `/v1/rooms/{id}/ws` and `/v1/legs/websocket` speak the same wire protocol after both endpoints share `wsmedia.Transport`: a leg WS writer and a room WS reader exchange JSON-base64 audio (`{"audio":"<b64>"}` shape) end-to-end, including the welcome `connected` frame and the `{"type":"stop"}` close verb |
 | `TestWSLegPing` | Inbound WS leg replies to a `{"type":"ping","event_id":N}` text frame with a matching pong |
 | `TestPlaybackCrossSampleRate` | Sweeps leg/room sample-rate combinations (8/16/48 kHz × 8/16/48 kHz) with a tone playback started before the leg joins a room. The captured WS egress must hold the original 425 Hz tone across the inject path even when room rate ≠ producer rate — regression guard for the high-pitched-TTS bug where `legPlaybackWriter` skipped resampling on the room inject path |
+| `TestResampleAntiAliasing` | Two 16 kHz WS legs in an 8 kHz room; leg A injects a 6 kHz tone (above the 4 kHz room Nyquist), the mixer routes it to leg B. Asserts the 2 kHz fold-back alias stays ≥20 dB below a genuine in-band reference tone — end-to-end proof the polyphase resampler filters above-Nyquist energy instead of aliasing it, which the old linear/decimation downsampler could not do |
 | `TestSIPRegister_Basic` | Raw sipgo client REGISTERs; expects 200 OK echoing `Expires`, a `sip.registration_active` event, and the binding visible via `GET /v1/sip/registrations` with the client's actual source socket |
 | `TestSIPRegister_Refresh` | Same Contact re-registers from a different ephemeral source port; binding's `Socket` updates in-place; only one binding remains for the (AOR, Contact) pair |
 | `TestSIPRegister_MultiContact` | Same AOR registers from two distinct Contacts; both bindings are listed; per-contact unregister and the `SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS=false` displacement path are also exercised |
