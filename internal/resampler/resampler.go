@@ -479,47 +479,9 @@ func (r *Resampler) updateFilter() {
 			r.channels[i].mem = make([]float64, size)
 		}
 	case r.filtLen > oldLength:
+		// Increasing the filter length mid-stream is unsupported upstream;
+		// unreachable here since the resampler is built once per fixed rate pair.
 		panic("not implemented")
-		// Increase the filter length
-		// oldAllocSize := len(r.mem) / len(r.channels)
-		// if r.filtLen-1+r.bufferSize > oldAllocSize {
-		// 	m := make([]float64, (r.filtLen-1+r.bufferSize)*len(r.channels))
-		// 	copy(m, r.mem)
-		// 	r.mem = m
-		// }
-		for i := len(r.channels) - 1; i >= 0; i-- {
-			//         spx_int32_t j;
-			//         spx_uint32_t olen = old_length;
-			//         /*if (st->magic_samples[i])*/
-			//         {
-			//            /* Try and remove the magic samples as if nothing had happened */
-			//
-			//            /* FIXME: This is wrong but for now we need it to avoid going over the array bounds */
-			//            olen = old_length + 2*st->magic_samples[i];
-			//            for (j=old_length-2+st->magic_samples[i];j>=0;j--)
-			//               st->mem[i*st->mem_alloc_size+j+st->magic_samples[i]] = st->mem[i*old_alloc_size+j];
-			//            for (j=0;j<st->magic_samples[i];j++)
-			//               st->mem[i*st->mem_alloc_size+j] = 0;
-			//            st->magic_samples[i] = 0;
-			//         }
-			//         if (st->filt_len > olen)
-			//         {
-			//            /* If the new filter length is still bigger than the "augmented" length */
-			//            /* Copy data going backward */
-			//            for (j=0;j<olen-1;j++)
-			//               st->mem[i*st->mem_alloc_size+(st->filt_len-2-j)] = st->mem[i*st->mem_alloc_size+(olen-2-j)];
-			//            /* Then put zeros for lack of anything better */
-			//            for (;j<st->filt_len-1;j++)
-			//               st->mem[i*st->mem_alloc_size+(st->filt_len-2-j)] = 0;
-			//            /* Adjust last_sample */
-			//            st->last_sample[i] += (st->filt_len - olen)/2;
-			//         } else {
-			//            /* Put back some of the magic! */
-			//            st->magic_samples[i] = (olen - st->filt_len)/2;
-			//            for (j=0;j<st->filt_len-1+st->magic_samples[i];j++)
-			//               st->mem[i*st->mem_alloc_size+j] = st->mem[i*st->mem_alloc_size+j+st->magic_samples[i]];
-			//         }
-		}
 	case r.filtLen < oldLength:
 		panic("not implemented")
 		//      spx_uint32_t i;
