@@ -93,6 +93,21 @@ func sineFrame(sampleRate int, freqHz, ptimeMs int) []byte {
 	return out
 }
 
+// contSineFrame is sineFrame for frame index frameIdx of a continuous stream:
+// the phase carries across frames instead of restarting at zero each time, so a
+// discontinuity at a frame boundary shows up instead of being hidden by the
+// fixture landing on a zero crossing every time.
+func contSineFrame(sampleRate int, freqHz, ptimeMs, frameIdx int) []byte {
+	n := sampleRate * ptimeMs / 1000
+	out := make([]byte, n*2)
+	inc := 2 * math.Pi * float64(freqHz) / float64(sampleRate)
+	for i := range n {
+		s := int16(math.Sin(float64(frameIdx*n+i)*inc) * 16000)
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(s))
+	}
+	return out
+}
+
 // countZeroCrossings counts sign changes between adjacent samples,
 // ignoring the all-zero leading region. Used as a cheap pitch check:
 // a tone at freq Hz produces ~2·freq crossings per second of audio.
@@ -143,18 +158,34 @@ func loudWindowsZCRate(pcm []byte, sampleRate, windowMs int, minRMS float64) (zc
 	return float64(totalZC) * float64(sampleRate) / float64(totalSamples), loudWindows
 }
 
-func TestResamplePCM16_Identity(t *testing.T) {
+func TestLegPlaybackWriter_EqualRatesAllocateNoFilter(t *testing.T) {
+	// A stream that needs no conversion must write through untouched and build
+	// no filter — it must not pay the filter's group delay for nothing.
+	l := &playbackTestLeg{id: "leg-1", sampleRate: 16000}
+	w := &legPlaybackWriter{
+		legID:        l.id,
+		leg:          l,
+		directWriter: l.AudioWriter(),
+		roomMgr:      newPlaybackRoomMgr(t),
+		srcRate:      16000,
+	}
 	in := sineFrame(16000, 1000, 20)
-	out := resamplePCM16(in, 16000, 16000)
-	if !bytes.Equal(in, out) {
-		t.Fatal("identity resample should return input bytes unchanged")
+	if _, err := w.Write(in); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := l.directBytes.Bytes(); !bytes.Equal(got, in) {
+		t.Error("equal-rate write should reach the leg byte for byte")
+	}
+	if len(w.resamplers) != 0 {
+		t.Errorf("equal-rate write allocated %d resampler(s), want 0", len(w.resamplers))
 	}
 }
 
-func TestResamplePCM16_LengthAndPitch(t *testing.T) {
-	// Resample a 1 kHz tone between every supported room rate and the
-	// telephony codec rates. After resampling, the dominant frequency
-	// must stay at 1 kHz (zero-crossings per second within 20%).
+// TestLegPlaybackWriter_LengthAndPitch pins the writer's duration contract and
+// checks the tone is not pitch-shifted across every supported rate pair. The
+// old version drove the deleted stateless resamplePCM16 helper directly; this
+// drives the writer that production actually uses.
+func TestLegPlaybackWriter_LengthAndPitch(t *testing.T) {
 	cases := []struct{ src, dst int }{
 		{8000, 16000},
 		{8000, 48000},
@@ -164,31 +195,36 @@ func TestResamplePCM16_LengthAndPitch(t *testing.T) {
 		{48000, 16000},
 	}
 	for _, c := range cases {
-		// 500 ms of audio gives the zero-crossing rate room to average.
-		var srcBuf bytes.Buffer
-		for i := 0; i < 25; i++ {
-			// 25 × 20 ms = 500 ms. Each call regenerates the wave
-			// starting at phase 0, which is fine for a per-frame
-			// crossing-rate check (boundaries match zero).
-			srcBuf.Write(sineFrame(c.src, 1000, 20))
-		}
-		var dstBuf bytes.Buffer
-		for off := 0; off < srcBuf.Len(); off += c.src * 20 / 1000 * 2 {
-			frame := srcBuf.Bytes()[off : off+c.src*20/1000*2]
-			dstBuf.Write(resamplePCM16(frame, uint32(c.src), uint32(c.dst)))
+		// The leg is at dst, the writer's producer at src, and the leg is in no
+		// room — so Write takes the direct path and converts src -> dst.
+		l := &playbackTestLeg{id: "leg-1", sampleRate: c.dst}
+		w := &legPlaybackWriter{
+			legID:        l.id,
+			leg:          l,
+			directWriter: l.AudioWriter(),
+			roomMgr:      newPlaybackRoomMgr(t),
+			srcRate:      uint32(c.src),
 		}
 
-		wantBytes := c.dst * 20 / 1000 * 2 * 25
-		if got := dstBuf.Len(); got < wantBytes-4 || got > wantBytes+4 {
-			t.Errorf("%d→%d: output %d bytes, want ~%d", c.src, c.dst, got, wantBytes)
+		// 25 x 20 ms = 500 ms, fed one frame at a time as the player does.
+		const frames = 25
+		for i := range frames {
+			if _, err := w.Write(contSineFrame(c.src, 1000, 20, i)); err != nil {
+				t.Fatalf("%d->%d: Write: %v", c.src, c.dst, err)
+			}
+		}
+		out := l.directBytes.Bytes()
+
+		wantBytes := c.dst * 20 / 1000 * 2 * frames
+		if got := len(out); got < wantBytes-4 || got > wantBytes+4 {
+			t.Errorf("%d->%d: output %d bytes, want ~%d", c.src, c.dst, got, wantBytes)
 		}
 
-		durSec := float64(dstBuf.Len()) / 2 / float64(c.dst)
-		zc := countZeroCrossings(dstBuf.Bytes())
-		zcPerSec := float64(zc) / durSec
-		expected := 2 * 1000.0 // 2·freq for a sine wave
+		durSec := float64(len(out)) / 2 / float64(c.dst)
+		zcPerSec := float64(countZeroCrossings(out)) / durSec
+		expected := 2 * 1000.0 // 2*freq for a sine wave
 		if zcPerSec < expected*0.8 || zcPerSec > expected*1.2 {
-			t.Errorf("%d→%d: zero-crossings/s = %.0f, want %.0f ±20%%",
+			t.Errorf("%d->%d: zero-crossings/s = %.0f, want %.0f +/-20%%",
 				c.src, c.dst, zcPerSec, expected)
 		}
 	}
