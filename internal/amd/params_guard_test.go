@@ -68,12 +68,12 @@ func minReachableTotal(base Params, want Result, voiced func(i int) bool) (time.
 	return 0, false
 }
 
-// TestValidate_WindowGuardsMatchFSM pins the guards to the FSM itself. Validate
-// accepts a params set only if every verdict is reachable within the analysis
-// window, so its accept boundary must be exactly the largest of the three
-// verdicts' first-reachable totals, as measured by driving the real FSM.
-// Accepting below that defeats a verdict; rejecting at it would reject a
-// genuinely usable config, which would be worse than the bug.
+// TestValidate_WindowGuardsMatchFSM pins Validate's accept boundary to the FSM
+// itself. Validate rejects only a window in which *no* verdict can be reached,
+// so that boundary must be exactly the smallest of the verdicts' first-reachable
+// totals, as measured by driving the real FSM. Accepting below it lets through a
+// config that can only ever return not_sure; rejecting at it would refuse a
+// window that genuinely yields a verdict, which would be worse than the bug.
 func TestValidate_WindowGuardsMatchFSM(t *testing.T) {
 	combos := 0
 	for _, initial := range []time.Duration{300, 1000, 2500} {
@@ -95,38 +95,36 @@ func TestValidate_WindowGuardsMatchFSM(t *testing.T) {
 					if !ok {
 						t.Fatalf("%+v: machine unreachable at any total", p)
 					}
-					human, ok := minReachableTotal(p, ResultHuman, shortestBurst(p))
-					if !ok {
-						// The greeting threshold is shorter than the shortest
-						// qualifying burst, so machine always pre-empts human.
-						// No total_analysis_time can fix that — out of scope
-						// for a window guard.
-						continue
-					}
+					// human can be unreachable at every total when the greeting
+					// threshold is shorter than the shortest qualifying burst, so
+					// machine always pre-empts it. No window can fix that, and it
+					// does not make the params degenerate — the other two verdicts
+					// still fire, so it simply does not constrain the boundary.
+					human, humanOK := minReachableTotal(p, ResultHuman, shortestBurst(p))
 					combos++
 
 					want := noSpeech
-					if machine > want {
+					if machine < want {
 						want = machine
 					}
-					if human > want {
+					if humanOK && human < want {
 						want = human
 					}
 
 					below := p
 					below.TotalAnalysisTime = want - frameDuration
 					if err := below.Validate(); err == nil {
-						t.Errorf("init=%v greet=%v after=%v word=%v: total=%v accepted, but no_speech=%v machine=%v human=%v need %v",
+						t.Errorf("init=%v greet=%v after=%v word=%v: total=%v accepted, but the first reachable verdict needs %v (no_speech=%v machine=%v human=%v/%v)",
 							p.InitialSilenceTimeout, p.GreetingDuration, p.AfterGreetingSilence, p.MinimumWordLength,
-							below.TotalAnalysisTime, noSpeech, machine, human, want)
+							below.TotalAnalysisTime, want, noSpeech, machine, human, humanOK)
 					}
 
 					at := p
 					at.TotalAnalysisTime = want
 					if err := at.Validate(); err != nil {
-						t.Errorf("init=%v greet=%v after=%v word=%v: total=%v rejected (%v), but all verdicts reachable there (no_speech=%v machine=%v human=%v)",
+						t.Errorf("init=%v greet=%v after=%v word=%v: total=%v rejected (%v), but a verdict is reachable there (no_speech=%v machine=%v human=%v/%v)",
 							p.InitialSilenceTimeout, p.GreetingDuration, p.AfterGreetingSilence, p.MinimumWordLength,
-							want, err, noSpeech, machine, human)
+							want, err, noSpeech, machine, human, humanOK)
 					}
 				}
 			}
@@ -136,6 +134,35 @@ func TestValidate_WindowGuardsMatchFSM(t *testing.T) {
 		t.Fatal("no combinations exercised")
 	}
 	t.Logf("pinned %d parameter combinations against the FSM", combos)
+}
+
+// TestValidate_AcceptsSuppressedVerdict covers the tuning idiom of pushing one
+// threshold past the window on purpose — a large greeting_duration is how a
+// caller disables the machine verdict. Those params are not degenerate and must
+// keep validating, so the guard cannot reject per-verdict.
+func TestValidate_AcceptsSuppressedVerdict(t *testing.T) {
+	p := Params{
+		InitialSilenceTimeout: 2500 * time.Millisecond,
+		GreetingDuration:      30 * time.Second,
+		AfterGreetingSilence:  800 * time.Millisecond,
+		TotalAnalysisTime:     5 * time.Second,
+		MinimumWordLength:     100 * time.Millisecond,
+	}
+
+	if p.canReachMachine() {
+		t.Fatal("this config is meant to have machine suppressed")
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("suppressing one verdict must stay valid: %v", err)
+	}
+
+	// The two surviving verdicts must genuinely still fire.
+	if det := drive(p, silenceOnly); det.Result != ResultNoSpeech {
+		t.Errorf("silence gave %s, want no_speech", det.Result)
+	}
+	if det := drive(p, shortestBurst(p)); det.Result != ResultHuman {
+		t.Errorf("short burst gave %s, want human", det.Result)
+	}
 }
 
 // TestValidate_RejectsDegenerateEqualWindows covers the reported config: three
@@ -164,21 +191,26 @@ func TestValidate_RejectsDegenerateEqualWindows(t *testing.T) {
 	}
 }
 
-// TestValidate_AcceptsSubFrameReachableTotal pins the sub-frame edge of each
-// guard. A verdict fires at a frame-aligned elapsed (its verdict frame), yet it
-// is reachable at any TotalAnalysisTime strictly greater than that frame — not
-// only at the next whole frame. The earlier bounds rejected the whole open
-// interval between the verdict frame and the next frame, 400'ing usable configs
-// whose window merely was not frame-aligned. Here each verdict's frame is read
-// straight from the FSM (driven with a generous window), then Validate must
-// reject exactly at the frame and accept a non-aligned window 10 ms past it.
-func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
+// TestReachability_SubFrameEdge pins the sub-frame edge of each per-verdict
+// reachability predicate. A verdict fires at a frame-aligned elapsed (its
+// verdict frame), yet it is reachable at any TotalAnalysisTime strictly greater
+// than that frame — not only at the next whole frame. Bounds that rejected the
+// whole open interval between the two would refuse usable configs whose window
+// merely was not frame-aligned. Each verdict's frame is read straight from the
+// FSM (driven with a generous window); the predicate must then report false
+// exactly at the frame and true for a non-aligned window 10 ms past it.
+//
+// This exercises the predicates rather than Validate because Validate rejects
+// only when every verdict is unreachable, so one verdict's edge does not move
+// its accept boundary. TestValidate_WindowGuardsMatchFSM covers that boundary.
+func TestReachability_SubFrameEdge(t *testing.T) {
 	const roomy = 15 * time.Second
 	cases := []struct {
 		name   string
 		p      Params
 		voiced func(i int) bool
 		want   Result
+		reach  func(Params) bool
 	}{
 		// The reported config: initial_silence_timeout=2500 with a 2510 window.
 		// no_speech fires at 2500; the deadline at 2510 does not pre-empt it.
@@ -192,6 +224,7 @@ func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
 			},
 			voiced: silenceOnly,
 			want:   ResultNoSpeech,
+			reach:  Params.canReachNoSpeech,
 		},
 		{
 			name: "machine",
@@ -203,6 +236,7 @@ func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
 			},
 			voiced: speechOnly,
 			want:   ResultMachine,
+			reach:  Params.canReachMachine,
 		},
 		{
 			name: "human",
@@ -212,7 +246,8 @@ func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
 				AfterGreetingSilence:  1230 * time.Millisecond,
 				MinimumWordLength:     250 * time.Millisecond,
 			},
-			want: ResultHuman,
+			want:  ResultHuman,
+			reach: Params.canReachHuman,
 		},
 	}
 
@@ -239,8 +274,8 @@ func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
 			if got := drive(atFrame, voiced); got.Result != ResultNotSure {
 				t.Fatalf("at the verdict frame the FSM gave %s, want not_sure", got.Result)
 			}
-			if err := atFrame.Validate(); err == nil {
-				t.Errorf("total=%v (== verdict frame) accepted, want rejected", verdictFrame)
+			if tc.reach(atFrame) {
+				t.Errorf("total=%v (== verdict frame) reported reachable, want unreachable", verdictFrame)
 			}
 
 			// A non-aligned window 10 ms past the frame is genuinely reachable.
@@ -249,9 +284,9 @@ func TestValidate_AcceptsSubFrameReachableTotal(t *testing.T) {
 			if got := drive(subFrame, voiced); got.Result != tc.want {
 				t.Fatalf("at %v the FSM gave %s, want %s", subFrame.TotalAnalysisTime, got.Result, tc.want)
 			}
-			if err := subFrame.Validate(); err != nil {
-				t.Errorf("total=%v (10 ms past verdict frame) rejected (%v), but %s is reachable there",
-					subFrame.TotalAnalysisTime, err, tc.want)
+			if !tc.reach(subFrame) {
+				t.Errorf("total=%v (10 ms past verdict frame) reported unreachable, but %s fires there",
+					subFrame.TotalAnalysisTime, tc.want)
 			}
 		})
 	}

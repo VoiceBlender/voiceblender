@@ -124,7 +124,9 @@ Originate an outbound SIP call.
 | `minimum_word_length` | integer | 100 | Minimum speech burst duration (ms) to count as a word. Shorter bursts are treated as noise. |
 | `beep_timeout` | integer | 0 | After detecting `machine`, continue listening up to this many ms for the voicemail beep tone (800–1200 Hz). `0` = beep detection disabled. |
 
-**Constraints** — params that cannot produce a verdict are rejected with `400` rather than silently analysing to `not_sure`: `total_analysis_time` must be greater than or equal to each of `initial_silence_timeout`, `greeting_duration` and `after_greeting_silence`. A threshold longer than the whole analysis window can never be reached, so such a call would always end `not_sure`.
+**Constraints** — `total_analysis_time` bounds every verdict: a threshold longer than the analysis window can never be reached, so that verdict never fires. Setting one threshold past the window is allowed, and is how you suppress a single verdict — a large `greeting_duration`, for example, disables `machine` while `no_speech` and `human` keep working. A window shorter than *all* of `initial_silence_timeout`, `greeting_duration` and `after_greeting_silence` is rejected with `400`, because such a call could only ever end `not_sure`.
+
+Analysis advances in 20 ms frames and the deadline is checked before a verdict is emitted, so a window exactly equal to a threshold does not reach it. Leave at least one frame of headroom above the thresholds you rely on.
 
 Omitted or `0` values fall back to the defaults above (for `beep_timeout`, `0` means beep detection is disabled); a negative value on any field is rejected with `400`.
 
@@ -2660,7 +2662,7 @@ All AMD parameters are optional. An empty request body `{}` enables AMD with all
 ```
 
 **Errors:**
-- `400` — Invalid AMD params (a negative value on any field, or a `total_analysis_time` below `initial_silence_timeout`, `greeting_duration` or `after_greeting_silence`) or leg is not a SIP leg
+- `400` — Invalid AMD params (a negative value on any field, or a `total_analysis_time` too short to reach any verdict) or leg is not a SIP leg
 - `404` — Leg not found
 - `409` — Leg is not in `connected` state (AMD can only start on answered calls)
 

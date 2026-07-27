@@ -72,6 +72,29 @@ type Analyzer struct {
 	beepDet    *beepDetector
 	beepAccum  []byte
 	beepWaited time.Duration
+
+	// Decode scratch shared by Feed and FeedBeep. Nothing survives the call that
+	// fills it, and the two are mutually exclusive for a given driver, so one
+	// buffer serves both. Held on the Analyzer because the push surface runs per
+	// RTP packet on the leg's readLoop, where a per-call allocation is churn.
+	frameSamples []int16
+}
+
+// compact shifts the unconsumed tail of buf to the front and keeps the backing
+// array, so the next append does not reallocate.
+func compact(buf []byte, off int) []byte {
+	if off == 0 {
+		return buf
+	}
+	return buf[:copy(buf, buf[off:])]
+}
+
+// scratch returns the shared decode buffer, allocating it on first use.
+func (a *Analyzer) scratch() []int16 {
+	if a.frameSamples == nil {
+		a.frameSamples = make([]int16, samplesPerFrame)
+	}
+	return a.frameSamples
 }
 
 // New creates an Analyzer with the given parameters.
@@ -273,19 +296,22 @@ func (a *Analyzer) Run(ctx context.Context, reader io.Reader) Detection {
 // The caller must serialize Feed against OnDeadline and FeedBeep.
 func (a *Analyzer) Feed(pcm []byte) (Detection, bool) {
 	a.feedAccum = append(a.feedAccum, pcm...)
-	samples := make([]int16, samplesPerFrame)
+	samples := a.scratch()
 
-	for len(a.feedAccum) >= frameSizeBytes {
-		frame := a.feedAccum[:frameSizeBytes]
+	off := 0
+	for len(a.feedAccum)-off >= frameSizeBytes {
+		frame := a.feedAccum[off : off+frameSizeBytes]
 		for i := range samples {
 			samples[i] = int16(binary.LittleEndian.Uint16(frame[i*2 : i*2+2]))
 		}
-		a.feedAccum = a.feedAccum[frameSizeBytes:]
+		off += frameSizeBytes
 
 		if det, done := a.feedState.step(a.params, samples); done {
+			a.feedAccum = compact(a.feedAccum, off)
 			return det, true
 		}
 	}
+	a.feedAccum = compact(a.feedAccum, off)
 
 	return Detection{}, false
 }
@@ -368,25 +394,29 @@ func (a *Analyzer) FeedBeep(pcm []byte) (BeepResult, bool) {
 		a.beepDet = newBeepDetector(beepMinFreq, beepMaxFreq, beepEnergyRatio, beepMinFrames)
 	}
 	a.beepAccum = append(a.beepAccum, pcm...)
-	samples := make([]int16, samplesPerFrame)
+	samples := a.scratch()
 
-	for len(a.beepAccum) >= frameSizeBytes {
+	off := 0
+	for len(a.beepAccum)-off >= frameSizeBytes {
 		if a.beepWaited >= a.params.BeepTimeout {
+			a.beepAccum = compact(a.beepAccum, off)
 			return BeepResult{}, true
 		}
 
-		frame := a.beepAccum[:frameSizeBytes]
+		frame := a.beepAccum[off : off+frameSizeBytes]
 		for i := range samples {
 			samples[i] = int16(binary.LittleEndian.Uint16(frame[i*2 : i*2+2]))
 		}
-		a.beepAccum = a.beepAccum[frameSizeBytes:]
+		off += frameSizeBytes
 
 		a.beepWaited += frameDuration
 
 		if a.beepDet.feed(samples) {
+			a.beepAccum = compact(a.beepAccum, off)
 			return BeepResult{Detected: true, BeepMs: ms(a.beepWaited)}, true
 		}
 	}
+	a.beepAccum = compact(a.beepAccum, off)
 
 	return BeepResult{}, false
 }

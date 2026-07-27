@@ -286,28 +286,20 @@ func TestAMD_InvalidParams(t *testing.T) {
 		amd  map[string]interface{}
 	}{
 		{
-			name: "total < initial_silence",
+			// Every threshold sits past the analysis window, so no verdict can
+			// ever fire and the call could only end not_sure.
+			name: "window too short for any verdict",
 			amd: map[string]interface{}{
 				"initial_silence_timeout": 5000,
-				"total_analysis_time":     2000,
-			},
-		},
-		{
-			// A greeting window longer than the whole analysis window can never
-			// be reached, so the machine verdict is unreachable.
-			name: "total < greeting",
-			amd: map[string]interface{}{
-				"initial_silence_timeout": 1000,
 				"greeting_duration":       5000,
-				"total_analysis_time":     2000,
+				"after_greeting_silence":  5000,
+				"total_analysis_time":     500,
 			},
 		},
 		{
-			name: "total < after_greeting",
+			name: "negative override",
 			amd: map[string]interface{}{
-				"initial_silence_timeout": 1000,
-				"after_greeting_silence":  5000,
-				"total_analysis_time":     2000,
+				"initial_silence_timeout": -1000,
 			},
 		},
 	}
@@ -324,6 +316,40 @@ func TestAMD_InvalidParams(t *testing.T) {
 				t.Fatalf("expected 400, got %d", createResp.StatusCode)
 			}
 			createResp.Body.Close()
+		})
+	}
+
+	// Pushing a single threshold past the window suppresses just that verdict
+	// and stays valid — the guard must not reject per-verdict.
+	suppressed := []struct {
+		name string
+		amd  map[string]interface{}
+	}{
+		{"machine suppressed", map[string]interface{}{
+			"initial_silence_timeout": 1000,
+			"greeting_duration":       30000,
+			"total_analysis_time":     2000,
+		}},
+		{"no_speech suppressed", map[string]interface{}{
+			"initial_silence_timeout": 30000,
+			"total_analysis_time":     2000,
+		}},
+	}
+
+	for _, tt := range suppressed {
+		t.Run(tt.name, func(t *testing.T) {
+			createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+				"type":   "sip",
+				"uri":    fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+				"codecs": []string{"PCMU"},
+				"amd":    tt.amd,
+			})
+			if createResp.StatusCode != http.StatusCreated {
+				t.Fatalf("expected 201, got %d", createResp.StatusCode)
+			}
+			var l legView
+			decodeJSON(t, createResp, &l)
+			httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), l.ID)).Body.Close()
 		})
 	}
 }
@@ -488,26 +514,20 @@ func TestAMD_PostEndpoint_InvalidParams(t *testing.T) {
 		body map[string]interface{}
 	}{
 		{
-			name: "total < initial_silence",
+			// Every threshold sits past the analysis window, so no verdict can
+			// ever fire and the call could only end not_sure.
+			name: "window too short for any verdict",
 			body: map[string]interface{}{
 				"initial_silence_timeout": 5000,
-				"total_analysis_time":     2000,
-			},
-		},
-		{
-			name: "total < greeting",
-			body: map[string]interface{}{
-				"initial_silence_timeout": 1000,
 				"greeting_duration":       5000,
-				"total_analysis_time":     2000,
+				"after_greeting_silence":  5000,
+				"total_analysis_time":     500,
 			},
 		},
 		{
-			name: "total < after_greeting",
+			name: "negative override",
 			body: map[string]interface{}{
-				"initial_silence_timeout": 1000,
-				"after_greeting_silence":  5000,
-				"total_analysis_time":     2000,
+				"initial_silence_timeout": -1000,
 			},
 		},
 	}
@@ -521,6 +541,20 @@ func TestAMD_PostEndpoint_InvalidParams(t *testing.T) {
 			amdResp.Body.Close()
 		})
 	}
+
+	// Suppressing a single verdict with one oversized threshold is a valid
+	// tuning choice, not a self-defeating config.
+	t.Run("machine suppressed", func(t *testing.T) {
+		amdResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/amd", instA.baseURL(), outID), map[string]interface{}{
+			"initial_silence_timeout": 1000,
+			"greeting_duration":       30000,
+			"total_analysis_time":     2000,
+		})
+		if amdResp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", amdResp.StatusCode)
+		}
+		amdResp.Body.Close()
+	})
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outID))
 }

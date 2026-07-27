@@ -400,22 +400,13 @@ func TestParams_Validate(t *testing.T) {
 		{"zero after greeting", func(p *Params) { p.AfterGreetingSilence = 0 }, ""},
 		{"zero total", func(p *Params) { p.TotalAnalysisTime = 0 }, ""},
 		{"zero min word", func(p *Params) { p.MinimumWordLength = 0 }, ""},
-		{"total < initial silence", func(p *Params) {
-			p.TotalAnalysisTime = 1000 * time.Millisecond
+		{"negative beep timeout", func(p *Params) { p.BeepTimeout = -1 }, "beep_timeout"},
+		{"window too short for any verdict", func(p *Params) {
+			// Below every threshold at once, so the analysis can only ever
+			// time out as not_sure.
 			p.InitialSilenceTimeout = 2000 * time.Millisecond
-		}, "initial_silence_timeout"},
-		{"total < greeting", func(p *Params) {
-			// Keep every other cross-field check satisfied so only the
-			// greeting_duration check can reject these params.
-			p.InitialSilenceTimeout = 500 * time.Millisecond
-			p.TotalAnalysisTime = 2000 * time.Millisecond
-			p.GreetingDuration = 3000 * time.Millisecond
-		}, "greeting_duration"},
-		{"total < after greeting", func(p *Params) {
-			p.InitialSilenceTimeout = 500 * time.Millisecond
-			p.TotalAnalysisTime = 2000 * time.Millisecond
-			p.AfterGreetingSilence = 3000 * time.Millisecond
-		}, "after_greeting_silence"},
+			p.TotalAnalysisTime = 900 * time.Millisecond
+		}, "any verdict"},
 	}
 
 	for _, tt := range tests {
@@ -428,6 +419,34 @@ func TestParams_Validate(t *testing.T) {
 			}
 			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error %q should mention %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	// Pushing a single threshold past the window suppresses that one verdict on
+	// purpose. The remaining verdicts still fire, so these stay valid — the
+	// guard is not per-verdict.
+	accepted := []struct {
+		name   string
+		modify func(*Params)
+	}{
+		{"no_speech suppressed", func(p *Params) {
+			p.InitialSilenceTimeout = 30 * time.Second
+		}},
+		{"machine suppressed", func(p *Params) {
+			p.GreetingDuration = 30 * time.Second
+		}},
+		{"human suppressed", func(p *Params) {
+			p.AfterGreetingSilence = 30 * time.Second
+		}},
+	}
+
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			p := DefaultParams()
+			tt.modify(&p)
+			if err := p.Validate(); err != nil {
+				t.Fatalf("suppressing one verdict must stay valid: %v", err)
 			}
 		})
 	}

@@ -42,35 +42,45 @@ func (p Params) Validate() error {
 	if p.BeepTimeout < 0 {
 		return errors.New("beep_timeout must not be negative")
 	}
-	// A window that a verdict cannot be reached within silently defeats that
-	// verdict: every call on the leg falls out as not_sure. Comparing against
-	// the raw threshold is not enough. fsmState.step advances one frame at a
-	// time, so a verdict fires at the first frame boundary at or past its
-	// threshold — a fixed elapsed we call the verdict frame. step runs its
-	// hard-deadline check *before* the phase switch that emits the verdict, so
-	// the verdict only survives when the deadline falls strictly after that
-	// frame. Hence each verdict is reachable exactly when TotalAnalysisTime is
-	// strictly greater than its verdict frame, and we reject at or below it.
-	if p.TotalAnalysisTime <= analysisFrames(p.InitialSilenceTimeout) {
-		return errors.New("total_analysis_time is too short to ever reach no_speech (initial_silence_timeout)")
+	// Pushing one threshold past TotalAnalysisTime silently defeats that
+	// verdict, but doing so deliberately is a legitimate tuning idiom — a large
+	// greeting_duration is how a caller disables the machine verdict. Only a
+	// window that defeats *every* verdict is rejected: that config cannot do
+	// anything but return not_sure for every call on the leg.
+	if !p.canReachNoSpeech() && !p.canReachMachine() && !p.canReachHuman() {
+		return errors.New("total_analysis_time is too short to reach any verdict; every call would end not_sure")
 	}
-	// Speech latches only after speechOnFrames voiced frames, and greetingDur
-	// starts counting at that frame, so the greeting lags the stream by
-	// speechOnFrames-1 frames.
-	if p.TotalAnalysisTime <= analysisFrames(p.GreetingDuration)+(speechOnFrames-1)*frameDuration {
-		return errors.New("total_analysis_time is too short to ever reach machine (greeting_duration)")
-	}
-	// A burst must survive the off-debounce to end, and those trailing silent
-	// frames still accrue to currentSpeech, so no burst is shorter than
-	// speechOffFrames — even when MinimumWordLength is.
+	return nil
+}
+
+// canReachNoSpeech reports whether the no_speech verdict is reachable at all.
+// fsmState.step advances one frame at a time, so a verdict fires at the first
+// frame boundary at or past its threshold, and step runs its hard-deadline
+// check *before* the phase switch that emits the verdict. So a verdict survives
+// only when TotalAnalysisTime is strictly greater than that frame — comparing
+// against the raw threshold is not enough.
+func (p Params) canReachNoSpeech() bool {
+	return p.TotalAnalysisTime > analysisFrames(p.InitialSilenceTimeout)
+}
+
+// canReachMachine reports whether the machine verdict is reachable at all.
+// Speech latches only after speechOnFrames voiced frames, and greetingDur
+// starts counting at that frame, so the greeting lags the stream by
+// speechOnFrames-1 frames.
+func (p Params) canReachMachine() bool {
+	return p.TotalAnalysisTime > analysisFrames(p.GreetingDuration)+(speechOnFrames-1)*frameDuration
+}
+
+// canReachHuman reports whether the human verdict is reachable at all. A burst
+// must survive the off-debounce to end, and those trailing silent frames still
+// accrue to currentSpeech, so no burst is shorter than speechOffFrames — even
+// when MinimumWordLength is.
+func (p Params) canReachHuman() bool {
 	burst := analysisFrames(p.MinimumWordLength)
 	if burst < speechOffFrames*frameDuration {
 		burst = speechOffFrames * frameDuration
 	}
-	if p.TotalAnalysisTime <= burst+(speechOnFrames-1)*frameDuration+analysisFrames(p.AfterGreetingSilence) {
-		return errors.New("total_analysis_time is too short to ever reach human (after_greeting_silence)")
-	}
-	return nil
+	return p.TotalAnalysisTime > burst+(speechOnFrames-1)*frameDuration+analysisFrames(p.AfterGreetingSilence)
 }
 
 // analysisFrames rounds d up to a whole number of analysis frames.
