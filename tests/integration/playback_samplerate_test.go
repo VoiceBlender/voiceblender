@@ -64,7 +64,7 @@ func runPlaybackRateCase(t *testing.T, roomRate, legRate int) {
 		inst.httpAddr, legRate)
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, err := ws.Dial(dialCtx, wsURL)
+	conn, err := wsDial(dialCtx, wsURL)
 	if err != nil {
 		t.Fatalf("dial ws leg: %v", err)
 	}

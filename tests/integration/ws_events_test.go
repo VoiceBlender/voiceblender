@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
@@ -36,7 +35,7 @@ func dialVSIFiltered(t *testing.T, inst *testInstance, appIDFilter string) net.C
 	if appIDFilter != "" {
 		url += "?app_id=" + appIDFilter
 	}
-	conn, _, _, err := ws.Dial(ctx, url)
+	conn, err := wsDial(ctx, url)
 	if err != nil {
 		t.Fatalf("dial vsi: %v", err)
 	}
