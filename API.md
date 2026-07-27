@@ -2863,11 +2863,17 @@ All event data uses typed structs with consistent field names. Events scoped to 
 > **Opt-in:** Speech detection is **disabled by default**. Enable it globally by setting `SPEECH_DETECTION_ENABLED=true`, or per call by setting `"speech_detection": true` on `POST /v1/legs` (outbound) or `POST /v1/legs/{id}/answer` (inbound). Per-call values override the global default.
 
 | `playback.started` | Playback began | `leg_id` or `room_id`, `playback_id` |
-| `playback.finished` | Playback ended | `leg_id` or `room_id`, `playback_id` |
+| `playback.finished` | Playback ended | `leg_id` or `room_id`, `playback_id`, `reason`, `played_ms` |
 | `playback.error` | Playback failed | `leg_id` or `room_id`, `playback_id`, `error` |
 | `tts.started` | TTS synthesis began playing | `leg_id` or `room_id`, `tts_id` |
-| `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id` |
+| `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id`, `reason`, `played_ms` |
 | `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
+> **Note:** `playback.finished` and `tts.finished` carry `reason` and `played_ms` so you can tell whether a prompt was heard in full or was cut short, and by how much.
+>
+> `reason` is `completed` when the audio played through to its end, and `stopped` when it did **not** reach the end — **for any reason**. That includes an app-initiated stop, a barge-in, and a leg hanging up: all three cancel the same playback, and they cannot be told apart from `reason` alone. To distinguish a hangup from a deliberate stop, look for a co-emitted `leg.disconnected` event. Tone playback never ends on its own, so it always reports `stopped`.
+>
+> `played_ms` is how much audio was actually written to the leg or room, in milliseconds. It counts audio played, **not** the source file's duration: a `repeat`ed playback accumulates across every iteration, so `played_ms` can exceed the length of the file.
+
 | `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
 | `recording.finished` | Recording ended | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |

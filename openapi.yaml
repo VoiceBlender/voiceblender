@@ -4426,6 +4426,12 @@ x-webhooks:
                                     playback_id:
                                         type: string
                                         description: Playback identifier
+                                    reason:
+                                        type: string
+                                        description: 'Why playback ended: ''completed'' (reached the end of the audio) or ''stopped'' (did not reach the end, for any reason)'
+                                    played_ms:
+                                        type: integer
+                                        description: Milliseconds of audio actually played, accumulated across repeat iterations
     playback.error:
         post:
             summary: Playback failed
@@ -4492,6 +4498,12 @@ x-webhooks:
                                     tts_id:
                                         type: string
                                         description: TTS playback identifier
+                                    reason:
+                                        type: string
+                                        description: 'Why the utterance ended: ''completed'' (reached the end of the audio) or ''stopped'' (did not reach the end, for any reason)'
+                                    played_ms:
+                                        type: integer
+                                        description: Milliseconds of audio actually played
     tts.error:
         post:
             summary: TTS synthesis or playback failed
