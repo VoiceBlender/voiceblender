@@ -64,9 +64,8 @@ type Bridge struct {
 	pid      string // synthetic participant id in both mixers
 }
 
-// bridgeParticipantPrefix marks a mixer participant as a synthetic bridge
-// endpoint rather than a leg. The mixer's participant map is not leg-only, so
-// teardown has to be able to tell the classes apart by ID.
+// bridgeParticipantPrefix distinguishes a synthetic bridge endpoint from a leg
+// in the mixer's participant map, which panic teardown dispatches on.
 const bridgeParticipantPrefix = "__bridge:"
 
 func bridgeParticipantID(bridgeID string) string {

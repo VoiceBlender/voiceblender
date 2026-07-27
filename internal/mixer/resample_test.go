@@ -537,3 +537,50 @@ func BenchmarkPCMResampler(b *testing.B) {
 		}
 	}
 }
+
+// countingCloser records Close calls under either shape closeWriter accepts.
+type countingCloser struct {
+	io.Writer
+	closes int
+}
+
+func (c *countingCloser) Close() error { c.closes++; return nil }
+
+type voidCloser struct {
+	io.Writer
+	closes int
+}
+
+func (c *voidCloser) Close() { c.closes++ }
+
+// resampleWriter decorates its destination, so it must not swallow Close.
+func TestResampleWriter_ClosePropagates(t *testing.T) {
+	errDst := &countingCloser{Writer: io.Discard}
+	if err := NewResampleWriter(errDst, DefaultSampleRate, 8000).(io.Closer).Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if errDst.closes != 1 {
+		t.Errorf("io.Closer destination closed %d times, want 1", errDst.closes)
+	}
+
+	voidDst := &voidCloser{Writer: io.Discard}
+	if err := NewResampleWriter(voidDst, DefaultSampleRate, 8000).(io.Closer).Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if voidDst.closes != 1 {
+		t.Errorf("void-Close destination closed %d times, want 1", voidDst.closes)
+	}
+}
+
+// A matched-rate NewResampleWriter returns dst unwrapped, so Close reaches it
+// only if dst was closable to begin with — the passthrough must not hide that.
+func TestResampleWriter_PassthroughKeepsDestinationClosable(t *testing.T) {
+	dst := &countingCloser{Writer: io.Discard}
+	w := NewResampleWriter(dst, DefaultSampleRate, DefaultSampleRate)
+	if err := closeWriter(w); err != nil {
+		t.Fatalf("closeWriter() = %v, want nil", err)
+	}
+	if dst.closes != 1 {
+		t.Errorf("passthrough destination closed %d times, want 1", dst.closes)
+	}
+}

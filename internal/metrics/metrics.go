@@ -98,6 +98,7 @@ func New(bus *events.Bus) *Collector {
 		c.disconnectReasons,
 		c.callDurationSeconds,
 		c.callTotalDurationSeconds,
+		recoveredPanics,
 	)
 
 	_ = bus.Subscribe(c.handle)
