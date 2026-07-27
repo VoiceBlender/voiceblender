@@ -28,6 +28,14 @@ const (
 	wavFormatUlaw = 7
 )
 
+// Accepted WAV sample rate range. Rates below 50 Hz yield zero samples per
+// ptime and would divide by zero when sizing frames; the upper bound caps the
+// per-frame buffer allocated for a caller-supplied file.
+const (
+	minWAVSampleRate = 8000
+	maxWAVSampleRate = 192000
+)
+
 // Player manages audio playback to an io.Writer (PCM stream).
 type Player struct {
 	mu      sync.Mutex
@@ -36,6 +44,10 @@ type Player struct {
 	log     *slog.Logger
 	onStart func()       // called once when streaming actually begins (after successful fetch)
 	volume  atomic.Int32 // -8..8, 0 = unchanged; atomic so SetVolume is safe during playback
+	// playedFrames counts output frames written by the current playback. Reset at
+	// the start of every play; atomic because the streaming goroutine writes it
+	// while PlayedMillis reads it.
+	playedFrames atomic.Int64
 }
 
 func NewPlayer(log *slog.Logger) *Player {
@@ -52,6 +64,13 @@ func (p *Player) SetVolume(v int) {
 		v = 8
 	}
 	p.volume.Store(int32(v))
+}
+
+// PlayedMillis returns how much audio the current or most recent playback wrote,
+// in milliseconds. Every output frame is exactly mixer.Ptime of audio. Read it
+// after the Play call returns to get the final total.
+func (p *Player) PlayedMillis() int {
+	return int(p.playedFrames.Load()) * mixer.Ptime
 }
 
 // OnStart registers a callback that fires once when audio streaming begins,
@@ -118,6 +137,8 @@ func (p *Player) playReader(ctx context.Context, writer io.Writer, reader io.Rea
 		p.mu.Unlock()
 	}()
 
+	p.playedFrames.Store(0)
+
 	format := detectFormat("", mimeType, reader)
 
 	if p.onStart != nil {
@@ -151,6 +172,9 @@ func (p *Player) playAt(ctx context.Context, writer io.Writer, url string, mimeT
 		p.cancel = nil
 		p.mu.Unlock()
 	}()
+
+	// Reset before the download so the count spans every repeat iteration.
+	p.playedFrames.Store(0)
 
 	// Normalize: 0 means play once.
 	if repeat == 0 {
@@ -359,6 +383,7 @@ func (p *Player) streamRawPCM(ctx context.Context, body io.Reader, writer io.Wri
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(srcRate, targetRate)
 
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
 	defer ticker.Stop()
@@ -392,7 +417,7 @@ func (p *Player) streamRawPCM(ctx context.Context, body io.Reader, writer io.Wri
 		}
 
 		// Resample if needed.
-		resampled := resampleLinear(samples, srcRate, targetRate)
+		resampled := rs.ResampleSamples(samples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized.
@@ -405,6 +430,7 @@ func (p *Player) streamRawPCM(ctx context.Context, body io.Reader, writer io.Wri
 			return fmt.Errorf("write audio: %w", werr)
 		}
 		frameCount++
+		p.playedFrames.Add(1)
 
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			p.log.Info("raw PCM playback complete", "frames_written", frameCount)
@@ -419,8 +445,14 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	if err != nil {
 		return fmt.Errorf("mp3 decode: %w", err)
 	}
+	return p.streamMP3PCM(ctx, dec, uint32(dec.SampleRate()), dec.Length(), writer, targetRate)
+}
 
-	srcRate := uint32(dec.SampleRate())
+// streamMP3PCM writes decoded MP3 frames — interleaved stereo 16-bit LE at
+// srcRate — out as mono PCM at targetRate. Split from streamMP3 so the frame
+// loop can be driven from raw PCM in tests (no MP3 encoder is available, and
+// silence fixtures cannot distinguish a per-frame filter from a persistent one).
+func (p *Player) streamMP3PCM(ctx context.Context, dec io.Reader, srcRate uint32, totalBytes int64, writer io.Writer, targetRate uint32) error {
 	const srcChannels = 2 // go-mp3 always outputs stereo
 
 	// Source bytes per ptime frame: stereo 16-bit samples.
@@ -431,7 +463,6 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	outSamplesPerFrame := int(targetRate) * mixer.Ptime / 1000
 	outFrameSize := outSamplesPerFrame * 2
 
-	totalBytes := dec.Length()
 	totalFrames := int(totalBytes) / srcReadSize
 
 	p.log.Info("MP3 playback starting",
@@ -445,6 +476,7 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(srcRate, targetRate)
 
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
 	defer ticker.Stop()
@@ -474,7 +506,7 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 		monoSamples := pcmToMono(srcBuf[:n], srcChannels)
 
 		// Resample to target rate.
-		resampled := resampleLinear(monoSamples, srcRate, targetRate)
+		resampled := rs.ResampleSamples(monoSamples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized.
@@ -487,6 +519,7 @@ func (p *Player) streamMP3(ctx context.Context, body io.Reader, writer io.Writer
 			return fmt.Errorf("write audio: %w", werr)
 		}
 		frameCount++
+		p.playedFrames.Add(1)
 
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			p.log.Info("MP3 playback complete", "frames_written", frameCount)
@@ -586,6 +619,10 @@ func parseWAVHeader(r io.Reader) (*wavHeader, error) {
 		return nil, fmt.Errorf("unsupported channel count: %d", h.NumChannels)
 	}
 
+	if h.SampleRate < minWAVSampleRate || h.SampleRate > maxWAVSampleRate {
+		return nil, fmt.Errorf("unsupported sample rate: %d (supported: %d-%d Hz)", h.SampleRate, minWAVSampleRate, maxWAVSampleRate)
+	}
+
 	return h, nil
 }
 
@@ -635,6 +672,7 @@ func (p *Player) streamWAV(ctx context.Context, body io.Reader, writer io.Writer
 	)
 
 	srcBuf := make([]byte, srcReadSize)
+	rs := newStreamResampler(hdr.SampleRate, targetRate)
 
 	// Pace output at real-time: one frame every ptime interval.
 	ticker := time.NewTicker(time.Duration(mixer.Ptime) * time.Millisecond)
@@ -665,7 +703,7 @@ func (p *Player) streamWAV(ctx context.Context, body io.Reader, writer io.Writer
 		monoSamples := decodeToMono(srcBuf[:n], hdr)
 
 		// Resample to target rate
-		resampled := resampleLinear(monoSamples, hdr.SampleRate, targetRate)
+		resampled := rs.ResampleSamples(monoSamples)
 		applyVolume(resampled, int(p.volume.Load()))
 
 		// Write as 16-bit LE PCM, frame-sized
@@ -678,6 +716,7 @@ func (p *Player) streamWAV(ctx context.Context, body io.Reader, writer io.Writer
 			return fmt.Errorf("write audio: %w", werr)
 		}
 		frameCount++
+		p.playedFrames.Add(1)
 
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			p.log.Info("WAV playback complete", "frames_written", frameCount)
@@ -758,29 +797,15 @@ func applyVolume(samples []int16, volume int) {
 	}
 }
 
-// resampleLinear performs linear interpolation to convert between sample rates.
-func resampleLinear(samples []int16, srcRate, dstRate uint32) []int16 {
-	if srcRate == dstRate {
-		return samples
-	}
-
-	ratio := float64(srcRate) / float64(dstRate)
-	outLen := int(float64(len(samples)) / ratio)
-	out := make([]int16, outLen)
-
-	for i := 0; i < outLen; i++ {
-		srcPos := float64(i) * ratio
-		idx := int(srcPos)
-		frac := srcPos - float64(idx)
-
-		if idx+1 < len(samples) {
-			s0 := int32(samples[idx])
-			s1 := int32(samples[idx+1])
-			out[i] = int16(s0 + int32(float64(s1-s0)*frac))
-		} else if idx < len(samples) {
-			out[i] = samples[idx]
-		}
-	}
-
-	return out
+// newStreamResampler builds the anti-aliasing resampler for one playback
+// stream, or returns nil when the rates match (a nil resampler is a passthrough).
+//
+// The filter is stateful, so its lifetime must be exactly one stream: build it
+// once before the frame loop and reuse it for every frame (per-frame rebuilds
+// re-zero the filter and gap every frame), but do not hang it on the long-lived
+// Player (that would bleed one playback's tail into the next). A repeat playback
+// builds a fresh filter per iteration by design — each iteration reseeks to the
+// start of the file.
+func newStreamResampler(srcRate, dstRate uint32) *mixer.PCMResampler {
+	return mixer.NewPCMResampler(int(srcRate), int(dstRate))
 }

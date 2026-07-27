@@ -126,6 +126,8 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
 				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
+				Reason:       playbackReason(playErr),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()
@@ -246,6 +248,8 @@ func (s *Server) doRoomTTS(roomID string, req TTSRequest) (*TTSStartResult, erro
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
 				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
+				Reason:       playbackReason(playErr),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()

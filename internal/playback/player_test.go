@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/zaf/g711"
 )
 
@@ -239,11 +240,16 @@ func TestDecodeToMono_Ulaw_Stereo(t *testing.T) {
 	}
 }
 
-func TestResampleLinear_SameRate(t *testing.T) {
+func TestStreamResampler_Passthrough(t *testing.T) {
+	// Equal rates must allocate no filter and hand the samples straight back:
+	// a stream that needs no conversion must not pay the filter's group delay.
+	if rs := newStreamResampler(8000, 8000); rs != nil {
+		t.Fatalf("newStreamResampler at equal rates allocated a filter: %#v", rs)
+	}
 	samples := []int16{100, 200, 300}
-	out := resampleLinear(samples, 8000, 8000)
-	if len(out) != 3 {
-		t.Fatalf("len = %d, want 3", len(out))
+	out := newStreamResampler(8000, 8000).ResampleSamples(samples)
+	if len(out) != len(samples) {
+		t.Fatalf("len = %d, want %d", len(out), len(samples))
 	}
 	for i, s := range out {
 		if s != samples[i] {
@@ -252,24 +258,25 @@ func TestResampleLinear_SameRate(t *testing.T) {
 	}
 }
 
-func TestResampleLinear_8kTo16k(t *testing.T) {
-	samples := []int16{0, 1000, 2000, 3000}
-	out := resampleLinear(samples, 8000, 16000)
+// TestStreamResampler_8kTo16k pins what the player's resampler owes its
+// callers: the 1:1 duration mapping, and a passband that survives the trip.
+// It deliberately does not pin exact output samples — those are the filter's
+// to choose, and an anti-aliasing filter is meant to change them.
+func TestStreamResampler_8kTo16k(t *testing.T) {
+	const (
+		srcRate, dstRate = 8000, 16000
+		toneHz, amp      = 440.0, 0.9
+		srcSamples       = 4000 // 500 ms
+	)
+	rs := newStreamResampler(srcRate, dstRate)
+	out := rs.ResampleSamples(toneSamples(srcSamples, 0, toneHz, srcRate, amp))
 
-	// 4 samples at 8kHz -> 8 samples at 16kHz
-	if len(out) != 8 {
-		t.Fatalf("len = %d, want 8", len(out))
+	if want := srcSamples * dstRate / srcRate; len(out) != want {
+		t.Errorf("len = %d, want %d (N ms in, N ms out)", len(out), want)
 	}
-	// Original samples should appear at even indices
-	if out[0] != 0 {
-		t.Errorf("out[0] = %d, want 0", out[0])
-	}
-	if out[2] != 1000 {
-		t.Errorf("out[2] = %d, want 1000", out[2])
-	}
-	// Interpolated samples at odd indices
-	if out[1] != 500 {
-		t.Errorf("out[1] = %d, want 500 (interpolated)", out[1])
+	// Skip the filter's lead-in before measuring the tone.
+	if got := toneAmplitude(out[2*rs.OutputLatency():], toneHz, dstRate); got < amp*0.95 {
+		t.Errorf("%g Hz tone came through at %.4f of full scale, want >= %.4f", toneHz, got, amp*0.95)
 	}
 }
 
@@ -308,58 +315,37 @@ func TestStreamWAV_PCM_Mono_SameRate(t *testing.T) {
 }
 
 func TestStreamWAV_Ulaw_Stereo_8kTo16k(t *testing.T) {
-	// Build a stereo mu-law WAV at 8kHz.
-	// Generate 320 stereo mu-law bytes = 160 stereo frames = 160 mono samples.
-	numFrames := 160
+	// A stereo mu-law WAV at 8 kHz carrying a 440 Hz tone, played out at 16 kHz.
+	// This asserts what matters — the tone arrives, at the right level — not the
+	// individual output samples, which are the anti-aliasing filter's to choose.
+	const (
+		numFrames   = 160 // one 20 ms frame at 8 kHz
+		toneHz, amp = 440.0, 0.8
+	)
 	audio := make([]byte, numFrames*2) // stereo
-	for i := 0; i < numFrames; i++ {
-		// Use the same byte for L and R for simplicity
-		audio[i*2] = uint8(i % 256)
-		audio[i*2+1] = uint8(i % 256)
+	for i := range numFrames {
+		v := int16(amp * 32767 * math.Sin(2*math.Pi*toneHz*float64(i)/8000))
+		b := g711.EncodeUlawFrame(v)
+		audio[i*2], audio[i*2+1] = b, b
 	}
 	wav := buildWAV(7, 2, 8000, 8, audio)
 
 	p := NewPlayer(slog.Default())
 	var output bytes.Buffer
-	err := p.streamWAV(context.Background(), bytes.NewReader(wav), &output, 16000)
-	if err != nil {
+	if err := p.streamWAV(context.Background(), bytes.NewReader(wav), &output, 16000); err != nil {
 		t.Fatalf("streamWAV: %v", err)
 	}
 
-	// At 16kHz with 20ms ptime, one frame = 320 samples = 640 bytes
-	expectedFrameSize := 640
-	if output.Len() != expectedFrameSize {
-		t.Fatalf("output size = %d, want %d", output.Len(), expectedFrameSize)
+	// At 16 kHz with 20 ms ptime, one frame = 320 samples = 640 bytes.
+	if output.Len() != 640 {
+		t.Fatalf("output size = %d, want 640", output.Len())
 	}
 
-	// Decode expected: mu-law stereo -> mono -> resample 8k->16k
-	monoSamples := make([]int16, numFrames)
-	for i := 0; i < numFrames; i++ {
-		left := int32(g711.DecodeUlawFrame(audio[i*2]))
-		right := int32(g711.DecodeUlawFrame(audio[i*2+1]))
-		monoSamples[i] = int16((left + right) / 2)
-	}
-	resampled := resampleLinear(monoSamples, 8000, 16000)
-
-	outData := output.Bytes()
-	maxDiff := int16(0)
-	for i := 0; i < len(resampled) && i < 320; i++ {
-		got := int16(binary.LittleEndian.Uint16(outData[i*2:]))
-		want := resampled[i]
-		diff := got - want
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > maxDiff {
-			maxDiff = diff
-		}
-		if got != want {
-			t.Errorf("sample[%d] = %d, want %d (diff %d)", i, got, want, diff)
-			break
-		}
-	}
-	if maxDiff > 0 {
-		t.Logf("max sample diff: %d", maxDiff)
+	// One frame is too short to let the filter settle, so measure the tone over
+	// the part past its lead-in rather than the whole frame.
+	got := decodePCM16(output.Bytes())
+	if amp := toneAmplitude(got[64:], toneHz, 16000); amp < 0.5 {
+		t.Errorf("%g Hz tone came through at %.4f of full scale, want >= 0.5", toneHz, amp)
 	}
 }
 
@@ -538,13 +524,26 @@ func (rw *roundTripWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// TestStreamWAV_Ulaw_RoundTrip_8k_16k_8k checks that routing 8 kHz mu-law up to
+// a 16 kHz room and back down again returns the same audio: same pitch, same
+// level, no corruption.
+//
+// It does not demand a bit-exact round trip. Bit-identity only ever held under
+// linear interpolation, which copied the original samples through untouched at
+// even indices so that dropping the odd ones recovered them exactly — and it
+// held only against a test-side "downsample" that drops every other sample, the
+// same unfiltered decimation the anti-aliasing filter replaces. That filter
+// reconstructs the waveform instead of copying samples through, and costs group
+// delay on each conversion, so bit-identity is the wrong question. What must
+// hold is that the tone survives the trip.
 func TestStreamWAV_Ulaw_RoundTrip_8k_16k_8k(t *testing.T) {
-	// Build a mono mu-law WAV at 8kHz, stream at 16kHz, then downsample back to 8kHz.
-	// Compare with direct decode at 8kHz. Should be near-identical.
-	numSamples := 160
+	const (
+		numSamples  = 800 // 100 ms at 8 kHz
+		toneHz, amp = 440.0, 0.8
+	)
 	audio := make([]byte, numSamples)
-	for i := 0; i < numSamples; i++ {
-		audio[i] = uint8((i * 7) % 256) // varied mu-law values
+	for i, v := range toneSamples(numSamples, 0, toneHz, 8000, amp) {
+		audio[i] = g711.EncodeUlawFrame(v)
 	}
 	wav16k := buildWAV(7, 1, 8000, 8, audio)
 	wav8k := buildWAV(7, 1, 8000, 8, audio)
@@ -575,20 +574,18 @@ func TestStreamWAV_Ulaw_RoundTrip_8k_16k_8k(t *testing.T) {
 		t.Fatalf("round-trip length = %d, reference = %d", len(downsampled), len(ref.samples16k))
 	}
 
-	maxDiff := int16(0)
-	for i := 0; i < len(downsampled); i++ {
-		diff := downsampled[i] - ref.samples16k[i]
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > maxDiff {
-			maxDiff = diff
-		}
+	// Skip each stream's lead-in, then compare the tone the round trip carries
+	// against the tone the direct 8 kHz path carries.
+	const skip = 128
+	got := toneAmplitude(downsampled[skip:], toneHz, 8000)
+	want := toneAmplitude(ref.samples16k[skip:], toneHz, 8000)
+	if math.Abs(got-want) > 0.05 {
+		t.Errorf("round-trip %g Hz tone = %.4f of full scale, direct 8 kHz path = %.4f — the trip through 16 kHz changed the signal",
+			toneHz, got, want)
 	}
-
-	t.Logf("round-trip max diff: %d (over %d samples)", maxDiff, len(downsampled))
-	if maxDiff > 0 {
-		t.Errorf("round-trip max diff = %d, want 0 (lossless round-trip)", maxDiff)
+	// A pitch shift would move the energy off 440 Hz, so pin the total energy too.
+	if gotRMS, wantRMS := rmsOf(downsampled[skip:]), rmsOf(ref.samples16k[skip:]); math.Abs(gotRMS-wantRMS) > 0.05 {
+		t.Errorf("round-trip RMS = %.4f, direct 8 kHz path = %.4f", gotRMS, wantRMS)
 	}
 }
 
@@ -890,6 +887,21 @@ func TestRepeat_ThreePlaysThreeTimes(t *testing.T) {
 	if output.Len() != 320*3 {
 		t.Errorf("output size = %d, want %d", output.Len(), 320*3)
 	}
+	// The count accumulates across every repeat iteration rather than resetting
+	// per iteration: 3 iterations x one 20ms frame.
+	if got := p.PlayedMillis(); got != 60 {
+		t.Errorf("PlayedMillis() = %d, want 60 (3 iterations x one 20ms frame)", got)
+	}
+
+	// Replaying on the same Player resets the count instead of accumulating
+	// across plays.
+	output.Reset()
+	if err := p.PlayAt8kHz(context.Background(), &output, ts.URL+"/audio.wav", "audio/wav", 1); err != nil {
+		t.Fatalf("second play: unexpected error: %v", err)
+	}
+	if got := p.PlayedMillis(); got != 20 {
+		t.Errorf("PlayedMillis() after second play = %d, want 20 - counter did not reset", got)
+	}
 }
 
 func TestRepeat_InfiniteStopsOnCancel(t *testing.T) {
@@ -1009,19 +1021,134 @@ func BenchmarkDecodeToMono_Ulaw_Stereo(b *testing.B) {
 	}
 }
 
-func BenchmarkResampleLinear_8kTo16k(b *testing.B) {
-	samples := make([]int16, 160)
-	for i := range samples {
-		samples[i] = int16(i * 100)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resampleLinear(samples, 8000, 16000)
-	}
-}
-
 func init() {
 	// Suppress unused import error
 	_ = io.Discard
+}
+
+// TestPlayedMillis covers one case per stream function, matching the three
+// counter sites in the player, so the table and the player cannot drift apart.
+// Each case derives the expected duration from the bytes actually written, so a
+// missing increment at any one site fails that case and only that case.
+func TestPlayedMillis(t *testing.T) {
+	tests := []struct {
+		name      string
+		frameSize int // output bytes per ptime frame at the target rate
+		stream    func(p *Player, w io.Writer) error
+	}{
+		{
+			name:      "raw PCM",
+			frameSize: 640, // 16kHz: 320 samples
+			stream: func(p *Player, w io.Writer) error {
+				// 3200 samples of 16kHz mono PCM = 200ms = 10 frames.
+				audio := make([]byte, 3200*2)
+				return p.streamRawPCM(context.Background(), bytes.NewReader(audio), w, 16000, 16000)
+			},
+		},
+		{
+			name:      "MP3",
+			frameSize: 640, // 16kHz: 320 samples
+			stream: func(p *Player, w io.Writer) error {
+				return p.streamMP3(context.Background(), bytes.NewReader(makeTestMP3(4)), w, 16000)
+			},
+		},
+		{
+			name:      "WAV",
+			frameSize: 320, // 8kHz: 160 samples
+			stream: func(p *Player, w io.Writer) error {
+				// 1600 samples of 8kHz mono PCM = 200ms = 10 frames.
+				wav := buildWAV(1, 1, 8000, 16, make([]byte, 1600*2))
+				return p.streamWAV(context.Background(), bytes.NewReader(wav), w, 8000)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPlayer(slog.Default())
+			var output bytes.Buffer
+			if err := tt.stream(p, &output); err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			frames := output.Len() / tt.frameSize
+			if frames == 0 {
+				t.Fatal("expected at least one output frame")
+			}
+			want := frames * mixer.Ptime
+			if got := p.PlayedMillis(); got != want {
+				t.Errorf("PlayedMillis() = %d, want %d (%d frames written)", got, want, frames)
+			}
+		})
+	}
+}
+
+// TestPlayedMillis_MidStreamCancel proves a truncated play reports only what it
+// actually wrote, not the source audio's full duration.
+func TestPlayedMillis_MidStreamCancel(t *testing.T) {
+	const outFrameSize = 640 // 16kHz
+	// 100 MP3 frames is ~2.6s of source audio — far more than we will play.
+	mp3Data := makeTestMP3(100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p := NewPlayer(slog.Default())
+
+	var output syncBuffer
+	go func() {
+		for output.Len() < 5*outFrameSize {
+			// spin until several frames are written
+		}
+		cancel()
+	}()
+
+	err := p.streamMP3(ctx, bytes.NewReader(mp3Data), &output, 16000)
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+
+	frames := output.Len() / outFrameSize
+	played := p.PlayedMillis()
+	if played == 0 {
+		t.Fatal("expected non-zero played time before cancel")
+	}
+	// Every write is followed by exactly one increment on the same goroutine, so
+	// this is an exact equality, not an approximation.
+	if want := frames * mixer.Ptime; played != want {
+		t.Errorf("PlayedMillis() = %d, want %d (%d frames written)", played, want, frames)
+	}
+	// The whole point: a cut-short play must not report the full source duration.
+	if played >= 2000 {
+		t.Errorf("PlayedMillis() = %d, expected a truncated play well under the ~2600ms source", played)
+	}
+}
+
+// TestPlayedMillis_ResetsBetweenPlays proves the counter does not accumulate
+// across separate plays on the same Player.
+func TestPlayedMillis_ResetsBetweenPlays(t *testing.T) {
+	const outFrameSize = 320                                  // 8kHz
+	longWAV := buildWAV(1, 1, 8000, 16, make([]byte, 1600*2)) // 200ms
+	shortWAV := buildWAV(1, 1, 8000, 16, make([]byte, 480*2)) // 60ms
+
+	p := NewPlayer(slog.Default())
+	var output bytes.Buffer
+
+	if err := p.PlayReaderAtRate(context.Background(), &output, bytes.NewReader(longWAV), "audio/wav", 8000); err != nil {
+		t.Fatalf("first play: %v", err)
+	}
+	first := p.PlayedMillis()
+	if first == 0 {
+		t.Fatal("first play reported 0ms")
+	}
+
+	output.Reset()
+	if err := p.PlayReaderAtRate(context.Background(), &output, bytes.NewReader(shortWAV), "audio/wav", 8000); err != nil {
+		t.Fatalf("second play: %v", err)
+	}
+	second := p.PlayedMillis()
+
+	if want := (output.Len() / outFrameSize) * mixer.Ptime; second != want {
+		t.Errorf("PlayedMillis() after second play = %d, want %d — counter did not reset", second, want)
+	}
+	if second >= first {
+		t.Errorf("second (shorter) play reported %dms, want less than the first play's %dms", second, first)
+	}
 }

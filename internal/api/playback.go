@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
+
+// playbackReason classifies why a playback or TTS utterance stopped, for the
+// finished events. It is only called on the non-error path, which is reached for
+// a nil error (the audio reached its end) or for context.Canceled. Anything that
+// is not a clean end is reported as "stopped" — an app-initiated stop and a leg
+// teardown both cancel the same context and cannot be told apart here;
+// consumers use the co-emitted leg.disconnected event for that.
+func playbackReason(err error) string {
+	if err == nil {
+		return "completed"
+	}
+	return "stopped"
+}
 
 // playbackState tracks per-leg and per-room playback players.
 // Nested map: entity_id → playback_id → *Player
@@ -131,6 +143,8 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
 				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 				PlaybackID:   playbackID,
+				Reason:       playbackReason(err),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()
@@ -264,6 +278,8 @@ func (s *Server) doStartRoomPlay(roomID string, req PlaybackRequest) (*PlaybackS
 			s.Bus.Publish(events.PlaybackFinished, &events.PlaybackFinishedData{
 				LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
 				PlaybackID:   playbackID,
+				Reason:       playbackReason(err),
+				PlayedMs:     player.PlayedMillis(),
 			})
 		}
 	}()
@@ -394,6 +410,32 @@ type legPlaybackWriter struct {
 	directWriter io.Writer // leg.AudioWriter(), captured once
 	roomMgr      *room.Manager
 	srcRate      uint32 // rate of bytes arriving at Write()
+
+	// resamplers holds one anti-aliasing resampler per destination rate, built
+	// on first use of that rate and kept for the whole stream. See resamplerFor.
+	resamplers map[uint32]*mixer.PCMResampler
+}
+
+// resamplerFor returns this stream's retained resampler from srcRate to
+// dstRate, building it the first time that rate is seen.
+//
+// Keyed by rate because a leg that joins or leaves a room mid-playback flips
+// between the room mixer's rate and its own native rate; each destination needs
+// its own filter history, and a flip must reuse the cached resampler rather than
+// rebuild it (rebuilding re-zeroes the filter). Never called for equal rates.
+//
+// No lock: Write runs once per 20 ms frame on the single player goroutine for
+// this stream, and PCMResampler is not concurrency-safe regardless.
+func (w *legPlaybackWriter) resamplerFor(dstRate uint32) *mixer.PCMResampler {
+	if rs, ok := w.resamplers[dstRate]; ok {
+		return rs
+	}
+	rs := mixer.NewPCMResampler(int(w.srcRate), int(dstRate))
+	if w.resamplers == nil {
+		w.resamplers = make(map[uint32]*mixer.PCMResampler, 2)
+	}
+	w.resamplers[dstRate] = rs
+	return rs
 }
 
 func (w *legPlaybackWriter) Write(p []byte) (int, error) {
@@ -406,7 +448,7 @@ func (w *legPlaybackWriter) Write(p []byte) (int, error) {
 				if w.srcRate == dstRate {
 					return injW.Write(p)
 				}
-				if _, err := injW.Write(resamplePCM16(p, w.srcRate, dstRate)); err != nil {
+				if _, err := injW.Write(w.resamplerFor(dstRate).ResampleBytes(p)); err != nil {
 					return 0, err
 				}
 				return len(p), nil
@@ -417,44 +459,8 @@ func (w *legPlaybackWriter) Write(p []byte) (int, error) {
 	if w.srcRate == legRate {
 		return w.directWriter.Write(p)
 	}
-	if _, err := w.directWriter.Write(resamplePCM16(p, w.srcRate, legRate)); err != nil {
+	if _, err := w.directWriter.Write(w.resamplerFor(legRate).ResampleBytes(p)); err != nil {
 		return 0, err
 	}
 	return len(p), nil
-}
-
-// resamplePCM16 resamples a mono 16-bit LE PCM buffer using linear
-// interpolation. Stateless: the input must be a whole number of samples
-// and is assumed to be a complete frame boundary (the player writes
-// one ptime frame per call), so no carry-over state is needed.
-func resamplePCM16(p []byte, srcRate, dstRate uint32) []byte {
-	if srcRate == dstRate || len(p) < 2 {
-		return p
-	}
-	srcSamples := len(p) / 2
-	src := make([]int16, srcSamples)
-	for i := 0; i < srcSamples; i++ {
-		src[i] = int16(binary.LittleEndian.Uint16(p[i*2:]))
-	}
-	ratio := float64(srcRate) / float64(dstRate)
-	outLen := int(float64(srcSamples) / ratio)
-	if outLen < 1 {
-		outLen = 1
-	}
-	out := make([]byte, outLen*2)
-	for i := 0; i < outLen; i++ {
-		srcPos := float64(i) * ratio
-		idx := int(srcPos)
-		frac := srcPos - float64(idx)
-		var s int16
-		if idx+1 < srcSamples {
-			s0 := int32(src[idx])
-			s1 := int32(src[idx+1])
-			s = int16(s0 + int32(float64(s1-s0)*frac))
-		} else if idx < srcSamples {
-			s = src[idx]
-		}
-		binary.LittleEndian.PutUint16(out[i*2:], uint16(s))
-	}
-	return out
 }

@@ -4,11 +4,16 @@ package integration
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gobwas/ws/wsutil"
 )
 
 // httpPatch sends a PATCH request with a JSON body.
@@ -196,4 +201,144 @@ func TestPlaybackVolume_Room(t *testing.T) {
 		t.Fatalf("room stop: unexpected status %d", stopResp.StatusCode)
 	}
 	stopResp.Body.Close()
+}
+
+// playbackFinishedFrame is the playback.finished envelope, narrowed to the
+// truncation-accounting fields.
+type playbackFinishedFrame struct {
+	Type       string `json:"type"`
+	PlaybackID string `json:"playback_id"`
+	Reason     string `json:"reason"`
+	PlayedMs   int    `json:"played_ms"`
+}
+
+// awaitPlaybackFinished reads VSI frames until the playback.finished for the
+// given playback arrives, skipping the other events the call emits.
+func awaitPlaybackFinished(t *testing.T, conn net.Conn, playbackID string, within time.Duration) playbackFinishedFrame {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(deadline)
+		data, err := wsutil.ReadServerText(conn)
+		if err != nil {
+			break
+		}
+		var f playbackFinishedFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			continue
+		}
+		if f.Type == "playback.finished" && f.PlaybackID == playbackID {
+			return f
+		}
+	}
+	t.Fatalf("timed out waiting for playback.finished for %s", playbackID)
+	return playbackFinishedFrame{}
+}
+
+// wavOneSecond8k builds a 1-second 8kHz mono 16-bit silent WAV: 50 ptime frames,
+// so a full play must report exactly 1000ms.
+func wavOneSecond8k() []byte {
+	const sampleRate = 8000
+	audio := make([]byte, sampleRate*2) // 1s of 16-bit mono silence
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+len(audio)))
+	buf.WriteString("WAVE")
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // PCM
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // mono
+	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate))
+	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate*2)) // byte rate
+	binary.Write(&buf, binary.LittleEndian, uint16(2))            // block align
+	binary.Write(&buf, binary.LittleEndian, uint16(16))           // bits
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(len(audio)))
+	buf.Write(audio)
+	return buf.Bytes()
+}
+
+// TestPlaybackFinished_Completed verifies that a prompt played through to its
+// end reports reason "completed" and the full duration of the audio.
+func TestPlaybackFinished_Completed(t *testing.T) {
+	instA := newTestInstance(t, "pbfin-c-a")
+	instB := newTestInstance(t, "pbfin-c-b")
+	outID, _ := establishCall(t, instA, instB)
+
+	wav := wavOneSecond8k()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(wav)
+	}))
+	defer srv.Close()
+
+	conn := dialVSI(t, instA)
+	defer conn.Close()
+
+	startResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/play", instA.baseURL(), outID), map[string]interface{}{
+		"url":       srv.URL + "/prompt.wav",
+		"mime_type": "audio/wav",
+	})
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("play: unexpected status %d", startResp.StatusCode)
+	}
+	var pbResp struct {
+		PlaybackID string `json:"playback_id"`
+	}
+	decodeJSON(t, startResp, &pbResp)
+
+	fin := awaitPlaybackFinished(t, conn, pbResp.PlaybackID, 15*time.Second)
+	if fin.Reason != "completed" {
+		t.Errorf("reason = %q, want %q", fin.Reason, "completed")
+	}
+	// The source is exactly 1s of audio; allow a frame or two of slack.
+	if fin.PlayedMs < 950 || fin.PlayedMs > 1050 {
+		t.Errorf("played_ms = %d, want ~1000 for a 1s prompt played in full", fin.PlayedMs)
+	}
+	t.Logf("completed play: reason=%q played_ms=%d", fin.Reason, fin.PlayedMs)
+}
+
+// TestPlaybackFinished_Stopped verifies that a prompt cut short reports reason
+// "stopped" and only the audio that was actually heard.
+func TestPlaybackFinished_Stopped(t *testing.T) {
+	instA := newTestInstance(t, "pbfin-s-a")
+	instB := newTestInstance(t, "pbfin-s-b")
+	outID, _ := establishCall(t, instA, instB)
+
+	conn := dialVSI(t, instA)
+	defer conn.Close()
+
+	// A looping tone never ends on its own, so this play can only be stopped.
+	startResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/play", instA.baseURL(), outID), map[string]interface{}{
+		"tone":   "us_dial",
+		"repeat": -1,
+	})
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("play: unexpected status %d", startResp.StatusCode)
+	}
+	var pbResp struct {
+		PlaybackID string `json:"playback_id"`
+	}
+	decodeJSON(t, startResp, &pbResp)
+
+	// Let a known amount of audio play, then cut it off.
+	time.Sleep(500 * time.Millisecond)
+	stopResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/play/%s", instA.baseURL(), outID, pbResp.PlaybackID))
+	if stopResp.StatusCode != http.StatusOK {
+		t.Fatalf("stop play: unexpected status %d", stopResp.StatusCode)
+	}
+
+	fin := awaitPlaybackFinished(t, conn, pbResp.PlaybackID, 15*time.Second)
+	if fin.Reason != "stopped" {
+		t.Errorf("reason = %q, want %q", fin.Reason, "stopped")
+	}
+	if fin.PlayedMs <= 0 {
+		t.Errorf("played_ms = %d, want > 0 — audio was playing for ~500ms before the stop", fin.PlayedMs)
+	}
+	// It played for ~500ms, so it must report far less than the endless tone.
+	if fin.PlayedMs > 2000 {
+		t.Errorf("played_ms = %d, want well under 2000 for a play stopped after ~500ms", fin.PlayedMs)
+	}
+	t.Logf("stopped play: reason=%q played_ms=%d", fin.Reason, fin.PlayedMs)
 }
