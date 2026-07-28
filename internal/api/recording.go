@@ -253,8 +253,8 @@ var (
 )
 
 // resolveStorage returns the appropriate storage backend for the request.
-// If the request includes per-request S3 config (s3_bucket), a new S3Backend
-// is created on the fly. Otherwise, falls back to the server-level S3 backend.
+// Per-request object-store config (s3_bucket / gcs_bucket) creates a backend
+// on the fly; otherwise the matching server-level backend is used.
 //
 // ctx bounds the bucket preflight, so a caller that goes away stops the probe
 // instead of holding the request — or, on VSI, the connection's command loop.
@@ -293,6 +293,21 @@ func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage
 			return nil, fmt.Errorf("S3 storage not configured: set S3_BUCKET env var or provide s3_bucket in request")
 		}
 		return s.S3, nil
+	case "gcs":
+		if req.GCSBucket != "" {
+			backend, err := storage.NewGCSBackend(context.Background(), storage.GCSConfig{
+				Bucket: req.GCSBucket,
+				Prefix: req.GCSPrefix,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create GCS backend: %w", err)
+			}
+			return backend, nil
+		}
+		if s.GCS == nil {
+			return nil, fmt.Errorf("GCS storage not configured: set GCS_BUCKET env var or provide gcs_bucket in request")
+		}
+		return s.GCS, nil
 	default:
 		return nil, fmt.Errorf("unknown storage type: %s", req.Storage)
 	}

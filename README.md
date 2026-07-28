@@ -20,7 +20,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
-- **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 upload
+- **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 or Google Cloud Storage upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
 - **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
@@ -90,8 +90,10 @@ All configuration is via environment variables:
 | `S3_ALLOW_INSECURE_ENDPOINT` | `false` | Allow a plaintext `http://` `S3_ENDPOINT` on a **non-local** host. Loopback and private addresses never need this. See [S3 bucket preflight](#s3-bucket-preflight). |
 | `S3_PREFLIGHT_TIMEOUT` | `10s` | Budget for the startup bucket probe. `0` disables it. |
 | `S3_REQUEST_PREFLIGHT_TIMEOUT` | `2s` | Budget for the bucket probe on a per-request S3 backend. `0` disables it. |
+| `GCS_BUCKET` | | Google Cloud Storage bucket for recording uploads via the native GCS API. Prefer this over `S3_ENDPOINT=https://storage.googleapis.com` on GKE — Workload Identity / ADC works directly, with no HMAC interop keys. |
+| `GCS_PREFIX` | | Object name prefix for GCS uploads (e.g. `recordings/`) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | | AWS credentials for S3 uploads and AWS Polly TTS. Resolved by the AWS SDK's default credential chain (env vars → `~/.aws/credentials` → EC2/ECS/EKS instance role), not by VoiceBlender directly. `AWS_REGION` is honored only when `S3_REGION` is empty. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to a Google Cloud service-account JSON file used by Google Cloud TTS when no per-request `api_key` is supplied. Resolved by Google's Application Default Credentials chain (env var → `~/.config/gcloud/application_default_credentials.json` → GCE/Cloud Run/GKE metadata), not by VoiceBlender directly. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Resolved by Google's Application Default Credentials chain (env var → `~/.config/gcloud/application_default_credentials.json` → GCE/Cloud Run/GKE metadata / Workload Identity), not by VoiceBlender directly. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files (used when `TTS_CACHE_ENABLED=true`) |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
@@ -489,7 +491,7 @@ internal/
   tts/                  TTS (ElevenLabs, Google Cloud, AWS Polly)
   stt/                  STT (ElevenLabs)
   agent/                AI agent (ElevenLabs, VAPI, Pipecat)
-  storage/              S3 upload backend
+  storage/              S3 / GCS upload backends
   config/               Environment variable config
 tests/integration/      Integration and benchmark tests
 ```

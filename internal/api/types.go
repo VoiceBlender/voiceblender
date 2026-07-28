@@ -463,10 +463,12 @@ type RecordRequest struct {
 	S3Prefix     string `json:"s3_prefix"`
 	S3AccessKey  string `json:"s3_access_key"`
 	S3SecretKey  string `json:"s3_secret_key"`
+	GCSBucket    string `json:"gcs_bucket"`
+	GCSPrefix    string `json:"gcs_prefix"`
 }
 
 var recordRequestFields = map[string]FieldEnrichment{
-	"storage":       {Description: `"file" (default) — local disk, "s3" — upload to S3 after recording stops`, Enum: []string{"file", "s3"}},
+	"storage":       {Description: `"file" (default) — local disk, "s3" — upload to S3 after recording stops, "gcs" — upload to Google Cloud Storage via the native GCS API (Application Default Credentials / Workload Identity)`, Enum: []string{"file", "s3", "gcs"}},
 	"multi_channel": {Description: "When true, record each participant to a separate mono WAV file in addition to the full mix. Only applies to room recordings.", Default: false},
 	"s3_bucket":     {Description: "S3 bucket name. Overrides S3_BUCKET env var. Required if env var is not set."},
 	"s3_region":     {Description: "AWS region. Overrides S3_REGION env var. Default us-east-1."},
@@ -474,6 +476,8 @@ var recordRequestFields = map[string]FieldEnrichment{
 	"s3_prefix":     {Description: "Key prefix (e.g. recordings/). Overrides S3_PREFIX env var."},
 	"s3_access_key": {Description: "AWS access key ID. Overrides default credential chain."},
 	"s3_secret_key": {Description: "AWS secret access key. Must be set together with s3_access_key."},
+	"gcs_bucket":    {Description: "GCS bucket name. Overrides GCS_BUCKET env var. Required if env var is not set when storage=gcs."},
+	"gcs_prefix":    {Description: "Object name prefix (e.g. recordings/). Overrides GCS_PREFIX env var."},
 }
 
 // ElevenLabsAgentRequest is the request body for POST /v1/legs/{id}/agent/elevenlabs

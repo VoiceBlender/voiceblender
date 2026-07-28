@@ -42,6 +42,8 @@ type Config struct {
 	S3Region          string
 	S3Endpoint        string
 	S3Prefix          string
+	GCSBucket         string
+	GCSPrefix         string
 	// S3AllowInsecureEndpoint permits a plaintext http:// S3 endpoint on a
 	// non-local host. Loopback and private endpoints are always allowed.
 	S3AllowInsecureEndpoint bool
@@ -159,6 +161,8 @@ func Load() Config {
 		S3Region:                  envOr("S3_REGION", "us-east-1"),
 		S3Endpoint:                os.Getenv("S3_ENDPOINT"),
 		S3Prefix:                  os.Getenv("S3_PREFIX"),
+		GCSBucket:                 os.Getenv("GCS_BUCKET"),
+		GCSPrefix:                 os.Getenv("GCS_PREFIX"),
 		S3AllowInsecureEndpoint:   envBool("S3_ALLOW_INSECURE_ENDPOINT", false),
 		S3PreflightTimeout:        envDuration("S3_PREFLIGHT_TIMEOUT", 10*time.Second),
 		S3RequestPreflightTimeout: envDuration("S3_REQUEST_PREFLIGHT_TIMEOUT", 2*time.Second),
