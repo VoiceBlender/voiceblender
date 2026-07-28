@@ -463,8 +463,8 @@ type RecordRequest struct {
 	S3Prefix     string `json:"s3_prefix"`
 	S3AccessKey  string `json:"s3_access_key"`
 	S3SecretKey  string `json:"s3_secret_key"`
-	GCSBucket    string `json:"gcs_bucket"`
-	GCSPrefix    string `json:"gcs_prefix"`
+	GCSBucket           string `json:"gcs_bucket"`
+	GCSObjectNamePrefix string `json:"gcs_object_name_prefix"`
 }
 
 var recordRequestFields = map[string]FieldEnrichment{
@@ -477,7 +477,7 @@ var recordRequestFields = map[string]FieldEnrichment{
 	"s3_access_key": {Description: "AWS access key ID. Overrides default credential chain."},
 	"s3_secret_key": {Description: "AWS secret access key. Must be set together with s3_access_key."},
 	"gcs_bucket":    {Description: "GCS bucket name. Overrides GCS_BUCKET env var. Required if env var is not set when storage=gcs."},
-	"gcs_prefix":    {Description: "Object name prefix (e.g. recordings/). Overrides GCS_PREFIX env var."},
+	"gcs_object_name_prefix": {Description: "Object name prefix (e.g. recordings or recordings/). Overrides GCS_OBJECT_NAME_PREFIX env var. A trailing slash is added automatically when missing."},
 }
 
 // ElevenLabsAgentRequest is the request body for POST /v1/legs/{id}/agent/elevenlabs

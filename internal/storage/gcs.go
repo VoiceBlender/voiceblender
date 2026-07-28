@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	gcs "cloud.google.com/go/storage"
 	"google.golang.org/api/option"
@@ -14,6 +15,10 @@ import (
 // GCSConfig holds configuration for the Google Cloud Storage backend.
 type GCSConfig struct {
 	Bucket string
+	// Prefix is an optional object-name prefix (e.g. "dev" or "recordings/").
+	// A trailing slash is added automatically when missing so callers can pass
+	// bare workspace ids matching the GCS_OBJECT_NAME_PREFIX convention used
+	// by other Synthflow services.
 	Prefix string
 	// ClientOptions are forwarded to storage.NewClient. Empty means Application
 	// Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud ADC, or the
@@ -59,6 +64,19 @@ func (u *liveGCSUploader) Close() error {
 	return u.client.Close()
 }
 
+// joinObjectKey builds an object key from an optional prefix and a basename.
+// A non-empty prefix without a trailing slash gets one, matching how other
+// Synthflow services treat GCS_OBJECT_NAME_PREFIX (bare workspace id).
+func joinObjectKey(prefix, base string) string {
+	if prefix == "" {
+		return base
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return prefix + base
+	}
+	return prefix + "/" + base
+}
+
 // NewGCSBackend creates a GCSBackend. Credentials are resolved via Google's
 // Application Default Credentials unless ClientOptions override that.
 func NewGCSBackend(ctx context.Context, cfg GCSConfig) (*GCSBackend, error) {
@@ -102,7 +120,7 @@ func (b *GCSBackend) Upload(ctx context.Context, localPath string) (string, erro
 	}
 	defer f.Close()
 
-	key := b.prefix + filepath.Base(localPath)
+	key := joinObjectKey(b.prefix, filepath.Base(localPath))
 	if err := b.uploader.Upload(ctx, key, f, "audio/wav"); err != nil {
 		return "", fmt.Errorf("gcs upload: %w", err)
 	}

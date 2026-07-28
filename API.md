@@ -1199,7 +1199,7 @@ other channel.
 | `s3_access_key` | string | no | AWS access key ID. Overrides default credential chain. |
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
 | `gcs_bucket` | string | no | GCS bucket name. Overrides `GCS_BUCKET` env var. Required if env var is not set when `storage=gcs`. |
-| `gcs_prefix` | string | no | Object name prefix (e.g. `recordings/`). Overrides `GCS_PREFIX` env var. |
+| `gcs_object_name_prefix` | string | no | Object name prefix (e.g. `recordings` or `recordings/`). Overrides `GCS_OBJECT_NAME_PREFIX` env var. A trailing slash is added automatically when missing. |
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created using the supplied config. Otherwise the matching server-level backend (from env vars) is used. GCS credentials come from Application Default Credentials / Workload Identity (same chain as Google Cloud TTS).
 
@@ -2082,7 +2082,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | `s3_access_key` | string | no | AWS access key ID. Overrides default credential chain. |
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
 | `gcs_bucket` | string | no | GCS bucket name. Overrides `GCS_BUCKET` env var. Required if env var is not set when `storage=gcs`. |
-| `gcs_prefix` | string | no | Object name prefix (e.g. `recordings/`). Overrides `GCS_PREFIX` env var. |
+| `gcs_object_name_prefix` | string | no | Object name prefix (e.g. `recordings` or `recordings/`). Overrides `GCS_OBJECT_NAME_PREFIX` env var. A trailing slash is added automatically when missing. |
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created. Otherwise the matching server-level backend (from env vars) is used.
 
@@ -3162,7 +3162,7 @@ All errors return:
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |
 | `S3_PREFIX` | _(none)_ | Key prefix for S3 objects (e.g. `recordings/`) |
 | `GCS_BUCKET` | _(none)_ | GCS bucket name (required for `storage=gcs` recordings). Uses Application Default Credentials / Workload Identity. |
-| `GCS_PREFIX` | _(none)_ | Object name prefix for GCS uploads (e.g. `recordings/`) |
+| `GCS_OBJECT_NAME_PREFIX` | _(none)_ | Object name prefix for GCS uploads (e.g. `recordings` or bare workspace id). Trailing slash added if missing. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio is stored on disk and persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files. |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |

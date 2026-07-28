@@ -197,13 +197,13 @@ func main() {
 	if cfg.GCSBucket != "" {
 		b, err := storage.NewGCSBackend(ctx, storage.GCSConfig{
 			Bucket: cfg.GCSBucket,
-			Prefix: cfg.GCSPrefix,
+			Prefix: cfg.GCSObjectNamePrefix,
 		})
 		if err != nil {
 			log.Error("failed to create GCS backend", "error", err)
 			os.Exit(1)
 		}
-		log.Info("GCS storage enabled", "bucket", cfg.GCSBucket, "prefix", cfg.GCSPrefix)
+		log.Info("GCS storage enabled", "bucket", cfg.GCSBucket, "prefix", cfg.GCSObjectNamePrefix)
 		gcsBackend = b
 		defer b.Close()
 	}

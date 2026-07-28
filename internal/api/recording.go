@@ -297,7 +297,7 @@ func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage
 		if req.GCSBucket != "" {
 			backend, err := storage.NewGCSBackend(context.Background(), storage.GCSConfig{
 				Bucket: req.GCSBucket,
-				Prefix: req.GCSPrefix,
+				Prefix: req.GCSObjectNamePrefix,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("create GCS backend: %w", err)

@@ -91,7 +91,7 @@ All configuration is via environment variables:
 | `S3_PREFLIGHT_TIMEOUT` | `10s` | Budget for the startup bucket probe. `0` disables it. |
 | `S3_REQUEST_PREFLIGHT_TIMEOUT` | `2s` | Budget for the bucket probe on a per-request S3 backend. `0` disables it. |
 | `GCS_BUCKET` | | Google Cloud Storage bucket for recording uploads via the native GCS API. Prefer this over `S3_ENDPOINT=https://storage.googleapis.com` on GKE — Workload Identity / ADC works directly, with no HMAC interop keys. |
-| `GCS_PREFIX` | | Object name prefix for GCS uploads (e.g. `recordings/`) |
+| `GCS_OBJECT_NAME_PREFIX` | | Object name prefix for GCS uploads (e.g. `recordings` or a bare workspace id like `dev`). A trailing slash is added automatically when missing. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | | AWS credentials for S3 uploads and AWS Polly TTS. Resolved by the AWS SDK's default credential chain (env vars → `~/.aws/credentials` → EC2/ECS/EKS instance role), not by VoiceBlender directly. `AWS_REGION` is honored only when `S3_REGION` is empty. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Resolved by Google's Application Default Credentials chain (env var → `~/.config/gcloud/application_default_credentials.json` → GCE/Cloud Run/GKE metadata / Workload Identity), not by VoiceBlender directly. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |

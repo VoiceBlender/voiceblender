@@ -384,6 +384,45 @@ func TestGCSBackend_Upload(t *testing.T) {
 	}
 }
 
+func TestGCSBackend_Upload_AddsTrailingSlash(t *testing.T) {
+	fake := &fakeGCSUploader{}
+	// Bare workspace id — same shape as GCS_OBJECT_NAME_PREFIX=dev.
+	backend := NewGCSBackendWithUploader(fake, "rec-bucket", "dev")
+
+	tmp := filepath.Join(t.TempDir(), "call.wav")
+	if err := os.WriteFile(tmp, []byte("wav-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := backend.Upload(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("upload error: %v", err)
+	}
+	if want := "gs://rec-bucket/dev/call.wav"; loc != want {
+		t.Errorf("location = %q, want %q", loc, want)
+	}
+	if fake.object != "dev/call.wav" {
+		t.Errorf("object = %q, want dev/call.wav", fake.object)
+	}
+}
+
+func TestJoinObjectKey(t *testing.T) {
+	tests := []struct {
+		prefix, base, want string
+	}{
+		{"", "a.wav", "a.wav"},
+		{"dev", "a.wav", "dev/a.wav"},
+		{"dev/", "a.wav", "dev/a.wav"},
+		{"recordings/inbound", "a.wav", "recordings/inbound/a.wav"},
+		{"recordings/inbound/", "a.wav", "recordings/inbound/a.wav"},
+	}
+	for _, tt := range tests {
+		if got := joinObjectKey(tt.prefix, tt.base); got != tt.want {
+			t.Errorf("joinObjectKey(%q, %q) = %q, want %q", tt.prefix, tt.base, got, tt.want)
+		}
+	}
+}
+
 func TestGCSBackend_Upload_Error(t *testing.T) {
 	fake := &fakeGCSUploader{err: fmt.Errorf("boom")}
 	backend := NewGCSBackendWithUploader(fake, "bucket", "")
