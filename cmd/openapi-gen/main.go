@@ -439,7 +439,7 @@ func configVars() *seq {
 		{Name: "S3_ENDPOINT", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},
 		{Name: "S3_PREFIX", Default: "", Description: "Key prefix applied to all S3 objects"},
 		{Name: "GCS_BUCKET", Default: "", Description: "Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE."},
-		{Name: "GCS_PREFIX", Default: "", Description: "Object name prefix applied to all GCS uploads (e.g. recordings/)"},
+		{Name: "GCS_OBJECT_NAME_PREFIX", Default: "", Description: "Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing."},
 		{Name: "AWS_ACCESS_KEY_ID", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN."},
 		{Name: "AWS_SECRET_ACCESS_KEY", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID."},
 		{Name: "AWS_SESSION_TOKEN", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET."},

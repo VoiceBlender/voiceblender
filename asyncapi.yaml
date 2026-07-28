@@ -5783,7 +5783,7 @@ components:
                     type: string
                 gcs_bucket:
                     type: string
-                gcs_prefix:
+                gcs_object_name_prefix:
                     type: string
             required:
                 - id
@@ -5796,7 +5796,7 @@ components:
                 - s3_access_key
                 - s3_secret_key
                 - gcs_bucket
-                - gcs_prefix
+                - gcs_object_name_prefix
         rejectRegistrationPayload:
             type: object
             properties:
