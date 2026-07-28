@@ -2071,6 +2071,18 @@ When `s3_bucket` is provided, a per-request S3 backend is created. Otherwise the
 
 When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
 
+#### Automatic Stop
+
+A room recording does not have to be stopped explicitly. Whenever the room is left with **no participants**, the recording is finalized (file closed, uploaded to S3 if configured) and `recording.finished` is published. That applies to every path that can empty a room:
+
+- the last participant disconnects or is hung up (`DELETE /v1/legs/{id}`),
+- the last participant is removed from the room (`DELETE /v1/rooms/{id}/legs/{legID}`),
+- the last participant is moved to another room (`POST /v1/rooms/{otherID}/legs`),
+- the room is deleted (`DELETE /v1/rooms/{id}`),
+- the last participant's audio path faults and the server tears the leg down.
+
+After that, `DELETE /v1/rooms/{id}/record` returns `404 — No recording in progress`. A client waiting for the recording to complete should therefore wait on `recording.finished` rather than assume the stop call is what produces it.
+
 #### Multi-Channel Recording
 
 When `multi_channel: true` is set, a single multi-channel WAV file is produced alongside the full mix. Each participant gets their own channel (track) within this file, with silence padding so all tracks are time-aligned to the recording start. Participants that join mid-recording get a new channel; participants that leave have silence written for the remainder.
@@ -2881,7 +2893,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 > `played_ms` is how much audio was actually written to the leg or room, in milliseconds. It counts audio played, **not** the source file's duration: a `repeat`ed playback accumulates across every iteration, so `played_ms` can exceed the length of the file.
 
 | `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
-| `recording.finished` | Recording ended | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
+| `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
