@@ -80,6 +80,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/api` (inbound auth) | 12 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, applies the configured fallback when undecided (reject by default, accept when configured), propagates a challenge decision (incl. `max_expires`), accept decision carries `max_expires`; `registerConsultFallback` mapping (unset/unknown → reject, `accept` case-insensitive); `ChallengeRequest` validation (realm + password/ha1 required, non-negative `max_expires`) |
 | `internal/api` (inbound transfer) | 2 | `pendingReferStore` state machine (accept vs decline/timeout are mutually exclusive; progress/complete require a prior accept; unknown-leg misses); `sipReasonPhrase` default reason phrases |
 | `internal/api` (amd driver) | 11 | Push-mode `amdDriver`: frames classified inline on the leg's readLoop, the wall-clock `watch` goroutine exits on leg teardown without publishing, exactly one `amd.result` per call, the machine+beep `pending` handshake (deadline firing mid-verdict defers the publish rather than dropping it), and tap-ownership gating so a superseded analysis publishes nothing and cannot clear the live tap |
+| `internal/api` (room-scoped cleanup) | 3 | Every path that empties a room finalizes its recording: removing the last leg, moving the last leg to another room, and deleting the room. Each starts a real recorder through `doStartRecordRoom` and asserts it is unregistered and `recording.finished` published, so leaving the recording running fails as loudly as leaking the map entry |
 | `internal/leg` (amd tap) | 1 | `ClearAMDTapIf` only clears the writer it was given, so a superseded AMD analysis cannot rip out the tap a later start installed |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
 | `internal/leg` (pcmedia) | 6 | Codec-driven PeerConnection construction, SampleRate wiring, idempotent `Start`, ICE candidate drain, two-peer ICE+DTLS-SRTP loopback with PCM round-trip |
@@ -185,6 +186,10 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestRecording_InRoomLeg` | Stereo recording of leg in a room (left=participant, right=mix) |
 | `TestRecording_Room` | Mono room mix recording |
 | `TestRecording_StopsOnDisconnect` | Recording auto-stops when leg hangs up |
+| `TestRoomRecordingFinalize_RemoveLastLeg` | `DELETE /v1/rooms/{id}/legs/{legID}` on the last participant finalizes the room recording: `recording.finished` carries the room's `app_id` and file, a second stop returns 404, and the file stops growing |
+| `TestRoomRecordingFinalize_MoveLastLegOut` | Moving a room's last participant into another room finalizes the source room's recording |
+| `TestRoomRecordingFinalize_DeleteRoom` | `DELETE /v1/rooms/{id}` finalizes the recording explicitly — the room is gone by then, so the per-leg cleanup cannot reach it and the `app_id` has to be snapshotted first |
+| `TestRoomRecordingFinalize_MixerPanicOnLastLeg` | A panicked leg that is the room's last participant finalizes the recording via the panic teardown; the recording is *not* finalized while that leg is still in the room |
 | `TestRecording_RoomNoParticipants` | Recording empty room returns 409 |
 | `TestRecording_StopWithNoRecording` | Stop without active recording returns 404 |
 | `TestRecording_StorageFileExplicit` | Explicit `storage=file` works |

@@ -611,12 +611,14 @@ func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 // Caller MUST publish LegDisconnected before any webhook is cleared.
 func (s *Server) cleanupLeg(l leg.Leg) {
 	if roomID := l.RoomID(); roomID != "" {
-		s.onLegLeavingRoomRecording(roomID, l.ID())
-		if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
-			s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
-		}
-		s.stopRoomAgentIfEmpty(roomID)
-		s.stopRoomRecordingIfEmpty(roomID)
+		// A failed removal is logged and swallowed: the rest of the teardown
+		// still has to run, so this never returns an error to abort on.
+		_ = s.roomScopedLegRemoval(roomID, l.ID(), func() error {
+			if err := s.RoomMgr.RemoveLeg(roomID, l.ID()); err != nil {
+				s.Log.Debug("remove leg from room on cleanup", "leg_id", l.ID(), "room_id", roomID, "error", err)
+			}
+			return nil
+		})
 	}
 
 	if err := l.Hangup(context.Background()); err != nil {

@@ -100,12 +100,9 @@ func NewServer(
 	// GET /v1/legs/{id} keeps serving it forever.
 	roomMgr.SetOnLegPanicTeardown(func(l leg.Leg, roomID, reason string) {
 		if roomID != "" {
-			// The room layer already cleared the leg's RoomID, so cleanupLeg
-			// skips its room block — which also skips the room-scoped cleanup
-			// every other removal path gets. Run that half here, same order.
-			s.onLegLeavingRoomRecording(roomID, l.ID())
-			s.stopRoomAgentIfEmpty(roomID)
-			s.stopRoomRecordingIfEmpty(roomID)
+			// The room layer already removed the leg and cleared its RoomID, so
+			// cleanupLeg skips its room block; run the room-scoped half here.
+			_ = s.roomScopedLegRemoval(roomID, l.ID(), nil)
 		}
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, reason)
