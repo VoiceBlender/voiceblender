@@ -78,11 +78,20 @@ func (s *Server) doDeleteRoom(id string) error {
 	// leg.disconnected per leg afterwards. RoomMgr.Delete hangs the legs up
 	// (sends BYE) but does not surface them as disconnect events on its own.
 	var participants []leg.Leg
+	appID := ""
 	if rm, ok := s.RoomMgr.Get(id); ok {
 		participants = rm.Participants()
+		appID = rm.AppID
 	}
 
 	s.cleanupRoomAgent(id)
+	// Deleting the room detaches every leg from it, so the per-leg cleanup
+	// below cannot reach the room-scoped teardown — RoomMgr.Delete clears each
+	// leg's RoomID, and the room is gone from the manager by then anyway. The
+	// agent is handled by the explicit call above; the recording needs the
+	// same treatment or it is never finalized and recording.finished never
+	// fires for a deleted room.
+	s.finalizeRoomRecording(id, appID, "room deleted")
 	s.Webhooks.ClearRoomWebhook(id)
 	if err := s.RoomMgr.Delete(id); err != nil {
 		return newAPIError(http.StatusNotFound, "%s", err.Error())
@@ -145,8 +154,9 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		if fromRoomID == roomID {
 			return nil, newAPIError(http.StatusBadRequest, "leg already in this room")
 		}
-		s.onLegLeavingRoomRecording(fromRoomID, req.LegID)
-		if err := s.RoomMgr.MoveLeg(fromRoomID, roomID, req.LegID); err != nil {
+		if err := s.roomScopedLegRemoval(fromRoomID, req.LegID, func() error {
+			return s.RoomMgr.MoveLeg(fromRoomID, roomID, req.LegID)
+		}); err != nil {
 			return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 		}
 		if req.Role != nil {
@@ -155,7 +165,6 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 			}
 		}
 		s.onLegJoinedRoom(roomID, req.LegID)
-		s.stopRoomAgentIfEmpty(fromRoomID)
 		return map[string]string{
 			"status": "moved",
 			"from":   fromRoomID,
@@ -208,12 +217,39 @@ func (s *Server) addLegToRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) doRemoveLegFromRoom(roomID, legID string) error {
+// roomScopedLegRemoval runs the cleanup that hangs off the room a leg is
+// leaving, around the removal itself. Every path that takes a leg out of a
+// room must go through here: the per-participant recording channel has to be
+// closed while the leg is still in the room, and the room's agent and
+// recording can only be judged empty once it is gone.
+//
+// It exists because those three calls used to be written out by hand at each
+// call site, and the sites had drifted — two of them omitted the room
+// recording, so moving or removing a room's last leg left the recording
+// running on an empty room and never published recording.finished. Going
+// through one function makes an omission a compile error rather than
+// something each new path has to remember.
+//
+// remove may be nil when the caller has already removed the leg. It returns
+// remove's error unchanged so callers keep their own status mapping.
+func (s *Server) roomScopedLegRemoval(roomID, legID string, remove func() error) error {
 	s.onLegLeavingRoomRecording(roomID, legID)
-	if err := s.RoomMgr.RemoveLeg(roomID, legID); err != nil {
-		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	if remove != nil {
+		if err := remove(); err != nil {
+			return err
+		}
 	}
 	s.stopRoomAgentIfEmpty(roomID)
+	s.stopRoomRecordingIfEmpty(roomID)
+	return nil
+}
+
+func (s *Server) doRemoveLegFromRoom(roomID, legID string) error {
+	if err := s.roomScopedLegRemoval(roomID, legID, func() error {
+		return s.RoomMgr.RemoveLeg(roomID, legID)
+	}); err != nil {
+		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
 	return nil
 }
 

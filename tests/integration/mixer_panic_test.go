@@ -16,14 +16,18 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 )
 
-// panicWriter panics on the first Write, driving the mixer's write loop into
-// recoverParticipant. Later writes block so a retry cannot spin.
+// panicWriter panics on the first Write once armed, driving the mixer's write
+// loop into recoverParticipant. Later writes block so a retry cannot spin.
+// Writes before arming block too, which lets a test choose the moment the leg
+// blows up rather than taking it on the first mix tick after joining.
 type panicWriter struct {
 	once  sync.Once
 	fired chan struct{}
+	armed chan struct{}
 }
 
 func (w *panicWriter) Write([]byte) (int, error) {
+	<-w.armed
 	first := false
 	w.once.Do(func() { first = true; close(w.fired) })
 	if first {
@@ -57,16 +61,26 @@ type panicLeg struct {
 }
 
 func newPanicLeg(id string) *panicLeg {
+	l := newDisarmedPanicLeg(id)
+	l.arm()
+	return l
+}
+
+// newDisarmedPanicLeg returns a panic leg that absorbs mix frames without
+// blowing up until arm() is called.
+func newDisarmedPanicLeg(id string) *panicLeg {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &panicLeg{
 		id:     id,
 		ctx:    ctx,
 		cancel: cancel,
-		writer: &panicWriter{fired: make(chan struct{})},
+		writer: &panicWriter{fired: make(chan struct{}), armed: make(chan struct{})},
 		reader: &blockedReader{release: make(chan struct{})},
 		hungUp: make(chan struct{}),
 	}
 }
+
+func (l *panicLeg) arm() { close(l.writer.armed) }
 
 func (l *panicLeg) ID() string             { return l.id }
 func (l *panicLeg) Type() leg.LegType      { return leg.TypeWebSocketInbound }
