@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -131,5 +132,84 @@ func TestS3Backend_Upload_Error(t *testing.T) {
 	// Local file should still exist when upload fails.
 	if _, err := os.Stat(tmp); err != nil {
 		t.Error("local file should still exist after failed upload")
+	}
+}
+
+type fakeGCSUploader struct {
+	object      string
+	body        []byte
+	contentType string
+	err         error
+	closed      bool
+}
+
+func (f *fakeGCSUploader) Upload(_ context.Context, object string, r io.Reader, contentType string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.object = object
+	f.contentType = contentType
+	var err error
+	f.body, err = io.ReadAll(r)
+	return err
+}
+
+func (f *fakeGCSUploader) Close() error {
+	f.closed = true
+	return nil
+}
+
+func TestGCSBackend_Upload(t *testing.T) {
+	fake := &fakeGCSUploader{}
+	backend := NewGCSBackendWithUploader(fake, "rec-bucket", "voiceblender/")
+
+	tmp := filepath.Join(t.TempDir(), "20260301_110500_abcd1234.wav")
+	if err := os.WriteFile(tmp, []byte("wav-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := backend.Upload(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("upload error: %v", err)
+	}
+
+	expectedLoc := "gs://rec-bucket/voiceblender/20260301_110500_abcd1234.wav"
+	if loc != expectedLoc {
+		t.Errorf("location = %q, want %q", loc, expectedLoc)
+	}
+	if fake.object != "voiceblender/20260301_110500_abcd1234.wav" {
+		t.Errorf("object = %q, want voiceblender/20260301_110500_abcd1234.wav", fake.object)
+	}
+	if fake.contentType != "audio/wav" {
+		t.Errorf("content-type = %q, want audio/wav", fake.contentType)
+	}
+	if string(fake.body) != "wav-data" {
+		t.Errorf("body = %q, want wav-data", fake.body)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Error("local file should have been deleted after upload")
+	}
+}
+
+func TestGCSBackend_Upload_Error(t *testing.T) {
+	fake := &fakeGCSUploader{err: fmt.Errorf("boom")}
+	backend := NewGCSBackendWithUploader(fake, "bucket", "")
+
+	tmp := filepath.Join(t.TempDir(), "test.wav")
+	if err := os.WriteFile(tmp, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := backend.Upload(context.Background(), tmp); err == nil {
+		t.Fatal("expected error")
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Error("local file should still exist after failed upload")
+	}
+}
+
+func TestNewGCSBackend_RequiresBucket(t *testing.T) {
+	if _, err := NewGCSBackend(context.Background(), GCSConfig{}); err == nil {
+		t.Fatal("expected error for empty bucket")
 	}
 }

@@ -145,6 +145,12 @@ info:
         - name: S3_PREFIX
           default: ""
           description: Key prefix applied to all S3 objects
+        - name: GCS_BUCKET
+          default: ""
+          description: Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE.
+        - name: GCS_PREFIX
+          default: ""
+          description: Object name prefix applied to all GCS uploads (e.g. recordings/)
         - name: AWS_ACCESS_KEY_ID
           default: ""
           description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'
@@ -162,7 +168,7 @@ info:
           description: '[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty.'
         - name: GOOGLE_APPLICATION_CREDENTIALS
           default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS when no per-request api_key is supplied. Consumed by Google''s Application Default Credentials chain.'
+          description: '[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Consumed by Google''s Application Default Credentials chain (env var → gcloud ADC → GCE/GKE metadata / Workload Identity).'
         - name: TTS_CACHE_ENABLED
           default: "false"
           description: Enable disk-backed TTS audio cache; cached audio persists across restarts
@@ -3371,10 +3377,11 @@ components:
             properties:
                 storage:
                     type: string
-                    description: '"file" (default) — local disk, "s3" — upload to S3 after recording stops'
+                    description: '"file" (default) — local disk, "s3" — upload to S3 after recording stops, "gcs" — upload to Google Cloud Storage via the native GCS API (Application Default Credentials / Workload Identity)'
                     enum:
                         - file
                         - s3
+                        - gcs
                 multi_channel:
                     type: boolean
                     description: When true, record each participant to a separate mono WAV file in addition to the full mix. Only applies to room recordings.
@@ -3397,6 +3404,12 @@ components:
                 s3_secret_key:
                     type: string
                     description: AWS secret access key. Must be set together with s3_access_key.
+                gcs_bucket:
+                    type: string
+                    description: GCS bucket name. Overrides GCS_BUCKET env var. Required if env var is not set when storage=gcs.
+                gcs_prefix:
+                    type: string
+                    description: Object name prefix (e.g. recordings/). Overrides GCS_PREFIX env var.
             required:
                 - storage
                 - multi_channel
@@ -3406,6 +3419,8 @@ components:
                 - s3_prefix
                 - s3_access_key
                 - s3_secret_key
+                - gcs_bucket
+                - gcs_prefix
         RegistrationAcceptRequest:
             type: object
             properties:

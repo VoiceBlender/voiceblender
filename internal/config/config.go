@@ -42,6 +42,8 @@ type Config struct {
 	S3Region              string
 	S3Endpoint            string
 	S3Prefix              string
+	GCSBucket             string
+	GCSPrefix             string
 	TTSCacheEnabled       bool
 	TTSCacheDir           string
 	TTSCacheIncludeAPIKey bool
@@ -150,6 +152,8 @@ func Load() Config {
 		S3Region:                 envOr("S3_REGION", "us-east-1"),
 		S3Endpoint:               os.Getenv("S3_ENDPOINT"),
 		S3Prefix:                 os.Getenv("S3_PREFIX"),
+		GCSBucket:                os.Getenv("GCS_BUCKET"),
+		GCSPrefix:                os.Getenv("GCS_PREFIX"),
 		TTSCacheEnabled:          os.Getenv("TTS_CACHE_ENABLED") == "true",
 		TTSCacheDir:              envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
 		TTSCacheIncludeAPIKey:    os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",

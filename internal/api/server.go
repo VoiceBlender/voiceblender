@@ -34,6 +34,7 @@ type Server struct {
 	TTS        tts.Provider
 	TTSCache   *tts.Cache
 	S3         storage.Backend
+	GCS        storage.Backend
 	Metrics    *metrics.Collector
 	Config     config.Config
 	AllowedIPs []netip.Prefix
