@@ -1203,7 +1203,7 @@ other channel.
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created using the supplied config. Otherwise the matching server-level backend (from env vars) is used. GCS credentials come from Application Default Credentials / Workload Identity (same chain as Google Cloud TTS).
 
-Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
 
 **Response:** `200 OK`
 
@@ -2086,7 +2086,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created. Otherwise the matching server-level backend (from env vars) is used.
 
-Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
 
 **Response:** `200 OK`
 

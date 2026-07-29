@@ -195,7 +195,9 @@ func main() {
 	}
 	var gcsBackend storage.Backend
 	if cfg.GCSBucket != "" {
-		b, err := storage.NewGCSBackend(ctx, storage.GCSConfig{
+		// Detached from the signal context so a shutdown does not break the
+		// credential refresh under the uploads that drain with it.
+		b, err := storage.NewGCSBackend(context.WithoutCancel(ctx), storage.GCSConfig{
 			Bucket: cfg.GCSBucket,
 			Prefix: cfg.GCSObjectNamePrefix,
 		})

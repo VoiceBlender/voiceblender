@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/api/option"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -443,5 +445,76 @@ func TestGCSBackend_Upload_Error(t *testing.T) {
 func TestNewGCSBackend_RequiresBucket(t *testing.T) {
 	if _, err := NewGCSBackend(context.Background(), GCSConfig{}); err == nil {
 		t.Fatal("expected error for empty bucket")
+	}
+}
+
+// The backend is reused across the uploads of one recording — a multi-channel
+// room recording uploads twice — so an upload must not close its own client.
+func TestGCSBackend_Upload_KeepsClientOpen(t *testing.T) {
+	fake := &fakeGCSUploader{}
+	backend := NewGCSBackendWithUploader(fake, "rec-bucket", "")
+
+	tmp := filepath.Join(t.TempDir(), "call.wav")
+	if err := os.WriteFile(tmp, []byte("wav-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Upload(context.Background(), tmp); err != nil {
+		t.Fatalf("upload error: %v", err)
+	}
+	if fake.closed {
+		t.Error("a reusable backend closed its client after one upload")
+	}
+}
+
+// Exercises the real GCS client against a fake endpoint, so the object name,
+// content type and payload are checked on the wire rather than at the uploader
+// seam the other tests stub out.
+func TestGCSBackend_Upload_LiveClient(t *testing.T) {
+	var gotURL string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"name":"dev/call.wav","bucket":"rec-bucket"}`))
+	}))
+	defer srv.Close()
+
+	backend, err := NewGCSBackend(context.Background(), GCSConfig{
+		Bucket:        "rec-bucket",
+		Prefix:        "dev",
+		ClientOptions: []option.ClientOption{option.WithEndpoint(srv.URL), option.WithoutAuthentication()},
+	})
+	if err != nil {
+		t.Fatalf("new backend: %v", err)
+	}
+	defer backend.Close()
+
+	tmp := filepath.Join(t.TempDir(), "call.wav")
+	if err := os.WriteFile(tmp, []byte("wav-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := backend.Upload(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("upload error: %v", err)
+	}
+	if want := "gs://rec-bucket/dev/call.wav"; loc != want {
+		t.Errorf("location = %q, want %q", loc, want)
+	}
+	if !strings.Contains(gotURL, "/upload/storage/v1/b/rec-bucket/o") {
+		t.Errorf("upload URL = %q, want an upload to bucket rec-bucket", gotURL)
+	}
+	if !strings.Contains(gotURL, "name=dev%2Fcall.wav") && !strings.Contains(gotURL, "name=dev/call.wav") {
+		t.Errorf("upload URL = %q, want object name dev/call.wav", gotURL)
+	}
+	if !strings.Contains(string(gotBody), "audio/wav") {
+		t.Errorf("request body did not declare the audio/wav content type: %q", gotBody)
+	}
+	if !strings.Contains(string(gotBody), "wav-data") {
+		t.Errorf("request body did not carry the recording payload: %q", gotBody)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Error("local file should have been deleted after upload")
 	}
 }
