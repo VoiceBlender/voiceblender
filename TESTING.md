@@ -39,6 +39,7 @@ go test ./internal/codec/
 go test ./internal/playback/
 go test ./internal/storage/
 go test ./internal/comfortnoise/
+go test ./internal/recording/
 ```
 
 ### Run with verbose output
@@ -72,6 +73,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
 | `internal/playback` | 48 | WAV/MP3 parsing, format detection, streaming, anti-aliasing resampler with per-stream filter lifetime (seam continuity across frames, fresh filter per stream, no cross-playback bleed), repeat, cancellation |
 | `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
+| `internal/recording` | 44 | Recorder lifecycle (start/stop/double-start, WAV header, custom rate, pause/resume, context cancel); atomic publish — capture goes to a `.rec-*.tmp` staging file and is fsync+chmod+rename'd into place, so nothing exists at the advertised path until it completes, a capture that errors mid-write or never wrote a frame is discarded rather than published, and a publish that fails only at the closing directory sync still reports `Finalized`; and the stereo loop on its own 20 ms clock — both channels drained non-blocking into bounded drop-oldest accumulators, silence-fill for a stalled channel, no drift when one channel bursts or closes, a stalled *producer* still advancing the timeline (the hold/DTMF/deafened case), pause zeroing both channels, and the bound holding at 8/16/48 kHz |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
 | `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
@@ -195,7 +197,9 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestRecording_StopWithNoRecording` | Stop without active recording returns 404 |
 | `TestRecording_StorageFileExplicit` | Explicit `storage=file` works |
 | `TestRecording_StorageS3NotConfigured` | `storage=s3` without config returns 400 |
-| `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop |
+| `TestStereoRecording_StaysAlignedAcrossIncomingStall` | A real loopback call stalls incoming RTP mid-recording while outgoing keeps flowing; marker bursts injected on both sides before and after prove the channels' offset did not change, i.e. the stall left no lasting skew |
+| `TestStereoRecording_SurvivesOutgoingStall` | The mirror case a producer-paced recorder cannot handle: holding the *recorded* leg stops its outgoing tap writes entirely, and the recording must still span the call in real time with the incoming audio at its true offsets |
+| `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop; also asserts the advertised path does not exist while recording is in progress and no `.rec-*.tmp` staging residue is left behind |
 | `TestRecording_PauseResume_Room` | Room-level pause/resume with events |
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
 | `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs (with speech detection explicitly enabled) |
