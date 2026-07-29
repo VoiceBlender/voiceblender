@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
 )
 
 func writeSelfSignedCert(t *testing.T, dir string) (certPath, keyPath string) {
@@ -168,6 +170,71 @@ func TestEngine_Serve_AcceptsTLSHandshake(t *testing.T) {
 	}
 	if lastErr != nil {
 		t.Fatalf("TLS handshake never succeeded: %v", lastErr)
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Serve did not return after ctx cancel")
+	}
+}
+
+func TestEngine_OPTIONSReturnsOK(t *testing.T) {
+	udpPort := pickFreePort(t, "udp")
+	engine, err := NewEngine(EngineConfig{
+		BindIP:   "127.0.0.1",
+		BindPort: udpPort,
+		SIPHost:  "test-vb",
+		Codecs:   []codec.CodecType{codec.CodecPCMU},
+		Log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- engine.Serve(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	clientPort := pickFreePort(t, "udp")
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent("options-test"))
+	if err != nil {
+		t.Fatalf("NewUA: %v", err)
+	}
+	cli, err := sipgo.NewClient(ua,
+		sipgo.WithClientHostname("127.0.0.1"),
+		sipgo.WithClientPort(clientPort),
+		sipgo.WithClientConnectionAddr(fmt.Sprintf("127.0.0.1:%d", clientPort)),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	target := sip.Uri{Scheme: "sip", Host: "127.0.0.1", Port: udpPort}
+	req := sip.NewRequest(sip.OPTIONS, target)
+	req.AppendHeader(&sip.ToHeader{Address: target})
+	fromHdr := &sip.FromHeader{Address: target, Params: sip.NewParams()}
+	fromHdr.Params.Add("tag", sip.GenerateTagN(8))
+	req.AppendHeader(fromHdr)
+	req.AppendHeader(sip.NewHeader("User-Agent", "options-test/1.0"))
+
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer reqCancel()
+	resp, err := cli.Do(reqCtx, req)
+	if err != nil {
+		t.Fatalf("OPTIONS: %v", err)
+	}
+	if resp.StatusCode != sip.StatusOK {
+		t.Fatalf("OPTIONS status = %d, want 200", resp.StatusCode)
+	}
+	if allow := resp.GetHeader("Allow"); allow == nil || allow.Value() == "" {
+		t.Fatalf("OPTIONS response missing Allow header")
+	}
+	if server := resp.GetHeader("Server"); server == nil || server.Value() != "test-vb" {
+		t.Fatalf("OPTIONS Server = %v, want test-vb", server)
 	}
 
 	cancel()
