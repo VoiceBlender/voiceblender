@@ -116,6 +116,9 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	if h := call.Request.GetHeader("X-Webhook-Secret"); h != nil {
 		webhookSecret = h.Value()
 	}
+	if webhookSecret == "" {
+		webhookSecret = s.Config.WebhookSecret
+	}
 	if webhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
 	}
