@@ -160,7 +160,9 @@ func main() {
 		log.Info("TTS cache enabled", "dir", cfg.TTSCacheDir)
 	}
 
-	// S3 storage backend (optional)
+	// Object-store backends (optional). S3 and GCS are independent; either or
+	// both may be configured. Recordings pick one per request via
+	// `storage=s3` / `storage=gcs`.
 	var s3Backend storage.Backend
 	if cfg.S3Bucket != "" {
 		b, err := storage.NewS3Backend(ctx, storage.S3Config{
@@ -191,6 +193,22 @@ func main() {
 		log.Info("S3 storage enabled", "bucket", cfg.S3Bucket, "region", cfg.S3Region)
 		s3Backend = b
 	}
+	var gcsBackend storage.Backend
+	if cfg.GCSBucket != "" {
+		// Detached from the signal context so a shutdown does not break the
+		// credential refresh under the uploads that drain with it.
+		b, err := storage.NewGCSBackend(context.WithoutCancel(ctx), storage.GCSConfig{
+			Bucket: cfg.GCSBucket,
+			Prefix: cfg.GCSObjectNamePrefix,
+		})
+		if err != nil {
+			log.Error("failed to create GCS backend", "error", err)
+			os.Exit(1)
+		}
+		log.Info("GCS storage enabled", "bucket", cfg.GCSBucket, "prefix", cfg.GCSObjectNamePrefix)
+		gcsBackend = b
+		defer b.Close()
+	}
 
 	// Prometheus metrics collector
 	metricsCollector := metrics.New(bus)
@@ -206,6 +224,7 @@ func main() {
 		log.Info("HTTP IP allowlist enabled", "prefixes", len(allowedIPs), "trust_proxy_headers", cfg.TrustProxyHeaders)
 	}
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhookReg, ttsProvider, ttsCache, s3Backend, metricsCollector, cfg, allowedIPs, log)
+	apiSrv.GCS = gcsBackend
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: apiSrv,

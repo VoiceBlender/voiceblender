@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -220,4 +222,104 @@ func TestResolveStorage_CallerDeadlineWins(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("resolveStorage took %v: the caller's deadline was ignored", elapsed)
 	}
+}
+
+// gcsEmulator points the Google client at a fake endpoint so a per-request GCS
+// backend can be built without Application Default Credentials — the client
+// skips its credential chain entirely when STORAGE_EMULATOR_HOST is set.
+func gcsEmulator(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("STORAGE_EMULATOR_HOST", strings.TrimPrefix(srv.URL, "http://"))
+}
+
+// storage=gcs must resolve to the server-level backend, and say so plainly when
+// neither the env var nor the request supplies a bucket.
+func TestResolveStorage_GCSServerLevel(t *testing.T) {
+	s := newTestServer(t)
+
+	if _, err := s.resolveStorage(context.Background(), RecordRequest{Storage: "gcs"}); err == nil {
+		t.Fatal("expected an error when GCS is configured nowhere")
+	}
+
+	serverBackend := storage.NewGCSBackendWithUploader(nopGCSUploader{}, "server-bucket", "")
+	s.GCS = serverBackend
+
+	backend, err := s.resolveStorage(context.Background(), RecordRequest{Storage: "gcs"})
+	if err != nil {
+		t.Fatalf("resolveStorage: %v", err)
+	}
+	if backend != storage.Backend(serverBackend) {
+		t.Errorf("backend = %#v, want the server-level backend", backend)
+	}
+}
+
+// A request-supplied bucket takes precedence over the server-level backend.
+func TestResolveStorage_GCSPerRequest(t *testing.T) {
+	gcsEmulator(t)
+
+	s := newTestServer(t)
+	s.GCS = storage.NewGCSBackendWithUploader(nopGCSUploader{}, "server-bucket", "")
+
+	backend, err := s.resolveStorage(context.Background(), RecordRequest{
+		Storage:             "gcs",
+		GCSBucket:           "request-bucket",
+		GCSObjectNamePrefix: "dev",
+	})
+	if err != nil {
+		t.Fatalf("resolveStorage: %v", err)
+	}
+	if backend == nil {
+		t.Fatal("backend is nil")
+	}
+	if backend == storage.Backend(s.GCS) {
+		t.Error("gcs_bucket was ignored in favour of the server-level backend")
+	}
+}
+
+type nopGCSUploader struct{}
+
+func (nopGCSUploader) Upload(context.Context, string, io.Reader, string) error { return nil }
+func (nopGCSUploader) Close() error                                            { return nil }
+
+// A per-recording backend must be closed once its uploads are done, while the
+// shared server-level backends must survive every recording that uses them.
+func TestReleaseBackend(t *testing.T) {
+	s := newTestServer(t)
+	s.S3 = &closableBackend{}
+	s.GCS = &closableBackend{}
+
+	perRequest := &closableBackend{}
+	s.releaseBackend(perRequest)
+	if !perRequest.closed {
+		t.Error("per-recording backend was not released")
+	}
+
+	s.releaseBackend(s.S3)
+	s.releaseBackend(s.GCS)
+	if s.S3.(*closableBackend).closed {
+		t.Error("the shared S3 backend was closed")
+	}
+	if s.GCS.(*closableBackend).closed {
+		t.Error("the shared GCS backend was closed")
+	}
+
+	// A file recording has no backend to release, and a backend that cannot be
+	// closed is simply left alone.
+	s.releaseBackend(nil)
+	s.releaseBackend(storage.FileBackend{})
+}
+
+type closableBackend struct {
+	closed bool
+}
+
+func (b *closableBackend) Upload(context.Context, string) (string, error) { return "", nil }
+func (b *closableBackend) Close() error {
+	b.closed = true
+	return nil
 }

@@ -1191,17 +1191,19 @@ other channel.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops |
+| `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
 | `s3_prefix` | string | no | Key prefix (e.g. `recordings/`). Overrides `S3_PREFIX` env var. |
 | `s3_access_key` | string | no | AWS access key ID. Overrides default credential chain. |
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
+| `gcs_bucket` | string | no | GCS bucket name. Overrides `GCS_BUCKET` env var. Required if env var is not set when `storage=gcs`. |
+| `gcs_object_name_prefix` | string | no | Object name prefix (e.g. `recordings` or `recordings/`). Overrides `GCS_OBJECT_NAME_PREFIX` env var. A trailing slash is added automatically when missing. |
 
-When `s3_bucket` is provided, a per-request S3 backend is created using the supplied config. Otherwise the server-level S3 backend (from env vars) is used.
+When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created using the supplied config. Otherwise the matching server-level backend (from env vars) is used. GCS credentials come from Application Default Credentials / Workload Identity (same chain as Google Cloud TTS).
 
-Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
 
 **Response:** `200 OK`
 
@@ -1212,12 +1214,12 @@ Creating a per-request backend probes the bucket with a bounded `HeadBucket` cal
 }
 ```
 
-Recording runs asynchronously. Events `recording.started` and `recording.finished` are emitted. When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
+Recording runs asynchronously. Events `recording.started` and `recording.finished` are emitted. When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI. When `storage=gcs`, it will contain a `gs://bucket/object` URI.
 
 The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
 
 **Errors:**
-- `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
+- `400` — Invalid storage type, S3/GCS not configured, or invalid credentials
 - `404` — Leg not found
 - `409` — Leg has no audio reader
 - `500` — Failed to create recording file
@@ -2071,7 +2073,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops |
+| `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
 | `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
@@ -2079,10 +2081,12 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | `s3_prefix` | string | no | Key prefix (e.g. `recordings/`). Overrides `S3_PREFIX` env var. |
 | `s3_access_key` | string | no | AWS access key ID. Overrides default credential chain. |
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
+| `gcs_bucket` | string | no | GCS bucket name. Overrides `GCS_BUCKET` env var. Required if env var is not set when `storage=gcs`. |
+| `gcs_object_name_prefix` | string | no | Object name prefix (e.g. `recordings` or `recordings/`). Overrides `GCS_OBJECT_NAME_PREFIX` env var. A trailing slash is added automatically when missing. |
 
-When `s3_bucket` is provided, a per-request S3 backend is created. Otherwise the server-level S3 backend (from env vars) is used.
+When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created. Otherwise the matching server-level backend (from env vars) is used.
 
-Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
 
 **Response:** `200 OK`
 
@@ -2093,7 +2097,7 @@ Creating a per-request backend probes the bucket with a bounded `HeadBucket` cal
 }
 ```
 
-When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
+When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI. When `storage=gcs`, it will contain a `gs://bucket/object` URI.
 
 #### Automatic Stop
 
@@ -3157,6 +3161,8 @@ All errors return:
 | `S3_REGION` | `us-east-1` | AWS region for S3 |
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |
 | `S3_PREFIX` | _(none)_ | Key prefix for S3 objects (e.g. `recordings/`) |
+| `GCS_BUCKET` | _(none)_ | GCS bucket name (required for `storage=gcs` recordings). Uses Application Default Credentials / Workload Identity. |
+| `GCS_OBJECT_NAME_PREFIX` | _(none)_ | Object name prefix for GCS uploads (e.g. `recordings` or bare workspace id). Trailing slash added if missing. |
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio is stored on disk and persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files. |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |

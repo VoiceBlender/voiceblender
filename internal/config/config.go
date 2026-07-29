@@ -11,37 +11,39 @@ import (
 )
 
 type Config struct {
-	InstanceID        string
-	SIPBindIP         string
-	SIPBindIPV6       string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
-	SIPListenIP       string
-	SIPListenIPV6     string // IPv6 socket bind; falls back to SIPBindIPV6
-	SIPExternalIP     string
-	SIPPort           string
-	SIPTLSPort        string // "" = TLS disabled
-	SIPTLSCert        string // path to CA-signed cert (fullchain.pem)
-	SIPTLSKey         string // path to private key (privkey.pem)
-	SIPDebug          bool   // dump full SIP message content for every request and response
-	SIPDomain         string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
-	SIPHost           string
-	HTTPAddr          string
-	AllowedIPs        string // comma-separated IPs and CIDR ranges; empty = allow all
-	TrustProxyHeaders bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
-	ICEServers        []string
-	WebRTCExternalIPs []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
-	RecordingDir      string
-	LogLevel          string
-	WebhookURL        string
-	WebhookSecret     string
-	ElevenLabsAPIKey  string
-	VAPIAPIKey        string
-	DeepgramAPIKey    string
-	AzureSpeechKey    string
-	AzureSpeechRegion string
-	S3Bucket          string
-	S3Region          string
-	S3Endpoint        string
-	S3Prefix          string
+	InstanceID          string
+	SIPBindIP           string
+	SIPBindIPV6         string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
+	SIPListenIP         string
+	SIPListenIPV6       string // IPv6 socket bind; falls back to SIPBindIPV6
+	SIPExternalIP       string
+	SIPPort             string
+	SIPTLSPort          string // "" = TLS disabled
+	SIPTLSCert          string // path to CA-signed cert (fullchain.pem)
+	SIPTLSKey           string // path to private key (privkey.pem)
+	SIPDebug            bool   // dump full SIP message content for every request and response
+	SIPDomain           string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
+	SIPHost             string
+	HTTPAddr            string
+	AllowedIPs          string // comma-separated IPs and CIDR ranges; empty = allow all
+	TrustProxyHeaders   bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
+	ICEServers          []string
+	WebRTCExternalIPs   []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
+	RecordingDir        string
+	LogLevel            string
+	WebhookURL          string
+	WebhookSecret       string
+	ElevenLabsAPIKey    string
+	VAPIAPIKey          string
+	DeepgramAPIKey      string
+	AzureSpeechKey      string
+	AzureSpeechRegion   string
+	S3Bucket            string
+	S3Region            string
+	S3Endpoint          string
+	S3Prefix            string
+	GCSBucket           string
+	GCSObjectNamePrefix string
 	// S3AllowInsecureEndpoint permits a plaintext http:// S3 endpoint on a
 	// non-local host. Loopback and private endpoints are always allowed.
 	S3AllowInsecureEndpoint bool
@@ -159,6 +161,8 @@ func Load() Config {
 		S3Region:                  envOr("S3_REGION", "us-east-1"),
 		S3Endpoint:                os.Getenv("S3_ENDPOINT"),
 		S3Prefix:                  os.Getenv("S3_PREFIX"),
+		GCSBucket:                 os.Getenv("GCS_BUCKET"),
+		GCSObjectNamePrefix:       os.Getenv("GCS_OBJECT_NAME_PREFIX"),
 		S3AllowInsecureEndpoint:   envBool("S3_ALLOW_INSECURE_ENDPOINT", false),
 		S3PreflightTimeout:        envDuration("S3_PREFLIGHT_TIMEOUT", 10*time.Second),
 		S3RequestPreflightTimeout: envDuration("S3_REQUEST_PREFLIGHT_TIMEOUT", 2*time.Second),

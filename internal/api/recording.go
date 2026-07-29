@@ -253,8 +253,8 @@ var (
 )
 
 // resolveStorage returns the appropriate storage backend for the request.
-// If the request includes per-request S3 config (s3_bucket), a new S3Backend
-// is created on the fly. Otherwise, falls back to the server-level S3 backend.
+// Per-request object-store config (s3_bucket / gcs_bucket) creates a backend
+// on the fly; otherwise the matching server-level backend is used.
 //
 // ctx bounds the bucket preflight, so a caller that goes away stops the probe
 // instead of holding the request — or, on VSI, the connection's command loop.
@@ -293,8 +293,41 @@ func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage
 			return nil, fmt.Errorf("S3 storage not configured: set S3_BUCKET env var or provide s3_bucket in request")
 		}
 		return s.S3, nil
+	case "gcs":
+		if req.GCSBucket != "" {
+			// The client outlives this request — the upload runs when recording
+			// stops — so it must not inherit the request's cancellation, or its
+			// credential refresh would fail once the caller goes away.
+			backend, err := storage.NewGCSBackend(context.WithoutCancel(ctx), storage.GCSConfig{
+				Bucket: req.GCSBucket,
+				Prefix: req.GCSObjectNamePrefix,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create GCS backend: %w", err)
+			}
+			return backend, nil
+		}
+		if s.GCS == nil {
+			return nil, fmt.Errorf("GCS storage not configured: set GCS_BUCKET env var or provide gcs_bucket in request")
+		}
+		return s.GCS, nil
 	default:
 		return nil, fmt.Errorf("unknown storage type: %s", req.Storage)
+	}
+}
+
+// releaseBackend closes a backend that was built for one recording, so a
+// per-request gcs_bucket does not leave a client's idle connections behind on
+// every call. The server-level backends are shared by every recording and must
+// stay open.
+func (s *Server) releaseBackend(backend storage.Backend) {
+	if backend == nil || backend == s.S3 || backend == s.GCS {
+		return
+	}
+	if c, ok := backend.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			s.Log.Warn("closing per-recording storage backend", "error", err)
+		}
 	}
 }
 
@@ -468,6 +501,15 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	fpath := rec.Stop()
 	rec.Wait()
 
+	// Upload to storage backend if not plain file.
+	var backend storage.Backend
+	if info != nil {
+		backend = info.storage
+	}
+	// This is the recording's last use of the backend, discarded capture
+	// included — a per-recording one is released here or never.
+	defer s.releaseBackend(backend)
+
 	// A discarded capture leaves nothing at fpath, so there is nothing to upload
 	// and no path worth naming: report the stop without a location rather than
 	// hand the caller a path that cannot be opened.
@@ -475,11 +517,6 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	if !rec.Finalized() {
 		s.Log.Error("leg capture was discarded, stopping without a file", "leg_id", legID, "file", fpath)
 	} else {
-		// Upload to storage backend if not plain file.
-		var backend storage.Backend
-		if info != nil {
-			backend = info.storage
-		}
 		location = fpath
 		if backend != nil {
 			loc, err := backend.Upload(context.Background(), fpath)
@@ -698,6 +735,15 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 		}
 	}
 
+	roomRecordStorage.Lock()
+	backend := roomRecordStorage.m[id]
+	delete(roomRecordStorage.m, id)
+	roomRecordStorage.Unlock()
+	// Taken before the early return below, and released only on the way out: a
+	// multi-channel recording shares this backend with the merged-file upload
+	// above, so the mix upload further down is not the last use of it.
+	defer s.releaseBackend(backend)
+
 	roomRecordPipes.Lock()
 	pw := roomRecordPipes.m[id]
 	delete(roomRecordPipes.m, id)
@@ -715,11 +761,6 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 	if !recOK {
 		return "", nil, false
 	}
-
-	roomRecordStorage.Lock()
-	backend := roomRecordStorage.m[id]
-	delete(roomRecordStorage.m, id)
-	roomRecordStorage.Unlock()
 
 	fpath := rec.Stop()
 	rec.Wait()
