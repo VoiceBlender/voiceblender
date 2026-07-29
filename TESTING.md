@@ -53,6 +53,8 @@ go test -v ./internal/...
 ```bash
 go test -v -run TestMixer_TapRecording ./internal/mixer/
 go test -v -run TestS3Backend_Upload ./internal/storage/
+go test -v -run TestS3Backend_Preflight ./internal/storage/
+go test -v -run TestResolveStorage ./internal/api/
 ```
 
 ### What each package tests
@@ -72,7 +74,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/codec` | 17 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB and AMR-NB type registration + factory + RFC 4867 round-trip (both payload formats) |
 | `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
 | `internal/playback` | 48 | WAV/MP3 parsing, format detection, streaming, anti-aliasing resampler with per-stream filter lifetime (seam continuity across frames, fresh filter per stream, no cross-playback bleed), repeat, cancellation |
-| `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
+| `internal/storage` | 7 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling; the `HeadBucket` preflight taxonomy (absent bucket is fatal, while a 403 without `s3:ListBucket`, a 5xx, an unreachable endpoint or an expired budget stay inconclusive and leave the backend usable) and the plaintext-endpoint guard, including the loopback/private/single-label exemptions that let a co-located MinIO work without an opt-in |
 | `internal/recording` | 44 | Recorder lifecycle (start/stop/double-start, WAV header, custom rate, pause/resume, context cancel); atomic publish — capture goes to a `.rec-*.tmp` staging file and is fsync+chmod+rename'd into place, so nothing exists at the advertised path until it completes, a capture that errors mid-write or never wrote a frame is discarded rather than published, and a publish that fails only at the closing directory sync still reports `Finalized`; and the stereo loop on its own 20 ms clock — both channels drained non-blocking into bounded drop-oldest accumulators, silence-fill for a stalled channel, no drift when one channel bursts or closes, a stalled *producer* still advancing the timeline (the hold/DTMF/deafened case), pause zeroing both channels, and the bound holding at 8/16/48 kHz |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
@@ -83,6 +85,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/api` (inbound auth) | 12 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, applies the configured fallback when undecided (reject by default, accept when configured), propagates a challenge decision (incl. `max_expires`), accept decision carries `max_expires`; `registerConsultFallback` mapping (unset/unknown → reject, `accept` case-insensitive); `ChallengeRequest` validation (realm + password/ha1 required, non-negative `max_expires`) |
 | `internal/api` (inbound transfer) | 2 | `pendingReferStore` state machine (accept vs decline/timeout are mutually exclusive; progress/complete require a prior accept; unknown-leg misses); `sipReasonPhrase` default reason phrases |
 | `internal/api` (amd driver) | 11 | Push-mode `amdDriver`: frames classified inline on the leg's readLoop, the wall-clock `watch` goroutine exits on leg teardown without publishing, exactly one `amd.result` per call, the machine+beep `pending` handshake (deadline firing mid-verdict defers the publish rather than dropping it), and tap-ownership gating so a superseded analysis publishes nothing and cannot clear the live tap |
+| `internal/api` (storage resolution) | 6 | `resolveStorage` for a per-request S3 backend: the operator's insecure-endpoint decision is inherited from server config and cannot be overridden per request, an absent bucket fails record-start while an inconclusive probe proceeds, the configured budget and the caller's own deadline each cut an unanswered probe short, and `S3_REQUEST_PREFLIGHT_TIMEOUT=0` skips the probe entirely. A VSI record-start against a black-holed endpoint returns on that budget rather than stalling the connection's recv loop |
 | `internal/api` (room-scoped cleanup) | 3 | Every path that empties a room finalizes its recording: removing the last leg, moving the last leg to another room, and deleting the room. Each starts a real recorder through `doStartRecordRoom` and asserts it is unregistered and `recording.finished` published, so leaving the recording running fails as loudly as leaking the map entry |
 | `internal/leg` (amd tap) | 1 | `ClearAMDTapIf` only clears the writer it was given, so a superseded AMD analysis cannot rip out the tap a later start installed |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
@@ -161,6 +164,7 @@ go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integra
 go test -tags integration -v -timeout 60s -run TestRTT ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestS3Preflight ./tests/integration/
 ```
 
 ### Integration test list
@@ -197,6 +201,10 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestRecording_StopWithNoRecording` | Stop without active recording returns 404 |
 | `TestRecording_StorageFileExplicit` | Explicit `storage=file` works |
 | `TestRecording_StorageS3NotConfigured` | `storage=s3` without config returns 400 |
+| `TestS3Preflight_MissingBucketRejectsRecordStart` | A bucket the store reports absent fails record-start with 400 and never attempts an upload, so the caller finds out before the call is recorded |
+| `TestS3Preflight_NoListBucketPermissionStillRecords` | A probe that cannot get a verdict (403 without `s3:ListBucket`, a 5xx, or an expired budget) is only warned about: record-start returns 200 and the recording still uploads, with `recording.finished` naming the `s3://` location |
+| `TestS3Preflight_InsecureEndpoint` | A plaintext `http://` `s3_endpoint` on a non-local host returns 400, and 200 once the operator sets `S3_ALLOW_INSECURE_ENDPOINT=true` |
+| `TestS3Preflight_UnresponsiveEndpointDoesNotStallRecordStart` | An endpoint that accepts the connection and never answers does not hold record-start beyond `S3_REQUEST_PREFLIGHT_TIMEOUT`, and does not fail it |
 | `TestStereoRecording_StaysAlignedAcrossIncomingStall` | A real loopback call stalls incoming RTP mid-recording while outgoing keeps flowing; marker bursts injected on both sides before and after prove the channels' offset did not change, i.e. the stall left no lasting skew |
 | `TestStereoRecording_SurvivesOutgoingStall` | The mirror case a producer-paced recorder cannot handle: holding the *recorded* leg stops its outgoing tap writes entirely, and the recording must still span the call in real time with the incoming audio at its true offsets |
 | `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop; also asserts the advertised path does not exist while recording is in progress and no `.rec-*.tmp` staging residue is left behind |

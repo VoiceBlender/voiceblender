@@ -145,6 +145,15 @@ info:
         - name: S3_PREFIX
           default: ""
           description: Key prefix applied to all S3 objects
+        - name: S3_ALLOW_INSECURE_ENDPOINT
+          default: "false"
+          description: 'Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in.'
+        - name: S3_PREFLIGHT_TIMEOUT
+          default: 10s
+          description: Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe.
+        - name: S3_REQUEST_PREFLIGHT_TIMEOUT
+          default: 2s
+          description: Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe.
         - name: AWS_ACCESS_KEY_ID
           default: ""
           description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'

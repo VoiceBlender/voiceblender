@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
@@ -265,6 +266,7 @@ func TestLoad_BooleanFields(t *testing.T) {
 	t.Setenv("TTS_CACHE_ENABLED", "true")
 	t.Setenv("TTS_CACHE_INCLUDE_API_KEY", "true")
 	t.Setenv("SIP_USE_SOURCE_SOCKET", "true")
+	t.Setenv("S3_ALLOW_INSECURE_ENDPOINT", "true")
 
 	cfg := Load()
 
@@ -277,12 +279,16 @@ func TestLoad_BooleanFields(t *testing.T) {
 	if !cfg.SIPUseSourceSocket {
 		t.Error("SIPUseSourceSocket should be true")
 	}
+	if !cfg.S3AllowInsecureEndpoint {
+		t.Error("S3AllowInsecureEndpoint should be true")
+	}
 }
 
 func TestLoad_BooleanFields_False(t *testing.T) {
 	t.Setenv("TTS_CACHE_ENABLED", "false")
 	t.Setenv("TTS_CACHE_INCLUDE_API_KEY", "")
 	t.Setenv("SIP_USE_SOURCE_SOCKET", "")
+	t.Setenv("S3_ALLOW_INSECURE_ENDPOINT", "")
 
 	cfg := Load()
 
@@ -294,6 +300,37 @@ func TestLoad_BooleanFields_False(t *testing.T) {
 	}
 	if cfg.SIPUseSourceSocket {
 		t.Error("SIPUseSourceSocket should be false")
+	}
+	if cfg.S3AllowInsecureEndpoint {
+		t.Error("S3AllowInsecureEndpoint should be false")
+	}
+}
+
+func TestLoad_S3PreflightTimeouts(t *testing.T) {
+	for _, key := range []string{"S3_PREFLIGHT_TIMEOUT", "S3_REQUEST_PREFLIGHT_TIMEOUT"} {
+		t.Setenv(key, "")
+	}
+
+	cfg := Load()
+	if cfg.S3PreflightTimeout != 10*time.Second {
+		t.Errorf("S3PreflightTimeout = %v, want 10s", cfg.S3PreflightTimeout)
+	}
+	// Deliberately shorter than the startup budget: this one runs inside
+	// record-start, on the VSI connection's command loop.
+	if cfg.S3RequestPreflightTimeout != 2*time.Second {
+		t.Errorf("S3RequestPreflightTimeout = %v, want 2s", cfg.S3RequestPreflightTimeout)
+	}
+
+	t.Setenv("S3_PREFLIGHT_TIMEOUT", "30s")
+	t.Setenv("S3_REQUEST_PREFLIGHT_TIMEOUT", "0s")
+
+	cfg = Load()
+	if cfg.S3PreflightTimeout != 30*time.Second {
+		t.Errorf("S3PreflightTimeout = %v, want 30s", cfg.S3PreflightTimeout)
+	}
+	// 0 is the documented way to switch the probe off entirely.
+	if cfg.S3RequestPreflightTimeout != 0 {
+		t.Errorf("S3RequestPreflightTimeout = %v, want 0", cfg.S3RequestPreflightTimeout)
 	}
 }
 
