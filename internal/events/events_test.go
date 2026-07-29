@@ -95,6 +95,75 @@ func TestBus_PublishSetsTimestamp(t *testing.T) {
 	}
 }
 
+func TestBus_PublishAssignsUniqueEventID(t *testing.T) {
+	bus := NewBus("inst")
+	var got []string
+	_ = bus.Subscribe(func(e Event) { got = append(got, e.EventID) })
+
+	for i := 0; i < 3; i++ {
+		bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})
+	}
+
+	seen := make(map[string]bool)
+	for i, id := range got {
+		if id == "" {
+			t.Fatalf("publish %d: empty event_id", i)
+		}
+		if seen[id] {
+			t.Errorf("publish %d: duplicate event_id %q", i, id)
+		}
+		seen[id] = true
+	}
+}
+
+// The id is stamped once before fan-out, so every subscriber must see the same
+// value for a given event.
+func TestBus_EventIDIdenticalAcrossSubscribers(t *testing.T) {
+	bus := NewBus("inst")
+	var a, b string
+	_ = bus.Subscribe(func(e Event) { a = e.EventID })
+	_ = bus.Subscribe(func(e Event) { b = e.EventID })
+
+	bus.Publish(RoomDeleted, &RoomDeletedData{RoomScope: RoomScope{RoomID: "r1"}})
+
+	if a == "" || a != b {
+		t.Errorf("subscriber ids = %q / %q, want equal and non-empty", a, b)
+	}
+}
+
+func TestEvent_MarshalJSON_EventID(t *testing.T) {
+	e := Event{
+		Type:      LegRinging,
+		EventID:   "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1",
+		Timestamp: time.Now().UTC(),
+		Data:      &LegRingingData{LegScope: LegScope{LegID: "leg-1"}},
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["event_id"] != e.EventID {
+		t.Errorf("event_id = %v, want %q", m["event_id"], e.EventID)
+	}
+
+	// A zero Event (not published through the bus) omits the key entirely.
+	b, err = json.Marshal(Event{Type: LegRinging})
+	if err != nil {
+		t.Fatalf("marshal zero event: %v", err)
+	}
+	m = nil
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal zero event: %v", err)
+	}
+	if _, ok := m["event_id"]; ok {
+		t.Error("event_id present on an event with no id")
+	}
+}
+
 func TestEvent_MarshalJSON(t *testing.T) {
 	e := Event{
 		Type:       LegConnected,

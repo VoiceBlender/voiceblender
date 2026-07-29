@@ -78,7 +78,10 @@ const (
 )
 
 type Event struct {
-	Type       EventType `json:"type"`
+	Type EventType `json:"type"`
+	// EventID is assigned once at publish, so it stays identical across every
+	// subscriber and every webhook delivery attempt of the same event.
+	EventID    string    `json:"event_id,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
 	InstanceID string    `json:"instance_id,omitempty"`
 	Data       EventData `json:"-"`
@@ -90,6 +93,9 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	envelope := map[string]interface{}{
 		"type":      e.Type,
 		"timestamp": e.Timestamp,
+	}
+	if e.EventID != "" {
+		envelope["event_id"] = e.EventID
 	}
 	if e.InstanceID != "" {
 		envelope["instance_id"] = e.InstanceID

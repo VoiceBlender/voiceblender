@@ -2471,16 +2471,20 @@ websocat "ws://localhost:8080/v1/vsi?app_id=^billing$"
 **Server → Client (event):**
 
 ```json
-{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
+{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
 ```
 
-Events use the same flattened JSON envelope as webhook POSTs. Clients already parsing webhook payloads can reuse the same deserializer.
+Events use the same flattened JSON envelope as webhook POSTs — including `event_id`, the same per-event idempotency key webhook receivers see in the body and the `X-Event-Id` header. Clients already parsing webhook payloads can reuse the same deserializer.
 
 **Server → Client (keepalive ping):**
 
 ```json
-{"type": "ping", "event_id": 1}
+{"type": "ping", "seq": 1, "event_id": 1}
 ```
+
+`seq` is a monotonic per-connection counter for the keepalive itself, starting at 1 and resetting on reconnect. It is unrelated to the `event_id` on streamed events — the ping is not an event.
+
+`event_id` on the ping frame is a **deprecated alias** for `seq`, kept so existing clients keep working; it carries the same integer counter, not the UUID that streamed events carry. New clients should read `seq`. The alias will be removed in a future release.
 
 **Client → Server (keepalive pong):**
 
@@ -2808,6 +2812,8 @@ Events are delivered as HTTP POST requests to registered webhook URLs.
 - **Worker pool:** 10 concurrent delivery goroutines
 - **Queue capacity:** 1000 events (dropped if full)
 
+Delivery is **best-effort, not guaranteed**. An event dropped because the queue was full, or abandoned after all 3 attempts failed, is never redelivered. Both cases are counted — see `voiceblender_webhook_dropped_total` and `voiceblender_webhook_deliveries_total` under [GET /metrics](#get-metrics).
+
 ### Signature Verification
 
 When a `secret` is configured, a `X-Signature-256` header is included:
@@ -2818,6 +2824,33 @@ X-Signature-256: sha256=<hex-encoded-hmac-sha256>
 
 The signature is computed over the raw JSON request body using HMAC-SHA256 with the webhook secret as the key.
 
+### Deduplication
+
+Every delivery carries an `X-Event-Id` header equal to the `event_id` field in the body:
+
+```
+X-Event-Id: 550e8400-e29b-41d4-a716-446655440000
+```
+
+`event_id` is a UUID assigned once when the event is published, so it is **stable across all 3 delivery attempts** of the same event and **identical for every subscriber** that receives it — the webhook POST and the VSI WebSocket frame for one event share an id.
+
+Because a retried attempt looks exactly like a fresh delivery to your endpoint (same body, same signature), treat `event_id` as an idempotency key: record it and ignore an event whose id you have already processed. Distinct events never share an id.
+
+Example receiver:
+
+```python
+seen = set()  # use a TTL cache or your database in production
+
+@app.post("/webhooks/voiceblender")
+def handle(request):
+    event_id = request.headers["X-Event-Id"]
+    if event_id in seen:
+        return "", 200          # already processed — ack and drop
+    seen.add(event_id)
+    process(request.json())
+    return "", 200
+```
+
 ### Event Envelope
 
 Event data fields are flattened into the top-level JSON object alongside the envelope fields — there is no `"data"` wrapper.
@@ -2826,6 +2859,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 {
   "type": "leg.ringing",
   "timestamp": "2026-03-01T11:05:00.123Z",
+  "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_type": "sip_inbound",
@@ -2845,7 +2879,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 
 **`authenticated`** / **`auth_username`** (inbound SIP only) are present and set when the INVITE carried digest credentials that VoiceBlender verified against a prior `/challenge` — i.e. the credentialed retry surfaced as a new, authenticated leg. They are omitted for un-challenged calls.
 
-All events include `instance_id` alongside the event-specific fields.
+All events include `event_id` and `instance_id` alongside the event-specific fields.
 
 ### Event Types
 
@@ -3514,7 +3548,13 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_call_duration_seconds` | Histogram | `type` | Answered call duration (time from answer to hangup). Use `rate(sum)/rate(count)` for ACD |
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
+| `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
+| `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
+| `voiceblender_webhook_deliveries_total` | Counter | `outcome` | Total terminal webhook delivery outcomes. `outcome`: `success`, `exhausted` (all 3 attempts failed), `marshal_error`, `request_error` (malformed webhook URL). Closed set, so cardinality is fixed at 4 |
+| `voiceblender_vsi_events_dropped_total` | Counter | — | Total events dropped because a VSI WebSocket client's buffer was full (slow consumer). Tune with `VSI_EVENT_BUFFER_SIZE` |
 | Go runtime metrics | — | — | Standard `go_*` and `process_*` metrics from the Prometheus Go client |
+
+Every delivery that reaches a terminal exit increments exactly one `voiceblender_webhook_deliveries_total{outcome}`. This is not a global `enqueued == sum(outcomes)` identity: jobs still queued at shutdown are abandoned without an outcome, so a small, shutdown-only skew is expected.
 
 #### PromQL Examples
 
@@ -3529,6 +3569,25 @@ Alert on audio-path panics being contained (each one drops a participant or a fr
 
 ```promql
 sum by (component, site) (rate(voiceblender_recovered_panics_total[5m])) > 0
+```
+
+Webhook drop ratio — the fraction of events that never made it onto the delivery queue:
+
+```promql
+rate(voiceblender_webhook_dropped_total[5m])
+  / (rate(voiceblender_webhook_dropped_total[5m]) + rate(voiceblender_webhook_enqueued_total[5m]))
+```
+
+Alert on webhooks that reached your endpoint but never succeeded:
+
+```promql
+rate(voiceblender_webhook_deliveries_total{outcome="exhausted"}[5m]) > 0
+```
+
+Alert on VSI consumers falling behind (raise `VSI_EVENT_BUFFER_SIZE` or fix the slow client):
+
+```promql
+rate(voiceblender_vsi_events_dropped_total[5m]) > 0
 ```
 
 ### Profiling (pprof)
