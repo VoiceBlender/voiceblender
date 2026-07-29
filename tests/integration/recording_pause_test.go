@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -33,6 +34,14 @@ func TestRecording_PauseResume_Leg(t *testing.T) {
 	}
 	var recStart recordingResponse
 	decodeJSON(t, recResp, &recStart)
+
+	// The path a start response advertises must not exist yet. API.md states the
+	// recording only appears there once it stops, so nothing can observe it
+	// half-written; this is the only end-to-end check of that contract, and it
+	// has to run now, while the recording is still in progress.
+	if _, err := os.Stat(recStart.File); !os.IsNotExist(err) {
+		t.Fatalf("%s exists while the recording is in progress, os.Stat err = %v — a partial recording is visible at its published name", recStart.File, err)
+	}
 
 	// Let audio flow for a bit.
 	time.Sleep(300 * time.Millisecond)
@@ -112,6 +121,17 @@ func TestRecording_PauseResume_Leg(t *testing.T) {
 	}
 	if len(buf.Data) == 0 {
 		t.Fatal("empty WAV")
+	}
+
+	// The staging file the recording was captured to must not outlive it. The
+	// literal mirrors stagingPattern in internal/recording, which is unexported
+	// and so cannot be referenced from here.
+	residue, err := filepath.Glob(filepath.Join(filepath.Dir(recStart.File), ".rec-*.tmp"))
+	if err != nil {
+		t.Fatalf("glob staging files: %v", err)
+	}
+	if len(residue) != 0 {
+		t.Errorf("staging residue left behind after the recording stopped: %v", residue)
 	}
 
 	// Pause after stop should 404.

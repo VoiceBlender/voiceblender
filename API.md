@@ -1168,6 +1168,13 @@ For legs in a room, recording is stereo at 16kHz:
 - **Left channel** — participant's incoming audio (before mix)
 - **Right channel** — mixed-minus-self (what the participant hears)
 
+Both channels are written on the recorder's own 20 ms clock, so the file always
+advances in real time and the two channels stay sample-aligned. A stretch where
+one side sends nothing — a call on hold, an outbound DTMF burst, a deafened room
+participant, or plain packet loss — appears as silence on that channel for
+exactly as long as it lasted, and never shortens the recording or shifts the
+other channel.
+
 **Request:**
 
 ```json
@@ -1205,6 +1212,8 @@ When `s3_bucket` is provided, a per-request S3 backend is created using the supp
 
 Recording runs asynchronously. Events `recording.started` and `recording.finished` are emitted. When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI.
 
+The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
+
 **Errors:**
 - `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
 - `404` — Leg not found
@@ -1225,6 +1234,17 @@ Stop recording a leg.
   "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | Path/URI of the recording. Empty when the capture was discarded and no file was written — see below. |
+
+A capture that fails mid-write, or that never captures a frame, is discarded:
+nothing is written and no file exists. The stop still succeeds with
+`status: stopped` — the recording did stop — but `file` comes back as `""`, as
+it does in the `recording.finished` event. Treat an empty `file` as "there is no
+recording to fetch", not as a path: it is the one case where a `200` produces no
+artefact. A non-empty `file` always names something that exists.
 
 **Errors:** `404` — No recording in progress
 
@@ -2128,12 +2148,37 @@ Multi-channel recording — includes a single multi-channel WAV with channel met
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `file` | string | Path/URI of the full mix recording (mono) |
+| `file` | string | Path/URI of the full mix recording (mono). Empty when the full-mix capture was discarded and no file was written. |
 | `multi_channel_file` | string | Path/URI of the multi-channel WAV file. Only present when `multi_channel: true` was used. |
 | `channels` | object | Map of leg ID to channel metadata. Only present when `multi_channel: true` was used. |
 | `channels[].channel` | integer | Zero-based channel index in the multi-channel WAV |
 | `channels[].start_ms` | integer | Milliseconds from recording start when this participant joined |
 | `channels[].end_ms` | integer | Milliseconds from recording start when this participant's audio ends |
+| `omitted_legs` | array | Leg IDs that took part but are absent from `multi_channel_file`, because capturing them failed. Omitted entirely when the recording is complete. |
+
+A participant whose capture fails is left out of the merge rather than failing
+the whole room: the other participants' audio is still produced, and the legs
+that were lost are named in `omitted_legs`. Those leg IDs have no entry in
+`channels`, and the remaining channel indices are contiguous — a channel index
+is only meaningful via `channels`, never by position. If **every** participant's
+capture fails there is nothing to merge, and the response carries neither
+`multi_channel_file` nor `channels` (the failure is logged server-side; the stop
+itself still succeeds).
+
+The full mix is captured independently of the per-participant ones, so it can be
+discarded on its own: a capture that fails mid-write, or that never captures a
+frame, writes no file. When that happens `file` comes back as `""`, as it does
+in the `recording.finished` event, while `multi_channel_file` and `channels` may
+still be present and usable. The stop still reports `status: stopped`. An empty
+`file` means there is no full mix to fetch, not a path; a non-empty `file`
+always names something real. In the worst case both the full mix and every
+per-participant capture are discarded, and the stop succeeds with an empty
+`file` and neither `multi_channel_file` nor `channels`.
+
+Whether a partial recording is acceptable is the caller's decision, so check
+`omitted_legs` before treating `multi_channel_file` as a complete record of the
+room. Treat a missing `multi_channel_file` on a `multi_channel: true` recording
+the same way — as a failure to produce one, not as an empty room.
 
 **Errors:** `404` — No recording in progress
 
@@ -2926,8 +2971,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 >
 > `played_ms` is how much audio was actually written to the leg or room, in milliseconds. It counts audio played, **not** the source file's duration: a `repeat`ed playback accumulates across every iteration, so `played_ms` can exceed the length of the file.
 
-| `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
-| `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
+| `recording.started` | Recording began | `leg_id` or `room_id`, `file` (does not exist yet — the path only appears when the recording stops) |
+| `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
