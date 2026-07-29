@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -254,7 +255,10 @@ var (
 // resolveStorage returns the appropriate storage backend for the request.
 // If the request includes per-request S3 config (s3_bucket), a new S3Backend
 // is created on the fly. Otherwise, falls back to the server-level S3 backend.
-func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
+//
+// ctx bounds the bucket preflight, so a caller that goes away stops the probe
+// instead of holding the request — or, on VSI, the connection's command loop.
+func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage.Backend, error) {
 	switch req.Storage {
 	case "", "file":
 		return storage.FileBackend{}, nil
@@ -265,16 +269,23 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 			if region == "" {
 				region = "us-east-1"
 			}
-			backend, err := storage.NewS3Backend(context.Background(), storage.S3Config{
-				Bucket:    req.S3Bucket,
-				Region:    region,
-				Endpoint:  req.S3Endpoint,
-				Prefix:    req.S3Prefix,
-				AccessKey: req.S3AccessKey,
-				SecretKey: req.S3SecretKey,
+			// The insecure-endpoint escape hatch is an operator decision, not a
+			// caller-supplied one: a per-request field would let any API caller
+			// downgrade the transport.
+			backend, err := storage.NewS3Backend(ctx, storage.S3Config{
+				Bucket:        req.S3Bucket,
+				Region:        region,
+				Endpoint:      req.S3Endpoint,
+				Prefix:        req.S3Prefix,
+				AccessKey:     req.S3AccessKey,
+				SecretKey:     req.S3SecretKey,
+				AllowInsecure: s.Config.S3AllowInsecureEndpoint,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("create S3 backend: %w", err)
+			}
+			if err := s.preflightS3(ctx, backend); err != nil {
+				return nil, err
 			}
 			return backend, nil
 		}
@@ -287,18 +298,40 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 	}
 }
 
+// preflightS3 rejects a bucket the store says does not exist, so the caller
+// finds out now instead of at the upload after the call. An inconclusive probe
+// is logged and accepted: the request must not fail because the probe could not
+// answer within its budget.
+func (s *Server) preflightS3(ctx context.Context, backend *storage.S3Backend) error {
+	if s.Config.S3RequestPreflightTimeout <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.Config.S3RequestPreflightTimeout)
+	defer cancel()
+
+	err := backend.Preflight(ctx)
+	switch {
+	case errors.Is(err, storage.ErrPreflightInconclusive):
+		s.Log.Warn("could not verify S3 bucket for recording; proceeding", "error", err)
+		return nil
+	case err != nil:
+		return err
+	}
+	return nil
+}
+
 // RecordingStartResult is the success payload for starting a leg or room recording.
 type RecordingStartResult struct {
 	Status string `json:"status"`
 	File   string `json:"file"`
 }
 
-func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingStartResult, error) {
+func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordRequest) (*RecordingStartResult, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -379,7 +412,7 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordLeg(id, req)
+	res, err := s.doStartRecordLeg(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return
@@ -563,12 +596,12 @@ func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) doStartRecordRoom(roomID string, req RecordRequest) (*RecordingStartResult, error) {
+func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req RecordRequest) (*RecordingStartResult, error) {
 	rm, ok := s.RoomMgr.Get(roomID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -635,7 +668,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordRoom(id, req)
+	res, err := s.doStartRecordRoom(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return

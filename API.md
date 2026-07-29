@@ -1201,6 +1201,8 @@ other channel.
 
 When `s3_bucket` is provided, a per-request S3 backend is created using the supplied config. Otherwise the server-level S3 backend (from env vars) is used.
 
+Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+
 **Response:** `200 OK`
 
 ```json
@@ -2079,6 +2081,8 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | `s3_secret_key` | string | no | AWS secret access key. Must be set together with `s3_access_key`. |
 
 When `s3_bucket` is provided, a per-request S3 backend is created. Otherwise the server-level S3 backend (from env vars) is used.
+
+Creating a per-request backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
 
 **Response:** `200 OK`
 
