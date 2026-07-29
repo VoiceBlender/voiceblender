@@ -182,7 +182,7 @@ func TestEngine_AllowHeader(t *testing.T) {
 		t.Fatalf("header name = %q, want Allow", h.Name())
 	}
 	val := h.Value()
-	for _, m := range []string{"INVITE", "ACK", "CANCEL", "BYE", "UPDATE", "REFER", "NOTIFY", "REGISTER"} {
+	for _, m := range []string{"INVITE", "ACK", "CANCEL", "BYE", "UPDATE", "REFER", "NOTIFY", "OPTIONS", "REGISTER"} {
 		if !strings.Contains(val, m) {
 			t.Errorf("Allow header %q missing method %s", val, m)
 		}
