@@ -3,6 +3,8 @@ package events
 import (
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Handler func(Event)
@@ -36,8 +38,11 @@ func (b *Bus) Subscribe(h Handler) func() {
 }
 
 func (b *Bus) Publish(typ EventType, data EventData) {
+	// The ID is stamped once here, before fan-out, so every subscriber and every
+	// webhook retry of this event sees the same value.
 	e := Event{
 		Type:       typ,
+		EventID:    uuid.NewString(),
 		Timestamp:  time.Now().UTC(),
 		InstanceID: b.instanceID,
 		Data:       data,

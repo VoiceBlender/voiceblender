@@ -58,6 +58,7 @@ func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 
 	// Create a real metrics collector — this subscribes to the event bus.
 	metricsCollector := metrics.New(bus)
+	webhooks.SetMetricsObserver(metricsCollector)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:   "127.0.0.1",
