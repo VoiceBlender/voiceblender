@@ -866,6 +866,15 @@ func (e *Engine) registerHandlers() {
 		}
 	}))
 
+	e.server.OnOptions(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
+		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		res.AppendHeader(e.ServerHeader())
+		res.AppendHeader(e.AllowHeader())
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("OPTIONS: respond 200 failed", "error", rerr)
+		}
+	}))
+
 	e.server.OnUpdate(wrap(e.handleUpdate))
 	e.server.OnRefer(wrap(e.handleRefer))
 	e.server.OnNotify(wrap(e.handleNotify))
