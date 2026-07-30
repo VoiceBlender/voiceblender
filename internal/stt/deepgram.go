@@ -241,10 +241,10 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		}
 
 		if result.IsFinal {
-			t.log.Info("deepgram stt final transcript", "text", text)
+			t.log.Debug("deepgram stt final transcript", "text", text)
 			cb(text, true)
 		} else {
-			t.log.Info("deepgram stt interim transcript", "text", text)
+			t.log.Debug("deepgram stt interim transcript", "text", text)
 			cb(text, false)
 		}
 	}

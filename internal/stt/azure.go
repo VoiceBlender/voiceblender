@@ -249,7 +249,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 				continue
 			}
 			if h.Text != "" {
-				t.log.Info("azure stt interim transcript", "text", h.Text)
+				t.log.Debug("azure stt interim transcript", "text", h.Text)
 				cb(h.Text, false)
 			}
 		case "speech.phrase":
@@ -259,7 +259,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 				continue
 			}
 			if p.RecognitionStatus == "Success" && p.DisplayText != "" {
-				t.log.Info("azure stt final transcript", "text", p.DisplayText)
+				t.log.Debug("azure stt final transcript", "text", p.DisplayText)
 				cb(p.DisplayText, true)
 			}
 		default:
