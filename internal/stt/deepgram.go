@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
@@ -17,7 +19,16 @@ import (
 const (
 	deepgramWSURL = "wss://api.deepgram.com/v1/listen"
 	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	// dgWriteTimeout caps how long a single frame write — and therefore the
+	// writer lock hold — may block on a peer that has stopped draining. A
+	// 640-byte audio frame or a 20-byte control frame never legitimately
+	// takes this long.
+	dgWriteTimeout = 5 * time.Second
 )
+
+// dgFinalizeFrame is the Deepgram control message that flushes the server-side
+// buffer and emits a final transcript while leaving the session open.
+var dgFinalizeFrame = []byte(`{"type":"Finalize"}`)
 
 // DeepgramTranscriber streams audio to Deepgram real-time STT over WebSocket.
 type DeepgramTranscriber struct {
@@ -25,6 +36,10 @@ type DeepgramTranscriber struct {
 	running bool
 	cancel  context.CancelFunc
 	log     *slog.Logger
+	// lw is the live socket writer, guarded by mu. Non-nil only between a
+	// successful dial and Start returning, so Finalize can reach the socket
+	// that otherwise lives entirely inside Start.
+	lw *dgLockedWriter
 }
 
 func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
@@ -75,6 +90,13 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 	defer conn.Close()
 
 	lw := &dgLockedWriter{conn: conn}
+	// Publish the writer so Finalize can reach this socket, and release it on
+	// the way out. Registered after `defer conn.Close()` so LIFO clears the
+	// field first; a Finalize that already copied the writer out can still
+	// race the close, which is why its write error is surfaced rather than
+	// treated as impossible.
+	t.setWriter(lw)
+	defer t.clearWriter()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -105,6 +127,41 @@ func (t *DeepgramTranscriber) Running() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.running
+}
+
+func (t *DeepgramTranscriber) setWriter(lw *dgLockedWriter) {
+	t.mu.Lock()
+	t.lw = lw
+	t.mu.Unlock()
+}
+
+func (t *DeepgramTranscriber) clearWriter() {
+	t.mu.Lock()
+	t.lw = nil
+	t.mu.Unlock()
+}
+
+// Finalize asks Deepgram to emit a final transcript for the audio buffered so
+// far and keeps the socket OPEN — unlike the CloseStream frame sendLoop writes
+// at teardown, which flushes AND ends the session. Fire-and-forget: it writes
+// the frame and returns; the flushed final arrives through the existing
+// recvLoop callback. A silent segment yields no transcript at all, because
+// empty transcripts are dropped before the callback.
+//
+// ctx bounds the write: a cancelled ctx returns without touching the socket,
+// and the write itself is deadline-capped so a caller running on a shared
+// recv loop cannot be pinned by a peer that stopped draining.
+func (t *DeepgramTranscriber) Finalize(ctx context.Context) error {
+	t.mu.Lock()
+	lw := t.lw
+	t.mu.Unlock()
+	if lw == nil {
+		return errors.New("deepgram stt session not connected")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return lw.WriteText(dgFinalizeFrame)
 }
 
 func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *dgLockedWriter) {
@@ -251,25 +308,42 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 }
 
 // dgLockedWriter serializes all WebSocket frame writes to a net.Conn.
+//
+// The mutex is deliberately held across the gobwas write call: a frame is a
+// header write followed by a payload write, so unsynchronized writers would
+// interleave and corrupt the stream. Every hold is bounded by a write
+// deadline set immediately beforehand, which is what makes it safe to acquire
+// this lock from a caller that must not stall — Finalize runs on the VSI
+// connection's recv loop, and a hold that could last forever there would
+// wedge every later command from that client.
 type dgLockedWriter struct {
 	mu   sync.Mutex
 	conn net.Conn
 }
 
+// setWriteDeadline bounds the next write. Errors are ignored: a conn that
+// rejects the deadline is already broken and the write will say so.
+func (lw *dgLockedWriter) setWriteDeadline() {
+	_ = lw.conn.SetWriteDeadline(time.Now().Add(dgWriteTimeout))
+}
+
 func (lw *dgLockedWriter) WriteBinary(data []byte) error {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
+	lw.setWriteDeadline()
 	return wsutil.WriteClientBinary(lw.conn, data)
 }
 
 func (lw *dgLockedWriter) WriteText(data []byte) error {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
+	lw.setWriteDeadline()
 	return wsutil.WriteClientText(lw.conn, data)
 }
 
 func (lw *dgLockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
+	lw.setWriteDeadline()
 	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }
