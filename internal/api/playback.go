@@ -44,6 +44,19 @@ var (
 	}{m: make(map[string]map[string]*playback.Player)}
 )
 
+// deregisterLegPlayer removes a player from legPlayers, pruning the per-leg
+// map when it empties. Every path that registers a leg player MUST reach this
+// on every terminal branch — an entry left behind is a permanent leak for a
+// leg that is already gone.
+func deregisterLegPlayer(legID, playbackID string) {
+	legPlayers.Lock()
+	defer legPlayers.Unlock()
+	delete(legPlayers.m[legID], playbackID)
+	if len(legPlayers.m[legID]) == 0 {
+		delete(legPlayers.m, legID)
+	}
+}
+
 // PlaybackStartResult is the success payload for starting a playback on a
 // leg or room. The same shape is returned by leg_tts and room_tts (with
 // "tts_id" semantics).
@@ -115,6 +128,10 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 		if req.Tone != "" {
 			spec, ok := playback.LookupTone(req.Tone)
 			if !ok {
+				// Deregister before returning: this branch never reaches the
+				// deregistration below, and a stale entry would make the leg
+				// look like it has audio outstanding forever.
+				deregisterLegPlayer(legID, playbackID)
 				s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
 					LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},
 					PlaybackID:   playbackID,
@@ -127,12 +144,7 @@ func (s *Server) doStartLegPlay(legID string, req PlaybackRequest) (*PlaybackSta
 		} else {
 			err = player.PlayAtRate(l.Context(), writer, req.URL, req.MimeType, playRate, req.Repeat)
 		}
-		legPlayers.Lock()
-		delete(legPlayers.m[legID], playbackID)
-		if len(legPlayers.m[legID]) == 0 {
-			delete(legPlayers.m, legID)
-		}
-		legPlayers.Unlock()
+		deregisterLegPlayer(legID, playbackID)
 		if err != nil && err != context.Canceled {
 			s.Bus.Publish(events.PlaybackError, &events.PlaybackErrorData{
 				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: appID},

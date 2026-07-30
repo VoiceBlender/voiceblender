@@ -12,6 +12,10 @@ import (
 )
 
 // apiMockLeg implements leg.Leg for addLegToRoom tests.
+//
+// Every optional field is zero-value compatible with the original mock:
+// an unset state reports connected, an unset ctx reports a background
+// context, and an unset audioWriter reports no writer.
 type apiMockLeg struct {
 	id             string
 	muted          bool
@@ -21,19 +25,40 @@ type apiMockLeg struct {
 	role           string
 	createdAt      time.Time
 	disconnectDone atomic.Bool
+
+	state       leg.LegState // "" → StateConnected
+	ctx         context.Context
+	audioWriter io.Writer
+	hangups     atomic.Int32
 }
 
 func (m *apiMockLeg) ID() string                             { return m.id }
 func (m *apiMockLeg) Type() leg.LegType                      { return leg.TypeSIPInbound }
-func (m *apiMockLeg) State() leg.LegState                    { return leg.StateConnected }
 func (m *apiMockLeg) SampleRate() int                        { return 8000 }
 func (m *apiMockLeg) AudioReader() io.Reader                 { return nil }
-func (m *apiMockLeg) AudioWriter() io.Writer                 { return nil }
+func (m *apiMockLeg) AudioWriter() io.Writer                 { return m.audioWriter }
 func (m *apiMockLeg) OnDTMF(func(rune))                      {}
 func (m *apiMockLeg) SendDTMF(context.Context, string) error { return nil }
-func (m *apiMockLeg) Hangup(context.Context) error           { return nil }
 func (m *apiMockLeg) Answer(context.Context) error           { return nil }
-func (m *apiMockLeg) Context() context.Context               { return context.Background() }
+
+func (m *apiMockLeg) State() leg.LegState {
+	if m.state == "" {
+		return leg.StateConnected
+	}
+	return m.state
+}
+
+func (m *apiMockLeg) Context() context.Context {
+	if m.ctx == nil {
+		return context.Background()
+	}
+	return m.ctx
+}
+
+func (m *apiMockLeg) Hangup(context.Context) error {
+	m.hangups.Add(1)
+	return nil
+}
 func (m *apiMockLeg) RoomID() string                         { return m.roomID }
 func (m *apiMockLeg) SetRoomID(id string)                    { m.roomID = id }
 func (m *apiMockLeg) AppID() string                          { return "" }

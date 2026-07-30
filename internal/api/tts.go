@@ -69,12 +69,7 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 			APIKey:   apiKey,
 		})
 		if err != nil {
-			legPlayers.Lock()
-			delete(legPlayers.m[id], ttsID)
-			if len(legPlayers.m[id]) == 0 {
-				delete(legPlayers.m, id)
-			}
-			legPlayers.Unlock()
+			deregisterLegPlayer(id, ttsID)
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
 				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
@@ -109,12 +104,7 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 		}
 		playErr := player.PlayReaderAtRate(l.Context(), writer, result.Audio, result.MimeType, ttsRate)
 
-		legPlayers.Lock()
-		delete(legPlayers.m[id], ttsID)
-		if len(legPlayers.m[id]) == 0 {
-			delete(legPlayers.m, id)
-		}
-		legPlayers.Unlock()
+		deregisterLegPlayer(id, ttsID)
 
 		if playErr != nil && playErr != context.Canceled {
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
