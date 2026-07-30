@@ -79,6 +79,7 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 				Error:        err.Error(),
+				Category:     string(tts.Categorize(err)),
 			})
 			return
 		}
@@ -121,6 +122,7 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
 				TTSID:        ttsID,
 				Error:        playErr.Error(),
+				Category:     string(tts.CategoryPlayback),
 			})
 		} else {
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
@@ -214,6 +216,7 @@ func (s *Server) doRoomTTS(roomID string, req TTSRequest) (*TTSStartResult, erro
 				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 				Error:        err.Error(),
+				Category:     string(tts.Categorize(err)),
 			})
 			return
 		}
@@ -243,6 +246,7 @@ func (s *Server) doRoomTTS(roomID string, req TTSRequest) (*TTSStartResult, erro
 				LegRoomScope: events.LegRoomScope{RoomID: id, AppID: roomAppID},
 				TTSID:        ttsID,
 				Error:        playErr.Error(),
+				Category:     string(tts.CategoryPlayback),
 			})
 		} else {
 			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
