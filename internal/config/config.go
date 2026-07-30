@@ -92,6 +92,7 @@ type Config struct {
 	SIPOutboundRegistrationMaxExpiresSeconds     int
 	SIPOutboundRegistrationRefreshRatio          float64
 	SIPOutboundRegistrationFailureBackoffMaxMs   int
+	SIPOutboundRegistrationAuthFailureLimit      int
 	VSIEventBufferSize                           int
 	DefaultSampleRate                            int
 	SpeechDetectionEnabled                       bool
@@ -192,6 +193,7 @@ func Load() Config {
 		SIPOutboundRegistrationMaxExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
 		SIPOutboundRegistrationRefreshRatio:          envFloat("SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO", 0.5),
 		SIPOutboundRegistrationFailureBackoffMaxMs:   envInt("SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS", 300000),
+		SIPOutboundRegistrationAuthFailureLimit:      envInt("SIP_OUTBOUND_REGISTRATION_AUTH_FAILURE_LIMIT", 3),
 		VSIEventBufferSize:                           vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
 		DefaultSampleRate:                            defaultRate,
 		SpeechDetectionEnabled:                       os.Getenv("SPEECH_DETECTION_ENABLED") == "true",

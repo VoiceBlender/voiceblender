@@ -69,6 +69,7 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		MaxExpiresSeconds:     s.Config.SIPOutboundRegistrationMaxExpiresSeconds,
 		RefreshRatio:          s.Config.SIPOutboundRegistrationRefreshRatio,
 		FailureBackoffMax:     time.Duration(s.Config.SIPOutboundRegistrationFailureBackoffMaxMs) * time.Millisecond,
+		AuthFailureLimit:      s.Config.SIPOutboundRegistrationAuthFailureLimit,
 	}
 	trunk := sipmod.NewOutboundRegistration(s.SIPEngine, s.Bus, s.Log, cfg, sipmod.OutboundRegistrationParams{
 		ID:                      id,
