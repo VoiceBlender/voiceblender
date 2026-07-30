@@ -99,7 +99,7 @@ Originate an outbound SIP call.
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
 | `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
-| `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
+| `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |

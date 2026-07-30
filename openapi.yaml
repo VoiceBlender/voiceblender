@@ -3089,7 +3089,7 @@ components:
                     description: Deprecated alias for `to` (sip legs only). Prefer `to`.
                 from:
                     type: string
-                    description: Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")
+                    description: Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.
                 privacy:
                     type: string
                     description: SIP Privacy header value (e.g. "id", "none")
@@ -3836,7 +3836,7 @@ components:
                     description: Upstream registrar SIP URI (e.g. "sip:pbx.example.com:5060" or "sips:pbx.example.com:5061;transport=tls").
                 aor:
                     type: string
-                    description: Address-of-record this trunk REGISTERs (e.g. "sip:alice@pbx.example.com"). Becomes the From URI for inbound REGISTER and outbound calls placed `from` this AOR.
+                    description: Address-of-record this trunk REGISTERs (e.g. "sip:alice@pbx.example.com"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR.
                 username:
                     type: string
                     description: Digest auth username. Defaults to the AOR user-part when empty.
