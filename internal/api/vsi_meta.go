@@ -275,7 +275,7 @@ func EventsMetadata() []EventMeta {
 		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{})},
 		{events.SIPOutboundRegistrationActive, "Outbound SIP trunk REGISTER accepted (initial or refresh)", reflect.TypeOf(events.SIPOutboundRegistrationActiveData{})},
 		{events.SIPOutboundRegistrationFailed, "Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)", reflect.TypeOf(events.SIPOutboundRegistrationFailedData{})},
-		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{})},
+		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, refresh failed past granted lifetime, or credentials permanently rejected)", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{})},
 	}
 }
 
