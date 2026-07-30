@@ -50,9 +50,7 @@ func main() {
 
 	// Event bus + webhooks
 	bus := events.NewBus(cfg.InstanceID)
-	_ = bus.Subscribe(func(e events.Event) {
-		log.Info("event", "type", string(e.Type), "data", e.Data)
-	})
+	_ = bus.Subscribe(func(e events.Event) { events.LogEvent(log, e) })
 	webhookReg := events.NewWebhookRegistry(bus, log, cfg.WebhookURL, cfg.WebhookSecret)
 	defer webhookReg.Stop()
 
