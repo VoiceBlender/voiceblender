@@ -373,7 +373,7 @@ paths:
 
                 With `{"reason": "<value>"}` and an unanswered SIP inbound leg (state `ringing` or `early_media`), VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is passed through to `leg.disconnected`'s `cdr.reason`.
 
-                For connected legs the request body is ignored.
+                On connected legs the `reason` field is ignored. `drain_playback` and `drain_timeout_ms` are the opposite: they apply to legs in state `connected` or `early_media` that are being hung up, and are ignored on the reject path. With `drain_playback` set, VoiceBlender waits — in the background, so the 202 is unaffected — for playback and TTS already started on that leg to finish before sending BYE, up to `drain_timeout_ms`. When the bound expires the leg is hung up anyway and the cut utterance reports `reason: "stopped"`. While the drain runs the leg is already out of the manager, so `GET /v1/legs/{id}` and a second `DELETE` return 404; `DELETE /v1/legs/{id}/play/{playbackID}` still works and releases the drain immediately.
             tags:
                 - Legs
             requestBody:
@@ -3285,7 +3285,7 @@ components:
             properties:
                 reason:
                     type: string
-                    description: 'Disconnect reason. Only honored for unanswered SIP inbound legs (state `ringing` or `early_media`); on connected legs the body is ignored and the leg is hung up with the legacy `api_hangup` reason. The value flows through to `leg.disconnected`''s `cdr.reason` and selects the SIP final response: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500.'
+                    description: 'Disconnect reason. Only honored for unanswered SIP inbound legs (state `ringing` or `early_media`); on connected legs this field is ignored and the leg is hung up with the legacy `api_hangup` reason. The value flows through to `leg.disconnected`''s `cdr.reason` and selects the SIP final response: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500.'
                     enum:
                         - busy
                         - declined
@@ -3294,6 +3294,16 @@ components:
                         - not_found
                         - forbidden
                         - server_error
+                drain_playback:
+                    type: boolean
+                    description: 'Wait for playback and TTS already started on this leg to finish before sending BYE, so a farewell prompt is not cut off. Best-effort and bounded by `drain_timeout_ms`; when the bound expires the leg is hung up anyway and the cut utterance reports `reason: "stopped"`. The HTTP 202 is unaffected — the wait happens in the background, only `leg.disconnected` arrives later. A TTS utterance still being synthesized counts as outstanding and is waited for. Applies to legs in state `connected` or `early_media` only; ignored on the reject path (a `reason` on an unanswered inbound leg) and on held legs. Audio played to the room the leg is in is not waited for. While the drain runs the leg is already out of the manager, so `GET /v1/legs/{id}` and a second `DELETE` return 404; `DELETE /v1/legs/{id}/play/{playbackID}` still works and releases the drain immediately.'
+                    default: false
+                drain_timeout_ms:
+                    type: integer
+                    description: Upper bound in milliseconds on the `drain_playback` wait. Values at or above the maximum are clamped to it; 0 or omitted uses the default.
+                    default: 5000
+                    minimum: 0
+                    maximum: 30000
         EarlyMediaLegRequest:
             type: object
             properties:

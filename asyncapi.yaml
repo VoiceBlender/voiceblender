@@ -5659,6 +5659,10 @@ components:
                     type: string
                 reason:
                     type: string
+                drain_playback:
+                    type: boolean
+                drain_timeout_ms:
+                    type: integer
             required:
                 - id
         deleteRegistrationPayload:

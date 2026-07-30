@@ -82,8 +82,10 @@ type answerLegPayload struct {
 
 // deleteLegPayload carries the inputs for delete_leg.
 type deleteLegPayload struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason,omitempty"`
+	ID             string `json:"id"`
+	Reason         string `json:"reason,omitempty"`
+	DrainPlayback  bool   `json:"drain_playback,omitempty"`
+	DrainTimeoutMs int    `json:"drain_timeout_ms,omitempty"`
 }
 
 // transferLegPayload combines a leg id with the transfer request.
@@ -302,7 +304,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doDeleteLeg(p.ID, p.Reason); err != nil {
+		if err := s.doDeleteLeg(p.ID, p.Reason, p.DrainPlayback, p.DrainTimeoutMs); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}

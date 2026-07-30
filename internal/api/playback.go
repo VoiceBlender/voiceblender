@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -54,6 +55,55 @@ func deregisterLegPlayer(legID, playbackID string) {
 	delete(legPlayers.m[legID], playbackID)
 	if len(legPlayers.m[legID]) == 0 {
 		delete(legPlayers.m, legID)
+	}
+}
+
+// drainPollInterval is how often drainLegPlayback re-checks legPlayers. Half a
+// 20ms ptime frame, so the extra latency it adds is inaudible. legPlayers is a
+// plain mutex-guarded map with no change signal, so a poll is the only option
+// short of adding one.
+const drainPollInterval = 10 * time.Millisecond
+
+// legHasPlayback reports whether legID has any playback or TTS outstanding.
+func legHasPlayback(legID string) bool {
+	legPlayers.Lock()
+	defer legPlayers.Unlock()
+	return len(legPlayers.m[legID]) > 0
+}
+
+// drainLegPlayback waits until legID has no playback or TTS outstanding,
+// returning true if it drained and false if the timeout or ctx won first.
+//
+// The predicate is legPlayers MEMBERSHIP, not Player.IsPlaying(). Membership is
+// established synchronously, before POST /play and POST /tts return 200, while
+// a player only reports itself as playing once the goroutine launched
+// afterwards actually starts writing. Gating on IsPlaying() would therefore
+// race a DELETE issued immediately after a 200, and for TTS it would be false
+// for the whole provider.Synthesize window — precisely the farewell-prompt case
+// this exists to serve. Membership is cleared on every terminal branch (see
+// deregisterLegPlayer's callers), so it cannot stick.
+//
+// Only per-leg audio counts. Audio played to the room the leg sits in lives in
+// roomPlayers and is not waited for — it is not this leg's property.
+func drainLegPlayback(ctx context.Context, legID string, timeout time.Duration) bool {
+	if !legHasPlayback(legID) {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			if !legHasPlayback(legID) {
+				return true
+			}
+		}
 	}
 }
 

@@ -713,7 +713,9 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 
 | Field | Type | Description |
 |---|---|---|
-| `reason` | string (optional) | Disconnect reason. Honored only for **unanswered SIP inbound legs** (state `ringing` or `early_media`); on connected legs the body is ignored and the leg is hung up with the legacy `api_hangup` reason. The reason value flows through to `leg.disconnected`'s `cdr.reason` and selects the SIP final response sent to the caller. |
+| `reason` | string (optional) | Disconnect reason. Honored only for **unanswered SIP inbound legs** (state `ringing` or `early_media`); on connected legs this field is ignored and the leg is hung up with the legacy `api_hangup` reason. The reason value flows through to `leg.disconnected`'s `cdr.reason` and selects the SIP final response sent to the caller. |
+| `drain_playback` | bool (optional, default `false`) | Wait for playback and TTS already started **on this leg** to finish before sending BYE, so a farewell prompt is not cut off. See below. |
+| `drain_timeout_ms` | int (optional, default `5000`, max `30000`) | Upper bound on the `drain_playback` wait. Values at or above the maximum are clamped to it; `0` or omitted uses the default. |
 
 #### Reason → SIP final response (unanswered inbound only)
 
@@ -727,6 +729,23 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 | `server_error` | 500 Server Internal Error |
 
 Without a body, behavior is unchanged: BYE on connected legs (`cdr.reason: "api_hangup"`), or dialog cancel on unanswered inbound legs (`cdr.reason: "caller_cancel"`).
+
+#### Draining in-flight playback before hangup
+
+```json
+{ "drain_playback": true, "drain_timeout_ms": 8000 }
+```
+
+By default a DELETE cuts any prompt still playing on the leg. With `drain_playback` set, VoiceBlender waits for playback and TTS already started on that leg to finish before sending BYE — the "say goodbye, then hang up" pattern, without the app having to poll `playback.finished` itself.
+
+- **The 202 is unaffected.** The wait happens on the same background goroutine that already did the hangup, so `DELETE` still returns immediately. Only `leg.disconnected` (and any room recording finalisation that follows it) arrives later.
+- **It is bounded.** When `drain_timeout_ms` elapses the leg is hung up anyway and the cut utterance reports `reason: "stopped"`, exactly as it does today. The wait also ends early if the leg is torn down by something else in the meantime (RTP timeout, session expiry, remote BYE, max duration).
+- **A TTS utterance still being synthesized counts as outstanding** and is waited for — the utterance is registered on the leg before the provider is called.
+- **Scope.** Applies to legs in state `connected` or `early_media`. Ignored on held legs and on the reject path (supplying a `reason` for an unanswered inbound leg). Audio played to the **room** the leg is in is not waited for — only per-leg `POST /v1/legs/{id}/play` and `POST /v1/legs/{id}/tts`.
+- **The leg is unaddressable while draining.** It is claimed out of the leg manager before the wait starts, so `GET /v1/legs/{id}` and a second `DELETE` return 404 for the duration. `DELETE /v1/legs/{id}/play/{playbackID}` still works and is the abort handle: stopping the playback releases the drain immediately.
+- **`cdr.reason` can differ.** A real remote hangup arriving during the drain wins, and `leg.disconnected` then reports `remote_bye` rather than `api_hangup`.
+
+The same two fields exist on the VSI `delete_leg` command.
 
 **Response:** `202 Accepted`
 

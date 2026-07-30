@@ -122,11 +122,16 @@ var earlyMediaLegRequestFields = map[string]FieldEnrichment{
 }
 
 // DeleteLegRequest is the optional request body for DELETE /v1/legs/{id}.
-// Honored only for unanswered SIP inbound legs (state ringing or
-// early_media). For connected legs the body is ignored and the leg is hung
-// up via SIP BYE with the legacy `api_hangup` reason.
+//
+// `reason` is honored only for unanswered SIP inbound legs (state ringing or
+// early_media); on connected legs it is ignored and the leg is hung up via SIP
+// BYE with the legacy `api_hangup` reason. `drain_playback` and
+// `drain_timeout_ms` are the other way round: they apply to connected and
+// early-media legs that are being hung up, not rejected.
 type DeleteLegRequest struct {
-	Reason string `json:"reason,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	DrainPlayback  bool   `json:"drain_playback,omitempty"`
+	DrainTimeoutMs int    `json:"drain_timeout_ms,omitempty"`
 }
 
 // DeleteReasonEnum lists the reason values accepted on DELETE /v1/legs/{id}.
@@ -135,7 +140,14 @@ type DeleteLegRequest struct {
 var DeleteReasonEnum = []string{"busy", "declined", "rejected", "unavailable", "not_found", "forbidden", "server_error"}
 
 var deleteLegRequestFields = map[string]FieldEnrichment{
-	"reason": {Description: "Disconnect reason. Only honored for unanswered SIP inbound legs (state `ringing` or `early_media`); on connected legs the body is ignored and the leg is hung up with the legacy `api_hangup` reason. The value flows through to `leg.disconnected`'s `cdr.reason` and selects the SIP final response: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500.", Enum: DeleteReasonEnum},
+	"reason":         {Description: "Disconnect reason. Only honored for unanswered SIP inbound legs (state `ringing` or `early_media`); on connected legs this field is ignored and the leg is hung up with the legacy `api_hangup` reason. The value flows through to `leg.disconnected`'s `cdr.reason` and selects the SIP final response: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500.", Enum: DeleteReasonEnum},
+	"drain_playback": {Description: "Wait for playback and TTS already started on this leg to finish before sending BYE, so a farewell prompt is not cut off. Best-effort and bounded by `drain_timeout_ms`; when the bound expires the leg is hung up anyway and the cut utterance reports `reason: \"stopped\"`. The HTTP 202 is unaffected — the wait happens in the background, only `leg.disconnected` arrives later. A TTS utterance still being synthesized counts as outstanding and is waited for. Applies to legs in state `connected` or `early_media` only; ignored on the reject path (a `reason` on an unanswered inbound leg) and on held legs. Audio played to the room the leg is in is not waited for. While the drain runs the leg is already out of the manager, so `GET /v1/legs/{id}` and a second `DELETE` return 404; `DELETE /v1/legs/{id}/play/{playbackID}` still works and releases the drain immediately.", Default: false},
+	"drain_timeout_ms": {
+		Description: "Upper bound in milliseconds on the `drain_playback` wait. Values at or above the maximum are clamped to it; 0 or omitted uses the default.",
+		Default:     defaultDrainTimeoutMillis,
+		Minimum:     intPtr(0),
+		Maximum:     intPtr(maxDrainTimeoutMillis),
+	},
 }
 
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.

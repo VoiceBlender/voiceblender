@@ -385,7 +385,14 @@ func RoutesMetadata() []RouteMeta {
 				"VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→" +
 				"603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is " +
 				"passed through to `leg.disconnected`'s `cdr.reason`.\n\n" +
-				"For connected legs the request body is ignored.",
+				"On connected legs the `reason` field is ignored. `drain_playback` and `drain_timeout_ms` are the " +
+				"opposite: they apply to legs in state `connected` or `early_media` that are being hung up, and are " +
+				"ignored on the reject path. With `drain_playback` set, VoiceBlender waits — in the background, so " +
+				"the 202 is unaffected — for playback and TTS already started on that leg to finish before sending " +
+				"BYE, up to `drain_timeout_ms`. When the bound expires the leg is hung up anyway and the cut " +
+				"utterance reports `reason: \"stopped\"`. While the drain runs the leg is already out of the " +
+				"manager, so `GET /v1/legs/{id}` and a second `DELETE` return 404; `DELETE " +
+				"/v1/legs/{id}/play/{playbackID}` still works and releases the drain immediately.",
 			Tags:         []string{"Legs"},
 			RequestType:  DeleteLegRequest{},
 			OptionalBody: true,

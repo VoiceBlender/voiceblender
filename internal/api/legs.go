@@ -652,7 +652,48 @@ func rejectionMapping(reason string) (code int, phrase string, ok bool) {
 	return 0, "", false
 }
 
-func (s *Server) doDeleteLeg(id string, reason string) error {
+const (
+	// defaultDrainTimeout applies when drain_playback is set without an
+	// explicit drain_timeout_ms.
+	defaultDrainTimeout = 5 * time.Second
+	// maxDrainTimeout caps how long a client can keep a leg alive after
+	// asking for its teardown.
+	maxDrainTimeout = 30 * time.Second
+)
+
+// drainBudget normalises a client-supplied drain_timeout_ms.
+//
+// The clamp is applied to the millisecond count BEFORE converting to a
+// Duration: multiplying first would let a large integer overflow int64 into a
+// negative duration, which fires the timer immediately and silently disables
+// the drain for a client who asked for a long one.
+func drainBudget(ms int) time.Duration {
+	if ms <= 0 {
+		return defaultDrainTimeout
+	}
+	if ms >= maxDrainTimeoutMillis {
+		return maxDrainTimeout
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// The two budgets expressed the way the wire field is, so the clamp, the
+// default and the published schema constraints cannot drift apart.
+const (
+	defaultDrainTimeoutMillis = int(defaultDrainTimeout / time.Millisecond)
+	maxDrainTimeoutMillis     = int(maxDrainTimeout / time.Millisecond)
+)
+
+// drainablePlaybackState reports whether a leg in this state can have direct
+// playback worth waiting for. Early media qualifies: doStartLegPlay's only
+// precondition is a non-nil AudioWriter, which SIPLeg provides before answer,
+// so pre-answer announcements are real. Held does not: the audio is not heard,
+// so waiting for it would only stall the teardown.
+func drainablePlaybackState(st leg.LegState) bool {
+	return st == leg.StateConnected || st == leg.StateEarlyMedia
+}
+
+func (s *Server) doDeleteLeg(id string, reason string, drain bool, drainTimeoutMs int) error {
 	// Validate reason early so a malformed request never claims the leg.
 	var (
 		rejectCode   int
@@ -705,6 +746,20 @@ func (s *Server) doDeleteLeg(id string, reason string) error {
 	}
 
 	go func() {
+		// Bounded wait for outstanding playback/TTS, INSIDE the detached
+		// goroutine — deleteLeg writes its 202 outside it, so the endpoint
+		// still returns immediately and only the timing of leg.disconnected
+		// moves. Do not hoist this above the `go func()`.
+		//
+		// The result is deliberately discarded: an expired budget is not an
+		// error, teardown proceeds either way and the truncated player reports
+		// reason "stopped" exactly as it does today. The wait also ends early
+		// if the leg context is cancelled, which happens once any competing
+		// teardown path (RTP timeout, session expiry, remote BYE, max duration,
+		// caller cancel) reaches Hangup.
+		if drain && drainablePlaybackState(l.State()) {
+			_ = drainLegPlayback(l.Context(), l.ID(), drainBudget(drainTimeoutMs))
+		}
 		if err := l.Hangup(context.Background()); err != nil {
 			s.Log.Warn("hangup error", "leg_id", l.ID(), "error", err)
 		}
@@ -723,7 +778,7 @@ func (s *Server) deleteLeg(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.doDeleteLeg(id, req.Reason); err != nil {
+	if err := s.doDeleteLeg(id, req.Reason, req.DrainPlayback, req.DrainTimeoutMs); err != nil {
 		handleAPIError(w, err)
 		return
 	}
