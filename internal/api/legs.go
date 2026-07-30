@@ -760,6 +760,29 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	writeJSON(w, http.StatusCreated, view)
 }
 
+// splitFromIdentity splits a POST /v1/legs `from` value into the user and host
+// parts of the outbound From URI.
+//
+// A full SIP URI ("sip:alice@pbx.example.com") yields both parts. Anything else
+// ("alice", "+15551234567", "tel:+15551234567") yields the raw value as the
+// user with an empty host, leaving the host to the matched trunk's AOR realm or
+// the engine's public host.
+//
+// The accept condition deliberately mirrors the trunk-matching parse below, so
+// the identity split and the trunk lookup can never disagree about what counts
+// as a full URI. Port and URI params are discarded on purpose: a From URI
+// should carry neither.
+func splitFromIdentity(from string) (user, host string) {
+	if from == "" {
+		return "", ""
+	}
+	u := sip.Uri{}
+	if err := sip.ParseUri(from, &u); err == nil && u.User != "" && u.Host != "" {
+		return u.User, u.Host
+	}
+	return from, ""
+}
+
 // doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
 // outbound SIP originate and kicks off the async INVITE, returning the leg view.
 // Shared by the REST handler and the VSI create_leg dispatch.
@@ -837,7 +860,8 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	}
 
 	// Build invite options.
-	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
+	fromUser, fromHost := splitFromIdentity(req.From)
+	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: fromUser, FromHost: fromHost}
 	if req.Auth != nil {
 		inviteOpts.AuthUsername = req.Auth.Username
 		inviteOpts.AuthPassword = req.Auth.Password
@@ -848,7 +872,8 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 
 	// Implicit trunk match: if `from` matches a registered outbound trunk's
 	// AOR (either as a full URI or just a user-part), auto-attach digest
-	// credentials and route the INVITE through the trunk's upstream proxy.
+	// credentials, route the INVITE through the trunk's upstream proxy, and
+	// place the From / P-Asserted-Identity in the trunk's AOR realm.
 	// Caller-supplied auth wins.
 	var trunkIDForLeg string
 	var matchedTrunk sipmod.Trunk
@@ -871,6 +896,11 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			}
 			regURI := reg.RegistrarURI()
 			inviteOpts.RouteURI = &regURI
+			// The registrar authenticated us under the AOR realm; claim that
+			// identity on the wire unless the caller named a host explicitly.
+			if inviteOpts.FromHost == "" {
+				inviteOpts.FromHost = reg.FromHost()
+			}
 		}
 	}
 
