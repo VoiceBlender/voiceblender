@@ -51,6 +51,8 @@ type rawSIPRegistrar struct {
 	// registration succeeded.
 	successCount atomic.Int32
 	rejectAfter  int32
+
+	rejectCredentialedCode int
 }
 
 type rawRegistrarOpts struct {
@@ -58,6 +60,10 @@ type rawRegistrarOpts struct {
 	digestUser   string // "" disables 401 challenge
 	digestPass   string
 	rejectAfter  int // > 0: reject (503) after this many successful REGISTERs
+	// rejectCredentialedCode, when > 0, answers every REGISTER that carries
+	// an Authorization header with this status instead of accepting it —
+	// i.e. the registrar refusing the credentials it just challenged for.
+	rejectCredentialedCode int
 }
 
 func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
@@ -92,6 +98,8 @@ func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
 		expectedPassword: opts.digestPass,
 		nonce:            "abcdef1234567890",
 		rejectAfter:      int32(opts.rejectAfter),
+
+		rejectCredentialedCode: opts.rejectCredentialedCode,
 	}
 
 	srv.OnRegister(func(req *sip.Request, tx sip.ServerTransaction) {
@@ -113,6 +121,12 @@ func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
 			// stub; OutboundRegistration's digest construction is exercised
 			// end-to-end by the unit test for parseGrantedExpires and by the
 			// fact that sipgo's library handles it.
+		}
+
+		// Refuse the credentials we just challenged for.
+		if r.rejectCredentialedCode > 0 && req.GetHeader("Authorization") != nil {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, r.rejectCredentialedCode, "Rejected", nil))
+			return
 		}
 
 		// Simulate the registrar disappearing after N successful REGISTERs.
@@ -538,6 +552,89 @@ func TestTrunk_SIPRegister_RefreshFailedEmitsExpired(t *testing.T) {
 		})
 	if len(all) != 1 {
 		t.Errorf("got %d refresh_failed events, want exactly 1", len(all))
+	}
+}
+
+// createRejectingTrunk stands up an instance whose registrar challenges for
+// digest and then refuses the credentials with rejectCode, creates a trunk
+// against it, and returns the instance, the registrar and the trunk id.
+func createRejectingTrunk(t *testing.T, name string, rejectCode, limit int) (*testInstance, *rawSIPRegistrar, string) {
+	t.Helper()
+	inst := newTestInstanceWithOpts(t, name, func(c *config.Config) {
+		c.SIPOutboundRegistrationAuthFailureLimit = limit
+		c.SIPOutboundRegistrationFailureBackoffMaxMs = 200
+	})
+	reg := newRawSIPRegistrar(t, rawRegistrarOpts{
+		digestUser:             "alice",
+		digestPass:             "secret",
+		rejectCredentialedCode: rejectCode,
+	})
+
+	createResp, body := createTrunkRequest(t, inst.baseURL(), map[string]interface{}{
+		"type": "sip_register",
+		"sip_register": map[string]interface{}{
+			"registrar_uri": fmt.Sprintf("sip:127.0.0.1:%d", reg.port),
+			"aor":           "sip:alice@vb.test",
+			"username":      "alice",
+			"password":      "secret",
+		},
+	})
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: %d, body=%s", createResp.StatusCode, body)
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatal("missing id in create response")
+	}
+	return inst, reg, id
+}
+
+// A registrar that keeps refusing the credentials it challenged for must not
+// be retried forever: the trunk goes terminal, stops registering, and stays
+// readable so an operator can see why.
+func TestTrunk_SIPRegister_AuthRejectionTerminates(t *testing.T) {
+	inst, reg, id := createRejectingTrunk(t, "trunk-auth-reject", 403, 2)
+
+	snap := waitForTrunkStatus(t, inst.baseURL(), id, "terminated", 15*time.Second)
+	if lastErr, _ := snap["last_error"].(string); lastErr == "" {
+		t.Error("terminated trunk has no last_error to explain itself")
+	}
+
+	exp := inst.collector.waitForMatch(t, events.SIPOutboundRegistrationExpired,
+		func(e events.Event) bool {
+			return e.Data.(*events.SIPOutboundRegistrationExpiredData).Reason == "credentials_rejected"
+		}, 5*time.Second)
+	if exp.Data.(*events.SIPOutboundRegistrationExpiredData).TrunkID != id {
+		t.Errorf("expired event trunk_id = %v, want %s",
+			exp.Data.(*events.SIPOutboundRegistrationExpiredData).TrunkID, id)
+	}
+
+	// The REGISTER storm has stopped.
+	before := reg.registerCount()
+	time.Sleep(time.Second)
+	if after := reg.registerCount(); after != before {
+		t.Errorf("REGISTER count kept climbing after termination: %d → %d", before, after)
+	}
+}
+
+// The mirror image: a rejection that is not about credentials (404 on a
+// just-provisioned AOR) must stay on the retry path.
+func TestTrunk_SIPRegister_NonAuthRejectionKeepsRetrying(t *testing.T) {
+	inst, reg, id := createRejectingTrunk(t, "trunk-404-retry", 404, 2)
+
+	waitForTrunkStatus(t, inst.baseURL(), id, "failed", 15*time.Second)
+	before := reg.registerCount()
+	time.Sleep(time.Second)
+	if after := reg.registerCount(); after <= before {
+		t.Errorf("REGISTER count froze at %d; a 404 must keep retrying", after)
+	}
+	snap := trunkSnapshot(t, inst.baseURL(), id)
+	if status, _ := snap["status"].(string); status == "terminated" {
+		t.Error("404 terminated the trunk; only 401/403/407 are credential rejections")
 	}
 }
 
