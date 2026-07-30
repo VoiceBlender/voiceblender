@@ -113,7 +113,8 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 	bus := s.Bus
 	legAppID := l.AppID()
 	cb := func(text string, isFinal bool) {
-		s.Log.Info("stt callback fired", "leg_id", id, "text", text, "is_final", isFinal)
+		s.Log.Info("stt callback fired", "leg_id", id, "is_final", isFinal, "text_len", len(text))
+		s.Log.Debug("stt callback text", "leg_id", id, "is_final", isFinal, "text", text)
 		bus.Publish(events.STTText, &events.STTTextData{
 			LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
 			Text:         text,
