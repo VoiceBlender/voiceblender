@@ -1233,6 +1233,40 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/stt/finalize:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: finalizeSTTLeg
+            summary: Flush the STT buffer on a leg without stopping STT
+            description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only Deepgram supports this; the Azure and ElevenLabs integrations answer 501. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Final transcript requested
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No STT in progress
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: STT session not connected or the flush failed
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '501':
+                    description: The active STT provider does not support finalize
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/agent/elevenlabs:
         parameters:
             - $ref: '#/components/parameters/LegId'

@@ -238,6 +238,10 @@ channels:
                 $ref: '#/components/messages/room_stt_stop'
             room_stt_stop.result:
                 $ref: '#/components/messages/room_stt_stopResult'
+            leg_stt_finalize:
+                $ref: '#/components/messages/leg_stt_finalize'
+            leg_stt_finalize.result:
+                $ref: '#/components/messages/leg_stt_finalizeResult'
             leg_tts:
                 $ref: '#/components/messages/leg_tts'
             leg_tts.result:
@@ -1201,6 +1205,19 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/room_stt_stop.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stt_finalize:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stt_finalize'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stt_finalize.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_tts:
         action: receive
@@ -3675,6 +3692,36 @@ components:
                         $ref: '#/components/schemas/STTStopResult'
                 required:
                     - type
+        leg_stt_finalize:
+            name: leg_stt_finalize
+            title: Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT
+            summary: Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_finalize
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_stt_finalizeResult:
+            name: leg_stt_finalizeResult
+            title: Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stt_finalize.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/STTFinalizeResult'
+                required:
+                    - type
         leg_tts:
             name: leg_tts
             title: Synthesize speech and play it on a leg
@@ -5303,6 +5350,13 @@ components:
                 - registrar_uri
                 - aor
                 - requested_expires_seconds
+        STTFinalizeResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
         STTStartLegResult:
             type: object
             properties:

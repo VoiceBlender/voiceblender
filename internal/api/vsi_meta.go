@@ -165,6 +165,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "room_stt_start", Summary: "Start speech-to-text on every participant of a room (auto-extends to legs that join later)", PayloadType: sttStartPayload{}, ResultType: STTStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
 		{Name: "leg_stt_stop", Summary: "Stop speech-to-text on a leg", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
 		{Name: "room_stt_stop", Summary: "Stop speech-to-text on a room", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_stt_finalize", Summary: "Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT", PayloadType: idPayload{}, ResultType: STTFinalizeResult{}, ErrorCodes: []int{404, 409, 501}},
 
 		// ── TTS ─────────────────────────────────────────────────────────
 		{Name: "leg_tts", Summary: "Synthesize speech and play it on a leg", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
