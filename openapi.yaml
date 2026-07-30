@@ -5181,7 +5181,7 @@ x-webhooks:
                                         type: string
     sip.outbound_registration_expired:
         post:
-            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            summary: Outbound SIP trunk removed (DELETE, shutdown, refresh failed past granted lifetime, or credentials permanently rejected)
             requestBody:
                 content:
                     application/json:
