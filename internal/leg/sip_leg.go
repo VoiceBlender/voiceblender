@@ -24,6 +24,10 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const rtpTimeout = 30 * time.Second
@@ -58,10 +62,32 @@ type SIPLeg struct {
 	connectedCh   chan struct{} // closed when leg reaches connected state
 	connectedOnce sync.Once     // ensures connectedCh is closed exactly once
 	onDTMF        func(digit rune)
-	lastDTMFTS    uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
-	onRTPTimeout  func() // called when no RTP received within timeout
-	onHold        func() // called when leg is put on hold
-	onUnhold      func() // called when leg is taken off hold
+
+	// rootSpan covers the whole leg lifecycle. It is written once by the
+	// constructor before the leg is shared with any other goroutine and is
+	// never reassigned, so reads need no lock — which is also why End() is
+	// never called while holding one.
+	//
+	// spanEndOnce is deliberately its own gate rather than disconnectDone:
+	// span-end is not coupled to ClaimDisconnect. Terminal paths that hang
+	// the leg up without ever publishing leg.disconnected never reach
+	// ClaimDisconnect — tying the span to it would leave those spans
+	// unended, and an unended span is never exported. Routing them through
+	// ClaimDisconnect instead would emit a leg.disconnected event where none
+	// exists today.
+	//
+	// Any terminal path that calls neither Hangup nor publishDisconnect must
+	// therefore end the span itself. Enumerate that set by walking every SIP
+	// leg CONSTRUCTION site, not the Hangup callers: two paths that abandon a
+	// leg without touching Hangup at all (the inbound answer failure and the
+	// AMD param reject) were invisible to a Hangup-based walk and leaked
+	// their spans until a construction-site walk found them.
+	rootSpan     trace.Span
+	spanEndOnce  sync.Once
+	lastDTMFTS   uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
+	onRTPTimeout func() // called when no RTP received within timeout
+	onHold       func() // called when leg is put on hold
+	onUnhold     func() // called when leg is taken off hold
 
 	callID    string      // SIP Call-ID for re-INVITE matching
 	held      bool        // true when call is on hold
@@ -205,7 +231,7 @@ func (l *SIPLeg) JitterBufferMs() int {
 	return l.jbTargetMs
 }
 
-func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
+func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, tracer trace.Tracer, log *slog.Logger) *SIPLeg {
 	ctx, cancel := context.WithCancel(call.Dialog.Context())
 
 	// Extract X-* headers from the inbound INVITE request.
@@ -252,6 +278,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		log:             log,
 	}
 	l.acceptDTMF.Store(true)
+	l.rootSpan = startRootSpan(ctx, tracer, l.legType, l.id)
 
 	// Copy session timer params from inbound call.
 	if call.SessionTimer != nil {
@@ -262,7 +289,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 	return l
 }
 
-func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
+func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, tracer trace.Tracer, log *slog.Logger) *SIPLeg {
 	now := time.Now()
 	ctx, cancel := context.WithCancel(call.Dialog.Context())
 	l := &SIPLeg{
@@ -279,11 +306,13 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 		log:        log,
 	}
 	l.acceptDTMF.Store(true)
+	l.rootSpan = startRootSpan(ctx, tracer, l.legType, l.id)
 
 	// Negotiate codec from the remote answer SDP
 	negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, engine.Codecs())
 	if !ok {
 		log.Error("no common codec with remote for outbound leg")
+		// The leg is returned unusable; the caller's teardown ends the span.
 		return l
 	}
 	l.codecType = negotiated
@@ -303,7 +332,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 // NewSIPOutboundPendingLeg creates an outbound leg in ringing state with its
 // own context. Call ConnectOutbound after the INVITE succeeds.
 // If codecs is non-empty it overrides the engine's default codec list.
-func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, log *slog.Logger) *SIPLeg {
+func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, tracer trace.Tracer, log *slog.Logger) *SIPLeg {
 	supported := engine.Codecs()
 	if len(codecs) > 0 {
 		supported = codecs
@@ -324,6 +353,7 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 		log:             log,
 	}
 	l.acceptDTMF.Store(true)
+	l.rootSpan = startRootSpan(ctx, tracer, l.legType, l.id)
 	return l
 }
 
@@ -1041,6 +1071,9 @@ func (l *SIPLeg) recoverLoopAndHangup(loop string) {
 			"stack", string(debug.Stack()),
 		)
 		_ = l.Hangup(context.Background())
+		// Hangup publishes no disconnect, so this is the only chance to end
+		// the span; without it a panicked leg's span leaks unexported.
+		l.EndRootSpan("panic")
 	}
 }
 
@@ -1423,8 +1456,93 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 // ClaimDisconnect returns true on the first caller and false on every
 // subsequent caller. Termination paths use this gate so only one publishes
 // leg.disconnected, even when DELETE racing with remote BYE or RTP timeout.
+//
+// Span-end is deliberately not wired here — see the rootSpan field comment.
 func (l *SIPLeg) ClaimDisconnect() bool {
 	return l.disconnectDone.CompareAndSwap(false, true)
+}
+
+// tracerName is the instrumentation scope for leg spans.
+const tracerName = "voiceblender"
+
+// startRootSpan opens a leg's lifecycle root span. A nil tracer yields a noop
+// span rather than a nil one: trace.Span is an interface, so a nil field would
+// panic on End(), and the recover sites in this file only cover the media
+// loops — a panic on a teardown path would take the process down.
+func startRootSpan(ctx context.Context, tracer trace.Tracer, legType LegType, legID string) trace.Span {
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer(tracerName)
+	}
+	// An outbound leg is a call this process initiates; SERVER would make it
+	// look like an inbound entrypoint in the backend's service map and RED
+	// metrics, both of which are computed off SpanKind.
+	kind := trace.SpanKindServer
+	if legType == TypeSIPOutbound {
+		kind = trace.SpanKindClient
+	}
+	_, span := tracer.Start(ctx, "sip.leg",
+		trace.WithSpanKind(kind),
+		trace.WithAttributes(
+			attribute.String("leg.id", legID),
+			attribute.String("leg.type", string(legType)),
+		),
+	)
+	return span
+}
+
+// RootSpan returns the leg's lifecycle root span. Never nil — an
+// uninstrumented leg reports a noop span.
+func (l *SIPLeg) RootSpan() trace.Span {
+	if l.rootSpan == nil {
+		return noop.Span{}
+	}
+	return l.rootSpan
+}
+
+// EndRootSpan ends the leg's root span, stamping the disconnect reason and
+// marking failure reasons as errors. Safe from any goroutine and idempotent:
+// only the first call takes effect, so racing terminal paths cannot double-end
+// (which the OTel SDK would silently ignore, hiding the bug rather than the
+// span). No lock is held across End(), which enqueues to the exporter.
+func (l *SIPLeg) EndRootSpan(reason string) {
+	l.spanEndOnce.Do(func() {
+		span := l.rootSpan
+		if span == nil {
+			return
+		}
+		span.SetAttributes(attribute.String("leg.disconnect_reason", reason))
+		if isFailureReason(reason) {
+			span.SetStatus(codes.Error, reason)
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	})
+}
+
+// normalDisconnectReasons are the reasons that end a leg in an orderly way.
+//
+// The test is inverted — anything not listed here is an error — because the
+// reason set is open: the outbound path synthesizes sip_<code> for any 4xx/5xx
+// it does not name, and the WhatsApp path synthesizes ice_<reason>. An
+// allowlist of failures could not cover either, so a new failure reason would
+// silently export as a healthy span.
+var normalDisconnectReasons = map[string]bool{
+	"api_hangup":         true, // operator hung the leg up
+	"remote_bye":         true, // peer hung up
+	"caller_cancel":      true, // caller gave up before answer
+	"cancelled":          true, // 487 after our CANCEL
+	"max_duration":       true, // configured call-duration limit reached
+	"room_deleted":       true, // room torn down
+	"transfer_completed": true, // referrer released after a successful transfer
+	"shutdown":           true, // process is stopping
+	"challenged":         true, // credentialed re-INVITE follows; the challenge succeeded
+}
+
+// isFailureReason reports whether a disconnect reason represents a leg that
+// did not end normally.
+func isFailureReason(reason string) bool {
+	return !normalDisconnectReasons[reason]
 }
 
 // sipReader reads PCM frames from the inFrames channel.
