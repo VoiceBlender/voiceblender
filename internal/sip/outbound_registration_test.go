@@ -29,6 +29,24 @@ func TestParseGrantedExpires_FallsBackToRequested(t *testing.T) {
 	}
 }
 
+// TestOutboundRegistration_FromHost pins FromHost to the AOR realm.
+//
+// The registrar host and the AOR host are deliberately DIFFERENT strings. The
+// struct holds both registrarURI and aor, so a getter that reached for the
+// wrong one would still look plausible; only a differing registrar host makes
+// that substitution observable.
+func TestOutboundRegistration_FromHost(t *testing.T) {
+	r := NewOutboundRegistration(nil, nil, nil, OutboundRegistrationConfig{}, OutboundRegistrationParams{
+		ID:           "t1",
+		RegistrarURI: sip.Uri{Scheme: "sip", Host: "sbc.carrier.net", Port: 5060},
+		AOR:          sip.Uri{Scheme: "sip", User: "alice", Host: "pbx.example.com"},
+		Password:     "x",
+	})
+	if got := r.FromHost(); got != "pbx.example.com" {
+		t.Errorf("FromHost() = %q, want the AOR realm %q (not the registrar host)", got, "pbx.example.com")
+	}
+}
+
 func TestOutboundRegistrationConfig_DefaultsApplied(t *testing.T) {
 	c := OutboundRegistrationConfig{}.withDefaults()
 	if c.DefaultExpiresSeconds != 3600 {
