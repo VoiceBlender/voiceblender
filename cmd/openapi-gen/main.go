@@ -426,7 +426,7 @@ func configVars() *seq {
 		{Name: "AMRNB_MODE", Default: "7", Description: "AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s."},
 		{Name: "AMRNB_OCTET_ALIGNED", Default: "true", Description: "Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated."},
 		{Name: "RECORDING_DIR", Default: "/tmp/recordings", Description: "Local directory for recording output files"},
-		{Name: "LOG_LEVEL", Default: "info", Description: "Log verbosity: debug, info, warn, error"},
+		{Name: "LOG_LEVEL", Default: "info", Description: "Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug."},
 		{Name: "WEBHOOK_URL", Default: "", Description: "Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)"},
 		{Name: "WEBHOOK_SECRET", Default: "", Description: "HMAC-SHA256 signing secret for the global webhook"},
 		{Name: "ELEVENLABS_API_KEY", Default: "", Description: "API key for ElevenLabs TTS, STT, and Agent provider"},
