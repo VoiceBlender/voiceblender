@@ -21,7 +21,7 @@ import (
 func discardedRecorder(t *testing.T, dir string) (*recording.Recorder, string) {
 	t.Helper()
 	rec := recording.NewRecorder(slog.Default())
-	fpath, err := rec.StartStereo(context.Background(), bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000)
+	fpath, err := rec.StartStereo(context.Background(), bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000, "")
 	if err != nil {
 		t.Fatalf("start discarded recorder: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestMultiChannelStartLeg_FailedStartIsReportedOmitted(t *testing.T) {
 	// A healthy leg, so the merge has something to produce and the omission is
 	// reported on a successful stop rather than swallowed by a failing one.
 	good := recording.NewRecorder(slog.Default())
-	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000, ""); err != nil {
 		t.Fatalf("start good leg: %v", err)
 	}
 	good.Wait()

@@ -203,7 +203,7 @@ func TestRecorder_StartStop_PublishesFinalOnly(t *testing.T) {
 	pr, pw := newSyncPipe()
 	gate := &frameGate{r: pr, secondRead: make(chan struct{})}
 
-	fpath, err := r.StartAt(context.Background(), gate, dir, sampleRate)
+	fpath, err := r.StartAt(context.Background(), gate, dir, sampleRate, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestRecorder_CaptureError_DiscardsStagedFile(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	fpath, err := r.StartStereo(context.Background(), &blockingReader{}, &blockingReader{}, dir, 8000)
+	fpath, err := r.StartStereo(context.Background(), &blockingReader{}, &blockingReader{}, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRecorder_NormalStopPublishes(t *testing.T) {
 	r := NewRecorder(slog.Default())
 
 	rd := &cancelOnlyReader{first: make(chan struct{})}
-	fpath, err := r.StartAt(context.Background(), rd, dir, 8000)
+	fpath, err := r.StartAt(context.Background(), rd, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestRecorder_ZeroFrameCaptureIsNotPublished(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	fpath, err := r.StartAt(context.Background(), eofReader{}, dir, 8000)
+	fpath, err := r.StartAt(context.Background(), eofReader{}, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestRecorder_StopBeforeFirstFrameIsNotPublished(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fpath, err := r.StartAt(ctx, pr, dir, 8000)
+	fpath, err := r.StartAt(ctx, pr, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestRecorder_ZeroFrameStereoCaptureIsNotPublished(t *testing.T) {
 	leftPW.Close()
 	rightPW.Close()
 
-	fpath, err := r.StartStereo(context.Background(), leftPR, rightPR, dir, 8000)
+	fpath, err := r.StartStereo(context.Background(), leftPR, rightPR, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
