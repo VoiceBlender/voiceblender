@@ -124,6 +124,46 @@ func TestMetrics_RoomCreatedDeleted(t *testing.T) {
 	}
 }
 
+func TestMetrics_WebhookEgressCounters(t *testing.T) {
+	c := New(events.NewBus("test"))
+
+	c.OnWebhookEnqueued()
+	c.OnWebhookEnqueued()
+	c.OnWebhookDropped()
+	c.OnWebhookDelivered("success")
+	c.OnWebhookDelivered("exhausted")
+	c.OnWebhookDelivered("exhausted")
+	c.ObserveVSIDropped()
+
+	body := getMetrics(t, c)
+	for _, want := range []string{
+		"voiceblender_webhook_enqueued_total 2",
+		"voiceblender_webhook_dropped_total 1",
+		`voiceblender_webhook_deliveries_total{outcome="success"} 1`,
+		`voiceblender_webhook_deliveries_total{outcome="exhausted"} 2`,
+		"voiceblender_vsi_events_dropped_total 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q, body:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetrics_EgressCountersRegisteredAtZero(t *testing.T) {
+	c := New(events.NewBus("test"))
+
+	body := getMetrics(t, c)
+	for _, want := range []string{
+		"voiceblender_webhook_enqueued_total 0",
+		"voiceblender_webhook_dropped_total 0",
+		"voiceblender_vsi_events_dropped_total 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q, body:\n%s", want, body)
+		}
+	}
+}
+
 func getMetrics(t *testing.T, c *Collector) string {
 	t.Helper()
 	rec := httptest.NewRecorder()

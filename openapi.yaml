@@ -145,6 +145,15 @@ info:
         - name: S3_PREFIX
           default: ""
           description: Key prefix applied to all S3 objects
+        - name: S3_ALLOW_INSECURE_ENDPOINT
+          default: "false"
+          description: 'Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in.'
+        - name: S3_PREFLIGHT_TIMEOUT
+          default: 10s
+          description: Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe.
+        - name: S3_REQUEST_PREFLIGHT_TIMEOUT
+          default: 2s
+          description: Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe.
         - name: GCS_BUCKET
           default: ""
           description: Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE.
@@ -3410,6 +3419,9 @@ components:
                 gcs_object_name_prefix:
                     type: string
                     description: Object name prefix (e.g. recordings or recordings/). Overrides GCS_OBJECT_NAME_PREFIX env var. A trailing slash is added automatically when missing.
+                filename:
+                    type: string
+                    description: Optional output basename for the WAV file. A .wav suffix is added when missing. Must be a single path segment (no directories). When omitted, a timestamped name is generated.
             required:
                 - storage
                 - multi_channel
@@ -3421,6 +3433,7 @@ components:
                 - s3_secret_key
                 - gcs_bucket
                 - gcs_object_name_prefix
+                - filename
         RegistrationAcceptRequest:
             type: object
             properties:
@@ -3934,13 +3947,17 @@ components:
                 - sdp
         WebhookEvent:
             type: object
-            description: Event envelope delivered via HTTP POST to registered webhook URLs. Event-specific fields are flattened into the top-level object (no "data" wrapper). Includes X-Signature-256 header when a secret is configured.
+            description: Event envelope delivered via HTTP POST to registered webhook URLs. Event-specific fields are flattened into the top-level object (no "data" wrapper). Includes X-Signature-256 header when a secret is configured, and an X-Event-Id header equal to the event_id field.
             properties:
                 type:
                     $ref: '#/components/schemas/WebhookEventType'
                 timestamp:
                     type: string
                     format: date-time
+                event_id:
+                    type: string
+                    format: uuid
+                    description: Stable per-event idempotency key; identical across delivery retries and across all subscribers of the event.
                 instance_id:
                     type: string
                     description: Instance identifier
@@ -4542,7 +4559,7 @@ x-webhooks:
                                         type: string
                                     file:
                                         type: string
-                                        description: Recording file path or S3 URI
+                                        description: Recording file path or S3 URI — does not exist yet; the path only appears when the recording stops
     recording.finished:
         post:
             summary: Recording ended
@@ -4570,6 +4587,11 @@ x-webhooks:
                                         type: object
                                         additionalProperties:
                                             $ref: '#/components/schemas/ChannelInfo'
+                                    omitted_legs:
+                                        type: array
+                                        items:
+                                            type: string
+                                        description: Participants whose audio is missing from multi_channel_file because their capture failed. Absent when the recording is complete
     recording.paused:
         post:
             summary: Recording paused (audio replaced with silence)

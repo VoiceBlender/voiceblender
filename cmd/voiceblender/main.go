@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -165,21 +166,38 @@ func main() {
 	var s3Backend storage.Backend
 	if cfg.S3Bucket != "" {
 		b, err := storage.NewS3Backend(ctx, storage.S3Config{
-			Bucket:   cfg.S3Bucket,
-			Region:   cfg.S3Region,
-			Endpoint: cfg.S3Endpoint,
-			Prefix:   cfg.S3Prefix,
+			Bucket:        cfg.S3Bucket,
+			Region:        cfg.S3Region,
+			Endpoint:      cfg.S3Endpoint,
+			Prefix:        cfg.S3Prefix,
+			AllowInsecure: cfg.S3AllowInsecureEndpoint,
 		})
 		if err != nil {
 			log.Error("failed to create S3 backend", "error", err)
 			os.Exit(1)
+		}
+		if cfg.S3PreflightTimeout > 0 {
+			pctx, cancel := context.WithTimeout(ctx, cfg.S3PreflightTimeout)
+			err := b.Preflight(pctx)
+			cancel()
+			switch {
+			case errors.Is(err, storage.ErrPreflightInconclusive):
+				// Uploads may still work, and a recording server must not be
+				// held hostage by a store that is merely unreachable right now.
+				log.Warn("could not verify S3 bucket; continuing", "bucket", cfg.S3Bucket, "error", err)
+			case err != nil:
+				log.Error("S3 bucket unusable", "error", err)
+				os.Exit(1)
+			}
 		}
 		log.Info("S3 storage enabled", "bucket", cfg.S3Bucket, "region", cfg.S3Region)
 		s3Backend = b
 	}
 	var gcsBackend storage.Backend
 	if cfg.GCSBucket != "" {
-		b, err := storage.NewGCSBackend(ctx, storage.GCSConfig{
+		// Detached from the signal context so a shutdown does not break the
+		// credential refresh under the uploads that drain with it.
+		b, err := storage.NewGCSBackend(context.WithoutCancel(ctx), storage.GCSConfig{
 			Bucket: cfg.GCSBucket,
 			Prefix: cfg.GCSObjectNamePrefix,
 		})
@@ -194,6 +212,7 @@ func main() {
 
 	// Prometheus metrics collector
 	metricsCollector := metrics.New(bus)
+	webhookReg.SetMetricsObserver(metricsCollector)
 
 	// HTTP API server
 	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPs)

@@ -39,6 +39,7 @@ go test ./internal/codec/
 go test ./internal/playback/
 go test ./internal/storage/
 go test ./internal/comfortnoise/
+go test ./internal/recording/
 ```
 
 ### Run with verbose output
@@ -52,6 +53,9 @@ go test -v ./internal/...
 ```bash
 go test -v -run TestMixer_TapRecording ./internal/mixer/
 go test -v -run TestS3Backend_Upload ./internal/storage/
+go test -v -run TestS3Backend_Preflight ./internal/storage/
+go test -v -run TestGCSBackend ./internal/storage/
+go test -v -run TestResolveStorage ./internal/api/
 ```
 
 ### What each package tests
@@ -65,12 +69,14 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/room` (bridge) | 12 | Direction mapping/validation, `CreateBridge` matrix (self/missing/rate/duplicate), live direction flip, delete teardown, mixer keepalive with zero legs |
 | `internal/room` (routing) | 6 | Role-based routing matrix: supervisor-whisper no-bleed at join, mid-call role change recomputes allow-sets, unroled legs default to full mesh, removing a leg prunes others' whitelists, `UpdateRoutingRow` with null clears row, matrix round-trip via `RoutingMatrix()` |
 | `internal/room` (panic teardown) | 8 | Mixer panic dispatch by participant class: a leg is removed and hung up with reason `mixer_panic`, a bridge endpoint tears down the whole bridge, a ws/agent source publishes nothing; teardown is elected on the participant instance so a leg that left and returned is spared, and a panicking `Hangup` inside the teardown does not crash the process |
-| `internal/metrics` | 9 | Prometheus collector: `/metrics` exposition, active-leg and active-room gauges, disconnect-reason and duration series from bus events, and `voiceblender_recovered_panics_total` (registered on every collector, incremented off the panic-recovery sites) |
+| `internal/metrics` | 11 | Prometheus collector: `/metrics` exposition, active-leg and active-room gauges, disconnect-reason and duration series from bus events, `voiceblender_recovered_panics_total` (registered on every collector, incremented off the panic-recovery sites), and the egress counters (`webhook_enqueued`/`webhook_dropped`/`webhook_deliveries{outcome}`/`vsi_events_dropped`) — registered at zero and incremented through the `events.MetricsObserver` methods |
+| `internal/events` | 28 | Event bus (subscribe/publish/unsubscribe, timestamp stamping), flattened `MarshalJSON` envelope, DTMF/RTT per-leg sequence numbers, webhook registry (leg/room/global routing, HMAC signing, `Stop`); the stable `event_id` (unique per publish, identical across subscribers, omitted on unpublished events, constant across all 3 retry attempts and matching the `X-Event-Id` header); and the exactly-one-outcome invariant for `deliver` (`success`, `exhausted`, `marshal_error`, `request_error`) plus full-queue drop counting and nil-observer safety |
 | `internal/speaking` | 7 | Voice activity detection, debouncing, mute handling, 8kHz/16kHz sample rates |
 | `internal/codec` | 17 | G.722 encode/decode, silence/tone round-trips, up/downsample, AMR-WB and AMR-NB type registration + factory + RFC 4867 round-trip (both payload formats) |
 | `goamr-wb` (external module) | 98 | AMR-WB (G.722.2) pure-Go DSP: ITU fixed-point basic ops, LPC/ISF, pitch, algebraic codebook, gain quant, synthesis/HF band, RFC 4867 payload (de)pack (octet-aligned + bandwidth-efficient), MIME sort/unsort. Lives in its own published module (`github.com/VoiceBlender/goamr-wb`, pinned in `go.mod`); its tests run from a local clone of that repo. |
 | `internal/playback` | 48 | WAV/MP3 parsing, format detection, streaming, anti-aliasing resampler with per-stream filter lifetime (seam continuity across frames, fresh filter per stream, no cross-playback bleed), repeat, cancellation |
-| `internal/storage` | 3 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling |
+| `internal/storage` | 15 | FileBackend (no-op), S3Backend upload (with httptest fake), error handling; the `HeadBucket` preflight taxonomy (absent bucket is fatal, while a 403 without `s3:ListBucket`, a 5xx, an unreachable endpoint or an expired budget stay inconclusive and leave the backend usable) and the plaintext-endpoint guard, including the loopback/private/single-label exemptions that let a co-located MinIO work without an opt-in. GCS uploads: the `gs://` location and object name (including the trailing slash supplied for a bare `GCS_OBJECT_NAME_PREFIX`), the `audio/wav` content type and payload checked on the wire through the real client against a fake endpoint, a failed upload leaving the local file in place, and client lifetime — a per-request backend releases its client after its one upload (success or failure) while a reusable one keeps it open |
+| `internal/recording` | 44 | Recorder lifecycle (start/stop/double-start, WAV header, custom rate, pause/resume, context cancel); atomic publish — capture goes to a `.rec-*.tmp` staging file and is fsync+chmod+rename'd into place, so nothing exists at the advertised path until it completes, a capture that errors mid-write or never wrote a frame is discarded rather than published, and a publish that fails only at the closing directory sync still reports `Finalized`; and the stereo loop on its own 20 ms clock — both channels drained non-blocking into bounded drop-oldest accumulators, silence-fill for a stalled channel, no drift when one channel bursts or closes, a stalled *producer* still advancing the timeline (the hold/DTMF/deafened case), pause zeroing both channels, and the bound holding at 8/16/48 kHz |
 | `internal/comfortnoise` | 5 | Comfort noise generation, amplitude clamping, mix-in |
 | `internal/jitter` | 10 | Fixed-delay reorder buffer: warm-up, reorder, duplicate drop, late-arrival drop, underrun silence, uint16 wraparound, max-depth eviction, reset |
 | `internal/sip` (refer) | 5 | Refer-To parsing (blind / attended with Replaces / no angles), Replaces.String() formatting, sipfrag status-line parsing |
@@ -80,6 +86,7 @@ go test -v -run TestS3Backend_Upload ./internal/storage/
 | `internal/api` (inbound auth) | 12 | `HandleRegisterAttempt` always publishes the `sip.registration_attempt` event, applies the configured fallback when undecided (reject by default, accept when configured), propagates a challenge decision (incl. `max_expires`), accept decision carries `max_expires`; `registerConsultFallback` mapping (unset/unknown → reject, `accept` case-insensitive); `ChallengeRequest` validation (realm + password/ha1 required, non-negative `max_expires`) |
 | `internal/api` (inbound transfer) | 2 | `pendingReferStore` state machine (accept vs decline/timeout are mutually exclusive; progress/complete require a prior accept; unknown-leg misses); `sipReasonPhrase` default reason phrases |
 | `internal/api` (amd driver) | 11 | Push-mode `amdDriver`: frames classified inline on the leg's readLoop, the wall-clock `watch` goroutine exits on leg teardown without publishing, exactly one `amd.result` per call, the machine+beep `pending` handshake (deadline firing mid-verdict defers the publish rather than dropping it), and tap-ownership gating so a superseded analysis publishes nothing and cannot clear the live tap |
+| `internal/api` (storage resolution) | 8 | `resolveStorage` for a per-request S3 backend: the operator's insecure-endpoint decision is inherited from server config and cannot be overridden per request, an absent bucket fails record-start while an inconclusive probe proceeds, the configured budget and the caller's own deadline each cut an unanswered probe short, and `S3_REQUEST_PREFLIGHT_TIMEOUT=0` skips the probe entirely. A VSI record-start against a black-holed endpoint returns on that budget rather than stalling the connection's recv loop. For GCS: `storage=gcs` resolves to the server-level backend, errors when configured nowhere, prefers a request-supplied `gcs_bucket` over the server-level one, and releases a per-recording backend once its uploads are done while leaving the shared server-level ones open |
 | `internal/api` (room-scoped cleanup) | 3 | Every path that empties a room finalizes its recording: removing the last leg, moving the last leg to another room, and deleting the room. Each starts a real recorder through `doStartRecordRoom` and asserts it is unregistered and `recording.finished` published, so leaving the recording running fails as loudly as leaking the map entry |
 | `internal/leg` (amd tap) | 1 | `ClearAMDTapIf` only clears the writer it was given, so a superseded AMD analysis cannot rip out the tap a later start installed |
 | `internal/sip` (dtmf) | 8 | RFC 4733 packet generation (7-packet sequence, marker bit, duration units at 8 kHz vs AMR-WB 16 kHz), `TelephoneEventClockRate` per codec (incl. G.722's 8 kHz RTP clock despite 16 kHz sampling), offer/answer/re-INVITE advertise telephone-event at the codec's clock rate (16 kHz for AMR-WB, 8 kHz for G.722), `ParseSDP`/`DTMFPTForRate` capture the remote telephone-event PT and rate |
@@ -158,6 +165,8 @@ go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integra
 go test -tags integration -v -timeout 60s -run TestRTT ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestS3Preflight ./tests/integration/
+go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integration/
 ```
 
 ### Integration test list
@@ -194,7 +203,17 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestRecording_StopWithNoRecording` | Stop without active recording returns 404 |
 | `TestRecording_StorageFileExplicit` | Explicit `storage=file` works |
 | `TestRecording_StorageS3NotConfigured` | `storage=s3` without config returns 400 |
-| `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop |
+| `TestGCSRecording_LegUploadsAndReportsGSURI` | A leg recording with `storage=gcs` uploads to the bucket once and reports a `gs://` location in both the stop response and `recording.finished`, with the object name carrying the `GCS_OBJECT_NAME_PREFIX` separator |
+| `TestGCSRecording_UnconfiguredRejectsRecordStart` | `storage=gcs` with no bucket configured returns 400 instead of starting a recording with nowhere to go |
+| `TestGCSRecording_PerRequestBucketUploadsMultiChannelAndMix` | The per-request `gcs_bucket` path end to end on a `multi_channel` room recording — the one case that uploads twice through a single backend: both the merged per-participant file and the room mix land in the request's bucket |
+| `TestGCSRecording_RoomUploadsMix` | A room recording takes its own path to the same backend: the merged mix is uploaded and reported as a `gs://` URI |
+| `TestS3Preflight_MissingBucketRejectsRecordStart` | A bucket the store reports absent fails record-start with 400 and never attempts an upload, so the caller finds out before the call is recorded |
+| `TestS3Preflight_NoListBucketPermissionStillRecords` | A probe that cannot get a verdict (403 without `s3:ListBucket`, a 5xx, or an expired budget) is only warned about: record-start returns 200 and the recording still uploads, with `recording.finished` naming the `s3://` location |
+| `TestS3Preflight_InsecureEndpoint` | A plaintext `http://` `s3_endpoint` on a non-local host returns 400, and 200 once the operator sets `S3_ALLOW_INSECURE_ENDPOINT=true` |
+| `TestS3Preflight_UnresponsiveEndpointDoesNotStallRecordStart` | An endpoint that accepts the connection and never answers does not hold record-start beyond `S3_REQUEST_PREFLIGHT_TIMEOUT`, and does not fail it |
+| `TestStereoRecording_StaysAlignedAcrossIncomingStall` | A real loopback call stalls incoming RTP mid-recording while outgoing keeps flowing; marker bursts injected on both sides before and after prove the channels' offset did not change, i.e. the stall left no lasting skew |
+| `TestStereoRecording_SurvivesOutgoingStall` | The mirror case a producer-paced recorder cannot handle: holding the *recorded* leg stops its outgoing tap writes entirely, and the recording must still span the call in real time with the incoming audio at its true offsets |
+| `TestRecording_PauseResume_Leg` | Pause/resume endpoints, events, idempotency, 404 after stop; also asserts the advertised path does not exist while recording is in progress and no `.rec-*.tmp` staging residue is left behind |
 | `TestRecording_PauseResume_Room` | Room-level pause/resume with events |
 | `TestMute_LegInRoom` | Mute/unmute in room, verify mix excludes muted audio |
 | `TestMute_SpeakingEventsSuppressed` | No speaking events for muted legs (with speech detection explicitly enabled) |
@@ -237,6 +256,8 @@ go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integr
 | `TestWSCommands_RoomLifecycle` | Create, get, list, delete room via WS commands; error on deleted room |
 | `TestWSCommands_MuteLeg` | Mute/get_leg via WS; error on missing leg; error on unknown command |
 | `TestWSEvents_AppIDFilter` | Two WS clients (filtered + unfiltered), two legs with different `app_id`; filtered client only sees matching events |
+| `TestEventID_WebhookHeaderAndBody` | A delivered webhook POST carries an `X-Event-Id` header equal to the `event_id` in the flattened body; `voiceblender_webhook_enqueued_total` and `voiceblender_webhook_deliveries_total` advance on `/metrics` |
+| `TestEventID_SharedAcrossWebhookAndVSI` | One published event reaches a webhook receiver and a `/v1/vsi` subscriber with the same `event_id` — the cross-subscriber guarantee that makes it usable as an idempotency key |
 | `TestWebRTC_AppIDFilter` | A WebRTC leg tagged with `app_id` on the offer reaches an `app_id`-filtered VSI subscriber, while an untagged WebRTC leg on the same server is dropped by the filter |
 | `TestWebRTC_AppIDInLegEvents` | `app_id` set on `POST /v1/webrtc/offer` is carried on the leg's `leg.connected` event |
 | `TestTransfer_Blind_Outbound` | A↔B, REFER on B's leg dials C, completion event fires, original hung up |

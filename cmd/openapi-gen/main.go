@@ -438,6 +438,9 @@ func configVars() *seq {
 		{Name: "S3_REGION", Default: "us-east-1", Description: "AWS region for S3"},
 		{Name: "S3_ENDPOINT", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},
 		{Name: "S3_PREFIX", Default: "", Description: "Key prefix applied to all S3 objects"},
+		{Name: "S3_ALLOW_INSECURE_ENDPOINT", Default: "false", Description: "Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in."},
+		{Name: "S3_PREFLIGHT_TIMEOUT", Default: "10s", Description: "Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe."},
+		{Name: "S3_REQUEST_PREFLIGHT_TIMEOUT", Default: "2s", Description: "Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe."},
 		{Name: "GCS_BUCKET", Default: "", Description: "Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE."},
 		{Name: "GCS_OBJECT_NAME_PREFIX", Default: "", Description: "Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing."},
 		{Name: "AWS_ACCESS_KEY_ID", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN."},
@@ -813,10 +816,13 @@ func main() {
 	schemaRegistry["WebhookEvent"] = newMap().set("type", "object").
 		set("description", "Event envelope delivered via HTTP POST to registered webhook URLs. "+
 			"Event-specific fields are flattened into the top-level object (no \"data\" wrapper). "+
-			"Includes X-Signature-256 header when a secret is configured.").
+			"Includes X-Signature-256 header when a secret is configured, and an X-Event-Id header "+
+			"equal to the event_id field.").
 		set("properties", newMap().
 			set("type", schemaRef("WebhookEventType")).
 			set("timestamp", newMap().set("type", "string").set("format", "date-time")).
+			set("event_id", newMap().set("type", "string").set("format", "uuid").
+				set("description", "Stable per-event idempotency key; identical across delivery retries and across all subscribers of the event.")).
 			set("instance_id", newMap().set("type", "string").set("description", "Instance identifier"))).
 		set("required", newSeq().add("type").add("timestamp"))
 

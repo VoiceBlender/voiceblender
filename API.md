@@ -1168,6 +1168,13 @@ For legs in a room, recording is stereo at 16kHz:
 - **Left channel** — participant's incoming audio (before mix)
 - **Right channel** — mixed-minus-self (what the participant hears)
 
+Both channels are written on the recorder's own 20 ms clock, so the file always
+advances in real time and the two channels stay sample-aligned. A stretch where
+one side sends nothing — a call on hold, an outbound DTMF burst, a deafened room
+participant, or plain packet loss — appears as silence on that channel for
+exactly as long as it lasted, and never shortens the recording or shifts the
+other channel.
+
 **Request:**
 
 ```json
@@ -1196,6 +1203,8 @@ For legs in a room, recording is stereo at 16kHz:
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created using the supplied config. Otherwise the matching server-level backend (from env vars) is used. GCS credentials come from Application Default Credentials / Workload Identity (same chain as Google Cloud TTS).
 
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+
 **Response:** `200 OK`
 
 ```json
@@ -1206,6 +1215,8 @@ When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created us
 ```
 
 Recording runs asynchronously. Events `recording.started` and `recording.finished` are emitted. When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI. When `storage=gcs`, it will contain a `gs://bucket/object` URI.
+
+The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
 
 **Errors:**
 - `400` — Invalid storage type, S3/GCS not configured, or invalid credentials
@@ -1227,6 +1238,17 @@ Stop recording a leg.
   "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | Path/URI of the recording. Empty when the capture was discarded and no file was written — see below. |
+
+A capture that fails mid-write, or that never captures a frame, is discarded:
+nothing is written and no file exists. The stop still succeeds with
+`status: stopped` — the recording did stop — but `file` comes back as `""`, as
+it does in the `recording.finished` event. Treat an empty `file` as "there is no
+recording to fetch", not as a path: it is the one case where a `200` produces no
+artefact. A non-empty `file` always names something that exists.
 
 **Errors:** `404` — No recording in progress
 
@@ -2064,6 +2086,8 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 
 When `s3_bucket` / `gcs_bucket` is provided, a per-request backend is created. Otherwise the matching server-level backend (from env vars) is used.
 
+Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` call, so a bucket that does not exist returns `400` here instead of failing later at upload. There is no equivalent probe for `gcs_bucket`: a GCS bucket that does not exist surfaces at upload, in the log and in `recording.finished` keeping the local path. A probe that cannot get a verdict (no `s3:ListBucket` permission, a `5xx`, an unreachable endpoint, an expired budget) is only logged, and recording starts normally. An `http://` `s3_endpoint` on a non-local host returns `400` unless the server runs with `S3_ALLOW_INSECURE_ENDPOINT=true`; loopback and private endpoints need no opt-in.
+
 **Response:** `200 OK`
 
 ```json
@@ -2132,12 +2156,37 @@ Multi-channel recording — includes a single multi-channel WAV with channel met
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `file` | string | Path/URI of the full mix recording (mono) |
+| `file` | string | Path/URI of the full mix recording (mono). Empty when the full-mix capture was discarded and no file was written. |
 | `multi_channel_file` | string | Path/URI of the multi-channel WAV file. Only present when `multi_channel: true` was used. |
 | `channels` | object | Map of leg ID to channel metadata. Only present when `multi_channel: true` was used. |
 | `channels[].channel` | integer | Zero-based channel index in the multi-channel WAV |
 | `channels[].start_ms` | integer | Milliseconds from recording start when this participant joined |
 | `channels[].end_ms` | integer | Milliseconds from recording start when this participant's audio ends |
+| `omitted_legs` | array | Leg IDs that took part but are absent from `multi_channel_file`, because capturing them failed. Omitted entirely when the recording is complete. |
+
+A participant whose capture fails is left out of the merge rather than failing
+the whole room: the other participants' audio is still produced, and the legs
+that were lost are named in `omitted_legs`. Those leg IDs have no entry in
+`channels`, and the remaining channel indices are contiguous — a channel index
+is only meaningful via `channels`, never by position. If **every** participant's
+capture fails there is nothing to merge, and the response carries neither
+`multi_channel_file` nor `channels` (the failure is logged server-side; the stop
+itself still succeeds).
+
+The full mix is captured independently of the per-participant ones, so it can be
+discarded on its own: a capture that fails mid-write, or that never captures a
+frame, writes no file. When that happens `file` comes back as `""`, as it does
+in the `recording.finished` event, while `multi_channel_file` and `channels` may
+still be present and usable. The stop still reports `status: stopped`. An empty
+`file` means there is no full mix to fetch, not a path; a non-empty `file`
+always names something real. In the worst case both the full mix and every
+per-participant capture are discarded, and the stop succeeds with an empty
+`file` and neither `multi_channel_file` nor `channels`.
+
+Whether a partial recording is acceptable is the caller's decision, so check
+`omitted_legs` before treating `multi_channel_file` as a complete record of the
+room. Treat a missing `multi_channel_file` on a `multi_channel: true` recording
+the same way — as a failure to produce one, not as an empty room.
 
 **Errors:** `404` — No recording in progress
 
@@ -2475,16 +2524,20 @@ websocat "ws://localhost:8080/v1/vsi?app_id=^billing$"
 **Server → Client (event):**
 
 ```json
-{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
+{"type": "leg.connected", "timestamp": "2026-04-15T12:00:00Z", "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1", "instance_id": "i-abc", "leg_id": "550e8400-...", "leg_type": "sip_outbound"}
 ```
 
-Events use the same flattened JSON envelope as webhook POSTs. Clients already parsing webhook payloads can reuse the same deserializer.
+Events use the same flattened JSON envelope as webhook POSTs — including `event_id`, the same per-event idempotency key webhook receivers see in the body and the `X-Event-Id` header. Clients already parsing webhook payloads can reuse the same deserializer.
 
 **Server → Client (keepalive ping):**
 
 ```json
-{"type": "ping", "event_id": 1}
+{"type": "ping", "seq": 1, "event_id": 1}
 ```
+
+`seq` is a monotonic per-connection counter for the keepalive itself, starting at 1 and resetting on reconnect. It is unrelated to the `event_id` on streamed events — the ping is not an event.
+
+`event_id` on the ping frame is a **deprecated alias** for `seq`, kept so existing clients keep working; it carries the same integer counter, not the UUID that streamed events carry. New clients should read `seq`. The alias will be removed in a future release.
 
 **Client → Server (keepalive pong):**
 
@@ -2812,6 +2865,8 @@ Events are delivered as HTTP POST requests to registered webhook URLs.
 - **Worker pool:** 10 concurrent delivery goroutines
 - **Queue capacity:** 1000 events (dropped if full)
 
+Delivery is **best-effort, not guaranteed**. An event dropped because the queue was full, or abandoned after all 3 attempts failed, is never redelivered. Both cases are counted — see `voiceblender_webhook_dropped_total` and `voiceblender_webhook_deliveries_total` under [GET /metrics](#get-metrics).
+
 ### Signature Verification
 
 When a `secret` is configured, a `X-Signature-256` header is included:
@@ -2822,6 +2877,33 @@ X-Signature-256: sha256=<hex-encoded-hmac-sha256>
 
 The signature is computed over the raw JSON request body using HMAC-SHA256 with the webhook secret as the key.
 
+### Deduplication
+
+Every delivery carries an `X-Event-Id` header equal to the `event_id` field in the body:
+
+```
+X-Event-Id: 550e8400-e29b-41d4-a716-446655440000
+```
+
+`event_id` is a UUID assigned once when the event is published, so it is **stable across all 3 delivery attempts** of the same event and **identical for every subscriber** that receives it — the webhook POST and the VSI WebSocket frame for one event share an id.
+
+Because a retried attempt looks exactly like a fresh delivery to your endpoint (same body, same signature), treat `event_id` as an idempotency key: record it and ignore an event whose id you have already processed. Distinct events never share an id.
+
+Example receiver:
+
+```python
+seen = set()  # use a TTL cache or your database in production
+
+@app.post("/webhooks/voiceblender")
+def handle(request):
+    event_id = request.headers["X-Event-Id"]
+    if event_id in seen:
+        return "", 200          # already processed — ack and drop
+    seen.add(event_id)
+    process(request.json())
+    return "", 200
+```
+
 ### Event Envelope
 
 Event data fields are flattened into the top-level JSON object alongside the envelope fields — there is no `"data"` wrapper.
@@ -2830,6 +2912,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 {
   "type": "leg.ringing",
   "timestamp": "2026-03-01T11:05:00.123Z",
+  "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_type": "sip_inbound",
@@ -2849,7 +2932,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
 
 **`authenticated`** / **`auth_username`** (inbound SIP only) are present and set when the INVITE carried digest credentials that VoiceBlender verified against a prior `/challenge` — i.e. the credentialed retry surfaced as a new, authenticated leg. They are omitted for un-challenged calls.
 
-All events include `instance_id` alongside the event-specific fields.
+All events include `event_id` and `instance_id` alongside the event-specific fields.
 
 ### Event Types
 
@@ -2896,8 +2979,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 >
 > `played_ms` is how much audio was actually written to the leg or room, in milliseconds. It counts audio played, **not** the source file's duration: a `repeat`ed playback accumulates across every iteration, so `played_ms` can exceed the length of the file.
 
-| `recording.started` | Recording began | `leg_id` or `room_id`, `file` |
-| `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels` (multi-channel only) |
+| `recording.started` | Recording began | `leg_id` or `room_id`, `file` (does not exist yet — the path only appears when the recording stops) |
+| `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
@@ -3520,7 +3603,13 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_call_duration_seconds` | Histogram | `type` | Answered call duration (time from answer to hangup). Use `rate(sum)/rate(count)` for ACD |
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
+| `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
+| `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
+| `voiceblender_webhook_deliveries_total` | Counter | `outcome` | Total terminal webhook delivery outcomes. `outcome`: `success`, `exhausted` (all 3 attempts failed), `marshal_error`, `request_error` (malformed webhook URL). Closed set, so cardinality is fixed at 4 |
+| `voiceblender_vsi_events_dropped_total` | Counter | — | Total events dropped because a VSI WebSocket client's buffer was full (slow consumer). Tune with `VSI_EVENT_BUFFER_SIZE` |
 | Go runtime metrics | — | — | Standard `go_*` and `process_*` metrics from the Prometheus Go client |
+
+Every delivery that reaches a terminal exit increments exactly one `voiceblender_webhook_deliveries_total{outcome}`. This is not a global `enqueued == sum(outcomes)` identity: jobs still queued at shutdown are abandoned without an outcome, so a small, shutdown-only skew is expected.
 
 #### PromQL Examples
 
@@ -3535,6 +3624,25 @@ Alert on audio-path panics being contained (each one drops a participant or a fr
 
 ```promql
 sum by (component, site) (rate(voiceblender_recovered_panics_total[5m])) > 0
+```
+
+Webhook drop ratio — the fraction of events that never made it onto the delivery queue:
+
+```promql
+rate(voiceblender_webhook_dropped_total[5m])
+  / (rate(voiceblender_webhook_dropped_total[5m]) + rate(voiceblender_webhook_enqueued_total[5m]))
+```
+
+Alert on webhooks that reached your endpoint but never succeeded:
+
+```promql
+rate(voiceblender_webhook_deliveries_total{outcome="exhausted"}[5m]) > 0
+```
+
+Alert on VSI consumers falling behind (raise `VSI_EVENT_BUFFER_SIZE` or fix the slow client):
+
+```promql
+rate(voiceblender_vsi_events_dropped_total[5m]) > 0
 ```
 
 ### Profiling (pprof)

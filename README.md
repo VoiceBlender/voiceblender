@@ -26,9 +26,9 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
 - **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat, Deepgram) with mid-session context injection
 - **Answering Machine Detection (AMD)** -- per-call analysis of outbound call audio to classify the answerer as human, machine, no-speech, or not-sure; optional voicemail beep detection via Goertzel frequency analysis
-- **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
+- **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; a stable per-event `event_id` (also sent as `X-Event-Id`) for receiver-side deduplication; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
 - **WebSocket event stream (VSI)** -- `GET /v1/vsi` streams all events and accepts commands (mute, hold, DTMF, room management) over a single persistent WebSocket; filter by `app_id` regex for multi-tenant isolation
-- **Prometheus metrics** -- operational metrics exposed at `GET /metrics` (active legs/rooms, call durations, disconnect reasons, Go runtime). See [API.md](API.md) for the full metric reference. Profiling via `go tool pprof` is available at `/debug/pprof/` when built with `-tags pprof`.
+- **Prometheus metrics** -- operational metrics exposed at `GET /metrics` (active legs/rooms, call durations, disconnect reasons, event-egress drop/delivery counters, Go runtime). See [API.md](API.md) for the full metric reference. Profiling via `go tool pprof` is available at `/debug/pprof/` when built with `-tags pprof`.
 
 ## Quick Start
 
@@ -83,10 +83,13 @@ All configuration is via environment variables:
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
-| `S3_BUCKET` | | S3 bucket for recording uploads |
+| `S3_BUCKET` | | S3 bucket for recording uploads. See [S3 bucket preflight](#s3-bucket-preflight). |
 | `S3_REGION` | `us-east-1` | AWS region |
-| `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.) |
+| `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.). Must include an `http://` or `https://` scheme. |
 | `S3_PREFIX` | | Key prefix for S3 objects |
+| `S3_ALLOW_INSECURE_ENDPOINT` | `false` | Allow a plaintext `http://` `S3_ENDPOINT` on a **non-local** host. Loopback and private addresses never need this. See [S3 bucket preflight](#s3-bucket-preflight). |
+| `S3_PREFLIGHT_TIMEOUT` | `10s` | Budget for the startup bucket probe. `0` disables it. |
+| `S3_REQUEST_PREFLIGHT_TIMEOUT` | `2s` | Budget for the bucket probe on a per-request S3 backend. `0` disables it. |
 | `GCS_BUCKET` | | Google Cloud Storage bucket for recording uploads via the native GCS API. Prefer this over `S3_ENDPOINT=https://storage.googleapis.com` on GKE — Workload Identity / ADC works directly, with no HMAC interop keys. |
 | `GCS_OBJECT_NAME_PREFIX` | | Object name prefix for GCS uploads (e.g. `recordings` or a bare workspace id like `dev`). A trailing slash is added automatically when missing. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | | AWS credentials for S3 uploads and AWS Polly TTS. Resolved by the AWS SDK's default credential chain (env vars → `~/.aws/credentials` → EC2/ECS/EKS instance role), not by VoiceBlender directly. `AWS_REGION` is honored only when `S3_REGION` is empty. |
@@ -135,6 +138,34 @@ All configuration is via environment variables:
 | `LIVEKIT_API_KEY` | _(none)_ | LiveKit API key used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. |
 | `LIVEKIT_API_SECRET` | _(none)_ | LiveKit API secret used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. Treat as a high-value secret; redact in logs. |
 | `LIVEKIT_DEFAULT_TOKEN_TTL` | `6h` | Default TTL applied to minted JWTs when the request omits `livekit.token_ttl`. Go duration string. LiveKit recommends ≤ 6 hours. |
+
+### S3 bucket preflight
+
+Recordings upload after the call ends, so a misconfigured bucket used to surface
+only in a log line once the audio had already been captured. VoiceBlender now
+probes the bucket with a `HeadBucket` call when it builds an S3 backend — at
+startup, and again per request when a request supplies `s3_bucket`.
+
+Only a bucket the store reports as **absent** is treated as fatal: startup exits
+`1`, and a per-request backend returns `400`. Anything that leaves the answer
+open — a `403` because the credentials have `s3:PutObject` but not
+`s3:ListBucket`, a `5xx`, an unreachable endpoint, an expired budget — is logged
+as a warning and the recording proceeds, because the upload may still succeed and
+a failed probe is not a reason to refuse to record. Least-privilege IAM policies
+and a briefly unreachable store therefore keep working as before.
+
+Both probes are bounded (`S3_PREFLIGHT_TIMEOUT`, `S3_REQUEST_PREFLIGHT_TIMEOUT`)
+and are also cut short when the caller goes away. Set either to `0` to skip that
+probe. The per-request budget is deliberately short: it runs inside record-start,
+and over VSI that occupies the connection's command loop.
+
+**Plaintext endpoints.** An `http://` `S3_ENDPOINT` pointing at a non-local host
+is refused, rather than shipping recording audio in cleartext — set
+`S3_ALLOW_INSECURE_ENDPOINT=true` to override. Loopback, RFC1918/link-local
+addresses, single-label hostnames (`http://minio:9000`) and `.internal` / `.local`
+names are exempt and need no flag, which covers the usual co-located MinIO. This
+is an operator decision and governs per-request `s3_*` uploads too; there is no
+per-request override.
 
 ## Links
 

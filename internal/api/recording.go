@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +51,15 @@ type multiChannelState struct {
 	log          *slog.Logger
 }
 
+// noteParticipant gives legID a channel position, at most one across every path
+// that reaches it — a failed start is recorded too, so stopAll can report it
+// omitted, and a retry must not claim a second position. Callers hold mc.mu.
+func (mc *multiChannelState) noteParticipant(legID string) {
+	if !slices.Contains(mc.participantOrder, legID) {
+		mc.participantOrder = append(mc.participantOrder, legID)
+	}
+}
+
 // startLeg begins recording a single participant's audio via the mixer's recordTap.
 func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 	mc.mu.Lock()
@@ -64,11 +75,14 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 	m.SetParticipantRecordTap(legID, pw)
 
 	rec := recording.NewRecorder(mc.log)
-	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mc.sampleRate))
+	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mc.sampleRate), "")
 	if err != nil {
 		mc.log.Error("multi-channel: failed to start per-leg recording", "leg_id", legID, "error", err)
 		m.ClearParticipantRecordTap(legID)
 		pw.Close()
+		// participantOrder is the only place stopAll can still find this leg, so
+		// without it the room would look complete rather than short a participant.
+		mc.noteParticipant(legID)
 		return
 	}
 
@@ -81,7 +95,7 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 
 	mc.recorders[legID] = rec
 	mc.pipes[legID] = pw
-	mc.participantOrder = append(mc.participantOrder, legID)
+	mc.noteParticipant(legID)
 	mc.joinOffsets[legID] = time.Since(mc.startTime)
 	mc.log.Info("multi-channel: started per-leg recording", "leg_id", legID, "file", fpath)
 }
@@ -108,6 +122,15 @@ func (mc *multiChannelState) stopLeg(legID string, m mixerIface) {
 	fpath := rec.Stop()
 	rec.Wait()
 
+	// Stop reports the path the recording was headed for whether or not it got
+	// there. Handing the merge a path it cannot open would fail the merge on its
+	// first unreadable input and destroy every other participant's audio too, so
+	// a discarded capture is left out and stopAll reports it omitted.
+	if !rec.Finalized() {
+		mc.log.Error("multi-channel: leg capture was discarded, dropping it from the merge", "leg_id", legID, "file", fpath)
+		return
+	}
+
 	mc.mu.Lock()
 	mc.files[legID] = fpath
 	mc.mu.Unlock()
@@ -133,21 +156,35 @@ func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResul
 	}
 
 	mc.mu.Lock()
-	// Build merge inputs in channel order.
-	inputs := make([]recording.MultiChannelInput, len(mc.participantOrder))
-	for i, legID := range mc.participantOrder {
-		inputs[i] = recording.MultiChannelInput{
-			LegID:      legID,
-			FilePath:   mc.files[legID],
-			JoinOffset: mc.joinOffsets[legID],
+	// Merge inputs in channel order, over the legs that actually published. The
+	// survivors are merged and the losses reported, so the caller can tell a
+	// complete recording from a partial one.
+	inputs := make([]recording.MultiChannelInput, 0, len(mc.participantOrder))
+	var omitted []string
+	for _, legID := range mc.participantOrder {
+		fpath, ok := mc.files[legID]
+		if !ok {
+			omitted = append(omitted, legID)
+			continue
 		}
+		inputs = append(inputs, recording.MultiChannelInput{
+			LegID:      legID,
+			FilePath:   fpath,
+			JoinOffset: mc.joinOffsets[legID],
+		})
 	}
 	mc.mu.Unlock()
 
+	// With nothing published there is nothing to salvage: MergeMultiChannel
+	// refuses an empty input set rather than reporting an empty room as success.
 	result, err := recording.MergeMultiChannel(mc.dir, inputs, totalDuration, mc.sampleRate)
 	if err != nil {
-		mc.log.Error("multi-channel: merge failed", "error", err)
+		mc.log.Error("multi-channel: merge failed", "error", err, "omitted_legs", omitted)
 		return nil, err
+	}
+	result.OmittedLegs = omitted
+	if len(omitted) > 0 {
+		mc.log.Warn("multi-channel: merged without the legs whose captures were discarded", "omitted_legs", omitted)
 	}
 
 	// Upload the merged file if storage backend is set.
@@ -218,7 +255,9 @@ var (
 // resolveStorage returns the appropriate storage backend for the request.
 // Per-request object-store config (s3_bucket / gcs_bucket) creates a backend
 // on the fly; otherwise the matching server-level backend is used.
-func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
+// ctx bounds the bucket preflight, so a caller that goes away stops the probe
+// instead of holding the request — or, on VSI, the connection's command loop.
+func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage.Backend, error) {
 	switch req.Storage {
 	case "", "file":
 		return storage.FileBackend{}, nil
@@ -229,16 +268,23 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 			if region == "" {
 				region = "us-east-1"
 			}
-			backend, err := storage.NewS3Backend(context.Background(), storage.S3Config{
-				Bucket:    req.S3Bucket,
-				Region:    region,
-				Endpoint:  req.S3Endpoint,
-				Prefix:    req.S3Prefix,
-				AccessKey: req.S3AccessKey,
-				SecretKey: req.S3SecretKey,
+			// The insecure-endpoint escape hatch is an operator decision, not a
+			// caller-supplied one: a per-request field would let any API caller
+			// downgrade the transport.
+			backend, err := storage.NewS3Backend(ctx, storage.S3Config{
+				Bucket:        req.S3Bucket,
+				Region:        region,
+				Endpoint:      req.S3Endpoint,
+				Prefix:        req.S3Prefix,
+				AccessKey:     req.S3AccessKey,
+				SecretKey:     req.S3SecretKey,
+				AllowInsecure: s.Config.S3AllowInsecureEndpoint,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("create S3 backend: %w", err)
+			}
+			if err := s.preflightS3(ctx, backend); err != nil {
+				return nil, err
 			}
 			return backend, nil
 		}
@@ -248,7 +294,10 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 		return s.S3, nil
 	case "gcs":
 		if req.GCSBucket != "" {
-			backend, err := storage.NewGCSBackend(context.Background(), storage.GCSConfig{
+			// The client outlives this request — the upload runs when recording
+			// stops — so it must not inherit the request's cancellation, or its
+			// credential refresh would fail once the caller goes away.
+			backend, err := storage.NewGCSBackend(context.WithoutCancel(ctx), storage.GCSConfig{
 				Bucket: req.GCSBucket,
 				Prefix: req.GCSObjectNamePrefix,
 			})
@@ -266,18 +315,66 @@ func (s *Server) resolveStorage(req RecordRequest) (storage.Backend, error) {
 	}
 }
 
+// releaseBackend closes a backend that was built for one recording, so a
+// per-request gcs_bucket does not leave a client's idle connections behind on
+// every call. The server-level backends are shared by every recording and must
+// stay open.
+func (s *Server) releaseBackend(backend storage.Backend) {
+	if backend == nil || backend == s.S3 || backend == s.GCS {
+		return
+	}
+	if c, ok := backend.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			s.Log.Warn("closing per-recording storage backend", "error", err)
+		}
+	}
+}
+
+// preflightS3 rejects a bucket the store says does not exist, so the caller
+// finds out now instead of at the upload after the call. An inconclusive probe
+// is logged and accepted: the request must not fail because the probe could not
+// answer within its budget.
+func (s *Server) preflightS3(ctx context.Context, backend *storage.S3Backend) error {
+	if s.Config.S3RequestPreflightTimeout <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.Config.S3RequestPreflightTimeout)
+	defer cancel()
+
+	err := backend.Preflight(ctx)
+	switch {
+	case errors.Is(err, storage.ErrPreflightInconclusive):
+		s.Log.Warn("could not verify S3 bucket for recording; proceeding", "error", err)
+		return nil
+	case err != nil:
+		return err
+	}
+	return nil
+}
+
 // RecordingStartResult is the success payload for starting a leg or room recording.
 type RecordingStartResult struct {
 	Status string `json:"status"`
 	File   string `json:"file"`
 }
 
-func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingStartResult, error) {
+func recordingBasenameFromRequest(req RecordRequest) (string, error) {
+	if req.Filename == "" {
+		return "", nil
+	}
+	return recording.SanitizeBasename(req.Filename)
+}
+
+func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordRequest) (*RecordingStartResult, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
+	basename, err := recordingBasenameFromRequest(req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -297,7 +394,7 @@ func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingSt
 		mix := rm.Mixer()
 		mix.SetParticipantTap(id, leftPW)
 		mix.SetParticipantOutTap(id, rightPW)
-		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
+		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 		if recErr != nil {
 			mix.ClearParticipantTap(id)
 			mix.ClearParticipantOutTap(id)
@@ -315,7 +412,7 @@ func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingSt
 		rightPR, rightPW := createPipe()
 		sipLeg.SetInTap(leftPW)
 		sipLeg.SetOutTap(rightPW)
-		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(l.SampleRate()))
+		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(l.SampleRate()), basename)
 		if recErr != nil {
 			sipLeg.ClearInTap()
 			sipLeg.ClearOutTap()
@@ -332,7 +429,7 @@ func (s *Server) doStartRecordLeg(legID string, req RecordRequest) (*RecordingSt
 		if reader == nil {
 			return nil, newAPIError(http.StatusConflict, "leg has no audio reader")
 		}
-		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()))
+		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()), basename)
 		if recErr != nil {
 			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
 		}
@@ -358,7 +455,7 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordLeg(id, req)
+	res, err := s.doStartRecordLeg(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return
@@ -419,14 +516,26 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	if info != nil {
 		backend = info.storage
 	}
-	location := fpath
-	if backend != nil {
-		loc, err := backend.Upload(context.Background(), fpath)
-		if err != nil {
-			s.Log.Error("storage upload failed", "leg_id", legID, "error", err)
-			// Keep local file and use local path.
-		} else {
-			location = loc
+	// This is the recording's last use of the backend, discarded capture
+	// included — a per-recording one is released here or never.
+	defer s.releaseBackend(backend)
+
+	// A discarded capture leaves nothing at fpath, so there is nothing to upload
+	// and no path worth naming: report the stop without a location rather than
+	// hand the caller a path that cannot be opened.
+	var location string
+	if !rec.Finalized() {
+		s.Log.Error("leg capture was discarded, stopping without a file", "leg_id", legID, "file", fpath)
+	} else {
+		location = fpath
+		if backend != nil {
+			loc, err := backend.Upload(context.Background(), fpath)
+			if err != nil {
+				s.Log.Error("storage upload failed", "leg_id", legID, "error", err)
+				// Keep local file and use local path.
+			} else {
+				location = loc
+			}
 		}
 	}
 
@@ -444,7 +553,9 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 // RecordingStopLegResult is the success payload for stopping a leg recording.
 type RecordingStopLegResult struct {
 	Status string `json:"status"`
-	File   string `json:"file"`
+	// File is the path/URI of the capture. Empty when the capture was discarded
+	// and nothing was written — the stop still succeeded, but there is no file.
+	File string `json:"file"`
 }
 
 // RecordingPauseResumeResult is the success payload for pause/resume on a leg
@@ -532,12 +643,16 @@ func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) doStartRecordRoom(roomID string, req RecordRequest) (*RecordingStartResult, error) {
+func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req RecordRequest) (*RecordingStartResult, error) {
 	rm, ok := s.RoomMgr.Get(roomID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "room not found")
 	}
-	backend, err := s.resolveStorage(req)
+	backend, err := s.resolveStorage(ctx, req)
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
+	basename, err := recordingBasenameFromRequest(req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -551,7 +666,7 @@ func (s *Server) doStartRecordRoom(roomID string, req RecordRequest) (*Recording
 	rm.Mixer().SetTap(pw)
 
 	rec := recording.NewRecorder(s.Log)
-	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
+	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 	if err != nil {
 		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
 	}
@@ -604,7 +719,7 @@ func (s *Server) recordRoom(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
-	res, err := s.doStartRecordRoom(id, req)
+	res, err := s.doStartRecordRoom(r.Context(), id, req)
 	if err != nil {
 		handleAPIError(w, err)
 		return
@@ -634,6 +749,15 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 		}
 	}
 
+	roomRecordStorage.Lock()
+	backend := roomRecordStorage.m[id]
+	delete(roomRecordStorage.m, id)
+	roomRecordStorage.Unlock()
+	// Taken before the early return below, and released only on the way out: a
+	// multi-channel recording shares this backend with the merged-file upload
+	// above, so the mix upload further down is not the last use of it.
+	defer s.releaseBackend(backend)
+
 	roomRecordPipes.Lock()
 	pw := roomRecordPipes.m[id]
 	delete(roomRecordPipes.m, id)
@@ -652,13 +776,16 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 		return "", nil, false
 	}
 
-	roomRecordStorage.Lock()
-	backend := roomRecordStorage.m[id]
-	delete(roomRecordStorage.m, id)
-	roomRecordStorage.Unlock()
-
 	fpath := rec.Stop()
 	rec.Wait()
+
+	// A discarded capture leaves nothing at fpath — see stopLegRecording. Any
+	// multi-channel result stands on its own, so report the stop without a
+	// location rather than as "no recording in progress".
+	if !rec.Finalized() {
+		s.Log.Error("room mix capture was discarded, stopping without a file", "room_id", id, "file", fpath)
+		return "", mcResult, true
+	}
 
 	location = fpath
 	if backend != nil {
@@ -677,10 +804,15 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 // recording. multi_channel_file/channels are present only when the recording
 // was started with multi_channel=true.
 type RecordingStopRoomResult struct {
-	Status           string                           `json:"status"`
+	Status string `json:"status"`
+	// File is the path/URI of the full mix. Empty when that capture was
+	// discarded and nothing was written; multi_channel_file may still be present.
 	File             string                           `json:"file"`
 	MultiChannelFile string                           `json:"multi_channel_file,omitempty"`
 	Channels         map[string]recording.ChannelInfo `json:"channels,omitempty"`
+	// OmittedLegs names participants whose audio is missing from the merged
+	// file because their capture failed. Absent when the recording is complete.
+	OmittedLegs []string `json:"omitted_legs,omitempty"`
 }
 
 func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, error) {
@@ -700,8 +832,10 @@ func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, erro
 	if mcResult != nil {
 		res.MultiChannelFile = mcResult.FilePath
 		res.Channels = mcResult.Channels
+		res.OmittedLegs = mcResult.OmittedLegs
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	return res, nil
@@ -843,6 +977,7 @@ func (s *Server) finalizeRoomRecording(roomID, appID, why string) bool {
 	if mcResult != nil {
 		evtData.MultiChannelFile = mcResult.FilePath
 		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
 	s.Bus.Publish(events.RecordingFinished, evtData)
 	s.Log.Info("auto-stopped room recording", "room_id", roomID, "file", location, "reason", why)
@@ -910,6 +1045,37 @@ func (r *pipeReader) Read(p []byte) (int, error) {
 		return n, nil
 	case <-r.done:
 		return 0, io.EOF
+	}
+}
+
+// TryRead is a non-blocking counterpart to Read. It serves any buffered
+// remainder first, then one frame if the writer already queued it, and
+// otherwise returns (0, nil) rather than waiting for one. io.EOF is reported
+// only once the writer is closed and nothing is left buffered or queued.
+//
+// Callers that must keep to their own clock use this to drain the pipe for
+// whatever it has right now, so a silent writer never stalls the reader.
+func (r *pipeReader) TryRead(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	select {
+	case data := <-r.ch:
+		n := copy(p, data)
+		if n < len(data) {
+			r.buf = data[n:]
+		}
+		return n, nil
+	default:
+	}
+	// Nothing buffered and nothing queued: EOF only once the writer is gone.
+	select {
+	case <-r.done:
+		return 0, io.EOF
+	default:
+		return 0, nil
 	}
 }
 
