@@ -74,7 +74,7 @@ func (s *ElevenLabsSession) Start(ctx context.Context, reader io.Reader, writer 
 	s.log.Info("agent websocket connected")
 	defer conn.Close()
 
-	lw := &lockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 
 	// Send initiation data if overrides are present.
 	if err := s.sendInitiation(lw, opts); err != nil {
@@ -122,7 +122,7 @@ func (s *ElevenLabsSession) ConversationID() string {
 	return s.conversationID
 }
 
-func (s *ElevenLabsSession) sendInitiation(lw *lockedWriter, opts Options) error {
+func (s *ElevenLabsSession) sendInitiation(lw *wsutilx.LockedWriter, opts Options) error {
 	if opts.FirstMessage == "" && opts.Language == "" && len(opts.DynamicVariables) == 0 {
 		return nil
 	}
@@ -159,7 +159,7 @@ type audioChunkMsg struct {
 	UserAudioChunk string `json:"user_audio_chunk"`
 }
 
-func (s *ElevenLabsSession) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
+func (s *ElevenLabsSession) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -240,7 +240,7 @@ type pingMessage struct {
 	} `json:"ping_event"`
 }
 
-func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, writer io.Writer, cb Callbacks) {
+func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, writer io.Writer, cb Callbacks) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -287,7 +287,13 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			s.log.Info("agent recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				s.log.Debug("agent close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			s.log.Info("agent recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 		if hdr.OpCode != ws.OpText {
@@ -386,22 +392,4 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 // InjectMessage is not supported by ElevenLabs.
 func (s *ElevenLabsSession) InjectMessage(ctx context.Context, message string) error {
 	return ErrNotSupported
-}
-
-// lockedWriter serializes all WebSocket frame writes to a net.Conn.
-type lockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *lockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *lockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }

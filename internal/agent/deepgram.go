@@ -23,7 +23,7 @@ type DeepgramSession struct {
 	running        bool
 	cancel         context.CancelFunc
 	conversationID string
-	lw             *dgAgentLockedWriter
+	lw             *wsutilx.LockedWriter
 	log            *slog.Logger
 }
 
@@ -72,7 +72,7 @@ func (s *DeepgramSession) Start(ctx context.Context, reader io.Reader, writer io
 	s.log.Info("deepgram agent websocket connected")
 	defer conn.Close()
 
-	lw := &dgAgentLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 
 	s.mu.Lock()
 	s.lw = lw
@@ -121,7 +121,7 @@ func (s *DeepgramSession) ConversationID() string {
 	return s.conversationID
 }
 
-func (s *DeepgramSession) sendSettings(lw *dgAgentLockedWriter, opts Options) error {
+func (s *DeepgramSession) sendSettings(lw *wsutilx.LockedWriter, opts Options) error {
 	// Audio config forced to 16kHz — VoiceBlender's audio pipeline always
 	// delivers/expects 16-bit PCM at 16kHz.
 	audioConfig := map[string]interface{}{
@@ -194,7 +194,7 @@ func (s *DeepgramSession) sendSettings(lw *dgAgentLockedWriter, opts Options) er
 	return lw.WriteText(data)
 }
 
-func (s *DeepgramSession) sendLoop(ctx context.Context, reader io.Reader, lw *dgAgentLockedWriter) {
+func (s *DeepgramSession) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -270,7 +270,7 @@ type dgAgentConversationText struct {
 	Content string `json:"content"`
 }
 
-func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAgentLockedWriter, writer io.Writer, cb Callbacks) {
+func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, writer io.Writer, cb Callbacks) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -310,7 +310,13 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			s.log.Info("deepgram agent recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				s.log.Debug("deepgram agent close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			s.log.Info("deepgram agent recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 
@@ -384,28 +390,4 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 			}
 		}
 	}
-}
-
-// dgAgentLockedWriter serializes all WebSocket frame writes to a net.Conn.
-type dgAgentLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *dgAgentLockedWriter) WriteBinary(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientBinary(lw.conn, data)
-}
-
-func (lw *dgAgentLockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *dgAgentLockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }
