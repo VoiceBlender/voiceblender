@@ -80,12 +80,10 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		req.AppendHeader(e.AllowHeader())
 		toURI := recipient
 		req.AppendHeader(&sip.ToHeader{Address: toURI})
-		if opts.FromUser != "" {
-			fromURI := sip.Uri{Scheme: "sip", User: opts.FromUser, Host: e.publicHost}
-			from := &sip.FromHeader{Address: fromURI}
-			from.Params.Add("tag", sip.GenerateTagN(16))
+		// Called per branch, so each forked INVITE gets its own From tag.
+		if from, pai := e.fromIdentity(opts); from != nil {
 			req.AppendHeader(from)
-			req.AppendHeader(sip.NewHeader("P-Asserted-Identity", fromURI.String()))
+			req.AppendHeader(pai)
 		}
 		for _, h := range opts.Headers {
 			req.AppendHeader(h)

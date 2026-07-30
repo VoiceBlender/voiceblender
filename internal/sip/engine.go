@@ -1077,6 +1077,7 @@ type InviteOptions struct {
 	Codecs       []codec.CodecType                              // Override engine codecs for this call; nil = use engine default
 	Headers      []sip.Header                                   // Extra SIP headers to include in the INVITE
 	FromUser     string                                         // Override the user part of the From header (caller ID)
+	FromHost     string                                         // Override the host part of the From/P-Asserted-Identity URI (e.g. a registered trunk's AOR realm); empty = engine publicHost
 	OnEarlyMedia func(remoteSDP *SDPMedia, rtpSess *RTPSession) // Called on first 183 with SDP
 	AuthUsername string                                         // SIP digest auth username (optional)
 	AuthPassword string                                         // SIP digest auth password (optional)
@@ -1097,6 +1098,33 @@ type InviteOptions struct {
 	// (0 = plain T.140, no RED).
 	RTTEnabled    bool
 	RTTRedundancy int
+}
+
+// fromIdentity builds the From header and the matching P-Asserted-Identity
+// header for an outbound INVITE. The host part comes from opts.FromHost,
+// falling back to the engine's publicHost when that is empty.
+//
+// Returns (nil, nil) when no caller ID was supplied, so the request goes out
+// with no explicit From and sipgo synthesizes one (a tagged From derived from
+// the client hostname). sipgo only fills in a From when the request has none —
+// it never rewrites one we supplied — so callers that do set FromUser keep
+// full control of both headers.
+//
+// P-Asserted-Identity is derived from the same URI as From by construction,
+// which is what keeps the asserted identity and the signalled identity in
+// lock-step (RFC 3325).
+func (e *Engine) fromIdentity(opts InviteOptions) (*sip.FromHeader, sip.Header) {
+	if opts.FromUser == "" {
+		return nil, nil
+	}
+	host := opts.FromHost
+	if host == "" {
+		host = e.publicHost
+	}
+	fromURI := sip.Uri{Scheme: "sip", User: opts.FromUser, Host: host}
+	from := &sip.FromHeader{Address: fromURI}
+	from.Params.Add("tag", sip.GenerateTagN(16))
+	return from, sip.NewHeader("P-Asserted-Identity", fromURI.String())
 }
 
 // Invite sends an outbound INVITE and returns an OutboundCall on success.
@@ -1176,16 +1204,9 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	req.AppendHeader(e.AllowHeader())
 	req.AppendHeader(e.UserAgentHeader())
 
-	if opts.FromUser != "" {
-		fromURI := sip.Uri{
-			Scheme: "sip",
-			User:   opts.FromUser,
-			Host:   e.publicHost,
-		}
-		from := &sip.FromHeader{Address: fromURI}
-		from.Params.Add("tag", sip.GenerateTagN(16))
+	if from, pai := e.fromIdentity(opts); from != nil {
 		req.AppendHeader(from)
-		req.AppendHeader(sip.NewHeader("P-Asserted-Identity", fromURI.String()))
+		req.AppendHeader(pai)
 	}
 
 	for _, h := range opts.Headers {
