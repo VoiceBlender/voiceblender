@@ -147,7 +147,7 @@ func TestStartStereo_ChannelAudioReachesBothSides(t *testing.T) {
 	rightPW.Close()
 
 	rec := recording.NewRecorder(slog.Default())
-	fpath, err := rec.StartStereo(context.Background(), leftPR, rightPR, dir, rate)
+	fpath, err := rec.StartStereo(context.Background(), leftPR, rightPR, dir, rate, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}

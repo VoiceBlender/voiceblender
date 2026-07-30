@@ -131,7 +131,7 @@ func runStereo(t *testing.T, rate, nSlots int, left, right *scriptedChannel) (l,
 	tickCh := make(chan time.Time)
 	rec.newTicker = func() (<-chan time.Time, func()) { return tickCh, func() {} }
 
-	fpath, err := rec.StartStereo(context.Background(), left, right, dir, uint32(rate))
+	fpath, err := rec.StartStereo(context.Background(), left, right, dir, uint32(rate), "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestRecordStereo_Pause_ZeroesBothChannels(t *testing.T) {
 	dir := t.TempDir()
 	tickCh := make(chan time.Time)
 	rec.newTicker = func() (<-chan time.Time, func()) { return tickCh, func() {} }
-	fpath, err := rec.StartStereo(context.Background(), left, right, dir, stereoRate)
+	fpath, err := rec.StartStereo(context.Background(), left, right, dir, stereoRate, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestRecordStereo_NoFramesIsNotPublished(t *testing.T) {
 	rec.newTicker = func() (<-chan time.Time, func()) { return tickCh, func() {} }
 
 	silent := func() *scriptedChannel { return newScriptedChannel(make([][]byte, 10)) }
-	fpath, err := rec.StartStereo(context.Background(), silent(), silent(), dir, stereoRate)
+	fpath, err := rec.StartStereo(context.Background(), silent(), silent(), dir, stereoRate, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestRecordStereo_ContextCancel_StopsRecording(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if _, err := r.StartStereo(ctx, leftPR, rightPR, dir, stereoRate); err != nil {
+	if _, err := r.StartStereo(ctx, leftPR, rightPR, dir, stereoRate, ""); err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
 
@@ -535,7 +535,7 @@ func TestRecordStereo_RejectsBlockingReader(t *testing.T) {
 	r := NewRecorder(slog.Default())
 	rightPR, _ := newSyncPipe()
 
-	if _, err := r.StartStereo(context.Background(), io.LimitReader(nil, 0), rightPR, dir, stereoRate); err != nil {
+	if _, err := r.StartStereo(context.Background(), io.LimitReader(nil, 0), rightPR, dir, stereoRate, ""); err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
 	r.Wait()

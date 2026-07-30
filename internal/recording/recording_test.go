@@ -137,7 +137,7 @@ func TestRecorder_StartAt_CustomRate(t *testing.T) {
 	pcm := generatePCM(16000, 1)
 	reader := bytes.NewReader(pcm)
 
-	fpath, err := r.StartAt(context.Background(), reader, dir, 16000)
+	fpath, err := r.StartAt(context.Background(), reader, dir, 16000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -213,6 +213,31 @@ func TestRecorder_FileNameFormat(t *testing.T) {
 	}
 	if !strings.Contains(base, "_") {
 		t.Errorf("expected underscore in filename: %q", base)
+	}
+}
+
+func TestRecorder_CustomBasename(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(slog.Default())
+
+	callID := "c3ef9e71-6c9c-43a0-9a55-c51b3894a03c"
+	rd := &cancelOnlyReader{first: make(chan struct{})}
+	fpath, err := r.StartAt(context.Background(), rd, dir, 8000, callID)
+	if err != nil {
+		t.Fatalf("StartAt: %v", err)
+	}
+	<-rd.first
+	r.Stop()
+	r.Wait()
+
+	if filepath.Base(fpath) != callID+".wav" {
+		t.Fatalf("basename = %q, want %q", filepath.Base(fpath), callID+".wav")
+	}
+	if !r.Finalized() {
+		t.Fatal("expected finalized recording")
+	}
+	if _, err := os.Stat(fpath); err != nil {
+		t.Fatalf("Stat: %v", err)
 	}
 }
 
