@@ -78,7 +78,7 @@ func TestWSRecordStartDoesNotStallRecvLoop(t *testing.T) {
 					cancel()
 				}
 
-				lw := &wsLockedWriter{conn: discardConn{}}
+				lw := newWSLockedWriter(discardConn{}, 2*time.Second)
 
 				done := make(chan struct{})
 				start := time.Now()
@@ -99,8 +99,11 @@ func TestWSRecordStartDoesNotStallRecvLoop(t *testing.T) {
 }
 
 // discardConn is a net.Conn that swallows writes, so wsHandleCommand can emit
-// its response without a real socket.
+// its response without a real socket. The embedded net.Conn is nil, so every
+// method the writer touches has to be overridden here or it panics at runtime
+// — which no compile-time gate catches.
 type discardConn struct{ net.Conn }
 
-func (discardConn) Write(b []byte) (int, error) { return len(b), nil }
-func (discardConn) Close() error                { return nil }
+func (discardConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (discardConn) Close() error                     { return nil }
+func (discardConn) SetWriteDeadline(time.Time) error { return nil }

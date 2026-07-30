@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/VoiceBlender/voiceblender/internal/wsmedia"
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/go-chi/chi/v5"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -20,25 +22,99 @@ const (
 	wsPongTimeout  = 10 * time.Second
 )
 
+// vsiWriteTimeout bounds every server → client write on the VSI WebSocket.
+// The value is shared with internal/wsmedia rather than re-invented: both are
+// long-lived sockets carrying small JSON frames, so one number is easier to
+// reason about than two. It is a wsutilx.DurationVar — the same shape as
+// wsutilx.DefaultReadTimeout — so tests can shorten it without racing the
+// handler goroutines that read it. Nothing outside tests writes it.
+var vsiWriteTimeout wsutilx.DurationVar
+
+func init() { vsiWriteTimeout.Store(wsmedia.DefaultWriteTimeout) }
+
 // wsLockedWriter serializes all WebSocket frame writes to a net.Conn (server
 // side). Kept here for the VSI commands path (internal/api/agent.go,
 // internal/api/ws_events.go), which still hand-rolls WS framing for
 // command/result messages. The room-WS handler itself uses wsmedia.Transport.
+//
+// The mutex is deliberately held across the write: gobwas emits one frame as a
+// header write followed by a payload write, so releasing in between would let
+// another goroutine interleave its header into this frame. The hold is bounded
+// by the write deadline armed immediately before the write, and a write that
+// misses that deadline is fatal to the connection — see fail.
+//
+// If internal/wsutilx ever grows a shared locked writer it will be the client
+// side (masked frames, WriteClientText) and cannot serve this call site;
+// converging means adding a server-side constructor beside it and deleting
+// this type.
 type wsLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
+	mu      sync.Mutex
+	conn    net.Conn
+	timeout time.Duration
+
+	failOnce sync.Once
+	writeErr atomic.Pointer[error]
+}
+
+func newWSLockedWriter(conn net.Conn, timeout time.Duration) *wsLockedWriter {
+	return &wsLockedWriter{conn: conn, timeout: timeout}
 }
 
 func (lw *wsLockedWriter) writeText(data []byte) error {
 	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteServerText(lw.conn, data)
+	setWSWriteDeadline(lw.conn, lw.timeout)
+	err := wsutil.WriteServerText(lw.conn, data)
+	lw.mu.Unlock()
+	if err != nil {
+		// Outside the lock: fail closes the conn, which is a call that can
+		// block, and nothing else may wait on it while the mutex is held.
+		lw.fail(err)
+	}
+	return err
 }
 
 func (lw *wsLockedWriter) writeControl(op ws.OpCode, payload []byte) error {
 	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteServerMessage(lw.conn, op, payload)
+	setWSWriteDeadline(lw.conn, lw.timeout)
+	err := wsutil.WriteServerMessage(lw.conn, op, payload)
+	lw.mu.Unlock()
+	if err != nil {
+		lw.fail(err)
+	}
+	return err
+}
+
+// fail records the first write failure and closes the connection. Closing is
+// what unblocks the recv loop's blocking read, so the handler can return and
+// run its deferred unsubscribe instead of continuing to serve commands onto a
+// stream that may carry a half-written frame. Once semantics matter: after the
+// first failure every writer still blocked on this conn wakes with a
+// consequential error and calls fail too, and only the root cause is kept.
+func (lw *wsLockedWriter) fail(err error) {
+	lw.failOnce.Do(func() {
+		lw.writeErr.Store(&err)
+		_ = lw.conn.Close()
+	})
+}
+
+// Err returns the first write error recorded by fail, or nil if every write so
+// far has succeeded.
+func (lw *wsLockedWriter) Err() error {
+	if p := lw.writeErr.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// setWSWriteDeadline pushes conn's write deadline forward by timeout. A
+// non-positive timeout is a no-op (the caller manages deadlines). Mirrors the
+// unexported helper of the same shape in internal/wsmedia, which cannot be
+// reused across the package boundary.
+func setWSWriteDeadline(conn net.Conn, timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
 }
 
 // wsRoom upgrades an HTTP request to a WebSocket and wires it as a raw
