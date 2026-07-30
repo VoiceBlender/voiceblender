@@ -313,6 +313,15 @@ func (s *Server) resolveTTSProvider(req TTSRequest) (tts.Provider, string) {
 		}
 		provider, name = s.TTS, "elevenlabs"
 	}
+	// Retry is inner and the cache is outer: a cache hit never enters the
+	// retry loop, so a cached utterance costs zero upstream calls.
+	//
+	// The nil check matters: without it every caller would get a non-nil
+	// wrapper, and the "no API key configured -> 503" guards in doLegTTS and
+	// doRoomTTS would stop firing when s.TTS itself is nil.
+	if provider != nil {
+		provider = tts.NewRetrying(provider, name, s.Log)
+	}
 	if s.TTSCache != nil {
 		provider = s.TTSCache.WrapProvider(provider, name)
 	}
