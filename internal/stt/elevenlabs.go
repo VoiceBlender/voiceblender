@@ -72,9 +72,9 @@ func (t *ElevenLabsTranscriber) Start(ctx context.Context, reader io.Reader, api
 	t.log.Info("stt websocket connected")
 	defer conn.Close()
 
-	// lockedWriter serializes ALL writes to the WebSocket connection,
+	// One shared writer serializes ALL writes to the WebSocket connection,
 	// including pong responses from the read path and audio sends.
-	lw := &lockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -114,7 +114,7 @@ type audioChunkMsg struct {
 	AudioBase64 string `json:"audio_base_64"`
 }
 
-func (t *ElevenLabsTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *lockedWriter) {
+func (t *ElevenLabsTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -160,9 +160,9 @@ type sttResponse struct {
 	Text        string `json:"text"`
 }
 
-func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *lockedWriter, emitPartial bool, cb TranscriptCallback) {
+func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, emitPartial bool, cb TranscriptCallback) {
 	// Use wsutil.Reader directly so that control frame responses (pong)
-	// go through our lockedWriter instead of writing to conn directly.
+	// go through the shared writer instead of writing to conn directly.
 	// Without this, pong writes and sendLoop writes race on the conn,
 	// corrupting WebSocket frames.
 	rd := &wsutil.Reader{
@@ -209,7 +209,13 @@ func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw 
 
 		// Skip non-text frames (binary, etc).
 		if hdr.OpCode == ws.OpClose {
-			t.log.Info("stt recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				t.log.Debug("stt close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			t.log.Info("stt recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 		if hdr.OpCode != ws.OpText {
@@ -250,22 +256,4 @@ func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw 
 			}
 		}
 	}
-}
-
-// lockedWriter serializes all WebSocket frame writes to a net.Conn.
-type lockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *lockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *lockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }

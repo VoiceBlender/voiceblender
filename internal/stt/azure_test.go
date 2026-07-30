@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -326,7 +327,7 @@ func TestAzure_FullFlowWithMockServer(t *testing.T) {
 	}
 	defer conn.Close()
 
-	lw := &azLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 	requestID := "testreqid"
 
 	// Send config.
