@@ -311,10 +311,16 @@ func (c *SignalClient) readJoin(ctx context.Context) (*livekit.JoinResponse, err
 func (c *SignalClient) readMessage() (*livekit.SignalResponse, error) {
 	data, op, err := wsutil.ReadServerData(c.conn)
 	if err != nil {
+		// gobwas answers close frames inside ReadServerData and reports
+		// them as a ClosedError rather than returning op == ws.OpClose, so
+		// the error path is the only place the peer's code and reason are
+		// visible.
+		var closed wsutil.ClosedError
+		if errors.As(err, &closed) {
+			c.log.Info("livekit signal recv close frame",
+				"code", int(closed.Code), "reason", closed.Reason)
+		}
 		return nil, err
-	}
-	if op == ws.OpClose {
-		return nil, io.EOF
 	}
 	if op != ws.OpBinary {
 		return nil, fmt.Errorf("expected binary frame, got op=%d", op)
@@ -611,6 +617,9 @@ func (c *SignalClient) send(req *livekit.SignalRequest) error {
 	if c.closed.Load() {
 		return errors.New("signal client closed")
 	}
+	// Bound the write: a peer that stops draining would otherwise pin this
+	// goroutine — and writeMu with it — until the kernel TCP timer fires.
+	wsutilx.SetWriteDeadline(c.conn, wsutilx.DefaultWriteTimeout.Load())
 	return wsutil.WriteClientBinary(c.conn, data)
 }
 
