@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -84,27 +86,44 @@ func TestGracefulShutdownEndsSpansThenFlushes(t *testing.T) {
 		Tracer: &fakeFlusher{rec: rec},
 	})
 
-	want := []string{
-		"http", "moq", "trunks",
-		"hangup:a", "end:a:shutdown",
-		"hangup:b", "end:b:shutdown",
-		"flush",
-	}
 	got := rec.snapshot()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("shutdown order:\n got = %v\nwant = %v", got, want)
+
+	// The serve-stopping steps are still strictly ordered, and all of them
+	// precede any leg teardown.
+	wantPrefix := []string{"http", "moq", "trunks"}
+	if len(got) < len(wantPrefix) || !reflect.DeepEqual(got[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("shutdown prefix:\n got = %v\nwant it to start with %v", got, wantPrefix)
 	}
 
-	// State the two load-bearing properties independently of the exact
-	// sequence, so the failure message names the broken invariant.
+	// Legs are torn down concurrently — one unresponsive peer must not spend
+	// the budget the others need — so their order relative to EACH OTHER is
+	// deliberately undefined and must not be asserted. What must hold per leg
+	// is that it was hung up, its span was ended, and the span was ended after
+	// its own hangup so the span covers the teardown.
+	idx := func(step string) int { return slices.Index(got, step) }
+	for _, name := range []string{"a", "b"} {
+		h, e := idx("hangup:"+name), idx("end:"+name+":shutdown")
+		if h < 0 {
+			t.Errorf("leg %s was never hung up: %v", name, got)
+		}
+		if e < 0 {
+			t.Errorf("leg %s's root span was never ended — it is then never exported: %v", name, got)
+		}
+		if h >= 0 && e >= 0 && e < h {
+			t.Errorf("leg %s's span ended before its own hangup, so it does not cover the teardown: %v", name, got)
+		}
+	}
+
+	// The two load-bearing properties, stated so a failure names the broken
+	// invariant rather than a sequence mismatch.
 	if got[len(got)-1] != "flush" {
 		t.Errorf("flush is not last (%v) — spans ended after the flush are never exported", got)
 	}
 	for i, step := range got {
 		if step == "flush" {
 			for _, later := range got[i:] {
-				if len(later) > 4 && later[:4] == "end:" {
-					t.Errorf("span ended after the flush: %v", got)
+				if strings.HasPrefix(later, "end:") {
+					t.Errorf("span ended after the flush, so it is never exported: %v", got)
 				}
 			}
 		}
@@ -205,6 +224,66 @@ func (hungTrunks) Shutdown(ctx context.Context) { <-ctx.Done() }
 // the flush: sdktrace's Shutdown selects on ctx.Done() and returns without
 // exporting, so a spent context silently discards every leg span the hangup
 // loop just ended — the trace an operator most wants from a sick process.
+// ctxLeg snapshots the state of the context its Hangup is handed. A real
+// Hangup sends BYE on that context, so an already-dead one means no BYE is
+// sent at all and the peer keeps a call the process has forgotten.
+type ctxLeg struct {
+	mu        sync.Mutex
+	called    bool
+	err       error
+	unbounded bool
+	remaining time.Duration
+}
+
+func (l *ctxLeg) Hangup(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.called = true
+	l.err = ctx.Err()
+	deadline, ok := ctx.Deadline()
+	l.unbounded = !ok
+	if ok {
+		l.remaining = time.Until(deadline)
+	}
+	return nil
+}
+
+// TestGracefulShutdownHangupSurvivesSpentBudget is the guard on the hangup
+// budget, and the sibling of the flush guard below.
+//
+// Trunks.Shutdown shares the caller's deadline and can consume all of it — an
+// unreachable registrar does exactly that. If the leg loop then ran on the
+// caller's context, every leg would be handed a dead context and no BYE would
+// be sent, silently stranding every live call on the far end.
+func TestGracefulShutdownHangupSurvivesSpentBudget(t *testing.T) {
+	l := &ctxLeg{}
+
+	// Small enough that hungTrunks consumes all of it before the legs are
+	// reached, mirroring the 5s in main.go being eaten by a dead registrar.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	GracefulShutdown(ctx, ShutdownDeps{
+		Trunks: hungTrunks{},
+		Legs:   func() []ShutdownLeg { return []ShutdownLeg{l} },
+	})
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.called {
+		t.Fatal("leg was never hung up")
+	}
+	if l.err != nil {
+		t.Fatalf("hangup got an already-dead context (%v) — no BYE is sent and the peer keeps the call", l.err)
+	}
+	if l.unbounded {
+		t.Fatal("hangup context has no deadline — one unresponsive peer would block shutdown forever")
+	}
+	if l.remaining <= 0 || l.remaining > hangupBudget {
+		t.Errorf("hangup budget = %v, want (0, %v]", l.remaining, hangupBudget)
+	}
+}
+
 func TestGracefulShutdownFlushSurvivesSpentBudget(t *testing.T) {
 	flusher := &ctxFlusher{}
 	rec := &recorder{}

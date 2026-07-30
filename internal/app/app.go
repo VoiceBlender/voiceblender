@@ -13,6 +13,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
@@ -106,6 +107,15 @@ var _ Flusher = (*sdktrace.TracerProvider)(nil)
 // budget, not inside it, so it extends worst-case shutdown by this much.
 const flushBudget = 2 * time.Second
 
+// hangupBudget bounds the leg teardown. Like the flush it is spent outside the
+// caller's budget: HTTP.Shutdown and Trunks.Shutdown run first and share that
+// one deadline, and either can consume all of it — an unreachable registrar
+// blocks Trunks.Shutdown until it expires. A leg hangup handed an already-dead
+// context sends no BYE at all, so the peer is left holding a call the process
+// has forgotten. Giving the loop its own deadline means the BYEs are attempted
+// whatever the earlier steps cost.
+const hangupBudget = 3 * time.Second
+
 // ShutdownDeps are the process components the shutdown sequence touches.
 // Every field is optional; a nil field is skipped.
 type ShutdownDeps struct {
@@ -143,14 +153,29 @@ func GracefulShutdown(ctx context.Context, deps ShutdownDeps) {
 	}
 
 	if deps.Legs != nil {
-		for _, l := range deps.Legs() {
-			_ = l.Hangup(ctx)
-			// Hangup does not publish leg.disconnected, so nothing else on
-			// this path would ever end the leg's root span.
-			if e, ok := l.(leg.RootSpanEnder); ok {
-				e.EndRootSpan("shutdown")
-			}
+		legs := deps.Legs()
+		// Own budget, detached from the caller's — see hangupBudget.
+		hangupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hangupBudget)
+		var wg sync.WaitGroup
+		for _, l := range legs {
+			wg.Add(1)
+			// Fan out rather than iterate: not every Hangup is fire-and-forget.
+			// SIPLeg's is, but WhatsAppLeg's Bye is synchronous on the context,
+			// so one unresponsive peer would spend the whole budget and leave
+			// every leg after it in the queue with nothing left to send a BYE
+			// with. Concurrently they each get the full budget.
+			go func(l ShutdownLeg) {
+				defer wg.Done()
+				_ = l.Hangup(hangupCtx)
+				// Hangup does not publish leg.disconnected, so nothing else on
+				// this path would ever end the leg's root span.
+				if e, ok := l.(leg.RootSpanEnder); ok {
+					e.EndRootSpan("shutdown")
+				}
+			}(l)
 		}
+		wg.Wait()
+		cancel()
 	}
 
 	if deps.Tracer != nil {
