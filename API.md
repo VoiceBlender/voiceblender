@@ -1080,6 +1080,8 @@ Change the volume of an active leg playback. Takes effect immediately on the nex
 
 Synthesize speech and play it on a leg.
 
+Transient upstream failures (429, 500/502/503/504, transport timeouts) are retried up to 3 times with jittered backoff, bounded to 5 seconds in total, before `tts.error` is published. Auth failures, rejected input, and unclassifiable errors are not retried.
+
 **Request:**
 
 ```json
@@ -2019,6 +2021,8 @@ Change the volume of an active room playback. Takes effect immediately on the ne
 ### POST /v1/rooms/{id}/tts
 
 Synthesize speech and play it into a room.
+
+Transient upstream failures (429, 500/502/503/504, transport timeouts) are retried up to 3 times with jittered backoff, bounded to 5 seconds in total, before `tts.error` is published. Auth failures, rejected input, and unclassifiable errors are not retried.
 
 **Request:**
 
@@ -2979,7 +2983,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `playback.error` | Playback failed | `leg_id` or `room_id`, `playback_id`, `error` |
 | `tts.started` | TTS synthesis began playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id`, `reason`, `played_ms` |
-| `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
+| `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error`, `category` |
 > **Note:** `playback.finished` and `tts.finished` carry `reason` and `played_ms` so you can tell whether a prompt was heard in full or was cut short, and by how much.
 >
 > `reason` is `completed` when the audio played through to its end, and `stopped` when it did **not** reach the end — **for any reason**. That includes an app-initiated stop, a barge-in, and a leg hanging up: all three cancel the same playback, and they cannot be told apart from `reason` alone. To distinguish a hangup from a deliberate stop, look for a co-emitted `leg.disconnected` event. Tone playback never ends on its own, so it always reports `stopped`.

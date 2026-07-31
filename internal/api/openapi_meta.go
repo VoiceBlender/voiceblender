@@ -112,6 +112,7 @@ func WebhookFieldDescriptions() map[string]string {
 		"tts.error.room_id":      "Room identifier",
 		"tts.error.tts_id":       "TTS playback identifier",
 		"tts.error.error":        "Error message",
+		"tts.error.category":     "Failure category: permanent_auth, permanent_input, rate_limited, service_unavailable, retryable, canceled or unknown for a synthesis failure, playback for a failure while streaming the audio. New values may be added; treat an unrecognised value as unknown",
 
 		// recording
 		"recording.started.leg_id":        "Leg identifier",

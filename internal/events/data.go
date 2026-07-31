@@ -339,6 +339,10 @@ type TTSErrorData struct {
 	LegRoomScope
 	TTSID string `json:"tts_id"`
 	Error string `json:"error"`
+	// Category is the tts.Category the failure was classified as. Always
+	// set — no omitempty — so a path that forgets it emits a loud "" rather
+	// than a silently absent key. The value set is open.
+	Category string `json:"category"`
 }
 
 // --- Recording ---

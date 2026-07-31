@@ -4535,6 +4535,9 @@ x-webhooks:
                                     error:
                                         type: string
                                         description: Error message
+                                    category:
+                                        type: string
+                                        description: 'Failure category: permanent_auth, permanent_input, rate_limited, service_unavailable, retryable, canceled or unknown for a synthesis failure, playback for a failure while streaming the audio. New values may be added; treat an unrecognised value as unknown'
     recording.started:
         post:
             summary: Recording began
