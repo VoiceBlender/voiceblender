@@ -75,7 +75,7 @@ All configuration is via environment variables:
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `WEBRTC_EXTERNAL_IPS` | *(empty)* | Comma-separated public IPs advertised as host ICE candidates (pion `SetNAT1To1IPs`). Set this when VoiceBlender runs behind NAT/Docker and the gathered host interface IPs aren't routable from the remote peer — otherwise WebRTC peers behind firewalls won't be able to reach VB. Supports IPv4 and IPv6 literals. The literal value `auto` performs STUN-based public-IP discovery at startup against the first reachable `ICE_SERVERS` entry; discovery failure is non-fatal and logs a warning. |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |
-| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
 | `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
@@ -138,6 +138,10 @@ All configuration is via environment variables:
 | `LIVEKIT_API_KEY` | _(none)_ | LiveKit API key used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. |
 | `LIVEKIT_API_SECRET` | _(none)_ | LiveKit API secret used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. Treat as a high-value secret; redact in logs. |
 | `LIVEKIT_DEFAULT_TOKEN_TTL` | `6h` | Default TTL applied to minted JWTs when the request omits `livekit.token_ttl`. Go duration string. LiveKit recommends ≤ 6 hours. |
+
+Verbatim transcript text, DTMF digits and full event payloads appear only at
+`LOG_LEVEL=debug`. Debug output is therefore PII-bearing and should not be
+shipped to a general-purpose log sink.
 
 ### S3 bucket preflight
 

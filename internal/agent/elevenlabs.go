@@ -346,7 +346,7 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 		case "user_transcript":
 			var msg userTranscriptMessage
 			if err := json.Unmarshal(raw, &msg); err == nil && msg.UserTranscript.Text != "" {
-				s.log.Info("agent user transcript", "text", msg.UserTranscript.Text)
+				s.log.Debug("agent user transcript", "text", msg.UserTranscript.Text)
 				if cb.OnUserTranscript != nil {
 					cb.OnUserTranscript(msg.UserTranscript.Text)
 				}
@@ -355,7 +355,7 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *loc
 		case "agent_response":
 			var msg agentResponseEvent
 			if err := json.Unmarshal(raw, &msg); err == nil && msg.AgentResponseEvent.Text != "" {
-				s.log.Info("agent response", "text", msg.AgentResponseEvent.Text)
+				s.log.Debug("agent response", "text", msg.AgentResponseEvent.Text)
 				if cb.OnAgentResponse != nil {
 					cb.OnAgentResponse(msg.AgentResponseEvent.Text)
 				}

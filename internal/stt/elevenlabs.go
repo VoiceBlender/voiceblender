@@ -240,12 +240,12 @@ func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw 
 		switch resp.MessageType {
 		case "partial_transcript":
 			if resp.Text != "" && emitPartial {
-				t.log.Info("stt partial transcript", "text", resp.Text)
+				t.log.Debug("stt partial transcript", "text", resp.Text)
 				cb(resp.Text, false)
 			}
 		case "committed_transcript":
 			if resp.Text != "" {
-				t.log.Info("stt committed transcript", "text", resp.Text)
+				t.log.Debug("stt committed transcript", "text", resp.Text)
 				cb(resp.Text, true)
 			}
 		}

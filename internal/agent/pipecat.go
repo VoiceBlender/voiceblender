@@ -284,7 +284,7 @@ func (p *PipecatSession) recvLoop(ctx context.Context, conn net.Conn, writer io.
 
 		case *pb.Frame_Transcription:
 			if f.Transcription != nil && f.Transcription.Text != "" {
-				p.log.Info("pipecat transcription", "text", f.Transcription.Text, "user_id", f.Transcription.UserId)
+				p.log.Debug("pipecat transcription", "text", f.Transcription.Text, "user_id", f.Transcription.UserId)
 				if cb.OnUserTranscript != nil {
 					cb.OnUserTranscript(f.Transcription.Text)
 				}
@@ -292,7 +292,7 @@ func (p *PipecatSession) recvLoop(ctx context.Context, conn net.Conn, writer io.
 
 		case *pb.Frame_Text:
 			if f.Text != nil && f.Text.Text != "" {
-				p.log.Info("pipecat text frame", "text", f.Text.Text)
+				p.log.Debug("pipecat text frame", "text", f.Text.Text)
 				if cb.OnAgentResponse != nil {
 					cb.OnAgentResponse(f.Text.Text)
 				}
@@ -318,7 +318,7 @@ func (p *PipecatSession) handleMessageFrame(raw string, cb Callbacks) {
 	case "user-transcript", "user-transcription":
 		var data pipecatTranscriptData
 		if err := json.Unmarshal(msg.Data, &data); err == nil && data.Text != "" {
-			p.log.Info("pipecat user transcript (rtvi)", "text", data.Text)
+			p.log.Debug("pipecat user transcript (rtvi)", "text", data.Text)
 			if cb.OnUserTranscript != nil {
 				cb.OnUserTranscript(data.Text)
 			}
@@ -327,7 +327,7 @@ func (p *PipecatSession) handleMessageFrame(raw string, cb Callbacks) {
 	case "bot-transcript", "bot-transcription":
 		var data pipecatTranscriptData
 		if err := json.Unmarshal(msg.Data, &data); err == nil && data.Text != "" {
-			p.log.Info("pipecat bot transcript (rtvi)", "text", data.Text)
+			p.log.Debug("pipecat bot transcript (rtvi)", "text", data.Text)
 			if cb.OnAgentResponse != nil {
 				cb.OnAgentResponse(data.Text)
 			}

@@ -355,12 +355,12 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 				if err := json.Unmarshal(raw, &msg); err == nil && msg.Content != "" {
 					switch msg.Role {
 					case "user":
-						s.log.Info("deepgram agent user transcript", "text", msg.Content)
+						s.log.Debug("deepgram agent user transcript", "text", msg.Content)
 						if cb.OnUserTranscript != nil {
 							cb.OnUserTranscript(msg.Content)
 						}
 					case "assistant":
-						s.log.Info("deepgram agent response", "text", msg.Content)
+						s.log.Debug("deepgram agent response", "text", msg.Content)
 						if cb.OnAgentResponse != nil {
 							cb.OnAgentResponse(msg.Content)
 						}
@@ -377,7 +377,11 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *dgAge
 				s.log.Debug("deepgram agent audio done")
 
 			case "Error":
-				s.log.Error("deepgram agent error", "raw", string(raw[:min(len(raw), 500)]))
+				// The Error envelope's shape is not modelled here, so it cannot
+				// be assumed free of conversation text. Keep the signal at
+				// error level and the body at debug.
+				s.log.Error("deepgram agent error", "raw_len", len(raw))
+				s.log.Debug("deepgram agent error payload", "raw", string(raw[:min(len(raw), 500)]))
 
 			default:
 				s.log.Debug("deepgram agent unknown message type", "type", envelope.Type)

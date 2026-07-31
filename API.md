@@ -3158,7 +3158,7 @@ All errors return:
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `RECORDING_DIR` | `/tmp/recordings` | Recording output directory |
-| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | _(none)_ | Global webhook URL. Events without a per-leg or per-room webhook are delivered here. |
 | `WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 signing secret for the global webhook. |
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
@@ -3173,6 +3173,10 @@ All errors return:
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio is stored on disk and persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files. |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
+
+Verbatim transcript text, DTMF digits and full event payloads appear only at
+`LOG_LEVEL=debug`. Debug output is therefore PII-bearing and should not be
+shipped to a general-purpose log sink.
 
 ---
 

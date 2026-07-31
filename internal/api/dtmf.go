@@ -101,7 +101,8 @@ func (s *Server) broadcastDTMF(fromLegID string, digit rune) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := target.SendDTMF(ctx, digits); err != nil {
-				s.Log.Warn("dtmf forward failed", "from_leg", fromLegID, "to_leg", target.ID(), "digit", digits, "error", err)
+				s.Log.Warn("dtmf forward failed", "from_leg", fromLegID, "to_leg", target.ID(), "digit_count", len(digits), "error", err)
+				s.Log.Debug("dtmf forward failed digits", "from_leg", fromLegID, "to_leg", target.ID(), "digit", digits)
 			}
 		}(p)
 	}

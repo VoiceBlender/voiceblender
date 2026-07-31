@@ -111,7 +111,7 @@ info:
           description: Local directory for recording output files
         - name: LOG_LEVEL
           default: info
-          description: 'Log verbosity: debug, info, warn, error'
+          description: 'Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug.'
         - name: WEBHOOK_URL
           default: ""
           description: Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)

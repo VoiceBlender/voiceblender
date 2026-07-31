@@ -371,12 +371,12 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 				if err := json.Unmarshal(raw, &msg); err == nil && msg.Transcript != "" {
 					switch msg.Role {
 					case "user":
-						v.log.Info("vapi user transcript", "text", msg.Transcript)
+						v.log.Debug("vapi user transcript", "text", msg.Transcript)
 						if cb.OnUserTranscript != nil {
 							cb.OnUserTranscript(msg.Transcript)
 						}
 					case "assistant":
-						v.log.Info("vapi agent response", "text", msg.Transcript)
+						v.log.Debug("vapi agent response", "text", msg.Transcript)
 						if cb.OnAgentResponse != nil {
 							cb.OnAgentResponse(msg.Transcript)
 						}
