@@ -531,6 +531,29 @@ See [TESTING.md](TESTING.md) for details.
 | [protobuf](https://github.com/protocolbuffers/protobuf-go) | Protocol Buffers | Pipecat agent |
 | [x/sync](https://pkg.go.dev/golang.org/x/sync) | Concurrency utilities | |
 
+## Contributing
+
+[CLAUDE.md](CLAUDE.md) is the canonical checklist for changes to this repository. Read it before opening a pull request.
+
+It is named for [Claude Code](https://claude.com/claude-code), which picks it up automatically — if you are working with Claude, no setup is needed. **Nothing in it is Claude-specific, though: the same rules apply to human contributors and to any other agentic coding tool** (Codex, Cursor, Copilot, Aider, and so on). If your tool expects a project instructions file under a different name, point it at `CLAUDE.md` rather than adding a second copy that will drift out of sync.
+
+In short, every change is expected to:
+
+- **Format** — run `gofmt` on all changed Go files.
+- **Regenerate specs** — run `make specs` when REST endpoints, request/response schemas, VSI commands, events, or config env vars change. `openapi.yaml` and `asyncapi.yaml` are generated; never hand-edit them.
+- **Update the docs it affects** — `API.md`, `README.md`, `TESTING.md`, and `voiceblender.env.example`.
+- **Ship tests** — unit tests for every new package or feature, plus integration tests in `tests/integration/`.
+- **Preserve the public API** — backwards compatibility is the default; break it only when there is no alternative.
+- **Keep comments minimal** — explain a non-obvious *why*, never restate what the code already says.
+
+CI enforces the first of these plus `go vet` and the unit tests, so run them locally before pushing:
+
+```bash
+gofmt -l .
+go vet ./...
+go test ./internal/... -count=1 -timeout=60s
+```
+
 ## AI-Assisted Development
 
 This project was developed with the assistance of [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant. 
