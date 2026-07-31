@@ -631,6 +631,42 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.LegMgr.Remove(l.ID())
 }
 
+// watchLegDialogEnd blocks until a connected leg ends, then tears it down and
+// publishes leg.disconnected — unless it was already torn down locally. It
+// returns when the dialog ends (the remote BYE), when maxDuration elapses
+// (skipped when <= 0), or when the leg's own context is cancelled.
+//
+// The leg context is in the select because a local teardown — an API hangup, a
+// room delete, an RTP timeout — hangs the leg up and cancels its context, but
+// our BYE to a vanished peer may never get the 200 that ends the sipgo dialog,
+// so waiting on the dialog alone would block for the process lifetime. Every
+// path that cancels a leg's context sets StateHungUp first, so the state guard
+// below can only suppress the disconnect that teardown already published; it
+// never publishes a spurious one.
+func (s *Server) watchLegDialogEnd(l leg.Leg, dialogCtx context.Context, maxDuration time.Duration) {
+	// A nil channel blocks forever, which is what "no cap" means here.
+	var maxC <-chan time.Time
+	if maxDuration > 0 {
+		maxTimer := time.NewTimer(maxDuration)
+		defer maxTimer.Stop()
+		maxC = maxTimer.C
+	}
+
+	reason := "remote_bye"
+	select {
+	case <-dialogCtx.Done():
+	case <-l.Context().Done():
+	case <-maxC:
+		reason = "max_duration"
+		s.Log.Info("max duration reached", "leg_id", l.ID(), "max_duration", maxDuration)
+	}
+
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, reason)
+	}
+}
+
 // rejectionMapping maps a user-supplied disconnect reason to a SIP final
 // status code + reason phrase, used when the leg is rejected before answer.
 // Unknown reasons return ok=false; the handler then returns 400.
@@ -973,29 +1009,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		addToRoom()
 
 		// Monitor for remote hangup or max duration.
-		if req.MaxDuration > 0 {
-			maxTimer := time.NewTimer(time.Duration(req.MaxDuration) * time.Second)
-			defer maxTimer.Stop()
-			select {
-			case <-call.Dialog.Context().Done():
-				if l.State() != leg.StateHungUp {
-					s.cleanupLeg(l)
-					s.publishDisconnect(l, "remote_bye")
-				}
-			case <-maxTimer.C:
-				if l.State() != leg.StateHungUp {
-					s.Log.Info("max duration reached", "leg_id", l.ID(), "max_duration", req.MaxDuration)
-					s.cleanupLeg(l)
-					s.publishDisconnect(l, "max_duration")
-				}
-			}
-		} else {
-			<-call.Dialog.Context().Done()
-			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "remote_bye")
-			}
-		}
+		s.watchLegDialogEnd(l, call.Dialog.Context(), time.Duration(req.MaxDuration)*time.Second)
 	}()
 
 	return toLegView(l), nil
@@ -1131,11 +1145,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 
 		// Block until call ends (BYE received or context cancelled)
-		<-call.Dialog.Context().Done()
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "remote_bye")
-		}
+		s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
 		return
 
 	case <-call.Dialog.Context().Done():

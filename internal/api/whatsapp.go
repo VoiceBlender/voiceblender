@@ -299,11 +299,7 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 		LegType:  string(l.Type()),
 	})
 
-	<-call.Dialog.Context().Done()
-	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "remote_bye")
-	}
+	s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
 }
 
 func legViewFrom(l leg.Leg) LegView {
