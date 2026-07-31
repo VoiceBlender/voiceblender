@@ -25,7 +25,7 @@ type CreateLegRequest struct {
 	Type            string            `json:"type"`                       // "sip", "whatsapp", or "websocket"
 	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
-	From            string            `json:"from,omitempty"`             // caller ID (user part of the SIP From header, e.g. "+15551234567")
+	From            string            `json:"from,omitempty"`             // caller ID — a bare user-part ("+15551234567") or a full SIP URI ("sip:alice@pbx.example.com")
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
@@ -79,7 +79,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket", "livekit_room"}},
 	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
-	"from":             {Description: `Caller ID — sets the user part of the SIP From header (e.g. "+15551234567", "alice")`},
+	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
 	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
@@ -595,7 +595,7 @@ type SIPRegisterTrunkSpec struct {
 
 var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
 	"registrar_uri":   {Description: "Upstream registrar SIP URI (e.g. \"sip:pbx.example.com:5060\" or \"sips:pbx.example.com:5061;transport=tls\")."},
-	"aor":             {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI for inbound REGISTER and outbound calls placed `from` this AOR."},
+	"aor":             {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR."},
 	"username":        {Description: "Digest auth username. Defaults to the AOR user-part when empty."},
 	"password":        {Description: "Digest auth password. Required. Never returned in any response."},
 	"contact_user":    {Description: "Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part."},

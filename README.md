@@ -70,7 +70,7 @@ All configuration is via environment variables:
 | `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
 | `SIP_TLS_KEY` | | Path to PEM-encoded TLS private key (e.g. `privkey.pem`). |
 | `SIP_DEBUG` | `false` | When `true`, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting. |
-| `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on **all** outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
+| `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on outbound SIP signalling (classic trunks and WhatsApp). Two exceptions apply to the From host only: a call matched to a registered SIP trunk uses that trunk's AOR realm, and a `from` given as a full SIP URI uses the host in that URI. Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `WEBRTC_EXTERNAL_IPS` | *(empty)* | Comma-separated public IPs advertised as host ICE candidates (pion `SetNAT1To1IPs`). Set this when VoiceBlender runs behind NAT/Docker and the gathered host interface IPs aren't routable from the remote peer — otherwise WebRTC peers behind firewalls won't be able to reach VB. Supports IPv4 and IPv6 literals. The literal value `auto` performs STUN-based public-IP discovery at startup against the first reachable `ICE_SERVERS` entry; discovery failure is non-fatal and logs a warning. |
@@ -314,6 +314,23 @@ DELETE /v1/sip/trunks/{id}                 # Unregister + remove (202 Accepted, 
 Outbound calls placed with `POST /v1/legs` whose `from` matches a registered
 trunk's AOR (or AOR user-part) automatically attach the trunk's digest
 credentials and traverse the trunk's upstream proxy via a Route header.
+Such calls also send `From` and `P-Asserted-Identity` in the trunk's AOR realm
+rather than `SIP_DOMAIN`, so the call claims the identity the registrar
+actually authenticated. An AOR port, if configured, is not carried into the
+From — `sip:alice@pbx.example.com:5070` yields a From host of
+`pbx.example.com`.
+
+> **Changed outcome.** This can flip how an upstream responds to calls that
+> previously went out under `SIP_DOMAIN`. A registrar that accepted them
+> un-challenged may now challenge them — which resolves on its own for a
+> correctly provisioned trunk, since the digest credentials are already
+> attached, but surfaces as a `401`/`407` failure for one with stale
+> credentials. It can flip the other way too: a registrar that rejected an
+> unknown From domain may now accept the call. There is no toggle. The only
+> way to keep `SIP_DOMAIN` on the From is to use a `from` that matches no
+> trunk AOR and no trunk AOR user-part, which also drops the trunk's
+> credentials and Route.
+
 Inbound INVITEs arriving from a registered trunk's registrar are tagged with
 `trunk_id` on the `leg.ringing` event.
 

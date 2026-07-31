@@ -195,6 +195,16 @@ func (r *OutboundRegistration) PeerSocket() (host string, port int, transport st
 // outbound INVITE path to attach a Route header.
 func (r *OutboundRegistration) RegistrarURI() sip.Uri { return r.registrarURI }
 
+// FromHost returns the AOR realm host — the domain the upstream registrar
+// authenticated us under. Used as the host part of the From and
+// P-Asserted-Identity URIs on outbound INVITEs placed from this trunk, so the
+// call claims the identity the trunk actually registered rather than the
+// engine's own public host.
+//
+// No lock: r.aor is assigned once in the constructor and never mutated, the
+// same reason AOR() reads it lock-free.
+func (r *OutboundRegistration) FromHost() string { return r.aor.Host }
+
 // Credentials returns the trunk's digest username/password. Used by the
 // outbound INVITE path; never exposed over the API.
 func (r *OutboundRegistration) Credentials() (string, string) {
