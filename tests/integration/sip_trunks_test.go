@@ -540,19 +540,19 @@ func TestTrunk_SIPRegister_OutboundCallFromFullURI(t *testing.T) {
 	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
-// TestTrunk_SIPRegister_OutboundCallFromHostWins covers the precedence guard:
-// a caller-supplied host is not overwritten by the trunk's AOR realm.
+// TestTrunk_SIPRegister_OutboundCallFromHostNormalized pins that the caller's
+// spelling of the host does not reach the wire: trunk matching canonicalizes
+// the AOR and the identity split lowercases the host, so the same identity in
+// any case produces one From.
 //
-// A case-differing host is the only input that reaches the guard's false
-// branch — trunk lookup canonicalizes the AOR (which lowercases the host)
-// while the identity split preserves the caller's spelling verbatim. SIP hosts
-// are case-insensitive, so this is about precedence, not about the wire.
-func TestTrunk_SIPRegister_OutboundCallFromHostWins(t *testing.T) {
+// The user-part is checked unchanged in the same assertion — SIP user-parts are
+// case-sensitive and must survive verbatim.
+func TestTrunk_SIPRegister_OutboundCallFromHostNormalized(t *testing.T) {
 	inv := originateOverRegisteredTrunk(t, "trunk-out-case", "sip:alice@VB.TEST")
 	if route := inv.GetHeader("Route"); route == nil {
 		t.Error("INVITE missing Route header (case-differing host broke trunk matching)")
 	}
-	assertInviteFromIdentity(t, inv, "alice", "VB.TEST")
+	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
 func TestTrunk_SIPRegister_RefreshFailedEmitsExpired(t *testing.T) {
