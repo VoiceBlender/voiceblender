@@ -34,6 +34,10 @@ func TestSplitFromIdentity(t *testing.T) {
 		// is not. This row is what makes the `u.Host != ""` conjunct
 		// load-bearing; without it the From would silently lose its host.
 		{"user with no host", "sip:alice@", "sip:alice@", ""},
+		// The host is lowercased to match CanonicalizeAOR, so the same
+		// identity spelled differently produces the same wire form. The
+		// user-part is NOT lowercased — SIP user-parts are case-sensitive.
+		{"mixed case host", "sip:Alice@PBX.Example.COM", "Alice", "pbx.example.com"},
 	}
 
 	for _, tc := range cases {

@@ -115,6 +115,9 @@ type SIPLeg struct {
 
 	earlyMediaSDP    []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders       map[string]string // X-* headers from inbound INVITE or outbound request
+	originUser       string            // user part of the identity to originate under on this leg's behalf (see OriginatingIdentity)
+	originHost       string            // host part of the same identity; empty = engine publicHost
+	trunkID          string            // trunk this leg arrived on (inbound) or was dialled over (outbound); "" = none
 	preferredCodec   codec.CodecType   // optional codec hint set via SignalAnswer; CodecUnknown = no preference
 	disconnectReason string            // optional override for leg.disconnected reason; set by Reject() before dialog cancel
 
@@ -228,6 +231,13 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		callID = cid.Value()
 	}
 
+	// The caller's From is the identity VoiceBlender originates under when
+	// this party REFERs us elsewhere.
+	var originUser, originHost string
+	if f := call.Request.From(); f != nil {
+		originUser, originHost = f.Address.User, f.Address.Host
+	}
+
 	offerFamily := ""
 	if call.RemoteSDP != nil {
 		offerFamily = call.RemoteSDP.AddressFamily
@@ -239,6 +249,8 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		createdAt:       time.Now(),
 		inbound:         call,
 		sipHeaders:      hdrs,
+		originUser:      originUser,
+		originHost:      originHost,
 		ctx:             ctx,
 		cancel:          cancel,
 		answerCh:        make(chan struct{}),
@@ -489,6 +501,34 @@ func (l *SIPLeg) AnsweredAt() time.Time {
 
 func (l *SIPLeg) SIPHeaders() map[string]string { return l.sipHeaders }
 func (l *SIPLeg) Headers() map[string]string    { return l.sipHeaders }
+
+// OriginatingIdentity returns the user and host to place in the From URI when
+// VoiceBlender originates a call on this leg's behalf — today only the REFER
+// transfer path. For an inbound leg that is the caller's From (the party asking
+// for the transfer); for an outbound leg it is the From VoiceBlender itself
+// sent. An empty user means no identity is known, leaving the From to sipgo.
+//
+// No lock: both fields are written once during leg setup, before the leg is
+// reachable through the manager.
+func (l *SIPLeg) OriginatingIdentity() (user, host string) { return l.originUser, l.originHost }
+
+// SetOriginatingIdentity records the From identity an outbound leg was dialled
+// under. Must be called during setup, before the leg is added to the manager.
+func (l *SIPLeg) SetOriginatingIdentity(user, host string) {
+	l.originUser, l.originHost = user, host
+}
+
+// TrunkID returns the trunk this leg arrived on (inbound) or was dialled over
+// (outbound), or "" when the leg has no trunk association. The REFER path uses
+// it to originate the transfer target over the same trunk.
+//
+// No lock: written once during leg setup, before the leg is reachable through
+// the manager.
+func (l *SIPLeg) TrunkID() string { return l.trunkID }
+
+// SetTrunkID records the leg's trunk association. Must be called during setup,
+// before the leg is added to the manager.
+func (l *SIPLeg) SetTrunkID(id string) { l.trunkID = id }
 
 // AnswerCh returns the channel that is closed when the REST answer endpoint is called.
 func (l *SIPLeg) AnswerCh() <-chan struct{} {

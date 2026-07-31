@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -804,19 +805,74 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 // user with an empty host, leaving the host to the matched trunk's AOR realm or
 // the engine's public host.
 //
-// The accept condition deliberately mirrors the trunk-matching parse below, so
-// the identity split and the trunk lookup can never disagree about what counts
-// as a full URI. Port and URI params are discarded on purpose: a From URI
-// should carry neither.
+// The accept condition matches the full-URI branch of the trunk lookup below,
+// so the two can never disagree about what counts as a full URI. The lookup's
+// user-only fallback deliberately does NOT reuse the split user: a `from` that
+// names a host matching no trunk AOR is a caller asking for a different
+// identity, and must not silently borrow a trunk's credentials on a user-part
+// collision.
+//
+// Port and URI params are discarded on purpose: a From URI should carry
+// neither. The host is lowercased to match CanonicalizeAOR, so the wire form
+// does not vary with the caller's spelling.
 func splitFromIdentity(from string) (user, host string) {
 	if from == "" {
 		return "", ""
 	}
 	u := sip.Uri{}
 	if err := sip.ParseUri(from, &u); err == nil && u.User != "" && u.Host != "" {
-		return u.User, u.Host
+		return u.User, strings.ToLower(u.Host)
 	}
 	return from, ""
+}
+
+// applyFromIdentity resolves a caller-supplied `from` into opts.FromUser /
+// opts.FromHost and, when it matches a registered outbound trunk's AOR (either
+// as a full URI or just a user-part), auto-attaches that trunk's digest
+// credentials, routes the INVITE through its upstream proxy, and places the
+// From / P-Asserted-Identity in its AOR realm. Credentials already on opts
+// (caller-supplied auth) win.
+//
+// Returns the matched trunk ID, or "" when nothing matched.
+//
+// Shared by POST /v1/legs and the REFER originate path so a transferred call
+// claims the same identity — and reaches the same upstream — as one the app
+// dialled itself.
+func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) string {
+	opts.FromUser, opts.FromHost = splitFromIdentity(from)
+	if from == "" {
+		return ""
+	}
+
+	var matchedTrunk sipmod.Trunk
+	// Full-URI match first.
+	fromURI := sip.Uri{}
+	if err := sip.ParseUri(from, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
+		matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
+	}
+	// User-only fallback (POST /v1/legs with `from: "alice"`).
+	if matchedTrunk == nil {
+		matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(from)
+	}
+	if matchedTrunk == nil || matchedTrunk.Type() != sipmod.TrunkTypeSIPRegister {
+		return ""
+	}
+	reg, ok := matchedTrunk.(*sipmod.OutboundRegistration)
+	if !ok {
+		return ""
+	}
+
+	if opts.AuthUsername == "" && opts.AuthPassword == "" {
+		opts.AuthUsername, opts.AuthPassword = reg.Credentials()
+	}
+	regURI := reg.RegistrarURI()
+	opts.RouteURI = &regURI
+	// The registrar authenticated us under the AOR realm; claim that identity
+	// on the wire unless the caller named a host explicitly.
+	if opts.FromHost == "" {
+		opts.FromHost = reg.FromHost()
+	}
+	return reg.ID()
 }
 
 // doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
@@ -896,8 +952,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	}
 
 	// Build invite options.
-	fromUser, fromHost := splitFromIdentity(req.From)
-	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: fromUser, FromHost: fromHost}
+	inviteOpts := sipmod.InviteOptions{Codecs: codecs}
 	if req.Auth != nil {
 		inviteOpts.AuthUsername = req.Auth.Username
 		inviteOpts.AuthPassword = req.Auth.Password
@@ -905,40 +960,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	if req.RTT {
 		inviteOpts.RTTEnabled = true
 	}
-
-	// Implicit trunk match: if `from` matches a registered outbound trunk's
-	// AOR (either as a full URI or just a user-part), auto-attach digest
-	// credentials, route the INVITE through the trunk's upstream proxy, and
-	// place the From / P-Asserted-Identity in the trunk's AOR realm.
-	// Caller-supplied auth wins.
-	var trunkIDForLeg string
-	var matchedTrunk sipmod.Trunk
-	if req.From != "" {
-		// Full-URI match first.
-		fromURI := sip.Uri{}
-		if err := sip.ParseUri(req.From, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
-			matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
-		}
-		// User-only fallback (POST /v1/legs with `from: "alice"`).
-		if matchedTrunk == nil {
-			matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(req.From)
-		}
-	}
-	if matchedTrunk != nil && matchedTrunk.Type() == sipmod.TrunkTypeSIPRegister {
-		if reg, ok := matchedTrunk.(*sipmod.OutboundRegistration); ok {
-			trunkIDForLeg = reg.ID()
-			if inviteOpts.AuthUsername == "" && inviteOpts.AuthPassword == "" {
-				inviteOpts.AuthUsername, inviteOpts.AuthPassword = reg.Credentials()
-			}
-			regURI := reg.RegistrarURI()
-			inviteOpts.RouteURI = &regURI
-			// The registrar authenticated us under the AOR realm; claim that
-			// identity on the wire unless the caller named a host explicitly.
-			if inviteOpts.FromHost == "" {
-				inviteOpts.FromHost = reg.FromHost()
-			}
-		}
-	}
+	trunkIDForLeg := s.applyFromIdentity(req.From, &inviteOpts)
+	l.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
+	l.SetTrunkID(trunkIDForLeg)
 
 	// AOR auto-resolve: if the recipient URI matches a known registration,
 	// route the INVITE to the bound socket(s) instead of letting sipgo
@@ -1133,6 +1157,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			}
 		}
 	}
+	l.SetTrunkID(trunkID)
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:      events.LegScope{LegID: l.ID(), AppID: l.AppID()},

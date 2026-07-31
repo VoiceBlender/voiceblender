@@ -787,6 +787,13 @@ When a peer sends **us** a REFER (asks us to transfer its call), the handling de
 
 The typical app flow: on `leg.transfer_requested`, call **accept**, perform the re-bridge (route the other party to the target), optionally report **progress**, then **complete**. If the app can't perform the transfer, call **decline** instead.
 
+**Identity on the auto-dialled INVITE.** With `SIP_REFER_AUTO_DIAL=true`, the INVITE the server places toward the target is originated on the referrer leg's behalf:
+
+- If the referrer leg arrived on — or was dialled over — a **registered SIP trunk**, the transfer goes out over that same trunk: `From` and `P-Asserted-Identity` carry the trunk's AOR, and the INVITE picks up the trunk's digest credentials and `Route`. The upstream that delivered the call is the one that can route the target, and it only accepts an identity it authenticated; the transferor's own caller ID would usually match no AOR and be rejected. `Referred-By`, when the referrer sent one, still identifies who asked for the transfer.
+- Otherwise the leg's own identity is reused — the caller's `From` for an inbound leg, the `from` the leg was created with for an outbound one.
+
+The resulting leg's `leg.ringing` reports both, as `from` (a full SIP URI when the host is known) and `trunk_id`.
+
 All four return `202 Accepted` on success, or `404` when there is no matching parked/accepted transfer for the leg. The same actions are available over VSI as `accept_transfer`, `progress_transfer`, `complete_transfer`, and `decline_transfer` (payload `{ "id": "<referrer_leg_id>", ... }`).
 
 #### POST /v1/legs/{id}/transfer/accept

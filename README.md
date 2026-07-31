@@ -334,6 +334,13 @@ From — `sip:alice@pbx.example.com:5070` yields a From host of
 Inbound INVITEs arriving from a registered trunk's registrar are tagged with
 `trunk_id` on the `leg.ringing` event.
 
+A leg associated with a trunk — in either direction — transfers out over that
+same trunk. With `SIP_REFER_AUTO_DIAL=true`, an inbound REFER on such a leg
+originates the target under the trunk's AOR, with its credentials and Route
+attached, rather than under the transferor's caller ID (which would usually
+match no AOR and be rejected upstream). See
+[Receiving a transfer](API.md#receiving-a-transfer-inbound-refer).
+
 ## WhatsApp Business Calling
 
 VoiceBlender bridges WhatsApp consumer voice calls to and from your stack via Meta's [Business Calling API](https://developers.facebook.com/docs/whatsapp/cloud-api/calling/sip/). Signalling is SIP over TLS to `wa.meta.vc:5061` with HTTP Digest auth; media is Opus over ICE + DTLS-SRTP (pion-driven). Once connected, a WhatsApp leg looks identical to any other leg — same `/v1/legs/{id}/...` operations, same event payloads, same room mechanics.
