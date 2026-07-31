@@ -316,6 +316,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	newLeg := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Log)
 	newLeg.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 	s.setupLegEventForwarding(newLeg)
+	s.setupHoldCallbacks(newLeg)
 	s.LegMgr.Add(newLeg)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
@@ -382,25 +383,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 
 	// The referrer is gone, so nothing else observes the transferred leg's
 	// dialog: the engine's BYE handling publishes no event of its own.
-	s.watchLegDialogEnd(newLeg, call.Dialog.Context())
-}
-
-// watchLegDialogEnd blocks until the leg's dialog ends, then disconnects the
-// leg unless it was already torn down locally. It also returns when the leg's
-// own context is cancelled: a local teardown (an API hangup, or a room delete)
-// hangs the leg up and cancels its context, but our BYE to a vanished peer may
-// never get the 200 that ends the sipgo dialog, so waiting on the dialog alone
-// would block for the process lifetime. The local teardown already published
-// the disconnect, so the state guard skips a second one.
-func (s *Server) watchLegDialogEnd(l *leg.SIPLeg, dialogCtx context.Context) {
-	select {
-	case <-dialogCtx.Done():
-	case <-l.Context().Done():
-	}
-	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "remote_bye")
-	}
+	s.watchLegDialogEnd(newLeg, call.Dialog.Context(), 0)
 }
 
 func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason string) {

@@ -59,7 +59,7 @@ func TestWatchLegDialogEndDisconnectsOnRemoteBye(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.watchLegDialogEnd(l, dialogCtx)
+		s.watchLegDialogEnd(l, dialogCtx, 0)
 	}()
 
 	remoteBye()
@@ -125,7 +125,7 @@ func TestWatchLegDialogEndExitsOnLocalTeardown(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.watchLegDialogEnd(l, dialogCtx)
+		s.watchLegDialogEnd(l, dialogCtx, 0)
 	}()
 
 	select {
@@ -165,6 +165,103 @@ func TestOriginateForReferWatchesDialogAfterConnect(t *testing.T) {
 
 	if strings.Contains(body, "go s.watchLegDialogEnd(") {
 		t.Error("watchLegDialogEnd is spawned in a goroutine — it must block in originateForRefer's own goroutine so leg.connected always precedes leg.disconnected")
+	}
+}
+
+// TestWatchLegDialogEndDisconnectsOnMaxDuration pins the max-duration cap that
+// POST /v1/legs exposes as max_duration. Neither the dialog nor the leg context
+// ends here, so only the timer can wake the monitor — and the disconnect must
+// be attributed to the cap, not to a BYE that never arrived.
+func TestWatchLegDialogEndDisconnectsOnMaxDuration(t *testing.T) {
+	s := newTestServer(t)
+	s.SIPEngine = referTestEngine(t)
+
+	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Log)
+	s.LegMgr.Add(l)
+
+	got := make(chan events.Event, 4)
+	unsub := s.Bus.Subscribe(func(e events.Event) {
+		if e.Type == events.LegDisconnected {
+			got <- e
+		}
+	})
+	t.Cleanup(unsub)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchLegDialogEnd(l, context.Background(), 10*time.Millisecond)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLegDialogEnd did not return after max duration elapsed")
+	}
+
+	select {
+	case e := <-got:
+		data, ok := e.Data.(*events.LegDisconnectedData)
+		if !ok {
+			t.Fatalf("leg.disconnected data = %T, want *events.LegDisconnectedData", e.Data)
+		}
+		if data.CDR.Reason != "max_duration" {
+			t.Errorf("cdr.reason = %q, want max_duration", data.CDR.Reason)
+		}
+	default:
+		t.Fatal("no leg.disconnected published — a leg that outlives max_duration must be reaped")
+	}
+
+	if _, ok := s.LegMgr.Get(l.ID()); ok {
+		t.Error("leg still registered after max duration — cleanupLeg must remove it")
+	}
+}
+
+// TestWatchLegDialogEndNoMaxDurationDoesNotFire guards the zero value: a leg
+// with no cap must not be reaped by a timer that fired immediately. Passing 0
+// through as a live time.Timer would tear down every uncapped call at once.
+func TestWatchLegDialogEndNoMaxDurationDoesNotFire(t *testing.T) {
+	s := newTestServer(t)
+	s.SIPEngine = referTestEngine(t)
+
+	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Log)
+	s.LegMgr.Add(l)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchLegDialogEnd(l, context.Background(), 0)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("watchLegDialogEnd returned with no cap and a live dialog — an uncapped leg was reaped")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked, as it must be.
+	}
+
+	// Unblock so the goroutine does not outlive the test.
+	l.Hangup(context.Background())
+	<-done
+}
+
+// TestOriginateForReferWiresLegCallbacks pins the callback wiring a transferred
+// leg shares with the other construction sites. setupLegEventForwarding carries
+// DTMF, RTT and the RTP-timeout reaper; setupHoldCallbacks carries leg.hold and
+// leg.unhold. Both must be installed before the leg is registered, or events
+// arriving on a freshly-added leg have nowhere to go.
+func TestOriginateForReferWiresLegCallbacks(t *testing.T) {
+	body := funcBody(t, "transfer.go", "originateForRefer")
+
+	for _, wiring := range []string{"s.setupLegEventForwarding(newLeg)", "s.setupHoldCallbacks(newLeg)"} {
+		at := strings.Index(body, wiring)
+		if at < 0 {
+			t.Errorf("originateForRefer does not call %s — a transferred leg is wired differently from every other connected leg", wiring)
+			continue
+		}
+		if add := strings.Index(body, "s.LegMgr.Add(newLeg)"); add >= 0 && at > add {
+			t.Errorf("%s runs after the leg is registered — callbacks must be wired first", wiring)
+		}
 	}
 }
 
