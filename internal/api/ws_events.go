@@ -122,10 +122,13 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	})
 	defer unsub()
 
-	lw := &wsLockedWriter{conn: conn}
+	// Closing on the first write failure is what wakes the recv loop below,
+	// so the handler can unwind and run its deferred unsub instead of staying
+	// pinned on a socket the peer stopped draining.
+	lw := wsutilx.NewServerLockedWriter(conn, func() { _ = conn.Close() })
 
 	connMsg, _ := json.Marshal(map[string]string{"type": "connected"})
-	if err := lw.writeText(connMsg); err != nil {
+	if err := lw.WriteText(connMsg); err != nil {
 		s.Log.Error("vsi send connected failed", "error", err)
 		return
 	}
@@ -155,7 +158,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 						"type":  "events_dropped",
 						"count": n,
 					})
-					if err := lw.writeText(notice); err != nil {
+					if err := lw.WriteText(notice); err != nil {
 						return
 					}
 				}
@@ -164,7 +167,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 					s.Log.Warn("vsi marshal failed", "type", e.Type, "error", err)
 					continue
 				}
-				if err := lw.writeText(data); err != nil {
+				if err := lw.WriteText(data); err != nil {
 					return
 				}
 			case <-done:
@@ -186,7 +189,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 				}
 				seq++
 				msg := vsiPingFrame(seq)
-				if err := lw.writeText(msg); err != nil {
+				if err := lw.WriteText(msg); err != nil {
 					return
 				}
 			case <-done:
@@ -198,7 +201,7 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	// Recv loop with typed dispatch. Returns when the client sends a "stop"
 	// command, the WebSocket frame parse fails, or the read deadline
 	// elapses (zombie connection / network partition).
-	reason := s.vsiRecvLoop(r.Context(), conn, lw, &closed)
+	reason := vsiExitReason(s.vsiRecvLoop(r.Context(), conn, lw, &closed), lw.Err())
 
 	close(done)
 	s.Log.Info("vsi client disconnected",
@@ -213,12 +216,19 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 // "reason" field of the structured shutdown log: "stop" (client sent stop
 // command), "read_timeout" (idle deadline elapsed — zombie connection),
 // "peer_close" (clean WS close), or "error" (other read/parse error).
-func (s *Server) vsiRecvLoop(ctx context.Context, conn net.Conn, lw *wsLockedWriter, closed *atomic.Bool) string {
+func (s *Server) vsiRecvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, closed *atomic.Bool) string {
 	controlHandler := wsutil.ControlFrameHandler(conn, ws.StateServerSide)
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateServerSide,
 		OnIntermediate: func(hdr ws.Header, r io.Reader) error {
+			// The handler's pong/close reply goes straight to conn, bypassing
+			// lw's mutex (a pre-existing interleave hazard, tracked
+			// separately), so it needs its own deadline or a peer that stops
+			// reading pins this loop forever. Both setters use now+timeout, so
+			// a concurrent one can only push an in-flight write's deadline
+			// out, never shorten it.
+			wsutilx.SetWriteDeadline(conn, wsutilx.DefaultWriteTimeout.Load())
 			return controlHandler(hdr, r)
 		},
 	}
@@ -235,6 +245,9 @@ func (s *Server) vsiRecvLoop(ctx context.Context, conn net.Conn, lw *wsLockedWri
 		}
 
 		if hdr.OpCode.IsControl() {
+			// Same as OnIntermediate above: bound the reply this handler
+			// writes directly to conn.
+			wsutilx.SetWriteDeadline(conn, wsutilx.DefaultWriteTimeout.Load())
 			if err := controlHandler(hdr, rd); err != nil {
 				return classifyReadError(err)
 			}
@@ -286,7 +299,21 @@ func classifyReadError(err error) string {
 	return "error"
 }
 
-func (s *Server) vsiSendResponse(lw *wsLockedWriter, requestID, typ string, data interface{}) {
+// vsiExitReason lets a write-deadline expiry override the read classification.
+// When a write times out the writer closes the conn, so the recv loop's next
+// read fails with net.ErrClosed and classifyReadError reports "peer_close" for
+// what is really a server-side write failure. Only a timeout overrides: any
+// other recorded write error (EPIPE, ErrClosed) is collateral of the peer
+// going away, which the read reason already describes accurately.
+func vsiExitReason(readReason string, writeErr error) string {
+	var ne net.Error
+	if errors.As(writeErr, &ne) && ne.Timeout() {
+		return "write_timeout"
+	}
+	return readReason
+}
+
+func (s *Server) vsiSendResponse(lw *wsutilx.LockedWriter, requestID, typ string, data interface{}) {
 	resp := vsiOutMsg{
 		Type:      typ,
 		RequestID: requestID,
@@ -296,5 +323,5 @@ func (s *Server) vsiSendResponse(lw *wsLockedWriter, requestID, typ string, data
 	if err != nil {
 		return
 	}
-	lw.writeText(b)
+	lw.WriteText(b)
 }

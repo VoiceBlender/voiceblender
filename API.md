@@ -2666,6 +2666,8 @@ The per-connection buffer size defaults to **256 events** and is configurable vi
 
 The default of 256 is sized for healthy clients on a normal event stream (one inbound call generates ~10 events). Increase only when you have a legitimate slow-consumer scenario you can't fix at the client.
 
+**Write deadline.** Buffering only covers a client that reads slowly. A client that stops reading altogether eventually fills the socket send buffer, and every server → client frame is bounded by a **5 second write deadline**: a frame that cannot be written within that window fails the write and the server closes the connection, logging the disconnect with `reason=write_timeout`. Previously such a write blocked indefinitely; a client that kept *sending* while it had stopped reading held its connection, its send loop and its event subscription open for the lifetime of the process, because the inbound traffic kept refreshing the idle read deadline that would otherwise have torn it down. Note the `events_dropped` notice is written before the event that triggered it, so a connection wedged badly enough may be closed while reporting drops — the socket was already stuck; the notice is the messenger. Clients should reconnect and resync via REST.
+
 **Example:**
 
 ```bash

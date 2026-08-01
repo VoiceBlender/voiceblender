@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -254,7 +255,7 @@ type deleteRegistrationPayload struct {
 // ctx is scoped to the WebSocket connection. This runs on the recv loop, so any
 // command that waits on the network holds up every later command from the same
 // client.
-func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vsiInMsg) {
+func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
 	// ── Leg queries ─────────────────────────────────────────────────
@@ -1139,7 +1140,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 }
 
 // wsSimpleLegCommand handles the common pattern: parse {id}, call doFn(id), respond.
-func (s *Server) wsSimpleLegCommand(lw *wsLockedWriter, msg vsiInMsg, doFn func(string) error, status string) {
+func (s *Server) wsSimpleLegCommand(lw *wsutilx.LockedWriter, msg vsiInMsg, doFn func(string) error, status string) {
 	var p idPayload
 	if !s.wsParsePayload(lw, msg, &p) {
 		return
@@ -1153,7 +1154,7 @@ func (s *Server) wsSimpleLegCommand(lw *wsLockedWriter, msg vsiInMsg, doFn func(
 
 // wsParsePayload unmarshals msg.Payload into dst. Returns false and sends an
 // error response if parsing fails.
-func (s *Server) wsParsePayload(lw *wsLockedWriter, msg vsiInMsg, dst interface{}) bool {
+func (s *Server) wsParsePayload(lw *wsutilx.LockedWriter, msg vsiInMsg, dst interface{}) bool {
 	if len(msg.Payload) == 0 {
 		return true
 	}
@@ -1164,11 +1165,11 @@ func (s *Server) wsParsePayload(lw *wsLockedWriter, msg vsiInMsg, dst interface{
 	return true
 }
 
-func (s *Server) wsCommandResult(lw *wsLockedWriter, msg vsiInMsg, data interface{}) {
+func (s *Server) wsCommandResult(lw *wsutilx.LockedWriter, msg vsiInMsg, data interface{}) {
 	s.vsiSendResponse(lw, msg.RequestID, msg.Type+".result", data)
 }
 
-func (s *Server) wsCommandError(lw *wsLockedWriter, msg vsiInMsg, err error) {
+func (s *Server) wsCommandError(lw *wsutilx.LockedWriter, msg vsiInMsg, err error) {
 	code := 500
 	if ae, ok := err.(*apiError); ok {
 		code = ae.Code
@@ -1180,7 +1181,7 @@ func (s *Server) wsCommandError(lw *wsLockedWriter, msg vsiInMsg, err error) {
 }
 
 // wsCreateLeg handles create_leg over the VSI WebSocket, mirroring POST /v1/legs.
-func (s *Server) wsCreateLeg(lw *wsLockedWriter, msg vsiInMsg, req CreateLegRequest) {
+func (s *Server) wsCreateLeg(lw *wsutilx.LockedWriter, msg vsiInMsg, req CreateLegRequest) {
 	var (
 		view LegView
 		err  error
