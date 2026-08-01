@@ -1378,6 +1378,42 @@ Stop speech-to-text on a leg.
 
 ---
 
+### POST /v1/legs/{id}/stt/finalize
+
+Flush the STT buffer on a leg and force a final transcript for the audio spoken
+so far. **STT keeps running** — the provider session is not closed and no new
+`POST /v1/legs/{id}/stt` is needed afterwards. Use it when the caller already
+knows the speaker has finished (a barge-in, a push-to-talk release, an agent
+turn boundary) and does not want to wait for the provider's own endpointing.
+
+No request body.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "stt_finalized" }
+```
+
+**Provider support:** `deepgram` only. VoiceBlender's ElevenLabs integration
+commits on its own voice-activity detection and its Azure integration has no
+mid-stream flush, so both answer `501`.
+
+**Notes:**
+- The flushed transcript arrives on the usual `stt.text` event with
+  `is_final: true`. A segment containing **no speech produces no event at
+  all** — a `200` here is an acknowledgement that the flush was requested, not
+  a promise that a transcript follows. Do not block waiting for one.
+- Applies to leg-scoped STT started with `POST /v1/legs/{id}/stt`. A leg being
+  transcribed as part of a room STT session is not tracked per leg and returns
+  `404`. There is no room-level finalize.
+
+**Errors:**
+- `404` — No STT in progress on this leg
+- `409` — The STT session is not connected, or the flush could not be written
+- `501` — The active STT provider does not support finalize
+
+---
+
 ### POST /v1/legs/{id}/agent/elevenlabs
 
 Attach an ElevenLabs ConvAI agent to a leg.
@@ -2632,6 +2668,7 @@ The commands below mirror the corresponding REST endpoints and use **resource-fi
 | `room_play_volume` | `{"id":"...","playback_id":"pb-...","volume":2}` | Adjust active room playback volume |
 | `leg_stt_start` | `{"id":"...","provider":"deepgram","language":"en"}` | Start speech-to-text on a leg |
 | `leg_stt_stop` | `{"id":"..."}` | Stop STT on a leg |
+| `leg_stt_finalize` | `{"id":"..."}` | Flush the STT buffer on a leg and emit a final transcript without stopping STT (Deepgram only) |
 | `room_stt_start` | `{"id":"...","provider":"elevenlabs"}` | Start STT on every participant of a room (auto-extends to legs that join later) |
 | `room_stt_stop` | `{"id":"..."}` | Stop room STT |
 | `leg_tts` | `{"id":"...","text":"Hello","voice":"Joanna","provider":"aws"}` | Synthesize and play TTS on a leg; returns `{tts_id, status}` |

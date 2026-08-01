@@ -20,7 +20,7 @@ func TestVSIMetadata_AllNewCommandsRegistered(t *testing.T) {
 		"leg_play_start", "leg_play_stop", "leg_play_volume",
 		"room_play_start", "room_play_stop", "room_play_volume",
 		// STT
-		"leg_stt_start", "leg_stt_stop", "room_stt_start", "room_stt_stop",
+		"leg_stt_start", "leg_stt_stop", "leg_stt_finalize", "room_stt_start", "room_stt_stop",
 		// TTS
 		"leg_tts", "room_tts",
 		// Agent
@@ -119,6 +119,7 @@ var routeToVSICommand = map[string]string{
 	"Post /legs/{id}/record/pause":                    "leg_record_pause",
 	"Post /legs/{id}/record/resume":                   "leg_record_resume",
 	"Post /legs/{id}/stt":                             "leg_stt_start",
+	"Post /legs/{id}/stt/finalize":                    "leg_stt_finalize",
 	"Delete /legs/{id}/stt":                           "leg_stt_stop",
 	"Post /legs/{id}/agent/elevenlabs":                "leg_agent_elevenlabs",
 	"Post /legs/{id}/agent/vapi":                      "leg_agent_vapi",
