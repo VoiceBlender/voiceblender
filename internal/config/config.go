@@ -60,7 +60,19 @@ type Config struct {
 	RTPPortMax                int
 	SIPJitterBufferMs         int
 	SIPJitterBufferMaxMs      int
-	SIPReferAutoDial          bool
+	// SIPMultiStreamEnabled allows a SIP dialog to negotiate more than one
+	// m=audio section (RFC 3264 §5.1). With it off, extra audio sections a peer
+	// offers are answered with port 0 and the stream API refuses to add any.
+	SIPMultiStreamEnabled bool
+	// SIPMultiStreamMax caps the audio sections per dialog. Each one consumes a
+	// port from the RTP_PORT_MIN/MAX pool.
+	SIPMultiStreamMax int
+	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
+	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
+	// separately from multi-stream because it changes the SDP single-stream
+	// calls emit whenever a peer offers a section we don't handle (e.g. video).
+	SIPSDPStrictMLineAnswer bool
+	SIPReferAutoDial        bool
 	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
 	// awaiting an app accept/decline decision (via the transfer commands) before
 	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
@@ -173,6 +185,9 @@ func Load() Config {
 		RTPPortMax:                envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:         envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:      envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPMultiStreamEnabled:     envBool("SIP_MULTI_STREAM_ENABLED", false),
+		SIPMultiStreamMax:         multiStreamMax(envInt("SIP_MULTI_STREAM_MAX", 4)),
+		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
 		SIPAutoRinging:            os.Getenv("SIP_AUTO_RINGING") == "true",
@@ -251,6 +266,22 @@ func envDuration(key string, def time.Duration) time.Duration {
 // produces ~10 events). The upper bound exists only to guard against
 // pathological config — at 1M slots the per-client memory footprint reaches
 // roughly 100 MB at typical event sizes.
+// multiStreamMax clamps the per-dialog audio stream cap. The ceiling keeps a
+// single misconfigured dialog from draining the RTP port pool.
+func multiStreamMax(n int) int {
+	const (
+		minStreams = 1
+		maxStreams = 16
+	)
+	if n < minStreams {
+		return minStreams
+	}
+	if n > maxStreams {
+		return maxStreams
+	}
+	return n
+}
+
 func vsiBufferSize(n int) int {
 	const (
 		minSize = 16

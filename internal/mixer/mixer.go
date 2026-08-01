@@ -111,9 +111,13 @@ type Participant struct {
 type Mixer struct {
 	mu           sync.Mutex
 	participants map[string]*Participant
-	stopCh       chan struct{}
-	stopped      bool
-	log          *slog.Logger
+	// stopCh is replaced whenever a stopped mixer restarts, so every loop
+	// captures the channel it was spawned against rather than reading this
+	// field: a loop still winding down from the previous run would otherwise
+	// race the restart that swaps it.
+	stopCh  chan struct{}
+	stopped bool
+	log     *slog.Logger
 
 	sampleRate      int
 	samplesPerFrame int
@@ -394,10 +398,11 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *P
 		m.stopped = false
 	}
 	m.participants[id] = p
+	stopCh := m.stopCh
 	m.mu.Unlock()
 
-	go m.readLoop(p)
-	go m.writeLoop(p)
+	go m.readLoop(p, stopCh)
+	go m.writeLoop(p, stopCh)
 	return p
 }
 
@@ -426,9 +431,10 @@ func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 		m.stopped = false
 	}
 	m.participants[id] = p
+	stopCh := m.stopCh
 	m.mu.Unlock()
 
-	go m.readLoop(p)
+	go m.readLoop(p, stopCh)
 }
 
 func (m *Mixer) RemoveParticipant(id string) {
@@ -540,8 +546,9 @@ func (m *Mixer) Start() {
 		m.stopCh = make(chan struct{})
 		m.stopped = false
 	}
+	stopCh := m.stopCh
 	m.mu.Unlock()
-	go m.mixLoop()
+	go m.mixLoop(stopCh)
 }
 
 func (m *Mixer) Stop() {
@@ -551,8 +558,9 @@ func (m *Mixer) Stop() {
 		return
 	}
 	m.stopped = true
+	stopCh := m.stopCh
 	m.mu.Unlock()
-	close(m.stopCh)
+	close(stopCh)
 }
 
 // recoverParticipant removes a participant whose IO loop panicked and notifies
@@ -627,12 +635,12 @@ func (m *Mixer) recoverTick() {
 
 // readLoop continuously reads PCM frames from a participant's Reader
 // and buffers them for the mix loop. Blocks on IO (RTP receive).
-func (m *Mixer) readLoop(p *Participant) {
+func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			return
 		case <-p.done:
 			return
@@ -658,7 +666,7 @@ func (m *Mixer) readLoop(p *Participant) {
 			}
 			select {
 			case p.incoming <- frame:
-			case <-m.stopCh:
+			case <-stopCh:
 				return
 			case <-p.done:
 				return
@@ -670,11 +678,11 @@ func (m *Mixer) readLoop(p *Participant) {
 // writeLoop continuously drains mixed audio from the outgoing channel
 // and writes to the participant's Writer. Blocks on IO (RTP send).
 // This runs on its own goroutine so the mix tick never blocks.
-func (m *Mixer) writeLoop(p *Participant) {
+func (m *Mixer) writeLoop(p *Participant, stopCh <-chan struct{}) {
 	defer m.recoverParticipant(p, "writeLoop")
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			return
 		case <-p.done:
 			return
@@ -689,13 +697,13 @@ func (m *Mixer) writeLoop(p *Participant) {
 	}
 }
 
-func (m *Mixer) mixLoop() {
+func (m *Mixer) mixLoop(stopCh <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(Ptime) * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			m.safeMixTick()

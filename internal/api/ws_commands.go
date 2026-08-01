@@ -76,9 +76,10 @@ type sttStartPayload struct {
 
 // answerLegPayload carries the inputs for answer_leg.
 type answerLegPayload struct {
-	ID              string `json:"id"`
-	SpeechDetection *bool  `json:"speech_detection,omitempty"`
-	Codec           string `json:"codec,omitempty"`
+	ID              string            `json:"id"`
+	SpeechDetection *bool             `json:"speech_detection,omitempty"`
+	Codec           string            `json:"codec,omitempty"`
+	Streams         []AnswerLegStream `json:"streams,omitempty"`
 }
 
 // deleteLegPayload carries the inputs for delete_leg.
@@ -216,6 +217,31 @@ type setLegRolePayload struct {
 	Role  string `json:"role"`
 }
 
+// legStreamPayload addresses one of a leg's audio streams.
+type legStreamPayload struct {
+	LegID    string `json:"leg_id"`
+	StreamID string `json:"stream_id"`
+}
+
+// legStreamAddPayload adds an audio stream to a live dialog.
+type legStreamAddPayload struct {
+	LegID     string `json:"leg_id"`
+	Direction string `json:"direction,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Label     string `json:"label,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+}
+
+// legStreamRoomPayload attaches one of a leg's streams to a room.
+type legStreamRoomPayload struct {
+	LegID    string `json:"leg_id"`
+	StreamID string `json:"stream_id"`
+	RoomID   string `json:"room_id"`
+	Role     string `json:"role,omitempty"`
+}
+
 // challengeLegPayload combines a leg id with the digest challenge inputs for
 // challenge_leg.
 type challengeLegPayload struct {
@@ -292,7 +318,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -614,6 +640,80 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		view, err := s.doSetLegRole(p.LegID, SetLegRoleRequest{Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_list":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		views, err := s.doListLegStreams(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, views)
+
+	case "leg_stream_get":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetLegStream(p.LegID, p.StreamID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_add":
+		var p legStreamAddPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doAddLegStream(ctx, p.LegID, AddLegStreamRequest{
+			Direction: p.Direction, Lang: p.Lang, Content: p.Content,
+			Label: p.Label, RoomID: p.RoomID, Role: p.Role,
+		})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_remove":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doRemoveLegStream(ctx, p.LegID, p.StreamID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, vsiStatusResponse{Status: "ok"})
+
+	case "leg_stream_attach_room":
+		var p legStreamRoomPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doAttachLegStreamRoom(p.LegID, p.StreamID, AttachStreamRoomRequest{RoomID: p.RoomID, Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_detach_room":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doDetachLegStreamRoom(p.LegID, p.StreamID)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

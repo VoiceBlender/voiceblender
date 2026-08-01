@@ -122,6 +122,20 @@ type LegCommandFailedData struct {
 	Error   string `json:"error"`
 }
 
+// LegStreamData describes one of a leg's additional audio streams (one m=audio
+// section beyond the primary). Reason is set only on the rejected and failed
+// events; RoomID and Role only on room changes.
+type LegStreamData struct {
+	LegScope
+	StreamID  string `json:"stream_id,omitempty"`
+	MID       string `json:"mid,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 // --- Transfer (SIP REFER) ---
 
 // LegTransferInitiatedData fires after we successfully send a REFER request

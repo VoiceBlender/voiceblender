@@ -58,6 +58,12 @@ type SDPConfig struct {
 	// 8 kHz regardless of audio codec, and unilaterally upgrading to 16 kHz
 	// breaks their DTMF.
 	DTMFClockRate int
+
+	// Streams, when non-empty, replaces the single audio section the generators
+	// would otherwise derive from RTPPort/Codecs/AMR*/DTMF*. Sections are
+	// emitted in slice order; a zero Port rejects one per RFC 3264 §6. The
+	// Text* fields still control the m=text section.
+	Streams []AudioStream
 }
 
 // SDPMedia holds parsed remote media parameters.
@@ -73,10 +79,64 @@ type SDPMedia struct {
 	Direction     string                     // "sendrecv", "sendonly", "recvonly", "inactive"; empty = sendrecv
 	DTMFEventPTs  map[uint8]int              // telephone-event (RFC 4733) PT -> clock rate, as advertised by the remote
 
+	// Audio holds every m=audio section in SDP order, including ones the peer
+	// rejected with port 0. MLines holds every m= section of any kind, so an
+	// answer can preserve the count and ordering RFC 3264 §6 requires.
+	Audio  []RemoteAudioStream
+	MLines []RemoteMLine
+
+	// PrimaryAudio indexes the Audio entry the scalar fields above mirror: the
+	// first section with a non-zero port, or -1 when there is none. The scalars
+	// are written only by syncPrimary.
+	PrimaryAudio int
+
 	// Text (RTT, T.140 / RFC 4103). Non-nil when the remote SDP carried an
 	// m=text line with a non-zero port. A port of zero (peer rejecting the
 	// text section per RFC 3264) leaves this field nil.
 	Text *SDPTextMedia
+}
+
+// PrimaryStream returns the audio section the scalar fields mirror, or nil when
+// every offered audio section was rejected.
+func (m *SDPMedia) PrimaryStream() *RemoteAudioStream {
+	if m.PrimaryAudio < 0 || m.PrimaryAudio >= len(m.Audio) {
+		return nil
+	}
+	return &m.Audio[m.PrimaryAudio]
+}
+
+// AudioByMID returns the audio section carrying the given a=mid value.
+func (m *SDPMedia) AudioByMID(mid string) (*RemoteAudioStream, bool) {
+	if mid == "" {
+		return nil, false
+	}
+	for i := range m.Audio {
+		if m.Audio[i].MID == mid {
+			return &m.Audio[i], true
+		}
+	}
+	return nil, false
+}
+
+// syncPrimary mirrors the primary audio section onto the legacy scalar fields.
+// It is the only writer of those fields.
+func (m *SDPMedia) syncPrimary() {
+	p := m.PrimaryStream()
+	if p == nil {
+		return
+	}
+	m.RemoteIP = p.RemoteIP
+	m.RemotePort = p.RemotePort
+	if p.AddressFamily != "" {
+		m.AddressFamily = p.AddressFamily
+	}
+	m.Codecs = p.Codecs
+	m.CodecPTs = p.CodecPTs
+	m.CodecRates = p.CodecRates
+	m.CodecFmtp = p.CodecFmtp
+	m.Ptime = p.Ptime
+	m.Direction = p.Direction
+	m.DTMFEventPTs = p.DTMFEventPTs
 }
 
 // SDPTextMedia holds parsed remote RTT parameters.
@@ -300,13 +360,143 @@ func buildSessionDescription(localIP string) *pionsdp.SessionDescription {
 	}
 }
 
-// addCodecAttributes appends rtpmap and fmtp attributes for a codec.
-func addCodecAttributes(md *pionsdp.MediaDescription, pt uint8, c codec.CodecType, cfg SDPConfig) {
-	md.Attributes = append(md.Attributes,
-		pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d %s", pt, codecRtpmap(c))))
-	if fmtp := codecFmtp(c, cfg.AMRWBOctetAligned, cfg.AMRWBModeSet, cfg.AMRNBOctetAligned, cfg.AMRNBModeSet); fmtp != "" {
+// buildAudioMediaDescription renders one m=audio section. A zero s.Port emits
+// the RFC 3264 §6 rejection form: port 0 and no attributes.
+func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
+	md := &pionsdp.MediaDescription{
+		MediaName: pionsdp.MediaName{
+			Media:  "audio",
+			Port:   pionsdp.RangedPort{Value: s.Port},
+			Protos: []string{"RTP", "AVP"},
+		},
+	}
+
+	if s.Port == 0 {
+		md.MediaName.Formats = []string{"0"}
+		return md
+	}
+
+	dtmfPT := s.DTMFPT
+	if dtmfPT == 0 {
+		dtmfPT = 101
+	}
+	dtmfRate := s.DTMFClockRate
+	if dtmfRate == 0 {
+		dtmfRate = 8000
+		if len(s.Codecs) > 0 {
+			dtmfRate = TelephoneEventClockRate(s.Codecs[0])
+		}
+	}
+
+	formats := make([]string, 0, len(s.Codecs)+2)
+	for _, c := range s.Codecs {
+		formats = append(formats, strconv.Itoa(int(s.PayloadType(c))))
+	}
+	if s.OfferTE48k {
+		formats = append(formats, "100") // telephone-event/48000
+	}
+	formats = append(formats, strconv.Itoa(int(dtmfPT)))
+	md.MediaName.Formats = formats
+
+	for _, c := range s.Codecs {
+		pt := s.PayloadType(c)
 		md.Attributes = append(md.Attributes,
-			pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", pt, fmtp)))
+			pionsdp.NewAttribute("rtpmap", fmt.Sprintf("%d %s", pt, codecRtpmap(c))))
+		if fmtp := codecFmtp(c, s.AMRWBOctetAligned, s.AMRWBModeSet, s.AMRNBOctetAligned, s.AMRNBModeSet); fmtp != "" {
+			md.Attributes = append(md.Attributes,
+				pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", pt, fmtp)))
+		}
+	}
+	if s.OfferTE48k {
+		addTelephoneEvent(md, 100, 48000)
+	}
+	addTelephoneEvent(md, dtmfPT, dtmfRate)
+
+	ptime := s.Ptime
+	if ptime == 0 {
+		ptime = 20
+	}
+	direction := s.Direction
+	if direction == "" {
+		direction = DirSendRecv
+	}
+	md.Attributes = append(md.Attributes,
+		pionsdp.NewAttribute("ptime", strconv.Itoa(ptime)),
+		pionsdp.NewPropertyAttribute(direction),
+	)
+	for _, kv := range []struct{ key, val string }{
+		{"mid", s.MID},         // RFC 5888
+		{"label", s.Label},     // RFC 4574
+		{"content", s.Content}, // RFC 4796
+		{"lang", s.Lang},       // RFC 8866
+	} {
+		if kv.val != "" {
+			md.Attributes = append(md.Attributes, pionsdp.NewAttribute(kv.key, kv.val))
+		}
+	}
+	md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute("rtcp-mux"))
+
+	return md
+}
+
+// offerStream derives the single audio section a legacy (Streams-less) offer
+// emits from the scalar SDPConfig fields.
+func offerStream(cfg SDPConfig) AudioStream {
+	hasOpus := false
+	for _, c := range cfg.Codecs {
+		if c == codec.CodecOpus {
+			hasOpus = true
+			break
+		}
+	}
+	// PT 101's clock rate follows the preferred codec so it matches the one the
+	// peer is most likely to select (AMR-WB needs 16 kHz).
+	teRate := 8000
+	if len(cfg.Codecs) > 0 {
+		teRate = TelephoneEventClockRate(cfg.Codecs[0])
+	}
+	return AudioStream{
+		Port:              cfg.RTPPort,
+		Direction:         DirSendRecv,
+		Codecs:            cfg.Codecs,
+		DTMFPT:            101,
+		DTMFClockRate:     teRate,
+		OfferTE48k:        hasOpus,
+		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
+		AMRWBModeSet:      cfg.AMRWBModeSet,
+		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
+		AMRNBModeSet:      cfg.AMRNBModeSet,
+	}
+}
+
+// answerStream derives the single audio section a legacy (Streams-less) answer
+// or re-INVITE emits.
+func answerStream(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, direction string) AudioStream {
+	dtmfPT, dtmfRate := resolveDTMF(cfg, selected)
+	return AudioStream{
+		Port:              cfg.RTPPort,
+		Direction:         direction,
+		Codecs:            []codec.CodecType{selected},
+		CodecPTs:          map[codec.CodecType]uint8{selected: selectedPT},
+		DTMFPT:            dtmfPT,
+		DTMFClockRate:     dtmfRate,
+		OfferTE48k:        selected == codec.CodecOpus,
+		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
+		AMRWBModeSet:      cfg.AMRWBModeSet,
+		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
+		AMRNBModeSet:      cfg.AMRNBModeSet,
+	}
+}
+
+// appendAudioSections renders cfg.Streams when set, otherwise the single
+// section described by fallback.
+func appendAudioSections(sd *pionsdp.SessionDescription, cfg SDPConfig, fallback AudioStream) {
+	streams := cfg.Streams
+	if len(streams) == 0 {
+		streams = []AudioStream{fallback}
+	}
+	for _, s := range streams {
+		sd.MediaDescriptions = append(sd.MediaDescriptions, buildAudioMediaDescription(s))
 	}
 }
 
@@ -445,59 +635,9 @@ func rejectedTextSection() *pionsdp.MediaDescription {
 func GenerateOffer(cfg SDPConfig) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
-	// Check if Opus is offered — if so we also offer telephone-event at 48kHz.
-	hasOpus := false
-	for _, c := range cfg.Codecs {
-		if c == codec.CodecOpus {
-			hasOpus = true
-			break
-		}
-	}
+	appendAudioSections(sd, cfg, offerStream(cfg))
 
-	// Build format list for m= line.
-	formats := make([]string, 0, len(cfg.Codecs)+2)
-	for _, c := range cfg.Codecs {
-		formats = append(formats, strconv.Itoa(int(c.PayloadType())))
-	}
-	if hasOpus {
-		formats = append(formats, "100") // telephone-event/48000
-	}
-	formats = append(formats, "101") // telephone-event
-
-	// PT 101 telephone-event clock rate follows the preferred codec so it
-	// matches the codec the peer is most likely to select (AMR-WB needs 16kHz).
-	teRate := 8000
-	if len(cfg.Codecs) > 0 {
-		teRate = TelephoneEventClockRate(cfg.Codecs[0])
-	}
-
-	md := &pionsdp.MediaDescription{
-		MediaName: pionsdp.MediaName{
-			Media:   "audio",
-			Port:    pionsdp.RangedPort{Value: cfg.RTPPort},
-			Protos:  []string{"RTP", "AVP"},
-			Formats: formats,
-		},
-	}
-
-	// Add codec attributes.
-	for _, c := range cfg.Codecs {
-		addCodecAttributes(md, c.PayloadType(), c, cfg)
-	}
-	if hasOpus {
-		addTelephoneEvent(md, 100, 48000)
-	}
-	addTelephoneEvent(md, 101, teRate)
-
-	md.Attributes = append(md.Attributes,
-		pionsdp.NewAttribute("ptime", "20"),
-		pionsdp.NewPropertyAttribute("sendrecv"),
-		pionsdp.NewPropertyAttribute("rtcp-mux"),
-	)
-
-	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
-
-	if textMD := buildTextMediaDescription(cfg, "sendrecv"); textMD != nil {
+	if textMD := buildTextMediaDescription(cfg, DirSendRecv); textMD != nil {
 		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
 	}
 
@@ -512,39 +652,10 @@ func GenerateOffer(cfg SDPConfig) []byte {
 func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, textRejected bool) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
-	dtmfPT, dtmfRate := resolveDTMF(cfg, selected)
-
-	formats := []string{strconv.Itoa(int(selectedPT))}
-	if selected == codec.CodecOpus {
-		formats = append(formats, "100") // telephone-event/48000
-	}
-	formats = append(formats, strconv.Itoa(int(dtmfPT)))
-
-	md := &pionsdp.MediaDescription{
-		MediaName: pionsdp.MediaName{
-			Media:   "audio",
-			Port:    pionsdp.RangedPort{Value: cfg.RTPPort},
-			Protos:  []string{"RTP", "AVP"},
-			Formats: formats,
-		},
-	}
-
-	addCodecAttributes(md, selectedPT, selected, cfg)
-	if selected == codec.CodecOpus {
-		addTelephoneEvent(md, 100, 48000)
-	}
-	addTelephoneEvent(md, dtmfPT, dtmfRate)
-
-	md.Attributes = append(md.Attributes,
-		pionsdp.NewAttribute("ptime", "20"),
-		pionsdp.NewPropertyAttribute("sendrecv"),
-		pionsdp.NewPropertyAttribute("rtcp-mux"),
-	)
-
-	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
+	appendAudioSections(sd, cfg, answerStream(cfg, selected, selectedPT, DirSendRecv))
 
 	if cfg.TextRTPPort != 0 {
-		if tmd := buildTextMediaDescription(cfg, "sendrecv"); tmd != nil {
+		if tmd := buildTextMediaDescription(cfg, DirSendRecv); tmd != nil {
 			sd.MediaDescriptions = append(sd.MediaDescriptions, tmd)
 		}
 	} else if textRejected {
@@ -568,41 +679,81 @@ func ParseSDP(raw []byte) (*SDPMedia, error) {
 		CodecRates:   make(map[codec.CodecType]int),
 		CodecFmtp:    make(map[codec.CodecType]string),
 		DTMFEventPTs: make(map[uint8]int),
+		PrimaryAudio: -1,
 	}
 
 	// Session-level c= line.
+	sessionIP, sessionAF := "", ""
 	if sd.ConnectionInformation != nil && sd.ConnectionInformation.Address != nil {
-		m.RemoteIP = sd.ConnectionInformation.Address.Address
-		m.AddressFamily = sd.ConnectionInformation.AddressType
+		sessionIP = sd.ConnectionInformation.Address.Address
+		sessionAF = sd.ConnectionInformation.AddressType
+		m.RemoteIP = sessionIP
+		m.AddressFamily = sessionAF
 	}
 
-	audioParsed := false
-	for _, md := range sd.MediaDescriptions {
+	// Session-level direction, inherited by sections that don't carry their own.
+	sessionDir := ""
+	for _, a := range sd.Attributes {
+		switch a.Key {
+		case DirSendRecv, DirSendOnly, DirRecvOnly, DirInactive:
+			sessionDir = a.Key
+		}
+	}
+
+	for i, md := range sd.MediaDescriptions {
+		ml := RemoteMLine{
+			Index:    i,
+			Media:    md.MediaName.Media,
+			Proto:    md.MediaName.Protos,
+			Port:     md.MediaName.Port.Value,
+			Formats:  md.MediaName.Formats,
+			AudioIdx: -1,
+		}
+		if v, ok := md.Attribute("mid"); ok {
+			ml.MID = v
+		}
+
 		switch md.MediaName.Media {
 		case "audio":
-			if audioParsed {
-				continue
+			as := parseAudioMedia(md, i, sessionIP, sessionAF, sessionDir)
+			ml.AudioIdx = len(m.Audio)
+			m.Audio = append(m.Audio, as)
+			if m.PrimaryAudio < 0 && as.RemotePort != 0 {
+				m.PrimaryAudio = ml.AudioIdx
 			}
-			parseAudioMedia(md, m)
-			audioParsed = true
 		case "text":
 			parseTextMedia(md, m, &sd)
 		}
+		m.MLines = append(m.MLines, ml)
 	}
+
+	m.syncPrimary()
 
 	if m.RemoteIP == "" {
 		return nil, fmt.Errorf("no connection address found in SDP")
 	}
-	if m.RemotePort == 0 {
+	if m.PrimaryAudio < 0 {
 		return nil, fmt.Errorf("no audio media line found in SDP")
 	}
 
 	return m, nil
 }
 
-// parseAudioMedia populates the audio-related fields of m from a single
-// audio MediaDescription.
-func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
+// parseAudioMedia extracts one m=audio section. sessionIP/sessionAF/sessionDir
+// are the session-level fallbacks for the c= line and direction attribute.
+func parseAudioMedia(md *pionsdp.MediaDescription, index int, sessionIP, sessionAF, sessionDir string) RemoteAudioStream {
+	m := RemoteAudioStream{
+		Index:         index,
+		RemoteIP:      sessionIP,
+		AddressFamily: sessionAF,
+		Direction:     sessionDir,
+		Ptime:         20,
+		CodecPTs:      make(map[codec.CodecType]uint8),
+		CodecRates:    make(map[codec.CodecType]int),
+		CodecFmtp:     make(map[codec.CodecType]string),
+		DTMFEventPTs:  make(map[uint8]int),
+	}
+
 	m.RemotePort = md.MediaName.Port.Value
 	if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
 		m.RemoteIP = md.ConnectionInformation.Address.Address
@@ -657,8 +808,18 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 			}
 		}
 		switch a.Key {
-		case "sendrecv", "sendonly", "recvonly", "inactive":
+		case DirSendRecv, DirSendOnly, DirRecvOnly, DirInactive:
 			m.Direction = a.Key
+		case "mid":
+			m.MID = a.Value
+		case "label":
+			m.Label = a.Value
+		case "content":
+			m.Content = a.Value
+		case "lang":
+			m.Lang = a.Value
+		case "rtcp-mux":
+			m.RTCPMux = true
 		}
 	}
 
@@ -699,6 +860,8 @@ func parseAudioMedia(md *pionsdp.MediaDescription, m *SDPMedia) {
 			}
 		}
 	}
+
+	return m
 }
 
 // parseTextMedia parses an m=text section (RFC 4103) and, when port != 0,
@@ -752,36 +915,7 @@ func parseTextMedia(md *pionsdp.MediaDescription, m *SDPMedia, sd *pionsdp.Sessi
 func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, direction string) []byte {
 	sd := buildSessionDescription(cfg.LocalIP)
 
-	dtmfPT, dtmfRate := resolveDTMF(cfg, selected)
-
-	formats := []string{strconv.Itoa(int(selectedPT))}
-	if selected == codec.CodecOpus {
-		formats = append(formats, "100") // telephone-event/48000
-	}
-	formats = append(formats, strconv.Itoa(int(dtmfPT)))
-
-	md := &pionsdp.MediaDescription{
-		MediaName: pionsdp.MediaName{
-			Media:   "audio",
-			Port:    pionsdp.RangedPort{Value: cfg.RTPPort},
-			Protos:  []string{"RTP", "AVP"},
-			Formats: formats,
-		},
-	}
-
-	addCodecAttributes(md, selectedPT, selected, cfg)
-	if selected == codec.CodecOpus {
-		addTelephoneEvent(md, 100, 48000)
-	}
-	addTelephoneEvent(md, dtmfPT, dtmfRate)
-
-	md.Attributes = append(md.Attributes,
-		pionsdp.NewAttribute("ptime", "20"),
-		pionsdp.NewPropertyAttribute(direction),
-		pionsdp.NewPropertyAttribute("rtcp-mux"),
-	)
-
-	sd.MediaDescriptions = append(sd.MediaDescriptions, md)
+	appendAudioSections(sd, cfg, answerStream(cfg, selected, selectedPT, direction))
 
 	if textMD := buildTextMediaDescription(cfg, direction); textMD != nil {
 		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
@@ -802,6 +936,27 @@ func NegotiateCodec(remote *SDPMedia, supported []codec.CodecType) (codec.CodecT
 // remote offer and the supported list; otherwise selection falls back to the
 // regular preference order.
 func NegotiateCodecPreferred(remote *SDPMedia, supported []codec.CodecType, preferred codec.CodecType) (codec.CodecType, uint8, bool) {
+	if remote == nil {
+		return codec.CodecUnknown, 0, false
+	}
+	return negotiateCodec(remote.Codecs, remote.CodecPTs, supported, preferred)
+}
+
+// NegotiateCodecStream is NegotiateCodecPreferred for one parsed m=audio
+// section, so each stream of a multi-stream offer negotiates independently.
+func NegotiateCodecStream(remote *RemoteAudioStream, supported []codec.CodecType, preferred codec.CodecType) (codec.CodecType, uint8, bool) {
+	if remote == nil {
+		return codec.CodecUnknown, 0, false
+	}
+	return negotiateCodec(remote.Codecs, remote.CodecPTs, supported, preferred)
+}
+
+func negotiateCodec(offeredCodecs []codec.CodecType, offeredPTs map[codec.CodecType]uint8, supported []codec.CodecType, preferred codec.CodecType) (codec.CodecType, uint8, bool) {
+	remote := struct {
+		Codecs   []codec.CodecType
+		CodecPTs map[codec.CodecType]uint8
+	}{offeredCodecs, offeredPTs}
+
 	if preferred != codec.CodecUnknown {
 		offered := false
 		for _, o := range remote.Codecs {

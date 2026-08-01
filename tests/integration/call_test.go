@@ -116,17 +116,20 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	})
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:            "127.0.0.1",
-		ListenIP:          "127.0.0.1",
-		ExternalIP:        cfg.SIPExternalIP,
-		BindPort:          sipPort,
-		SIPHost:           name,
-		Codecs:            codecs,
-		AMRWBMode:         cfg.AMRWBMode,
-		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
-		Log:               log,
-		UseSourceSocket:   cfg.SIPUseSourceSocket,
-		Registrar:         registrar,
+		BindIP:             "127.0.0.1",
+		ListenIP:           "127.0.0.1",
+		ExternalIP:         cfg.SIPExternalIP,
+		BindPort:           sipPort,
+		SIPHost:            name,
+		Codecs:             codecs,
+		AMRWBMode:          cfg.AMRWBMode,
+		AMRWBOctetAligned:  cfg.AMRWBOctetAligned,
+		Log:                log,
+		UseSourceSocket:    cfg.SIPUseSourceSocket,
+		Registrar:          registrar,
+		MultiStreamEnabled: cfg.SIPMultiStreamEnabled,
+		MultiStreamMax:     cfg.SIPMultiStreamMax,
+		StrictMLineAnswer:  cfg.SIPSDPStrictMLineAnswer,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)

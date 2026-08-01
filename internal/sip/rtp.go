@@ -87,6 +87,12 @@ func (s *RTPSession) getRemote() *net.UDPAddr {
 	return (*net.UDPAddr)(atomic.LoadPointer(&s.remoteAddr))
 }
 
+// RemoteAddr returns the address media is currently sent to, or nil before the
+// first SetRemote. Reflects symmetric-RTP latching as well as SDP negotiation.
+func (s *RTPSession) RemoteAddr() *net.UDPAddr {
+	return s.getRemote()
+}
+
 // setRemote stores the remote address atomically.
 func (s *RTPSession) setRemote(addr *net.UDPAddr) {
 	atomic.StorePointer(&s.remoteAddr, unsafe.Pointer(addr))

@@ -20,6 +20,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/emiago/sipgo"
@@ -152,7 +153,7 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
@@ -171,6 +172,20 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 			}
 			preferred = c
 		}
+		if len(streams) > 0 {
+			if !s.SIPEngine.MultiStreamEnabled() {
+				return newAPIError(http.StatusConflict, "multi-stream is disabled (SIP_MULTI_STREAM_ENABLED)")
+			}
+			for i, st := range streams {
+				if st.RoomID == "" {
+					continue
+				}
+				if _, ok := s.RoomMgr.Get(st.RoomID); !ok {
+					return newAPIError(http.StatusNotFound, "streams[%d]: room %q not found", i, st.RoomID)
+				}
+			}
+			s.setStreamRoomsOverride(id, streams)
+		}
 		if speechDetection != nil {
 			s.setSpeechOverride(id, speechDetection)
 		}
@@ -179,6 +194,9 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 	case *leg.WhatsAppLeg:
 		if codecName != "" {
 			return newAPIError(http.StatusBadRequest, "codec selection is not supported for WhatsApp legs")
+		}
+		if len(streams) > 0 {
+			return newAPIError(http.StatusBadRequest, "multiple audio streams are not supported for WhatsApp legs")
 		}
 		if err := tl.RequestAnswer(); err != nil {
 			return newAPIError(http.StatusConflict, "%s", err.Error())
@@ -270,7 +288,7 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -550,17 +568,17 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // HandleReInvite processes a remote re-INVITE by finding the matching SIPLeg
 // via Call-ID and delegating to its hold/unhold handler. Returns the SDP
 // answer to include in the 200 OK response.
-func (s *Server) HandleReInvite(callID string, direction string) []byte {
+func (s *Server) HandleReInvite(callID string, offer []byte) []byte {
 	for _, l := range s.LegMgr.List() {
 		sl, ok := l.(*leg.SIPLeg)
 		if !ok {
 			continue
 		}
 		if sl.CallID() == callID {
-			sdp := sl.ReInviteAnswerSDP(direction)
-			sl.HandleRemoteHold(direction)
 			// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
 			sl.ResetSessionTimer()
+			sdp, direction := sl.ApplyRemoteOffer(offer)
+			sl.HandleRemoteHold(direction)
 			return sdp
 		}
 	}
@@ -572,7 +590,7 @@ func (s *Server) HandleReInvite(callID string, direction string) []byte {
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, direction string, hasSDP bool) []byte {
+func (s *Server) HandleUpdate(callID string, offer []byte, hasSDP bool) []byte {
 	for _, l := range s.LegMgr.List() {
 		sl, ok := l.(*leg.SIPLeg)
 		if !ok {
@@ -581,7 +599,7 @@ func (s *Server) HandleUpdate(callID string, direction string, hasSDP bool) []by
 		if sl.CallID() == callID {
 			sl.ResetSessionTimer()
 			if hasSDP {
-				sdp := sl.ReInviteAnswerSDP(direction)
+				sdp, direction := sl.ApplyRemoteOffer(offer)
 				sl.HandleRemoteHold(direction)
 				return sdp
 			}
@@ -611,6 +629,11 @@ func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 // mixer stops pushing frames before Hangup closes the socket.
 // Caller MUST publish LegDisconnected before any webhook is cleared.
 func (s *Server) cleanupLeg(l leg.Leg) {
+	// Secondary streams may be mixed into rooms other than the leg's own, so
+	// they have to be detached explicitly — removing the leg from its room only
+	// reaches the streams parked there.
+	s.detachLegStreams(l)
+
 	if roomID := l.RoomID(); roomID != "" {
 		// A failed removal is logged and swallowed: the rest of the teardown
 		// still has to run, so this never returns an error to abort on.
@@ -630,6 +653,22 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.cleanupLegAgent(l.ID())
 	s.stopLegRecording(l.ID())
 	s.LegMgr.Remove(l.ID())
+}
+
+// detachLegStreams removes every secondary audio stream of l from whichever
+// room it was attached to.
+func (s *Server) detachLegStreams(l leg.Leg) {
+	sl, ok := l.(*leg.SIPLeg)
+	if !ok {
+		return
+	}
+	for streamID, roomID := range sl.StreamRooms() {
+		rm, ok := s.RoomMgr.Get(roomID)
+		if !ok {
+			continue
+		}
+		rm.RemoveLegStream(room.StreamParticipantID(l.ID(), streamID))
+	}
 }
 
 // watchLegDialogEnd blocks until a connected leg ends, then tears it down and
@@ -888,6 +927,30 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		return LegView{}, newAPIError(http.StatusBadRequest, "invalid SIP URI: %v", err)
 	}
 
+	// Reject an unsatisfiable multi-stream offer up front: letting it through
+	// would surface as a failed INVITE, which reads like a network problem.
+	if len(req.Streams) > 0 {
+		if !s.SIPEngine.MultiStreamEnabled() {
+			return LegView{}, newAPIError(http.StatusConflict, "multi-stream is disabled (SIP_MULTI_STREAM_ENABLED)")
+		}
+		if total, max := len(req.Streams)+1, s.SIPEngine.MultiStreamMax(); total > max {
+			return LegView{}, newAPIError(http.StatusConflict,
+				"request offers %d audio streams (1 primary + %d extra), cap is %d", total, len(req.Streams), max)
+		}
+		for i, st := range req.Streams {
+			switch st.Direction {
+			case "", sipmod.DirSendRecv, sipmod.DirSendOnly, sipmod.DirRecvOnly, sipmod.DirInactive:
+			default:
+				return LegView{}, newAPIError(http.StatusBadRequest, "streams[%d]: invalid direction %q", i, st.Direction)
+			}
+			if st.RoomID != "" {
+				if _, ok := s.RoomMgr.Get(st.RoomID); !ok {
+					return LegView{}, newAPIError(http.StatusNotFound, "streams[%d]: room %q not found", i, st.RoomID)
+				}
+			}
+		}
+	}
+
 	// Parse codec overrides from request.
 	var codecs []codec.CodecType
 	for _, name := range req.Codecs {
@@ -996,6 +1059,20 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		// starts only after the call is answered (200 OK).
 		addToRoom()
 	}
+	if len(req.Streams) > 0 {
+		// The engine's first entry is the call's primary audio; the request
+		// lists only the extras, so prepend an unadorned primary section.
+		inviteOpts.Streams = make([]sipmod.OfferStream, 0, len(req.Streams)+1)
+		inviteOpts.Streams = append(inviteOpts.Streams, sipmod.OfferStream{})
+		for _, st := range req.Streams {
+			inviteOpts.Streams = append(inviteOpts.Streams, sipmod.OfferStream{
+				Direction: st.Direction,
+				Lang:      st.Lang,
+				Content:   st.Content,
+				Label:     st.Label,
+			})
+		}
+	}
 	if req.Privacy != "" {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Privacy", req.Privacy))
 	}
@@ -1061,6 +1138,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
 		startAMD()
 		addToRoom()
+		s.attachOfferedStreamRooms(l, req.Streams)
 
 		// Monitor for remote hangup or max duration.
 		s.watchLegDialogEnd(l, call.Dialog.Context(), time.Duration(req.MaxDuration)*time.Second)
@@ -1198,6 +1276,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			LegType:  string(l.Type()),
 		})
 		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+		s.attachAnsweredStreamRooms(l, s.takeStreamRoomsOverride(l.ID()))
 
 		// Block until call ends (BYE received or context cancelled)
 		s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
@@ -1503,6 +1582,25 @@ func (s *Server) setSpeechOverride(legID string, override *bool) {
 	s.speechOverrideMu.Lock()
 	s.speechOverride[legID] = override
 	s.speechOverrideMu.Unlock()
+}
+
+func (s *Server) setStreamRoomsOverride(legID string, streams []AnswerLegStream) {
+	if len(streams) == 0 {
+		return
+	}
+	s.streamRoomsMu.Lock()
+	s.streamRooms[legID] = streams
+	s.streamRoomsMu.Unlock()
+}
+
+func (s *Server) takeStreamRoomsOverride(legID string) []AnswerLegStream {
+	s.streamRoomsMu.Lock()
+	defer s.streamRoomsMu.Unlock()
+	streams, ok := s.streamRooms[legID]
+	if ok {
+		delete(s.streamRooms, legID)
+	}
+	return streams
 }
 
 func (s *Server) takeSpeechOverride(legID string) *bool {

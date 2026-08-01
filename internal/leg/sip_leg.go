@@ -58,7 +58,6 @@ type SIPLeg struct {
 	connectedCh   chan struct{} // closed when leg reaches connected state
 	connectedOnce sync.Once     // ensures connectedCh is closed exactly once
 	onDTMF        func(digit rune)
-	lastDTMFTS    uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
 	onRTPTimeout  func() // called when no RTP received within timeout
 	onHold        func() // called when leg is put on hold
 	onUnhold      func() // called when leg is taken off hold
@@ -73,45 +72,19 @@ type SIPLeg struct {
 	sessionTimer     *time.Timer // refresh or expiry timer
 	onSessionExpired func()      // called when session expires without refresh
 
-	// Media
-	rtpSess   *sipmod.RTPSession
-	codecType codec.CodecType
-	rtpPT     uint8 // RTP payload type we receive on (echoed in our SDP)
-	// rtpSendPT is the PT used when sending RTP. For dynamic codecs where the
-	// peer picks its own PT (AMR-WB), this is the remote PT and differs from
-	// rtpPT; 0 means "use rtpPT" (the symmetric case for all other codecs).
-	rtpSendPT uint8
-	// DTMF (RFC 4733 telephone-event) send parameters, derived from the remote
-	// SDP after negotiation. dtmfSendPT is the telephone-event PT to transmit
-	// on (the PT the remote advertised); 0 means the default 101.
-	// dtmfClockRate is the negotiated telephone-event clock rate — typically
-	// the rate the peer advertised, not necessarily the audio codec's rate
-	// (phones like Fanvil pin telephone-event at 8 kHz with an AMR-WB body).
-	// 0 means the default 8kHz.
-	dtmfSendPT    uint8
-	dtmfClockRate int
-	// AMR-WB negotiated parameters (only meaningful when codecType is AMR-WB).
-	amrwbOctetAligned bool
-	amrwbMode         int    // transmit mode (config ceiling clamped to peer mode-set)
-	amrwbModeSet      string // peer's negotiated mode-set, echoed in our answer ("" = none)
-
-	amrnbOctetAligned bool
-	amrnbMode         int    // transmit mode (config ceiling clamped to peer mode-set)
-	amrnbModeSet      string // peer's negotiated mode-set, echoed in our answer ("" = none)
-	encoder           codec.Encoder
-	decoder           codec.Decoder
-	inFrames          chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
-	outFrames         chan []byte // native-rate PCM to encode in writeLoop
-	dtmfCh            chan string // DTMF digits to send in writeLoop
-
-	// Optional ingress jitter buffer. When non-nil, readLoop pushes decoded
-	// PCM into jb keyed by RTP sequence number, and popLoop drains jb at a
-	// fixed cadence into inFrames. When nil, readLoop pushes directly to
-	// inFrames (passthrough — zero added latency, no reordering).
-	jb           *jitter.Buffer
-	jbTargetMs   int // target delay in ms; 0 = disabled
-	jbMaxMs      int // max queue depth in ms
-	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
+	// Media. prim is the m-line-0 stream every dialog has and is never nil once
+	// a constructor has run; streams holds it plus any additional negotiated
+	// audio sections, indexed by m-line position.
+	prim    *mediaStream
+	streams []*mediaStream
+	// mlines is the dialog's m-line vector. Slots are append-only, so an
+	// m-line index is a stable identity for the life of the dialog
+	// (RFC 3264 §8).
+	mlines sipmod.MLineTable
+	// Negotiation policy, copied from the engine at construction.
+	multiStream    bool
+	multiStreamMax int
+	strictMLines   bool
 
 	earlyMediaSDP    []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders       map[string]string // X-* headers from inbound INVITE or outbound request
@@ -148,26 +121,6 @@ type SIPLeg struct {
 	localIP         string            // for SDP answer generation
 	supportedCodecs []codec.CodecType // from engine config
 
-	// Optional taps for recording on standalone legs.
-	inTap  io.Writer // copy of decoded incoming PCM (before inFrames)
-	outTap io.Writer // copy of outgoing PCM (from writeLoop, including silence)
-
-	// AMD tap — separate from inTap so recording and AMD can coexist.
-	amdTap io.Writer
-
-	// Speaking detection tap — receives decoded incoming PCM for voice
-	// activity detection. Separate from other taps so all can coexist.
-	speakingTap io.Writer
-
-	// Inbound RTP stream statistics for MOS calculation (protected by rtpStatsMu).
-	rtpStatsMu     sync.Mutex
-	rtpReceived    uint32
-	rtpFirstSeq    uint16
-	rtpLastSeq     uint16
-	rtpHasFirst    bool
-	rtpJitter      float64 // running jitter in RTP clock units (RFC 3550 §A.8)
-	rtpLastTransit int64   // last transit time in RTP clock units
-
 	log *slog.Logger
 }
 
@@ -195,8 +148,8 @@ func (l *SIPLeg) SetJitterBuffer(targetMs, maxMs int) {
 		maxMs = targetMs
 	}
 	l.mu.Lock()
-	l.jbTargetMs = targetMs
-	l.jbMaxMs = maxMs
+	l.prim.jbTargetMs = targetMs
+	l.prim.jbMaxMs = maxMs
 	l.mu.Unlock()
 }
 
@@ -205,7 +158,7 @@ func (l *SIPLeg) SetJitterBuffer(targetMs, maxMs int) {
 func (l *SIPLeg) JitterBufferMs() int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return l.jbTargetMs
+	return l.prim.jbTargetMs
 }
 
 func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
@@ -263,6 +216,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		rttBufferMs:     t140.DefaultBufferMs,
 		log:             log,
 	}
+	l.initPrimaryStream()
 	l.acceptDTMF.Store(true)
 
 	// Copy session timer params from inbound call.
@@ -284,13 +238,22 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 		createdAt:  now,
 		answeredAt: now,
 		outbound:   call,
-		rtpSess:    call.RTPSess,
 		engine:     engine,
 		ctx:        ctx,
 		cancel:     cancel,
 		log:        log,
 	}
+	l.initPrimaryStream()
+	l.prim.rtpSess = call.RTPSess
+	l.supportedCodecs = engine.Codecs()
 	l.acceptDTMF.Store(true)
+
+	// Multi-stream offers zip the answer onto every offered section.
+	if l.adoptOutboundStreams(call) {
+		l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
+		l.setupTextMedia()
+		return l
+	}
 
 	// Negotiate codec from the remote answer SDP
 	negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, engine.Codecs())
@@ -298,15 +261,15 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 		log.Error("no common codec with remote for outbound leg")
 		return l
 	}
-	l.codecType = negotiated
+	l.prim.codecType = negotiated
 	// As the offerer we receive on OUR payload type (from the offer SDP); for
 	// dynamic codecs whose answerer PT differs (AMR-WB) the send PT is set from
 	// the remote answer by configureAMRWB.
-	l.rtpPT = negotiated.PayloadType()
-	l.configureAMRWB(call.RemoteSDP, remotePT)
-	l.configureAMRNB(call.RemoteSDP, remotePT)
-	l.configureDTMF(call.RemoteSDP)
-	l.setupMedia()
+	l.prim.rtpPT = negotiated.PayloadType()
+	l.configureAMRWB(l.prim, call.RemoteSDP, remotePT)
+	l.configureAMRNB(l.prim, call.RemoteSDP, remotePT)
+	l.configureDTMF(l.prim, call.RemoteSDP)
+	l.setupStreamMedia(l.prim)
 	l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
 	l.setupTextMedia()
 	return l
@@ -335,6 +298,7 @@ func NewSIPOutboundPendingLeg(engine *sipmod.Engine, codecs []codec.CodecType, l
 		rttBufferMs:     t140.DefaultBufferMs,
 		log:             log,
 	}
+	l.initPrimaryStream()
 	l.acceptDTMF.Store(true)
 	return l
 }
@@ -356,15 +320,15 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 	}
 
 	l.mu.Lock()
-	l.rtpSess = rtpSess
-	l.codecType = negotiated
-	l.rtpPT = negotiated.PayloadType()
-	l.configureAMRWB(remoteSDP, remotePT)
-	l.configureAMRNB(remoteSDP, remotePT)
-	l.configureDTMF(remoteSDP)
+	l.prim.rtpSess = rtpSess
+	l.prim.codecType = negotiated
+	l.prim.rtpPT = negotiated.PayloadType()
+	l.configureAMRWB(l.prim, remoteSDP, remotePT)
+	l.configureAMRNB(l.prim, remoteSDP, remotePT)
+	l.configureDTMF(l.prim, remoteSDP)
 	l.mu.Unlock()
 
-	l.setupMedia()
+	l.setupStreamMedia(l.prim)
 	l.setupTextMedia()
 	l.setState(StateEarlyMedia)
 	return nil
@@ -381,7 +345,7 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	}
 	l.outbound = call
 	if st == StateRinging {
-		l.rtpSess = call.RTPSess
+		l.prim.rtpSess = call.RTPSess
 	}
 	// Extract Call-ID for re-INVITE matching.
 	if call.Dialog.InviteRequest != nil {
@@ -392,18 +356,25 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	l.mu.Unlock()
 
 	if st == StateRinging {
-		negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
-		if !ok {
-			return fmt.Errorf("no common codec with remote")
+		// A multi-stream offer zips the answer onto every offered section;
+		// otherwise fall through to the single-stream path.
+		if l.adoptOutboundStreams(call) {
+			l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
+			l.setupTextMedia()
+		} else {
+			negotiated, remotePT, ok := sipmod.NegotiateCodec(call.RemoteSDP, l.supportedCodecs)
+			if !ok {
+				return fmt.Errorf("no common codec with remote")
+			}
+			l.prim.codecType = negotiated
+			l.prim.rtpPT = negotiated.PayloadType()
+			l.configureAMRWB(l.prim, call.RemoteSDP, remotePT)
+			l.configureAMRNB(l.prim, call.RemoteSDP, remotePT)
+			l.configureDTMF(l.prim, call.RemoteSDP)
+			l.setupStreamMedia(l.prim)
+			l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
+			l.setupTextMedia()
 		}
-		l.codecType = negotiated
-		l.rtpPT = negotiated.PayloadType()
-		l.configureAMRWB(call.RemoteSDP, remotePT)
-		l.configureAMRNB(call.RemoteSDP, remotePT)
-		l.configureDTMF(call.RemoteSDP)
-		l.setupMedia()
-		l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
-		l.setupTextMedia()
 	} else if !l.RTTNegotiated() {
 		// Coming from early-media: adopt the text session if it wasn't
 		// already adopted by SetupEarlyMediaOutbound.
@@ -429,7 +400,7 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 
 func (l *SIPLeg) ID() string      { return l.id }
 func (l *SIPLeg) Type() LegType   { return l.legType }
-func (l *SIPLeg) SampleRate() int { return l.codecType.SampleRate() }
+func (l *SIPLeg) SampleRate() int { return l.prim.codecType.SampleRate() }
 
 func (l *SIPLeg) State() LegState {
 	l.mu.RLock()
@@ -708,49 +679,10 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 		return fmt.Errorf("leg is %s, not ringing", st)
 	}
 
-	// Negotiate codec from remote offer
-	negotiated, pt, ok := sipmod.NegotiateCodecPreferred(l.inbound.RemoteSDP, l.supportedCodecs, preferred)
-	if !ok {
-		return fmt.Errorf("no common codec negotiated")
-	}
-	l.codecType = negotiated
-	l.rtpPT = pt
-	l.configureAMRWB(l.inbound.RemoteSDP, pt)
-	l.configureAMRNB(l.inbound.RemoteSDP, pt)
-	l.configureDTMF(l.inbound.RemoteSDP)
-
-	// Create RTP session
-	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
+	answerSDP, err := l.negotiateInboundAnswer(preferred)
 	if err != nil {
-		return fmt.Errorf("create RTP session: %w", err)
+		return err
 	}
-	l.rtpSess = rtpSess
-
-	// Set remote RTP address from the offer SDP
-	if err := rtpSess.SetRemote(l.inbound.RemoteSDP.RemoteIP, l.inbound.RemoteSDP.RemotePort); err != nil {
-		rtpSess.Close()
-		return fmt.Errorf("set remote: %w", err)
-	}
-
-	// Optionally negotiate RTT (m=text) alongside audio.
-	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
-
-	// Generate answer SDP — echo the remote's PT and AMR-WB framing.
-	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
-		LocalIP:           l.localIP,
-		RTPPort:           rtpSess.LocalPort(),
-		Codecs:            l.supportedCodecs,
-		TextRTPPort:       textPort,
-		TextT140PT:        t140PT,
-		TextREDPT:         redPT,
-		RTTRedundancy:     l.rttRedundancy,
-		AMRWBOctetAligned: l.amrwbOctetAligned,
-		AMRWBModeSet:      l.amrwbModeSet,
-		AMRNBOctetAligned: l.amrnbOctetAligned,
-		AMRNBModeSet:      l.amrnbModeSet,
-		DTMFPT:            l.dtmfSendPT,
-		DTMFClockRate:     l.dtmfClockRate,
-	}, negotiated, pt, textRejected)
 
 	// Store SDP for reuse in Answer()
 	l.mu.Lock()
@@ -765,11 +697,11 @@ func (l *SIPLeg) EnableEarlyMedia(ctx context.Context, preferred codec.CodecType
 		sip.NewHeader("Content-Type", "application/sdp"),
 		l.engine.ServerHeader(),
 	); err != nil {
-		rtpSess.Close()
+		l.closeAllStreams()
 		return fmt.Errorf("send 183: %w", err)
 	}
 
-	l.setupMedia()
+	l.startAcceptedStreams()
 	l.setupTextMedia()
 	l.setState(StateEarlyMedia)
 	return nil
@@ -820,49 +752,10 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 
 	// Normal answer path from ringing state.
 
-	// Negotiate codec from remote offer
-	negotiated, pt, ok := sipmod.NegotiateCodecPreferred(l.inbound.RemoteSDP, l.supportedCodecs, preferred)
-	if !ok {
-		return fmt.Errorf("no common codec negotiated")
-	}
-	l.codecType = negotiated
-	l.rtpPT = pt
-	l.configureAMRWB(l.inbound.RemoteSDP, pt)
-	l.configureAMRNB(l.inbound.RemoteSDP, pt)
-	l.configureDTMF(l.inbound.RemoteSDP)
-
-	// Create RTP session
-	rtpSess, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
+	answerSDP, err := l.negotiateInboundAnswer(preferred)
 	if err != nil {
-		return fmt.Errorf("create RTP session: %w", err)
+		return err
 	}
-	l.rtpSess = rtpSess
-
-	// Set remote RTP address from the offer SDP
-	if err := rtpSess.SetRemote(l.inbound.RemoteSDP.RemoteIP, l.inbound.RemoteSDP.RemotePort); err != nil {
-		rtpSess.Close()
-		return fmt.Errorf("set remote: %w", err)
-	}
-
-	// Optionally negotiate RTT (m=text) alongside audio.
-	textPort, t140PT, redPT, textRejected := l.setupInboundTextMedia(l.inbound.RemoteSDP)
-
-	// Generate answer SDP — echo the remote's PT and AMR-WB framing.
-	answerSDP := sipmod.GenerateAnswer(sipmod.SDPConfig{
-		LocalIP:           l.localIP,
-		RTPPort:           rtpSess.LocalPort(),
-		Codecs:            l.supportedCodecs,
-		TextRTPPort:       textPort,
-		TextT140PT:        t140PT,
-		TextREDPT:         redPT,
-		RTTRedundancy:     l.rttRedundancy,
-		AMRWBOctetAligned: l.amrwbOctetAligned,
-		AMRWBModeSet:      l.amrwbModeSet,
-		AMRNBOctetAligned: l.amrnbOctetAligned,
-		AMRNBModeSet:      l.amrnbModeSet,
-		DTMFPT:            l.dtmfSendPT,
-		DTMFClockRate:     l.dtmfClockRate,
-	}, negotiated, pt, textRejected)
 
 	// Send 200 OK with SDP answer
 	if l.sessionInterval > 0 {
@@ -873,7 +766,7 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 			sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
 			l.engine.ServerHeader(),
 		); err != nil {
-			rtpSess.Close()
+			l.closeAllStreams()
 			return fmt.Errorf("respond SDP: %w", err)
 		}
 	} else {
@@ -881,12 +774,12 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 			sip.NewHeader("Content-Type", "application/sdp"),
 			l.engine.ServerHeader(),
 		); err != nil {
-			rtpSess.Close()
+			l.closeAllStreams()
 			return fmt.Errorf("respond SDP: %w", err)
 		}
 	}
 
-	l.setupMedia()
+	l.startAcceptedStreams()
 	l.setupTextMedia()
 	l.mu.Lock()
 	l.answeredAt = time.Now()
@@ -907,46 +800,46 @@ const defaultAMRNBEncoderMode = 7
 // configureAMRWB records AMR-WB-specific negotiation results: the remote send
 // PT and the payload framing (octet-aligned vs bandwidth-efficient) read from
 // the peer's fmtp, plus the configured encoder mode. No-op for other codecs.
-func (l *SIPLeg) configureAMRWB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
-	if l.codecType != codec.CodecAMRWB {
+func (l *SIPLeg) configureAMRWB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remotePT uint8) {
+	if s.codecType != codec.CodecAMRWB {
 		return
 	}
-	l.rtpSendPT = remotePT
-	l.amrwbMode = defaultAMRWBEncoderMode
+	s.rtpSendPT = remotePT
+	s.amrwbMode = defaultAMRWBEncoderMode
 	if l.engine != nil {
-		l.amrwbMode = l.engine.AMRWBMode()
+		s.amrwbMode = l.engine.AMRWBMode()
 	}
-	l.amrwbModeSet = ""
+	s.amrwbModeSet = ""
 	if remoteSDP != nil {
 		fmtp := remoteSDP.CodecFmtp[codec.CodecAMRWB]
-		l.amrwbOctetAligned = sipmod.AMRWBOctetAligned(fmtp)
+		s.amrwbOctetAligned = sipmod.AMRWBOctetAligned(fmtp)
 		// Honor the peer's mode-set: clamp our (ceiling) transmit mode to it and
 		// echo it back in our answer per RFC 4867.
 		if modeSet := sipmod.AMRWBModeSet(fmtp); len(modeSet) > 0 {
-			l.amrwbMode = sipmod.ClampAMRWBMode(l.amrwbMode, modeSet)
-			l.amrwbModeSet = sipmod.FormatAMRWBModeSet(modeSet)
+			s.amrwbMode = sipmod.ClampAMRWBMode(s.amrwbMode, modeSet)
+			s.amrwbModeSet = sipmod.FormatAMRWBModeSet(modeSet)
 		}
 	}
 }
 
 // configureAMRNB mirrors configureAMRWB for the narrowband variant. No-op when
 // the negotiated codec is not AMR-NB. AMR-NB modes span 0..7.
-func (l *SIPLeg) configureAMRNB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
-	if l.codecType != codec.CodecAMRNB {
+func (l *SIPLeg) configureAMRNB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remotePT uint8) {
+	if s.codecType != codec.CodecAMRNB {
 		return
 	}
-	l.rtpSendPT = remotePT
-	l.amrnbMode = defaultAMRNBEncoderMode
+	s.rtpSendPT = remotePT
+	s.amrnbMode = defaultAMRNBEncoderMode
 	if l.engine != nil {
-		l.amrnbMode = l.engine.AMRNBMode()
+		s.amrnbMode = l.engine.AMRNBMode()
 	}
-	l.amrnbModeSet = ""
+	s.amrnbModeSet = ""
 	if remoteSDP != nil {
 		fmtp := remoteSDP.CodecFmtp[codec.CodecAMRNB]
-		l.amrnbOctetAligned = sipmod.AMRNBOctetAligned(fmtp)
+		s.amrnbOctetAligned = sipmod.AMRNBOctetAligned(fmtp)
 		if modeSet := sipmod.AMRNBModeSet(fmtp); len(modeSet) > 0 {
-			l.amrnbMode = sipmod.ClampAMRNBMode(l.amrnbMode, modeSet)
-			l.amrnbModeSet = sipmod.FormatAMRNBModeSet(modeSet)
+			s.amrnbMode = sipmod.ClampAMRNBMode(s.amrnbMode, modeSet)
+			s.amrnbModeSet = sipmod.FormatAMRNBModeSet(modeSet)
 		}
 	}
 }
@@ -958,80 +851,97 @@ func (l *SIPLeg) configureAMRNB(remoteSDP *sipmod.SDPMedia, remotePT uint8) {
 // Fanvil pairs it with telephone-event/8000 — so we trust the peer rather
 // than impose a rate. Falls back to PT 101 at the codec-conventional rate
 // when no telephone-event was offered.
-func (l *SIPLeg) configureDTMF(remoteSDP *sipmod.SDPMedia) {
-	l.dtmfSendPT = 101
-	l.dtmfClockRate = sipmod.TelephoneEventClockRate(l.codecType)
+func (l *SIPLeg) configureDTMF(s *mediaStream, remoteSDP *sipmod.SDPMedia) {
+	s.dtmfSendPT = 101
+	s.dtmfClockRate = sipmod.TelephoneEventClockRate(s.codecType)
+	s.dtmfRecvPTs = nil
 	if remoteSDP == nil {
 		return
 	}
 	if pt, rate, ok := remoteSDP.PreferredDTMFEvent(); ok {
-		l.dtmfSendPT = pt
-		l.dtmfClockRate = rate
+		s.dtmfSendPT = pt
+		s.dtmfClockRate = rate
+	}
+	// Accept ingress DTMF on every telephone-event PT the peer advertised, not
+	// just the conventional pair. An empty map keeps the legacy 100/101 default.
+	if len(remoteSDP.DTMFEventPTs) > 0 {
+		s.dtmfRecvPTs = make(map[uint8]int, len(remoteSDP.DTMFEventPTs))
+		for pt, rate := range remoteSDP.DTMFEventPTs {
+			s.dtmfRecvPTs[pt] = rate
+		}
 	}
 }
 
-func (l *SIPLeg) setupMedia() {
+func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 	var err error
-	if l.codecType == codec.CodecAMRWB {
-		l.encoder, err = codec.NewAMRWBEncoder(l.amrwbMode, l.amrwbOctetAligned)
+	if s.codecType == codec.CodecAMRWB {
+		s.encoder, err = codec.NewAMRWBEncoder(s.amrwbMode, s.amrwbOctetAligned)
 		if err != nil {
-			l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
 			return
 		}
-		l.decoder = codec.NewAMRWBDecoder(l.amrwbOctetAligned)
-	} else if l.codecType == codec.CodecAMRNB {
-		l.encoder, err = codec.NewAMRNBEncoder(l.amrnbMode, l.amrnbOctetAligned)
+		s.decoder = codec.NewAMRWBDecoder(s.amrwbOctetAligned)
+	} else if s.codecType == codec.CodecAMRNB {
+		s.encoder, err = codec.NewAMRNBEncoder(s.amrnbMode, s.amrnbOctetAligned)
 		if err != nil {
-			l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
 			return
 		}
-		l.decoder = codec.NewAMRNBDecoder(l.amrnbOctetAligned)
+		s.decoder = codec.NewAMRNBDecoder(s.amrnbOctetAligned)
 	} else {
-		l.encoder, err = codec.NewEncoder(l.codecType)
+		s.encoder, err = codec.NewEncoder(s.codecType)
 		if err != nil {
-			l.log.Error("create encoder failed", "codec", l.codecType, "error", err)
+			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
 			return
 		}
-		l.decoder, err = codec.NewDecoder(l.codecType)
+		s.decoder, err = codec.NewDecoder(s.codecType)
 		if err != nil {
-			l.log.Error("create decoder failed", "codec", l.codecType, "error", err)
+			l.log.Error("create decoder failed", "codec", s.codecType, "error", err)
 			return
 		}
 	}
 
-	l.inFrames = make(chan []byte, 5)
-	l.outFrames = make(chan []byte, 5)
-	l.dtmfCh = make(chan string, 5)
+	s.inFrames = make(chan []byte, 5)
+	s.outFrames = make(chan []byte, 5)
+	s.dtmfCh = make(chan string, 5)
 
 	// 20 ms of samples at the codec's native rate, 16-bit mono LE.
-	l.jbFrameBytes = l.codecType.SampleRate() / 50 * 2
+	s.jbFrameBytes = s.codecType.SampleRate() / 50 * 2
 
 	// Construct the jitter buffer if enabled.
-	if l.jbTargetMs > 0 {
-		l.jb = jitter.NewMs(l.jbTargetMs, l.jbMaxMs, 20)
+	if s.jbTargetMs > 0 {
+		s.jb = jitter.NewMs(s.jbTargetMs, s.jbMaxMs, 20)
 	}
 
 	l.log.Info("SIP leg media setup",
 		"leg_id", l.id,
-		"codec", l.codecType.String(),
-		"payload_type", l.rtpPT,
-		"sample_rate", l.codecType.SampleRate(),
-		"clock_rate", l.codecType.ClockRate(),
-		"jitter_buffer_ms", l.jbTargetMs,
+		"stream_id", s.id,
+		"codec", s.codecType.String(),
+		"payload_type", s.rtpPT,
+		"sample_rate", s.codecType.SampleRate(),
+		"clock_rate", s.codecType.ClockRate(),
+		"jitter_buffer_ms", s.jbTargetMs,
+		"direction", s.negotiatedDir,
 	)
 
-	go l.readLoop()
-	if l.jb != nil {
-		go l.popLoop()
+	if s.receives() {
+		go l.readLoop(s)
+		if s.jb != nil {
+			go l.popLoop(s)
+		}
 	}
-	go l.writeLoop()
+	// A recvonly or inactive stream must not transmit (RFC 3264 §6.1), so it
+	// gets no writeLoop at all rather than a muted one.
+	if s.sends() {
+		go l.writeLoop(s)
+	}
 }
 
 // popLoop drains the jitter buffer at a fixed 20 ms cadence and pushes the
 // resulting PCM frame (or silence on underrun) into inFrames. Runs only
 // when an ingress jitter buffer is enabled; otherwise readLoop pushes
 // directly.
-func (l *SIPLeg) popLoop() {
+func (l *SIPLeg) popLoop(s *mediaStream) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -1040,22 +950,22 @@ func (l *SIPLeg) popLoop() {
 			return
 		case <-ticker.C:
 		}
-		pcm, ok := l.jb.Pop()
+		pcm, ok := s.jb.Pop()
 		if !ok {
 			// Warm-up or underrun — push a silence frame so the mixer's
 			// downstream pull still finds something at this tick.
-			pcm = make([]byte, l.jbFrameBytes)
+			pcm = make([]byte, s.jbFrameBytes)
 		}
 		select {
-		case l.inFrames <- pcm:
+		case s.inFrames <- pcm:
 		default:
 			// Consumer behind — drop oldest (same overflow policy as the
 			// passthrough path used to have).
 			select {
-			case <-l.inFrames:
+			case <-s.inFrames:
 			default:
 			}
-			l.inFrames <- pcm
+			s.inFrames <- pcm
 		}
 	}
 }
@@ -1084,10 +994,50 @@ func (l *SIPLeg) recoverLoopAndHangup(loop string) {
 	}
 }
 
+// recoverStreamLoop contains a panic to the stream that raised it. The primary
+// stream carries the call, so its failure still hangs the leg up; a secondary
+// stream is torn down on its own and the call continues.
+func (l *SIPLeg) recoverStreamLoop(s *mediaStream, loop string) {
+	if s.primary {
+		l.recoverLoopAndHangup(loop)
+		return
+	}
+	if r := recover(); r != nil {
+		l.log.Error(loop+" panic, closing stream",
+			"leg_id", l.id,
+			"stream_id", s.id,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+		l.closeStream(s)
+	}
+}
+
+// closeStream stops a secondary stream's media and releases its RTP port. The
+// slot keeps its m-line position as a tombstone so subsequent offers stay
+// RFC 3264-conformant.
+func (l *SIPLeg) closeStream(s *mediaStream) {
+	if s.primary {
+		return
+	}
+	l.mu.Lock()
+	for i, cur := range l.streams {
+		if cur == s {
+			l.streams = append(l.streams[:i:i], l.streams[i+1:]...)
+			break
+		}
+	}
+	if slot, ok := l.mlines.ByStreamID(s.id); ok {
+		l.mlines.Tombstone(slot.Index)
+	}
+	l.mu.Unlock()
+	s.close()
+}
+
 // readLoop reads RTP packets from the UDP socket, decodes audio, and pushes
 // native-rate PCM frames into inFrames.
-func (l *SIPLeg) readLoop() {
-	defer l.recoverLoopAndHangup("readLoop")
+func (l *SIPLeg) readLoop(s *mediaStream) {
+	defer l.recoverStreamLoop(s, "readLoop")
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -1096,12 +1046,12 @@ func (l *SIPLeg) readLoop() {
 		isHeld := l.held
 		l.mu.RUnlock()
 		if isHeld {
-			l.rtpSess.SetReadDeadline(time.Now().Add(2*time.Hour + time.Minute))
+			s.rtpSess.SetReadDeadline(time.Now().Add(2*time.Hour + time.Minute))
 		} else {
-			l.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
+			s.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
 		}
 
-		pkt, err := l.rtpSess.ReadRTP()
+		pkt, err := s.rtpSess.ReadRTP()
 		if err != nil {
 			select {
 			case <-l.ctx.Done():
@@ -1115,7 +1065,13 @@ func (l *SIPLeg) readLoop() {
 			// Check for read deadline timeout (no RTP received).
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				l.log.Info("RTP timeout", "leg_id", l.id, "timeout", rtpTimeout)
+				l.log.Info("RTP timeout", "leg_id", l.id, "stream_id", s.id, "timeout", rtpTimeout)
+				// Only the primary stream's silence means the call is dead; a
+				// secondary stream going quiet just closes that stream.
+				if !s.primary {
+					l.closeStream(s)
+					return
+				}
 				l.mu.RLock()
 				cb := l.onRTPTimeout
 				l.mu.RUnlock()
@@ -1130,18 +1086,19 @@ func (l *SIPLeg) readLoop() {
 
 		// Track sequence number on ALL valid RTP packets (including DTMF,
 		// comfort noise, etc.) since they share the same sequence number space.
-		l.trackRTPSeq(pkt.SequenceNumber)
+		l.trackRTPSeq(s, pkt.SequenceNumber)
 
-		// Handle DTMF telephone-event (PT 101 = 8kHz, PT 100 = 48kHz for Opus)
-		if pkt.PayloadType == 100 || pkt.PayloadType == 101 {
+		// Handle DTMF telephone-event on whichever PTs the peer advertised
+		// (falling back to the conventional 101 = 8kHz, 100 = 48kHz for Opus).
+		if s.acceptsDTMFPT(pkt.PayloadType) {
 			ev, err := sipmod.DecodeDTMFEvent(pkt.Payload)
 			if err != nil {
 				continue
 			}
 			// Only fire callback on end-of-event. RFC 4733 senders retransmit
 			// end-of-event 3 times with the same timestamp — deduplicate on it.
-			if ev.EndOfEvent && pkt.Timestamp != l.lastDTMFTS {
-				l.lastDTMFTS = pkt.Timestamp
+			if ev.EndOfEvent && pkt.Timestamp != s.lastDTMFTS {
+				s.lastDTMFTS = pkt.Timestamp
 				digit, ok := sipmod.DTMFEventToDigit(ev.Event)
 				if ok {
 					l.mu.RLock()
@@ -1157,7 +1114,7 @@ func (l *SIPLeg) readLoop() {
 
 		// Skip packets that don't match the negotiated codec PT (e.g.
 		// comfort noise, keep-alive, or other non-audio PTs).
-		if pkt.PayloadType != l.rtpPT {
+		if pkt.PayloadType != s.rtpPT {
 			continue
 		}
 
@@ -1168,17 +1125,17 @@ func (l *SIPLeg) readLoop() {
 
 		// Update jitter on audio packets only (DTMF retransmits share
 		// timestamps, which would spike the jitter estimate).
-		l.updateRTPJitter(pkt)
+		l.updateRTPJitter(s, pkt)
 
 		// Decode audio payload
-		samples, err := l.decoder.Decode(pkt.Payload)
+		samples, err := s.decoder.Decode(pkt.Payload)
 		if err != nil {
 			head := pkt.Payload
 			if len(head) > 8 {
 				head = head[:8]
 			}
 			l.log.Debug("readLoop: decode error", "error", err,
-				"pt", pkt.PayloadType, "expected_pt", l.rtpPT,
+				"pt", pkt.PayloadType, "expected_pt", s.rtpPT,
 				"payload_len", len(pkt.Payload), "payload_head", fmt.Sprintf("%x", head),
 				"seq", pkt.SequenceNumber)
 			continue
@@ -1189,9 +1146,9 @@ func (l *SIPLeg) readLoop() {
 
 		// Write to incoming taps before pushing to inFrames.
 		l.mu.RLock()
-		tap := l.inTap
-		at := l.amdTap
-		st := l.speakingTap
+		tap := s.inTap
+		at := s.amdTap
+		st := s.speakingTap
 		l.mu.RUnlock()
 		if tap != nil {
 			tap.Write(pcm)
@@ -1206,67 +1163,67 @@ func (l *SIPLeg) readLoop() {
 		// Route to jitter buffer if enabled, otherwise push directly to
 		// inFrames with drop-oldest-on-overflow (preserves legacy
 		// passthrough behavior).
-		if l.jb != nil {
-			l.jb.Push(pkt.SequenceNumber, pcm)
+		if s.jb != nil {
+			s.jb.Push(pkt.SequenceNumber, pcm)
 			continue
 		}
 		select {
-		case l.inFrames <- pcm:
+		case s.inFrames <- pcm:
 		default:
 			select {
-			case <-l.inFrames:
+			case <-s.inFrames:
 			default:
 			}
-			l.inFrames <- pcm
+			s.inFrames <- pcm
 		}
 	}
 }
 
 // trackRTPSeq updates sequence number and packet count for ALL received RTP
 // packets (audio, DTMF, comfort noise) since they share one sequence space.
-func (l *SIPLeg) trackRTPSeq(seq uint16) {
-	l.rtpStatsMu.Lock()
-	l.rtpReceived++
-	if !l.rtpHasFirst {
-		l.rtpFirstSeq = seq
-		l.rtpLastSeq = seq
-		l.rtpHasFirst = true
+func (l *SIPLeg) trackRTPSeq(s *mediaStream, seq uint16) {
+	s.rtpStatsMu.Lock()
+	s.rtpReceived++
+	if !s.rtpHasFirst {
+		s.rtpFirstSeq = seq
+		s.rtpLastSeq = seq
+		s.rtpHasFirst = true
 	} else {
-		l.rtpLastSeq = seq
+		s.rtpLastSeq = seq
 	}
-	l.rtpStatsMu.Unlock()
+	s.rtpStatsMu.Unlock()
 }
 
 // updateRTPJitter updates inter-arrival jitter (RFC 3550 §A.8) on audio
 // packets only. DTMF end-of-event retransmits share the same RTP timestamp,
 // which would spike the jitter estimate if included.
-func (l *SIPLeg) updateRTPJitter(pkt *rtp.Packet) {
-	clockRate := int64(l.codecType.ClockRate())
+func (l *SIPLeg) updateRTPJitter(s *mediaStream, pkt *rtp.Packet) {
+	clockRate := int64(s.codecType.ClockRate())
 	arrival := time.Now().UnixNano() * clockRate / 1e9
 	transit := arrival - int64(pkt.Timestamp)
 
-	l.rtpStatsMu.Lock()
-	if l.rtpLastTransit != 0 {
-		d := transit - l.rtpLastTransit
+	s.rtpStatsMu.Lock()
+	if s.rtpLastTransit != 0 {
+		d := transit - s.rtpLastTransit
 		if d < 0 {
 			d = -d
 		}
-		l.rtpJitter += (float64(d) - l.rtpJitter) / 16
+		s.rtpJitter += (float64(d) - s.rtpJitter) / 16
 	}
-	l.rtpLastTransit = transit
-	l.rtpStatsMu.Unlock()
+	s.rtpLastTransit = transit
+	s.rtpStatsMu.Unlock()
 }
 
 // RTPStats returns inbound stream quality metrics and a MOS estimate.
 func (l *SIPLeg) RTPStats() RTPStats {
-	l.rtpStatsMu.Lock()
-	received := l.rtpReceived
-	firstSeq := l.rtpFirstSeq
-	lastSeq := l.rtpLastSeq
-	jitter := l.rtpJitter
-	hasFirst := l.rtpHasFirst
-	clockRate := l.codecType.ClockRate()
-	l.rtpStatsMu.Unlock()
+	l.prim.rtpStatsMu.Lock()
+	received := l.prim.rtpReceived
+	firstSeq := l.prim.rtpFirstSeq
+	lastSeq := l.prim.rtpLastSeq
+	jitter := l.prim.rtpJitter
+	hasFirst := l.prim.rtpHasFirst
+	clockRate := l.prim.codecType.ClockRate()
+	l.prim.rtpStatsMu.Unlock()
 
 	if !hasFirst || received < 2 {
 		return RTPStats{}
@@ -1289,24 +1246,24 @@ func (l *SIPLeg) RTPStats() RTPStats {
 }
 
 // writeLoop sends RTP packets on a 20ms ticker.
-func (l *SIPLeg) writeLoop() {
-	defer l.recoverLoopAndHangup("writeLoop")
+func (l *SIPLeg) writeLoop(s *mediaStream) {
+	defer l.recoverStreamLoop(s, "writeLoop")
 
 	const ptime = 20 * time.Millisecond
 
 	// PCM frame size at codec's native sample rate: samples per 20ms × 2 bytes
-	pcmFrameBytes := l.codecType.SampleRate() / 50 * 2
+	pcmFrameBytes := s.codecType.SampleRate() / 50 * 2
 
 	// RTP timestamp increment is codec-dependent: clockRate * 20ms
-	samplesPerFrame := uint32(l.codecType.ClockRate() / 50)
+	samplesPerFrame := uint32(s.codecType.ClockRate() / 50)
 
 	// DTMF (RFC 4733) send PT and per-packet duration units, at the negotiated
 	// telephone-event clock rate (16kHz for AMR-WB, else 8kHz).
-	telephoneEventPT := l.dtmfSendPT
+	telephoneEventPT := s.dtmfSendPT
 	if telephoneEventPT == 0 {
 		telephoneEventPT = 101
 	}
-	dtmfSamplesPerPkt := uint16(l.dtmfClockRate / 50)
+	dtmfSamplesPerPkt := uint16(s.dtmfClockRate / 50)
 	if dtmfSamplesPerPkt == 0 {
 		dtmfSamplesPerPkt = 160
 	}
@@ -1318,9 +1275,9 @@ func (l *SIPLeg) writeLoop() {
 	var seqNum uint16
 	var timestamp uint32
 	silenceFrame := make([]byte, pcmFrameBytes)
-	pt := l.rtpPT
-	if l.rtpSendPT != 0 {
-		pt = l.rtpSendPT
+	pt := s.rtpPT
+	if s.rtpSendPT != 0 {
+		pt = s.rtpSendPT
 	}
 
 	for {
@@ -1337,7 +1294,7 @@ func (l *SIPLeg) writeLoop() {
 		l.mu.RUnlock()
 		if isHeld {
 			select {
-			case <-l.outFrames:
+			case <-s.outFrames:
 			default:
 			}
 			timestamp += samplesPerFrame
@@ -1347,7 +1304,7 @@ func (l *SIPLeg) writeLoop() {
 		// Check for pending DTMF digits.
 		var dtmfDigits string
 		select {
-		case dtmfDigits = <-l.dtmfCh:
+		case dtmfDigits = <-s.dtmfCh:
 		default:
 		}
 
@@ -1355,7 +1312,7 @@ func (l *SIPLeg) writeLoop() {
 			for _, ch := range dtmfDigits {
 				pkts := sipmod.GenerateDTMFPackets(ch, telephoneEventPT, ssrc, seqNum, timestamp, dtmfSamplesPerPkt)
 				for i, pkt := range pkts {
-					if err := l.rtpSess.WriteRTP(pkt); err != nil {
+					if err := s.rtpSess.WriteRTP(pkt); err != nil {
 						l.log.Error("writeLoop: DTMF WriteRTP failed", "error", err)
 						return
 					}
@@ -1379,14 +1336,14 @@ func (l *SIPLeg) writeLoop() {
 		// Normal audio frame.
 		var frame []byte
 		select {
-		case frame = <-l.outFrames:
+		case frame = <-s.outFrames:
 		default:
 			frame = silenceFrame
 		}
 
 		// Write to outgoing tap (for recording) before encoding.
 		l.mu.RLock()
-		oTap := l.outTap
+		oTap := s.outTap
 		l.mu.RUnlock()
 		if oTap != nil {
 			oTap.Write(frame)
@@ -1395,7 +1352,7 @@ func (l *SIPLeg) writeLoop() {
 		// Parse PCM bytes to int16 samples (already at native rate)
 		samples := bytesToSamples(frame)
 
-		encoded, err := l.encoder.Encode(samples)
+		encoded, err := s.encoder.Encode(samples)
 		if err != nil {
 			l.log.Error("writeLoop: encode failed", "error", err)
 			return
@@ -1411,7 +1368,7 @@ func (l *SIPLeg) writeLoop() {
 			},
 			Payload: encoded,
 		}
-		if err := l.rtpSess.WriteRTP(pkt); err != nil {
+		if err := s.rtpSess.WriteRTP(pkt); err != nil {
 			l.log.Error("writeLoop: WriteRTP failed", "error", err)
 			return
 		}
@@ -1438,8 +1395,8 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 	l.mu.Unlock()
 	l.stopSessionTimer()
 
-	if l.rtpSess != nil {
-		l.rtpSess.Close()
+	for _, s := range l.audioStreams() {
+		s.close()
 	}
 	if l.textRtpSess != nil {
 		l.textRtpSess.Close()
@@ -1512,17 +1469,17 @@ func (w *sipWriter) Write(p []byte) (int, error) {
 func (l *SIPLeg) AudioReader() io.Reader {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	if l.inFrames == nil {
+	if l.prim.inFrames == nil {
 		return nil
 	}
-	return &sipReader{frames: l.inFrames, ctx: l.ctx}
+	return &sipReader{frames: l.prim.inFrames, ctx: l.ctx}
 }
 
 func (l *SIPLeg) AudioWriter() io.Writer {
-	if l.outFrames == nil {
+	if l.prim.outFrames == nil {
 		return nil
 	}
-	return &sipWriter{frames: l.outFrames, ctx: l.ctx}
+	return &sipWriter{frames: l.prim.outFrames, ctx: l.ctx}
 }
 
 // SetInTap sets a writer that receives a copy of every decoded incoming PCM
@@ -1530,14 +1487,14 @@ func (l *SIPLeg) AudioWriter() io.Writer {
 func (l *SIPLeg) SetInTap(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.inTap = w
+	l.prim.inTap = w
 }
 
 // ClearInTap removes the incoming tap.
 func (l *SIPLeg) ClearInTap() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.inTap = nil
+	l.prim.inTap = nil
 }
 
 // SetOutTap sets a writer that receives a copy of every outgoing PCM frame
@@ -1545,14 +1502,14 @@ func (l *SIPLeg) ClearInTap() {
 func (l *SIPLeg) SetOutTap(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.outTap = w
+	l.prim.outTap = w
 }
 
 // ClearOutTap removes the outgoing tap.
 func (l *SIPLeg) ClearOutTap() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.outTap = nil
+	l.prim.outTap = nil
 }
 
 // SetAMDTap sets a writer that receives decoded incoming PCM for answering
@@ -1560,7 +1517,7 @@ func (l *SIPLeg) ClearOutTap() {
 func (l *SIPLeg) SetAMDTap(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.amdTap = w
+	l.prim.amdTap = w
 }
 
 // ClearAMDTapIf removes the AMD tap only if w is the writer currently
@@ -1571,10 +1528,10 @@ func (l *SIPLeg) SetAMDTap(w io.Writer) {
 func (l *SIPLeg) ClearAMDTapIf(w io.Writer) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.amdTap != w {
+	if l.prim.amdTap != w {
 		return false
 	}
-	l.amdTap = nil
+	l.prim.amdTap = nil
 	return true
 }
 
@@ -1585,7 +1542,7 @@ func (l *SIPLeg) ClearAMDTapIf(w io.Writer) bool {
 func (l *SIPLeg) OwnsAMDTap(w io.Writer) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.amdTap == w
+	return l.prim.amdTap == w
 }
 
 // SetSpeakingTap sets a writer that receives decoded incoming PCM for
@@ -1593,14 +1550,14 @@ func (l *SIPLeg) OwnsAMDTap(w io.Writer) bool {
 func (l *SIPLeg) SetSpeakingTap(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.speakingTap = w
+	l.prim.speakingTap = w
 }
 
 // ClearSpeakingTap removes the speaking detection tap.
 func (l *SIPLeg) ClearSpeakingTap() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.speakingTap = nil
+	l.prim.speakingTap = nil
 }
 
 func (l *SIPLeg) OnDTMF(f func(digit rune)) {
@@ -1617,6 +1574,9 @@ func (l *SIPLeg) OnRTPTimeout(f func()) {
 	l.onRTPTimeout = f
 }
 
+// Deprecated: use ApplyRemoteOffer, which also re-applies the peer's media
+// address. Retained for callers that only have a direction string.
+//
 // ReInviteAnswerSDP builds an SDP body for responding to a remote re-INVITE.
 // The direction is mirrored: if the remote sent "sendonly" (hold), we respond
 // with "recvonly"; if "sendrecv" we respond with "sendrecv".
@@ -1635,25 +1595,152 @@ func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
 		ourDirection = "inactive"
 	}
 
-	if l.rtpSess == nil {
+	if l.prim.rtpSess == nil {
 		return nil
 	}
-	return sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, ourDirection)
+	return sipmod.GenerateReInviteSDP(l.sdpConfig(), l.prim.codecType, l.prim.rtpPT, ourDirection)
 }
 
-// sdpConfig returns an SDPConfig populated from the leg's current local
-// media state (audio + optional text). Assumes l.rtpSess is non-nil.
+// ApplyRemoteOffer processes a peer's re-INVITE/UPDATE offer and returns the
+// SDP answer plus the offered direction (empty when the body carried none).
+//
+// Unlike the direction-only path it replaces, this re-applies the peer's media
+// address: an SBC that re-anchors media on a re-INVITE used to leave the call
+// one-way because nothing ever called SetRemote again.
+func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string) {
+	if len(body) == 0 {
+		// A session-timer refresh with no offer: nothing to renegotiate.
+		return nil, ""
+	}
+
+	remote, err := sipmod.ParseSDP(body)
+	if err != nil {
+		l.log.Warn("re-offer: parse SDP failed", "leg_id", l.id, "error", err)
+		return l.reInviteSDP(sipmod.DirSendRecv), ""
+	}
+
+	direction = remote.Direction
+	l.applyRemoteAudio(remote)
+
+	// Re-plan the whole offer rather than just echoing a direction: a re-offer
+	// may add or remove sections, and RFC 3264 §6 requires the answer to match
+	// it section for section either way.
+	textIdx := -1
+	if l.textRtpSess != nil {
+		textIdx = offeredTextMLine(remote)
+	}
+	plans := sipmod.PlanAnswer(remote, l.answerOptions(codec.CodecUnknown, textIdx))
+	sections := l.buildAnswerStreams(remote, plans)
+	if len(sipmod.AcceptedAudio(plans)) == 0 {
+		// Nothing negotiable left; fall back to re-offering our current state
+		// rather than answering with no media at all.
+		return l.reInviteSDP(sipmod.MirrorDirection(direction)), direction
+	}
+
+	l.mu.RLock()
+	cfg := sipmod.SDPConfig{
+		LocalIP: l.localIP,
+		Codecs:  l.supportedCodecs,
+		Streams: sections,
+	}
+	if textIdx >= 0 {
+		cfg.TextRTPPort = l.textRtpSess.LocalPort()
+		cfg.TextT140PT = l.textT140PT
+		cfg.TextREDPT = l.textREDPT
+		cfg.RTTRedundancy = l.rttRedundancy
+	}
+	selected, pt := l.prim.codecType, l.prim.rtpPT
+	l.mu.RUnlock()
+
+	answer = sipmod.GenerateAnswer(cfg, selected, pt, false)
+	l.startAcceptedStreams()
+	return answer, direction
+}
+
+// applyAnswer takes the peer's answer to an offer we sent. It runs before the
+// ACK, so the media state is settled by the time the peer may start sending.
+func (l *SIPLeg) applyAnswer(body []byte) {
+	if len(body) == 0 {
+		return
+	}
+	remote, err := sipmod.ParseSDP(body)
+	if err != nil {
+		l.log.Warn("re-INVITE answer: parse SDP failed", "leg_id", l.id, "error", err)
+		return
+	}
+	l.applyRemoteAudio(remote)
+}
+
+// applyRemoteAudio re-points each live stream at the address the peer's latest
+// offer advertises. Streams are matched by a=mid when both sides carry one and
+// positionally otherwise, per RFC 3264 §8.
+func (l *SIPLeg) applyRemoteAudio(remote *sipmod.SDPMedia) {
+	for _, s := range l.audioStreams() {
+		ra := l.matchRemoteStream(s, remote)
+		if ra == nil || ra.RemotePort == 0 || ra.RemoteIP == "" {
+			continue
+		}
+		if s.rtpSess == nil {
+			continue
+		}
+		if err := s.rtpSess.SetRemote(ra.RemoteIP, ra.RemotePort); err != nil {
+			l.log.Warn("re-offer: set remote failed",
+				"leg_id", l.id, "stream_id", s.id,
+				"addr", ra.RemoteIP, "port", ra.RemotePort, "error", err)
+			continue
+		}
+		l.mu.Lock()
+		s.negotiatedDir = sipmod.MirrorDirection(ra.EffectiveDirection())
+		l.mu.Unlock()
+	}
+}
+
+// matchRemoteStream finds the offered audio section describing s.
+func (l *SIPLeg) matchRemoteStream(s *mediaStream, remote *sipmod.SDPMedia) *sipmod.RemoteAudioStream {
+	if s.mid != "" {
+		if ra, ok := remote.AudioByMID(s.mid); ok {
+			return ra
+		}
+	}
+	// No mid on one side or the other — fall back to m-line position, which
+	// RFC 3264 guarantees is stable for the life of the dialog.
+	for i := range remote.Audio {
+		if remote.Audio[i].Index == s.index {
+			return &remote.Audio[i]
+		}
+	}
+	if s.primary {
+		return remote.PrimaryStream()
+	}
+	return nil
+}
+
+// reInviteSDP builds an offer body carrying the given direction, taking the
+// lock sdpConfig requires. Returns nil when there is no media session yet.
+func (l *SIPLeg) reInviteSDP(direction string) []byte {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.prim.rtpSess == nil {
+		return nil
+	}
+	return sipmod.GenerateReInviteSDP(l.sdpConfig(), l.prim.codecType, l.prim.rtpPT, direction)
+}
+
+// sdpConfig returns an SDPConfig populated from the leg's current local media
+// state (audio + optional text). Callers must hold l.mu (read or write): it
+// walks the mutable stream and m-line state. Assumes the primary stream's RTP
+// session is non-nil.
 func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 	cfg := sipmod.SDPConfig{
 		LocalIP:           l.localIP,
-		RTPPort:           l.rtpSess.LocalPort(),
+		RTPPort:           l.prim.rtpSess.LocalPort(),
 		Codecs:            l.supportedCodecs,
-		AMRWBOctetAligned: l.amrwbOctetAligned,
-		AMRWBModeSet:      l.amrwbModeSet,
-		AMRNBOctetAligned: l.amrnbOctetAligned,
-		AMRNBModeSet:      l.amrnbModeSet,
-		DTMFPT:            l.dtmfSendPT,
-		DTMFClockRate:     l.dtmfClockRate,
+		AMRWBOctetAligned: l.prim.amrwbOctetAligned,
+		AMRWBModeSet:      l.prim.amrwbModeSet,
+		AMRNBOctetAligned: l.prim.amrnbOctetAligned,
+		AMRNBModeSet:      l.prim.amrnbModeSet,
+		DTMFPT:            l.prim.dtmfSendPT,
+		DTMFClockRate:     l.prim.dtmfClockRate,
 	}
 	if l.textRtpSess != nil {
 		cfg.TextRTPPort = l.textRtpSess.LocalPort()
@@ -1738,7 +1825,10 @@ func (l *SIPLeg) Hold(ctx context.Context) error {
 		return fmt.Errorf("leg is %s, must be connected to hold", st)
 	}
 
-	sdpBody := sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, "sendonly")
+	sdpBody := l.reInviteSDP(sipmod.DirSendOnly)
+	if sdpBody == nil {
+		return fmt.Errorf("no media session to hold")
+	}
 
 	var dialog interface{}
 	if l.inbound != nil {
@@ -1749,7 +1839,7 @@ func (l *SIPLeg) Hold(ctx context.Context) error {
 		return fmt.Errorf("no dialog available")
 	}
 
-	if err := l.engine.SendReInvite(ctx, dialog, sdpBody); err != nil {
+	if _, err := l.engine.SendReInviteAnswer(ctx, dialog, sdpBody, l.applyAnswer); err != nil {
 		return fmt.Errorf("hold re-INVITE: %w", err)
 	}
 
@@ -1773,7 +1863,10 @@ func (l *SIPLeg) Unhold(ctx context.Context) error {
 		return nil // not held
 	}
 
-	sdpBody := sipmod.GenerateReInviteSDP(l.sdpConfig(), l.codecType, l.rtpPT, "sendrecv")
+	sdpBody := l.reInviteSDP(sipmod.DirSendRecv)
+	if sdpBody == nil {
+		return fmt.Errorf("no media session to unhold")
+	}
 
 	var dialog interface{}
 	if l.inbound != nil {
@@ -1784,7 +1877,7 @@ func (l *SIPLeg) Unhold(ctx context.Context) error {
 		return fmt.Errorf("no dialog available")
 	}
 
-	if err := l.engine.SendReInvite(ctx, dialog, sdpBody); err != nil {
+	if _, err := l.engine.SendReInviteAnswer(ctx, dialog, sdpBody, l.applyAnswer); err != nil {
 		return fmt.Errorf("unhold re-INVITE: %w", err)
 	}
 
@@ -1895,7 +1988,7 @@ func (l *SIPLeg) sessionRefresh() {
 		return
 	}
 
-	if err := l.engine.SendReInvite(l.ctx, dialog, sdpBody); err != nil {
+	if _, err := l.engine.SendReInviteAnswer(l.ctx, dialog, sdpBody, l.applyAnswer); err != nil {
 		l.log.Error("session timer: refresh re-INVITE failed", "leg_id", l.id, "error", err)
 		// On failure, try once more at 75% of remaining interval.
 		remaining := time.Duration(interval) * time.Second / 4
@@ -1956,11 +2049,11 @@ func (l *SIPLeg) stopSessionTimer() {
 }
 
 func (l *SIPLeg) SendDTMF(ctx context.Context, digits string) error {
-	if l.dtmfCh == nil {
+	if l.prim.dtmfCh == nil {
 		return fmt.Errorf("no DTMF channel available")
 	}
 	select {
-	case l.dtmfCh <- digits:
+	case l.prim.dtmfCh <- digits:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

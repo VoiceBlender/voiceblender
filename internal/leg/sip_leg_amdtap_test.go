@@ -3,6 +3,8 @@ package leg
 import (
 	"bytes"
 	"testing"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
 
 // TestSIPLegClearAMDTapIfOnlyClearsItsOwnTap pins the tap's identity check.
@@ -14,21 +16,21 @@ func TestSIPLegClearAMDTapIfOnlyClearsItsOwnTap(t *testing.T) {
 	first := &bytes.Buffer{}
 	second := &bytes.Buffer{}
 
-	l := &SIPLeg{}
+	l := newTestSIPLeg(codec.CodecPCMU)
 	l.SetAMDTap(first)
 	l.SetAMDTap(second) // a second AMD start supersedes the first
 
 	if l.ClearAMDTapIf(first) {
 		t.Error("clearing a superseded tap must report that it did not own the slot")
 	}
-	if l.amdTap != second {
+	if l.prim.amdTap != second {
 		t.Fatal("a superseded tap must not clear the live tap")
 	}
 
 	if !l.ClearAMDTapIf(second) {
 		t.Error("the installed tap must report that it owned the slot")
 	}
-	if l.amdTap != nil {
+	if l.prim.amdTap != nil {
 		t.Error("the installed tap must clear the slot")
 	}
 }

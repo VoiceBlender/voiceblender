@@ -401,7 +401,10 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Answer a ringing or early-media inbound SIP leg (asynchronous)",
 			Description: "Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; " +
 				"the actual SIP 200 OK is sent in the background, and the leg's transition is observed via " +
-				"`leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously.",
+				"`leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. " +
+				"When the caller offered several m=audio sections and SIP_MULTI_STREAM_ENABLED is on, they are all " +
+				"accepted automatically; `streams` optionally routes each accepted stream beyond the primary into " +
+				"its own room, applied once the answer is negotiated.",
 			Tags:         []string{"Legs"},
 			RequestType:  AnswerLegRequest{},
 			OptionalBody: true,
@@ -945,7 +948,9 @@ func RoutesMetadata() []RouteMeta {
 				"answered before being added — in this case the response status is " +
 				"`adding` and the actual room join happens asynchronously, observable " +
 				"via `leg.joined_room`. Auto-answer failures surface as " +
-				"`leg.command_failed` with `command=\"add_to_room\"`.",
+				"`leg.command_failed` with `command=\"add_to_room\"`. " +
+				"Only the leg's primary audio stream joins by default; `streams` additionally mixes named " +
+				"secondary streams of the same leg into this room. A stream currently mixed elsewhere is moved here.",
 			Tags:        []string{"Rooms"},
 			RequestType: AddLegRequest{},
 			Responses: map[int]ResponseMeta{
@@ -1058,6 +1063,86 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
 				400: {Description: "Invalid JSON"},
 				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "GET", Path: "/legs/{id}/streams", OperationID: "listLegStreams",
+			Summary: "List a leg's audio streams",
+			Description: "Returns every negotiated m=audio section on the leg, in m-line order. A single-stream " +
+				"call has exactly one entry, the primary. Multiple streams require SIP_MULTI_STREAM_ENABLED.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Audio streams in m-line order", Type: []LegStreamView{}},
+				400: {Description: "Not a SIP leg"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/streams", OperationID: "addLegStream",
+			Summary: "Add an audio stream to a live call",
+			Description: "Negotiates an additional m=audio section with a re-INVITE (RFC 3264 §8.1). The new " +
+				"section is appended below the existing ones and binds its own RTP port. Use it to carry a " +
+				"second independent audio stream — a translated feed, for example — alongside the original. " +
+				"Set `content` to \"alt\" and `lang` to the feed's language so the peer can tell them apart. " +
+				"Requires SIP_MULTI_STREAM_ENABLED; a peer that answers the new section with port 0 leaves the " +
+				"call untouched and this returns 409.",
+			Tags:        []string{"Legs"},
+			RequestType: AddLegStreamRequest{},
+			Responses: map[int]ResponseMeta{
+				201: {Description: "Stream negotiated", Type: LegStreamView{}},
+				400: {Description: "Invalid JSON or not a SIP leg"},
+				404: {Description: "Leg or room not found"},
+				409: {Description: "Multi-stream disabled, stream cap reached, no negotiated media yet, or the peer rejected the stream"},
+			},
+		},
+		{
+			Method: "GET", Path: "/legs/{id}/streams/{streamId}", OperationID: "getLegStream",
+			Summary: "Get one of a leg's audio streams",
+			Tags:    []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Audio stream", Type: LegStreamView{}},
+				400: {Description: "Not a SIP leg"},
+				404: {Description: "Leg or stream not found"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/streams/{streamId}", OperationID: "removeLegStream",
+			Summary: "Remove an audio stream from a live call",
+			Description: "Disables the stream with a re-INVITE carrying port 0 for its section (RFC 3264 §8.2) " +
+				"and releases its RTP port. The m-line slot survives as a tombstone — the m-line count never " +
+				"decreases for the life of a dialog — so a later added stream takes a new position. The " +
+				"primary stream carries the call and cannot be removed.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				204: {Description: "Stream removed"},
+				400: {Description: "Not a SIP leg"},
+				404: {Description: "Leg or stream not found"},
+				409: {Description: "Cannot remove the primary stream, or the re-INVITE failed"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/streams/{streamId}/room", OperationID: "attachLegStreamRoom",
+			Summary: "Mix an audio stream into a room",
+			Description: "Attaches one of the leg's secondary streams to a room, which may differ from the " +
+				"leg's own room — that is what lets an original audio stream and a translated one be mixed " +
+				"separately. A leg never hears its own other streams, whatever the routing matrix says.",
+			Tags:        []string{"Legs"},
+			RequestType: AttachStreamRoomRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated stream", Type: LegStreamView{}},
+				400: {Description: "Invalid JSON, missing room_id, not a SIP leg, or the primary stream"},
+				404: {Description: "Leg, stream, or room not found"},
+				409: {Description: "Stream carries no audio in either direction"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/streams/{streamId}/room", OperationID: "detachLegStreamRoom",
+			Summary: "Remove an audio stream from its room",
+			Tags:    []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated stream", Type: LegStreamView{}},
+				400: {Description: "Not a SIP leg"},
+				404: {Description: "Leg or stream not found"},
 			},
 		},
 		{

@@ -19,6 +19,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"MOQ_OPUS_BITRATE", "AMRWB_MODE", "AMRWB_OCTET_ALIGNED",
 		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
 		"SIP_INBOUND_REGISTER_DEFAULT",
+		"SIP_MULTI_STREAM_ENABLED", "SIP_MULTI_STREAM_MAX",
+		"SIP_SDP_STRICT_MLINE_ANSWER",
 	} {
 		t.Setenv(key, "")
 	}
@@ -45,6 +47,15 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.RTPPortMin != 10000 {
 		t.Errorf("RTPPortMin = %d, want 10000", cfg.RTPPortMin)
+	}
+	if cfg.SIPMultiStreamEnabled {
+		t.Error("SIPMultiStreamEnabled = true, want false by default")
+	}
+	if cfg.SIPMultiStreamMax != 4 {
+		t.Errorf("SIPMultiStreamMax = %d, want 4", cfg.SIPMultiStreamMax)
+	}
+	if cfg.SIPSDPStrictMLineAnswer {
+		t.Error("SIPSDPStrictMLineAnswer = true, want false by default")
 	}
 	if cfg.RTPPortMax != 20000 {
 		t.Errorf("RTPPortMax = %d, want 20000", cfg.RTPPortMax)

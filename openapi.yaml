@@ -193,6 +193,15 @@ info:
         - name: SIP_JITTER_BUFFER_MAX_MS
           default: "300"
           description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
+        - name: SIP_MULTI_STREAM_ENABLED
+          default: "false"
+          description: Allow a SIP dialog to negotiate more than one m=audio section (RFC 3264 §5.1), so a call can carry several independent audio streams — e.g. original plus translated audio. When false, extra audio sections offered by a peer are answered with port 0 and the per-leg stream API refuses to add any. Off by default because many endpoints and SBCs assume exactly one m=audio line.
+        - name: SIP_MULTI_STREAM_MAX
+          default: "4"
+          description: Maximum audio sections per SIP dialog when SIP_MULTI_STREAM_ENABLED is true. Each stream consumes one port from the RTP_PORT_MIN/RTP_PORT_MAX pool. Clamped to 1..16.
+        - name: SIP_SDP_STRICT_MLINE_ANSWER
+          default: "false"
+          description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.
         - name: SIP_REFER_AUTO_DIAL
           default: "false"
           description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
@@ -402,7 +411,7 @@ paths:
         post:
             operationId: answerLeg
             summary: Answer a ringing or early-media inbound SIP leg (asynchronous)
-            description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously.
+            description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. When the caller offered several m=audio sections and SIP_MULTI_STREAM_ENABLED is on, they are all accepted automatically; `streams` optionally routes each accepted stream beyond the primary into its own room, applied once the answer is negotiated.
             tags:
                 - Legs
             requestBody:
@@ -1691,7 +1700,7 @@ paths:
         post:
             operationId: addLegToRoom
             summary: Add or move a leg to a room
-            description: Add a leg to a room (auto-creates room if it doesn't exist). If the leg is already in a different room, it is atomically moved to the target room. A ringing inbound SIP leg is automatically answered before being added — in this case the response status is `adding` and the actual room join happens asynchronously, observable via `leg.joined_room`. Auto-answer failures surface as `leg.command_failed` with `command="add_to_room"`.
+            description: Add a leg to a room (auto-creates room if it doesn't exist). If the leg is already in a different room, it is atomically moved to the target room. A ringing inbound SIP leg is automatically answered before being added — in this case the response status is `adding` and the actual room join happens asynchronously, observable via `leg.joined_room`. Auto-answer failures surface as `leg.command_failed` with `command="add_to_room"`. Only the leg's primary audio stream joins by default; `streams` additionally mixes named secondary streams of the same leg into this room. A stream currently mixed elsewhere is moved here.
             tags:
                 - Rooms
             requestBody:
@@ -1955,6 +1964,201 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '404':
                     description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/streams:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        get:
+            operationId: listLegStreams
+            summary: List a leg's audio streams
+            description: Returns every negotiated m=audio section on the leg, in m-line order. A single-stream call has exactly one entry, the primary. Multiple streams require SIP_MULTI_STREAM_ENABLED.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Audio streams in m-line order
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        post:
+            operationId: addLegStream
+            summary: Add an audio stream to a live call
+            description: Negotiates an additional m=audio section with a re-INVITE (RFC 3264 §8.1). The new section is appended below the existing ones and binds its own RTP port. Use it to carry a second independent audio stream — a translated feed, for example — alongside the original. Set `content` to "alt" and `lang` to the feed's language so the peer can tell them apart. Requires SIP_MULTI_STREAM_ENABLED; a peer that answers the new section with port 0 leaves the call untouched and this returns 409.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AddLegStreamRequest'
+            responses:
+                '201':
+                    description: Stream negotiated
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Invalid JSON or not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Multi-stream disabled, stream cap reached, no negotiated media yet, or the peer rejected the stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/streams/{streamId}:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+            - name: streamId
+              in: path
+              required: true
+              schema:
+                type: string
+        get:
+            operationId: getLegStream
+            summary: Get one of a leg's audio streams
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Audio stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or stream not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: removeLegStream
+            summary: Remove an audio stream from a live call
+            description: Disables the stream with a re-INVITE carrying port 0 for its section (RFC 3264 §8.2) and releases its RTP port. The m-line slot survives as a tombstone — the m-line count never decreases for the life of a dialog — so a later added stream takes a new position. The primary stream carries the call and cannot be removed.
+            tags:
+                - Legs
+            responses:
+                '204':
+                    description: Stream removed
+                '400':
+                    description: Not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or stream not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Cannot remove the primary stream, or the re-INVITE failed
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/streams/{streamId}/room:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+            - name: streamId
+              in: path
+              required: true
+              schema:
+                type: string
+        post:
+            operationId: attachLegStreamRoom
+            summary: Mix an audio stream into a room
+            description: Attaches one of the leg's secondary streams to a room, which may differ from the leg's own room — that is what lets an original audio stream and a translated one be mixed separately. A leg never hears its own other streams, whatever the routing matrix says.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AttachStreamRoomRequest'
+            responses:
+                '200':
+                    description: Updated stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Invalid JSON, missing room_id, not a SIP leg, or the primary stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg, stream, or room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Stream carries no audio in either direction
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: detachLegStreamRoom
+            summary: Remove an audio stream from its room
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Updated stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or stream not found
                     content:
                         application/json:
                             schema:
@@ -3057,8 +3261,46 @@ components:
                 role:
                     type: string
                     description: If set, apply this routing role to the leg atomically before it joins the mixer. The room's routing matrix (see PUT /v1/rooms/{id}/routing) decides which other legs this leg hears and is heard by based on roles. Pass "" to clear the role (full mesh). Omit to leave the current role untouched.
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AddRoomStream'
+                    description: Additional audio streams of the leg to mix into this room, each with its own routing role. Omit to add only the leg's primary stream. A stream already mixed elsewhere is moved here.
             required:
                 - leg_id
+        AddLegStreamRequest:
+            type: object
+            properties:
+                direction:
+                    type: string
+                    description: Media direction for the new stream, from this server's point of view. Defaults to sendrecv.
+                    enum:
+                        - sendrecv
+                        - sendonly
+                        - recvonly
+                        - inactive
+                    default: sendrecv
+                lang:
+                    type: string
+                    description: BCP 47 language tag advertised as a=lang (RFC 8866), e.g. "es-ES" for a Spanish translation feed.
+                content:
+                    type: string
+                    description: Value advertised as a=content (RFC 4796). Use "main" for original audio and "alt" for an alternative feed such as a translation.
+                    enum:
+                        - main
+                        - alt
+                        - speaker
+                        - slides
+                        - sl
+                label:
+                    type: string
+                    description: Value advertised as a=label (RFC 4574), for correlating the stream with external metadata.
+                room_id:
+                    type: string
+                    description: If set, attach the new stream to this room once it is negotiated.
+                role:
+                    type: string
+                    description: Routing role to apply when room_id is set.
         AgentMessageRequest:
             type: object
             properties:
@@ -3083,6 +3325,22 @@ components:
                         - opus
                         - AMR-WB
                         - AMR-NB
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AnswerLegStream'
+                    description: 'Rooms for the caller''s additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller''s offer decides how many exist, so an entry with no matching stream is ignored. Requires SIP_MULTI_STREAM_ENABLED. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later.'
+        AttachStreamRoomRequest:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                    description: Room to mix this stream into. May differ from the leg's own room.
+                role:
+                    type: string
+                    description: Routing role for the stream inside that room. The room's routing matrix decides who hears it.
+            required:
+                - room_id
         ChallengeRequest:
             type: object
             properties:
@@ -3186,6 +3444,11 @@ components:
                     type: boolean
                     description: 'For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.'
                     default: false
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CreateLegStream'
+                    description: SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. Requires SIP_MULTI_STREAM_ENABLED; the total (primary + extras) must not exceed SIP_MULTI_STREAM_MAX. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead.
                 url:
                     type: string
                     description: WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.
@@ -3686,6 +3949,26 @@ components:
                     type: integer
                     description: Max time (ms) to wait for the voicemail beep after machine detection. 0 or omitted = disabled.
                     default: 0
+        AddRoomStream:
+            type: object
+            properties:
+                stream_id:
+                    type: string
+                    description: Stream identifier from GET /v1/legs/{id}/streams. The primary stream is not addressable here — it joins with the leg itself.
+                role:
+                    type: string
+                    description: Routing role for this stream inside the room.
+            required:
+                - stream_id
+        AnswerLegStream:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                    description: Room to mix this stream into once the answer is negotiated. May differ from the room the leg itself joins.
+                role:
+                    type: string
+                    description: Routing role for this stream inside its room.
         BridgeView:
             type: object
             properties:
@@ -3711,6 +3994,39 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        CreateLegStream:
+            type: object
+            properties:
+                direction:
+                    type: string
+                    description: Media direction for this stream, from this server's point of view. Defaults to sendrecv.
+                    enum:
+                        - sendrecv
+                        - sendonly
+                        - recvonly
+                        - inactive
+                    default: sendrecv
+                lang:
+                    type: string
+                    description: BCP 47 language tag advertised as a=lang (RFC 8866), e.g. "es-ES" for a Spanish translation feed.
+                content:
+                    type: string
+                    description: Value advertised as a=content (RFC 4796). Use "alt" for an alternative feed such as a translation.
+                    enum:
+                        - main
+                        - alt
+                        - speaker
+                        - slides
+                        - sl
+                label:
+                    type: string
+                    description: Value advertised as a=label (RFC 4574), for correlating the stream with external metadata.
+                room_id:
+                    type: string
+                    description: Room to mix this stream into once the call connects. May differ from the leg's own room_id, which governs the primary stream.
+                role:
+                    type: string
+                    description: Routing role for this stream inside its room.
         CreateTrunkResponse:
             type: object
             properties:
@@ -3735,6 +4051,77 @@ components:
             properties:
                 peer_uri:
                     type: string
+        LegStreamView:
+            type: object
+            properties:
+                id:
+                    type: string
+                    description: Stream identifier, stable for the life of the dialog. The primary stream is always "0".
+                mid:
+                    type: string
+                    description: The stream's SDP a=mid token (RFC 5888), used to correlate it across offer/answer.
+                index:
+                    type: integer
+                    description: Position of the stream's m= line in the SDP. Fixed for the life of the dialog (RFC 3264 §8).
+                primary:
+                    type: boolean
+                    description: True for the call's main bidirectional audio stream, which cannot be removed or attached to a room independently.
+                state:
+                    type: string
+                    description: Negotiation state.
+                    enum:
+                        - pending
+                        - active
+                        - removed
+                direction:
+                    type: string
+                    description: Negotiated media direction from this server's point of view.
+                    enum:
+                        - sendrecv
+                        - sendonly
+                        - recvonly
+                        - inactive
+                desired_direction:
+                    type: string
+                    description: Direction requested by the application. Survives hold/unhold, unlike the negotiated direction.
+                    enum:
+                        - sendrecv
+                        - sendonly
+                        - recvonly
+                        - inactive
+                codec:
+                    type: string
+                    description: Codec negotiated for this stream. Streams on one leg may use different codecs.
+                sample_rate:
+                    type: integer
+                    description: Native sample rate of the stream's codec, in Hz.
+                local_port:
+                    type: integer
+                    description: Local RTP port. Each stream binds its own port; a shared transport is undefined without BUNDLE (RFC 9143).
+                remote_addr:
+                    type: string
+                    description: Remote RTP address media is currently sent to.
+                label:
+                    type: string
+                    description: The stream's a=label value (RFC 4574), for correlating it with external metadata.
+                content:
+                    type: string
+                    description: The stream's a=content value (RFC 4796), e.g. "main" for original audio and "alt" for a translated feed.
+                lang:
+                    type: string
+                    description: 'The stream''s a=lang value (RFC 8866): a BCP 47 language tag such as "en" or "es-ES".'
+                room_id:
+                    type: string
+                    description: Room this stream's audio is mixed into. A secondary stream may sit in a different room than its leg.
+                role:
+                    type: string
+                    description: Routing role of this stream within its room. Streams carry their own role, independent of their leg's.
+            required:
+                - id
+                - index
+                - primary
+                - state
+                - direction
         LiveKitParams:
             type: object
             properties:
@@ -4010,6 +4397,11 @@ components:
                 - leg.hold
                 - leg.unhold
                 - leg.command_failed
+                - leg.stream_added
+                - leg.stream_removed
+                - leg.stream_rejected
+                - leg.stream_failed
+                - leg.stream_room_changed
                 - dtmf.received
                 - rtt.received
                 - speaking.started
@@ -4344,6 +4736,146 @@ x-webhooks:
                                     command:
                                         type: string
                                     error:
+                                        type: string
+    leg.stream_added:
+        post:
+            summary: An additional m=audio stream was negotiated on a live dialog
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
+                                        type: string
+    leg.stream_removed:
+        post:
+            summary: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
+                                        type: string
+    leg.stream_rejected:
+        post:
+            summary: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
+                                        type: string
+    leg.stream_failed:
+        post:
+            summary: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
+                                        type: string
+    leg.stream_room_changed:
+        post:
+            summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
                                         type: string
     dtmf.received:
         post:

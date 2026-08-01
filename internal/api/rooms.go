@@ -130,6 +130,10 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		}
 	}
 
+	if err := s.validateRoomStreams(l, req.Streams); err != nil {
+		return nil, err
+	}
+
 	// Apply mute/deaf before the leg enters the mixer so the participant
 	// is added with the desired state in a single atomic step.
 	if req.Mute != nil {
@@ -165,6 +169,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 			}
 		}
 		s.onLegJoinedRoom(roomID, req.LegID)
+		s.attachRequestedRoomStreams(l, roomID, req.Streams)
 		return map[string]string{
 			"status": "moved",
 			"from":   fromRoomID,
@@ -190,6 +195,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 				return
 			}
 			s.onLegJoinedRoom(roomID, req.LegID)
+			s.attachRequestedRoomStreams(l, roomID, req.Streams)
 		}()
 		return map[string]string{"status": "adding"}, nil
 	}
@@ -198,6 +204,7 @@ func (s *Server) doAddLegToRoom(ctx context.Context, roomID string, req AddLegRe
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 	s.onLegJoinedRoom(roomID, req.LegID)
+	s.attachRequestedRoomStreams(l, roomID, req.Streams)
 	return map[string]string{"status": "added"}, nil
 }
 

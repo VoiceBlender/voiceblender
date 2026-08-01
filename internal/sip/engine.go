@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,14 @@ type EngineConfig struct {
 	// NonceTTL bounds the lifetime of an issued inbound-auth challenge nonce.
 	// Zero falls back to the store default (60s).
 	NonceTTL time.Duration
+
+	// MultiStreamEnabled allows dialogs to negotiate more than one m=audio
+	// section. MultiStreamMax caps how many (zero means one).
+	MultiStreamEnabled bool
+	MultiStreamMax     int
+	// StrictMLineAnswer makes answers carry a port-0 placeholder for every
+	// offered section we don't accept, per RFC 3264 §6.
+	StrictMLineAnswer bool
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -78,35 +87,38 @@ type Engine struct {
 	dsCache *dialogServerCache
 	dcCache *dialogClientCache
 
-	onInvite          func(call *InboundCall)
-	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
-	pendingAuth       *pendingAuthStore
-	onReInvite        func(callID string, direction string) []byte // returns SDP answer for 200 OK
-	onUpdate          func(callID string, direction string, hasSDP bool) []byte
-	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
-	onNotify          func(callID string, statusCode int, reason string, terminated bool)
-	codecs            []codec.CodecType
-	amrwbMode         int
-	amrwbOctetAligned bool
-	amrnbMode         int
-	amrnbOctetAligned bool
-	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
-	bindIPV6          string // IPv6 advertised address; empty if v4-only
-	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
-	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
-	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
-	bindPort          int
-	tlsPort           int // 0 = TLS disabled
-	tlsCert           string
-	tlsKey            string
-	sipHost           string
-	portAlloc         *PortAllocator
-	log               *slog.Logger
-	sipDebug          bool
-	useSourceSocket   bool
-	destPinned        atomic.Uint64 // count of res.Destination overrides applied
-	registrar         *Registrar
-	trunks            *TrunkManager
+	onInvite           func(call *InboundCall)
+	onRegisterAttempt  func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
+	pendingAuth        *pendingAuthStore
+	onReInvite         func(callID string, offer []byte) []byte // returns SDP answer for 200 OK
+	onUpdate           func(callID string, offer []byte, hasSDP bool) []byte
+	onRefer            func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
+	onNotify           func(callID string, statusCode int, reason string, terminated bool)
+	codecs             []codec.CodecType
+	amrwbMode          int
+	multiStreamEnabled bool
+	multiStreamMax     int
+	strictMLineAnswer  bool
+	amrwbOctetAligned  bool
+	amrnbMode          int
+	amrnbOctetAligned  bool
+	bindIP             string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
+	bindIPV6           string // IPv6 advertised address; empty if v4-only
+	publicHost         string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
+	listenIP           string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
+	listenIPV6         string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
+	bindPort           int
+	tlsPort            int // 0 = TLS disabled
+	tlsCert            string
+	tlsKey             string
+	sipHost            string
+	portAlloc          *PortAllocator
+	log                *slog.Logger
+	sipDebug           bool
+	useSourceSocket    bool
+	destPinned         atomic.Uint64 // count of res.Destination overrides applied
+	registrar          *Registrar
+	trunks             *TrunkManager
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -243,6 +255,13 @@ type OutboundCall struct {
 	Dialog    *sipgo.DialogClientSession
 	RemoteSDP *SDPMedia
 	RTPSess   *RTPSession
+
+	// ExtraRTPSess holds the media sockets for audio sections beyond the first,
+	// in m-line order. Nil for single-stream calls. OfferedStreams describes
+	// every audio section offered, including the first, so the leg can zip the
+	// peer's answer onto them positionally.
+	ExtraRTPSess   []*RTPSession
+	OfferedStreams []AudioStream
 
 	// Optional RTT (T.140 / RFC 4103) media. Populated when the remote's
 	// answer accepts the offered m=text section. Nil otherwise.
@@ -423,33 +442,36 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		ua:                ua,
-		server:            server,
-		client:            client,
-		dsCache:           newDialogServerCache(serverUA),
-		dcCache:           newDialogClientCache(clientUA),
-		codecs:            cfg.Codecs,
-		amrwbMode:         cfg.AMRWBMode,
-		amrwbOctetAligned: cfg.AMRWBOctetAligned,
-		amrnbMode:         cfg.AMRNBMode,
-		amrnbOctetAligned: cfg.AMRNBOctetAligned,
-		bindIP:            advertiseIP,
-		bindIPV6:          advertiseIPV6,
-		publicHost:        publicHost,
-		listenIP:          listenIP,
-		listenIPV6:        listenIPV6,
-		bindPort:          cfg.BindPort,
-		tlsPort:           cfg.TLSBindPort,
-		tlsCert:           cfg.TLSCertPath,
-		tlsKey:            cfg.TLSKeyPath,
-		sipHost:           cfg.SIPHost,
-		portAlloc:         cfg.PortAllocator,
-		log:               cfg.Log,
-		sipDebug:          cfg.SIPDebug,
-		useSourceSocket:   cfg.UseSourceSocket,
-		registrar:         cfg.Registrar,
-		trunks:            NewTrunkManager(),
-		pendingAuth:       newPendingAuthStore(cfg.NonceTTL),
+		ua:                 ua,
+		server:             server,
+		client:             client,
+		dsCache:            newDialogServerCache(serverUA),
+		dcCache:            newDialogClientCache(clientUA),
+		codecs:             cfg.Codecs,
+		amrwbMode:          cfg.AMRWBMode,
+		multiStreamEnabled: cfg.MultiStreamEnabled,
+		multiStreamMax:     cfg.MultiStreamMax,
+		strictMLineAnswer:  cfg.StrictMLineAnswer,
+		amrwbOctetAligned:  cfg.AMRWBOctetAligned,
+		amrnbMode:          cfg.AMRNBMode,
+		amrnbOctetAligned:  cfg.AMRNBOctetAligned,
+		bindIP:             advertiseIP,
+		bindIPV6:           advertiseIPV6,
+		publicHost:         publicHost,
+		listenIP:           listenIP,
+		listenIPV6:         listenIPV6,
+		bindPort:           cfg.BindPort,
+		tlsPort:            cfg.TLSBindPort,
+		tlsCert:            cfg.TLSCertPath,
+		tlsKey:             cfg.TLSKeyPath,
+		sipHost:            cfg.SIPHost,
+		portAlloc:          cfg.PortAllocator,
+		log:                cfg.Log,
+		sipDebug:           cfg.SIPDebug,
+		useSourceSocket:    cfg.UseSourceSocket,
+		registrar:          cfg.Registrar,
+		trunks:             NewTrunkManager(),
+		pendingAuth:        newPendingAuthStore(cfg.NonceTTL),
 	}
 
 	if cfg.Log != nil {
@@ -487,7 +509,7 @@ func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
 // The handler receives the SIP Call-ID and the SDP direction attribute, and
 // returns the SDP body to include in the 200 OK response (nil = no SDP).
-func (e *Engine) OnReInvite(handler func(callID string, direction string) []byte) {
+func (e *Engine) OnReInvite(handler func(callID string, offer []byte) []byte) {
 	e.onReInvite = handler
 }
 
@@ -497,7 +519,7 @@ func (e *Engine) OnReInvite(handler func(callID string, direction string) []byte
 // direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
 // and the returned []byte is the SDP answer for the 200 OK. When false,
 // direction is "" and the handler should only refresh session-timer state.
-func (e *Engine) OnUpdate(handler func(callID string, direction string, hasSDP bool) []byte) {
+func (e *Engine) OnUpdate(handler func(callID string, offer []byte, hasSDP bool) []byte) {
 	e.onUpdate = handler
 }
 
@@ -542,22 +564,15 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 	}
 
+	// The offer body goes to the handler untouched: only the leg holds the
+	// m-line table this re-offer has to be matched against positionally.
 	body := req.Body()
-	direction := "sendrecv"
-	if len(body) > 0 {
-		remoteSDP, err := ParseSDP(body)
-		if err != nil {
-			e.log.Warn("re-INVITE: parse SDP failed", "error", err)
-		} else if remoteSDP.Direction != "" {
-			direction = remoteSDP.Direction
-		}
-	}
 
 	// Call the handler before responding so it can provide the SDP answer
 	// and update hold state.
 	var answerSDP []byte
 	if e.onReInvite != nil {
-		answerSDP = e.onReInvite(callID.Value(), direction)
+		answerSDP = e.onReInvite(callID.Value(), body)
 	}
 
 	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
@@ -583,7 +598,7 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "direction", direction)
+	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "has_sdp", len(body) > 0)
 }
 
 // handleUpdate processes an in-dialog UPDATE (RFC 3311). Typical uses are
@@ -627,10 +642,10 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 
 	body := req.Body()
 	hasSDP := len(body) > 0
-	direction := ""
 	if hasSDP {
-		remoteSDP, err := ParseSDP(body)
-		if err != nil {
+		// Reject a malformed offer up front; the handler renegotiates against
+		// the leg's m-line table only once the body is known to parse.
+		if _, err := ParseSDP(body); err != nil {
 			e.log.Warn("UPDATE: parse SDP failed", "error", err)
 			res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad SDP", nil)
 			res.AppendHeader(e.ServerHeader())
@@ -639,15 +654,11 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 			}
 			return
 		}
-		direction = remoteSDP.Direction
-		if direction == "" {
-			direction = "sendrecv"
-		}
 	}
 
 	var answerSDP []byte
 	if e.onUpdate != nil {
-		answerSDP = e.onUpdate(callID.Value(), direction, hasSDP)
+		answerSDP = e.onUpdate(callID.Value(), body, hasSDP)
 	}
 
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
@@ -672,12 +683,23 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	e.log.Info("UPDATE handled", "call_id", callID.Value(), "has_sdp", hasSDP, "direction", direction)
+	e.log.Info("UPDATE handled", "call_id", callID.Value(), "has_sdp", hasSDP)
 }
 
-// SendReInvite sends a re-INVITE within an existing dialog for hold/unhold.
+// SendReInvite sends a re-INVITE within an existing dialog for hold/unhold,
+// discarding the peer's answer. Prefer SendReInviteAnswer when the answer
+// matters — which it does for anything beyond a plain direction flip.
 // dialog must be either *sipgo.DialogServerSession or *sipgo.DialogClientSession.
 func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody []byte) error {
+	_, err := e.SendReInviteAnswer(ctx, dialog, sdpBody, nil)
+	return err
+}
+
+// SendReInviteAnswer sends a re-INVITE and returns the peer's answer body from
+// the 200 OK. When apply is non-nil it is invoked with that body *before* the
+// ACK is written, so local media state is already consistent by the time the
+// peer is cleared to send.
+func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdpBody []byte, apply func(answer []byte)) ([]byte, error) {
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
@@ -687,19 +709,24 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
-			return fmt.Errorf("re-INVITE Do: %w", err)
+			return nil, fmt.Errorf("re-INVITE Do: %w", err)
 		}
 		if !res.IsSuccess() {
-			return fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+			return nil, fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+		}
+
+		answer := res.Body()
+		if apply != nil {
+			apply(answer)
 		}
 
 		// Send ACK
 		cont := res.Contact()
 		if cont != nil {
 			ack := sip.NewRequest(sip.ACK, cont.Address)
-			return d.WriteRequest(ack)
+			return answer, d.WriteRequest(ack)
 		}
-		return nil
+		return answer, nil
 
 	case *sipgo.DialogClientSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
@@ -710,22 +737,27 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
-			return fmt.Errorf("re-INVITE Do: %w", err)
+			return nil, fmt.Errorf("re-INVITE Do: %w", err)
 		}
 		if !res.IsSuccess() {
-			return fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+			return nil, fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+		}
+
+		answer := res.Body()
+		if apply != nil {
+			apply(answer)
 		}
 
 		// Send ACK
 		cont := res.Contact()
 		if cont != nil {
 			ack := sip.NewRequest(sip.ACK, cont.Address)
-			return d.WriteRequest(ack)
+			return answer, d.WriteRequest(ack)
 		}
-		return nil
+		return answer, nil
 
 	default:
-		return fmt.Errorf("unsupported dialog type: %T", dialog)
+		return nil, fmt.Errorf("unsupported dialog type: %T", dialog)
 	}
 }
 
@@ -1098,6 +1130,73 @@ type InviteOptions struct {
 	// (0 = plain T.140, no RED).
 	RTTEnabled    bool
 	RTTRedundancy int
+
+	// Streams, when it holds more than one entry, offers that many m=audio
+	// sections. The first is the call's primary bidirectional audio; the rest
+	// are additional streams (e.g. a translated feed). Empty or single-entry
+	// offers emit exactly the SDP a single-stream call always has.
+	Streams []OfferStream
+}
+
+// OfferStream describes one m=audio section to offer beyond the defaults.
+type OfferStream struct {
+	Direction string // "" means sendrecv
+	Lang      string // BCP 47 tag for a=lang
+	Content   string // a=content, e.g. "main" or "alt"
+	Label     string // a=label
+}
+
+// zero reports whether the stream carries no attributes, i.e. it is the plain
+// bidirectional audio section a legacy offer would emit.
+func (o OfferStream) zero() bool {
+	return o.Direction == "" && o.Lang == "" && o.Content == "" && o.Label == ""
+}
+
+// buildOfferStreams populates cfg.Streams when an offer carries more than the
+// one plain audio section, allocating a media socket per extra stream. It
+// leaves cfg untouched for a legacy single-stream offer, so that SDP stays
+// byte-for-byte what deployed peers already negotiate.
+//
+// The returned sessions cover only the extra streams; the caller owns the first.
+func (e *Engine) buildOfferStreams(cfg *SDPConfig, first *RTPSession, codecs []codec.CodecType, streams []OfferStream) ([]*RTPSession, []AudioStream, error) {
+	if len(streams) == 0 || (len(streams) == 1 && streams[0].zero()) {
+		return nil, nil, nil
+	}
+	if !e.multiStreamEnabled && len(streams) > 1 {
+		return nil, nil, fmt.Errorf("multi-stream offers are disabled (SIP_MULTI_STREAM_ENABLED)")
+	}
+	if max := e.MultiStreamMax(); len(streams) > max {
+		return nil, nil, fmt.Errorf("offer requests %d audio streams, cap is %d", len(streams), max)
+	}
+
+	// The first section reuses the socket the caller already bound.
+	base := offerStream(*cfg)
+	sessions := make([]*RTPSession, 0, len(streams)-1)
+	offered := make([]AudioStream, 0, len(streams))
+
+	for i, os := range streams {
+		sess := first
+		if i > 0 {
+			s, err := NewRTPSessionFromAllocator(e.portAlloc)
+			if err != nil {
+				return sessions, nil, fmt.Errorf("create RTP session for stream %d: %w", i, err)
+			}
+			sessions = append(sessions, s)
+			sess = s
+		}
+		as := base
+		as.Codecs = codecs
+		as.Port = sess.LocalPort()
+		as.MID = strconv.Itoa(i)
+		as.Direction = os.Direction
+		as.Lang = os.Lang
+		as.Content = os.Content
+		as.Label = os.Label
+		offered = append(offered, as)
+	}
+
+	cfg.Streams = offered
+	return sessions, offered, nil
 }
 
 // fromIdentity builds the From header and the matching P-Asserted-Identity
@@ -1180,9 +1279,20 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		AMRWBOctetAligned: e.amrwbOctetAligned,
 		AMRNBOctetAligned: e.amrnbOctetAligned,
 	}
+	extraSess, offered, oerr := e.buildOfferStreams(&cfg, rtpSess, codecs, opts.Streams)
+	if oerr != nil {
+		for _, s := range extraSess {
+			s.Close()
+		}
+		return nil, oerr
+	}
+
 	if opts.RTTEnabled {
 		ts, terr := NewRTPSessionFromAllocator(e.portAlloc)
 		if terr != nil {
+			for _, s := range extraSess {
+				s.Close()
+			}
 			return nil, fmt.Errorf("create text RTP session: %w", terr)
 		}
 		textRtpSess = ts
@@ -1365,11 +1475,13 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	committed = true
 	return &OutboundCall{
-		Dialog:       ds,
-		RemoteSDP:    remoteSDP,
-		RTPSess:      rtpSess,
-		TextRTPSess:  textRtpSess,
-		SessionTimer: sessionTimer,
+		Dialog:         ds,
+		RemoteSDP:      remoteSDP,
+		RTPSess:        rtpSess,
+		ExtraRTPSess:   extraSess,
+		OfferedStreams: offered,
+		TextRTPSess:    textRtpSess,
+		SessionTimer:   sessionTimer,
 	}, nil
 }
 
@@ -1377,6 +1489,21 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 func (e *Engine) Codecs() []codec.CodecType {
 	return e.codecs
 }
+
+// MultiStreamEnabled reports whether dialogs may negotiate more than one
+// m=audio section.
+func (e *Engine) MultiStreamEnabled() bool { return e.multiStreamEnabled }
+
+// MultiStreamMax returns the per-dialog audio stream cap (at least 1).
+func (e *Engine) MultiStreamMax() int {
+	if e.multiStreamMax < 1 {
+		return 1
+	}
+	return e.multiStreamMax
+}
+
+// StrictMLineAnswer reports whether answers cover every offered m= section.
+func (e *Engine) StrictMLineAnswer() bool { return e.strictMLineAnswer }
 
 // AMRWBMode returns the configured AMR-WB encoder speech mode (0..8).
 func (e *Engine) AMRWBMode() int { return e.amrwbMode }
