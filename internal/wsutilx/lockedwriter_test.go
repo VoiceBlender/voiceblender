@@ -201,3 +201,83 @@ func TestLockedWriter_LatchesFirstError(t *testing.T) {
 		t.Errorf("Err() = %v, want %v", err, boom)
 	}
 }
+
+// TestLockedWriter_FrameMasking asserts each constructor picks the framing its
+// side of the connection requires. A server that masks (or a client that does
+// not) is a protocol violation the peer closes on, and nothing else in the
+// suite reads the mask bit.
+func TestLockedWriter_FrameMasking(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		make   func(net.Conn) *LockedWriter
+		masked bool
+	}{
+		{"client", NewLockedWriter, true},
+		{"server", func(c net.Conn) *LockedWriter { return NewServerLockedWriter(c, nil) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := &recordingConn{}
+			if err := tc.make(rc).WriteText([]byte("hello")); err != nil {
+				t.Fatalf("WriteText: %v", err)
+			}
+
+			rc.mu.Lock()
+			raw := rc.buf.Bytes()
+			rc.mu.Unlock()
+
+			f, err := ws.ReadFrame(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatalf("ReadFrame: %v", err)
+			}
+			if f.Header.Masked != tc.masked {
+				t.Fatalf("masked = %v, want %v", f.Header.Masked, tc.masked)
+			}
+			if f.Header.OpCode != ws.OpText {
+				t.Fatalf("opcode = %v, want text", f.Header.OpCode)
+			}
+		})
+	}
+}
+
+// TestServerLockedWriter_OnFailRunsOnceOnFirstFailure asserts the teardown hook
+// fires exactly once. The VSI handler passes conn.Close here — it is what wakes
+// a recv loop parked in a blocking read — and every writer that piles up behind
+// the failure must be absorbed by the latch rather than closing again.
+func TestServerLockedWriter_OnFailRunsOnceOnFirstFailure(t *testing.T) {
+	boom := errors.New("write boom")
+	fc := &failingConn{err: boom}
+	var fails atomic.Int32
+	lw := NewServerLockedWriter(fc, func() { fails.Add(1) })
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := lw.WriteText([]byte("hello")); !errors.Is(err, boom) {
+				t.Errorf("WriteText err = %v, want %v", err, boom)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := fails.Load(); got != 1 {
+		t.Fatalf("onFail ran %d times, want exactly 1", got)
+	}
+	if got := fc.writes.Load(); got != 1 {
+		t.Fatalf("conn.Write calls = %d, want 1: the latch let a writer touch a broken frame", got)
+	}
+}
+
+// A healthy writer must not run the teardown hook.
+func TestServerLockedWriter_OnFailQuietWhileHealthy(t *testing.T) {
+	var fails atomic.Int32
+	lw := NewServerLockedWriter(&recordingConn{}, func() { fails.Add(1) })
+
+	if err := lw.WriteText([]byte("hello")); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if got := fails.Load(); got != 0 {
+		t.Fatalf("onFail ran %d times on a healthy write, want 0", got)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -165,7 +166,7 @@ func deepgramAgentOpts(req DeepgramAgentRequest) agent.Options {
 }
 
 // vsiStartLegAgentElevenLabs validates and starts an ElevenLabs leg agent over VSI.
-func (s *Server) vsiStartLegAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
+func (s *Server) vsiStartLegAgentElevenLabs(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
 	if p.AgentID == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "agent_id is required"))
 		return
@@ -183,7 +184,7 @@ func (s *Server) vsiStartLegAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p 
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartLegAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agentVAPIPayload) {
+func (s *Server) vsiStartLegAgentVAPI(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentVAPIPayload) {
 	if p.AssistantID == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "assistant_id is required"))
 		return
@@ -201,7 +202,7 @@ func (s *Server) vsiStartLegAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agentV
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartLegAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p agentPipecatPayload) {
+func (s *Server) vsiStartLegAgentPipecat(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentPipecatPayload) {
 	if p.WebsocketURL == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "websocket_url is required"))
 		return
@@ -214,7 +215,7 @@ func (s *Server) vsiStartLegAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p age
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartLegAgentDeepgram(lw *wsLockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
+func (s *Server) vsiStartLegAgentDeepgram(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
 	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.DeepgramAPIKey, "deepgram")
 	if errMsg != "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))
@@ -228,7 +229,7 @@ func (s *Server) vsiStartLegAgentDeepgram(lw *wsLockedWriter, msg vsiInMsg, p ag
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartRoomAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
+func (s *Server) vsiStartRoomAgentElevenLabs(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentElevenLabsPayload) {
 	if p.AgentID == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "agent_id is required"))
 		return
@@ -246,7 +247,7 @@ func (s *Server) vsiStartRoomAgentElevenLabs(lw *wsLockedWriter, msg vsiInMsg, p
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartRoomAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agentVAPIPayload) {
+func (s *Server) vsiStartRoomAgentVAPI(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentVAPIPayload) {
 	if p.AssistantID == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "assistant_id is required"))
 		return
@@ -264,7 +265,7 @@ func (s *Server) vsiStartRoomAgentVAPI(lw *wsLockedWriter, msg vsiInMsg, p agent
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartRoomAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p agentPipecatPayload) {
+func (s *Server) vsiStartRoomAgentPipecat(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentPipecatPayload) {
 	if p.WebsocketURL == "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusBadRequest, "websocket_url is required"))
 		return
@@ -277,7 +278,7 @@ func (s *Server) vsiStartRoomAgentPipecat(lw *wsLockedWriter, msg vsiInMsg, p ag
 	s.wsCommandResult(lw, msg, res)
 }
 
-func (s *Server) vsiStartRoomAgentDeepgram(lw *wsLockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
+func (s *Server) vsiStartRoomAgentDeepgram(lw *wsutilx.LockedWriter, msg vsiInMsg, p agentDeepgramPayload) {
 	apiKey, errMsg := resolveAPIKey(p.APIKey, s.Config.DeepgramAPIKey, "deepgram")
 	if errMsg != "" {
 		s.wsCommandError(lw, msg, newAPIError(http.StatusServiceUnavailable, "%s", errMsg))

@@ -97,13 +97,15 @@ func WatchCancel(ctx context.Context, conn net.Conn) func() {
 	return func() { close(stopCh) }
 }
 
-// LockedWriter serializes client-side WebSocket frame writes to a net.Conn
-// and bounds each one with a write deadline.
+// LockedWriter serializes WebSocket frame writes to a net.Conn and bounds
+// each one with a write deadline. The state field selects masked client
+// frames or unmasked server frames; everything else is identical, so both
+// halves of the codebase share one writer.
 //
 // Serialization is required for correctness, not merely for safety: a
 // WebSocket frame is a header write followed by a payload write (gobwas
 // ws.WriteFrame issues them as two separate conn.Write calls), so two
-// unsynchronized writers interleave and corrupt the stream. Any client
+// unsynchronized writers interleave and corrupt the stream. Any endpoint
 // with both a send loop and a read path that answers pings therefore
 // needs a single writer shared by both halves.
 //
@@ -115,30 +117,40 @@ func WatchCancel(ctx context.Context, conn net.Conn) func() {
 //
 // A write that fails on the deadline leaves the stream mid-frame and
 // unrecoverable, so the first failure is latched: every later write returns
-// it without touching the conn. Callers must tear the connection down.
+// it without touching the conn. Callers must tear the connection down, or
+// supply an onFail hook that does it for them.
 type LockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-	err  error
+	mu     sync.Mutex
+	conn   net.Conn
+	state  ws.State
+	onFail func()
+	err    error
 }
 
 // NewLockedWriter returns a LockedWriter writing client-side (masked)
 // frames to conn.
-func NewLockedWriter(conn net.Conn) *LockedWriter { return &LockedWriter{conn: conn} }
+func NewLockedWriter(conn net.Conn) *LockedWriter {
+	return &LockedWriter{conn: conn, state: ws.StateClientSide}
+}
+
+// NewServerLockedWriter returns a LockedWriter writing server-side
+// (unmasked) frames to conn. onFail, when non-nil, runs once after the
+// first write failure and outside the mutex — typically conn.Close, which
+// is what wakes a recv loop parked in a blocking read so its handler can
+// unwind instead of serving on a stream carrying a truncated frame.
+func NewServerLockedWriter(conn net.Conn, onFail func()) *LockedWriter {
+	return &LockedWriter{conn: conn, state: ws.StateServerSide, onFail: onFail}
+}
 
 // WriteText writes data as a single text frame.
-func (lw *LockedWriter) WriteText(data []byte) error {
-	return lw.write(func(conn net.Conn) error { return wsutil.WriteClientText(conn, data) })
-}
+func (lw *LockedWriter) WriteText(data []byte) error { return lw.write(ws.OpText, data) }
 
 // WriteBinary writes data as a single binary frame.
-func (lw *LockedWriter) WriteBinary(data []byte) error {
-	return lw.write(func(conn net.Conn) error { return wsutil.WriteClientBinary(conn, data) })
-}
+func (lw *LockedWriter) WriteBinary(data []byte) error { return lw.write(ws.OpBinary, data) }
 
 // WriteControl writes a control frame (typically ws.OpPong) with payload.
 func (lw *LockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	return lw.write(func(conn net.Conn) error { return wsutil.WriteClientMessage(conn, op, payload) })
+	return lw.write(op, payload)
 }
 
 // Err returns the latched write failure, or nil while the stream is intact.
@@ -148,16 +160,25 @@ func (lw *LockedWriter) Err() error {
 	return lw.err
 }
 
-func (lw *LockedWriter) write(fn func(net.Conn) error) error {
+func (lw *LockedWriter) write(op ws.OpCode, payload []byte) error {
 	lw.mu.Lock()
-	defer lw.mu.Unlock()
 	if lw.err != nil {
-		return lw.err
-	}
-	SetWriteDeadline(lw.conn, DefaultWriteTimeout.Load())
-	if err := fn(lw.conn); err != nil {
-		lw.err = err
+		err := lw.err
+		lw.mu.Unlock()
 		return err
 	}
-	return nil
+	SetWriteDeadline(lw.conn, DefaultWriteTimeout.Load())
+	err := wsutil.WriteMessage(lw.conn, lw.state, op, payload)
+	if err != nil {
+		lw.err = err
+	}
+	lw.mu.Unlock()
+
+	if err != nil && lw.onFail != nil {
+		// Outside the mutex: onFail closes the conn, and no writer may be
+		// parked on this lock while that runs. The latch above is what keeps
+		// it to one call.
+		lw.onFail()
+	}
+	return err
 }
