@@ -88,6 +88,10 @@ Originate an outbound SIP call.
     "password": "trunk-pass"
   },
   "room_id": "room-123",
+  "streams": [
+    { "direction": "sendonly", "content": "alt", "lang": "es",
+      "room_id": "room-translated", "role": "translator" }
+  ],
   "amd": {
     "initial_silence_timeout": 2500,
     "greeting_duration": 1500,
@@ -117,6 +121,7 @@ Originate an outbound SIP call.
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
+| `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. Requires `SIP_MULTI_STREAM_ENABLED`; primary + extras must not exceed `SIP_MULTI_STREAM_MAX`. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -157,7 +162,9 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
 
 **Errors:**
-- `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
+- `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, or an invalid `streams[].direction`
+- `404` — A `streams[].room_id` names a room that does not exist
+- `409` — `streams` was set with `SIP_MULTI_STREAM_ENABLED=false`, or the request exceeds `SIP_MULTI_STREAM_MAX`
 
 ---
 
@@ -561,7 +568,10 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 ```json
 {
   "speech_detection": true,
-  "codec": "PCMA"
+  "codec": "PCMA",
+  "streams": [
+    { "room_id": "room-translated", "role": "translator" }
+  ]
 }
 ```
 
@@ -569,6 +579,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
+| `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Requires `SIP_MULTI_STREAM_ENABLED`. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
 **Response:** `202 Accepted`
 
@@ -578,8 +589,8 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 
 **Errors:**
 - `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
-- `404` — Leg not found
-- `409` — Leg is not in `ringing` or `early_media` state
+- `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
+- `409` — Leg is not in `ringing` or `early_media` state, or `streams` was set with `SIP_MULTI_STREAM_ENABLED=false`
 
 ---
 
@@ -1683,12 +1694,24 @@ Join already muted / deaf:
 }
 ```
 
+Join with one of the leg's additional audio streams:
+
+```json
+{
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "streams": [
+    { "stream_id": "1", "role": "translator" }
+  ]
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `leg_id` | string | yes | ID of the leg to add |
 | `mute` | bool | no | Apply this mute state to the leg atomically before it joins the mixer — prevents the race where one frame of un-muted audio leaks into the mix between add and `/mute`. Omit to leave current state untouched (useful on move). |
 | `deaf` | bool | no | Apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched. |
 | `role` | string | no | Apply a routing role atomically before the leg enters the mixer. The room's routing matrix (see `/v1/rooms/{id}/routing`) decides who hears whom based on roles, so passing `role` on join guarantees no audio bleed between the leg appearing in the mix and the matrix being applied. Pass an empty string to clear the role (full mesh). Omit to leave the current role untouched. |
+| `streams` | object[] | no | **SIP only.** Additional audio streams of the same leg to mix into **this** room, each with its own routing role. Each entry takes `stream_id` (from `GET /v1/legs/{id}/streams`) and `role`. Omit to add only the leg's primary stream, which is the classic behaviour. A stream currently mixed elsewhere is moved here. Because this endpoint is scoped to one room it can only place streams *here* — to fan a leg's streams across different rooms, use [`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom). |
 
 **Response (added):** `200 OK`
 
