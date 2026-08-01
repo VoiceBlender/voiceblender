@@ -402,9 +402,9 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; " +
 				"the actual SIP 200 OK is sent in the background, and the leg's transition is observed via " +
 				"`leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. " +
-				"When the caller offered several m=audio sections and SIP_MULTI_STREAM_ENABLED is on, they are all " +
-				"accepted automatically; `streams` optionally routes each accepted stream beyond the primary into " +
-				"its own room, applied once the answer is negotiated.",
+				"When the caller offers several m=audio sections they are all accepted; `streams` optionally " +
+				"routes each accepted stream beyond the primary into its own room, applied once the answer " +
+				"is negotiated.",
 			Tags:         []string{"Legs"},
 			RequestType:  AnswerLegRequest{},
 			OptionalBody: true,
@@ -1069,7 +1069,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/legs/{id}/streams", OperationID: "listLegStreams",
 			Summary: "List a leg's audio streams",
 			Description: "Returns every negotiated m=audio section on the leg, in m-line order. A single-stream " +
-				"call has exactly one entry, the primary. Multiple streams require SIP_MULTI_STREAM_ENABLED.",
+				"call has exactly one entry, the primary.",
 			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Audio streams in m-line order", Type: []LegStreamView{}},
@@ -1084,15 +1084,14 @@ func RoutesMetadata() []RouteMeta {
 				"section is appended below the existing ones and binds its own RTP port. Use it to carry a " +
 				"second independent audio stream — a translated feed, for example — alongside the original. " +
 				"Set `content` to \"alt\" and `lang` to the feed's language so the peer can tell them apart. " +
-				"Requires SIP_MULTI_STREAM_ENABLED; a peer that answers the new section with port 0 leaves the " +
-				"call untouched and this returns 409.",
+				"A peer that answers the new section with port 0 leaves the call untouched and this returns 409.",
 			Tags:        []string{"Legs"},
 			RequestType: AddLegStreamRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Stream negotiated", Type: LegStreamView{}},
 				400: {Description: "Invalid JSON or not a SIP leg"},
 				404: {Description: "Leg or room not found"},
-				409: {Description: "Multi-stream disabled, stream cap reached, no negotiated media yet, or the peer rejected the stream"},
+				409: {Description: "Leg has no negotiated media yet, or the peer rejected the stream"},
 			},
 		},
 		{

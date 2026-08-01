@@ -70,10 +70,6 @@ type EngineConfig struct {
 	// Zero falls back to the store default (60s).
 	NonceTTL time.Duration
 
-	// MultiStreamEnabled allows dialogs to negotiate more than one m=audio
-	// section. MultiStreamMax caps how many (zero means one).
-	MultiStreamEnabled bool
-	MultiStreamMax     int
 	// StrictMLineAnswer makes answers carry a port-0 placeholder for every
 	// offered section we don't accept, per RFC 3264 §6.
 	StrictMLineAnswer bool
@@ -87,38 +83,36 @@ type Engine struct {
 	dsCache *dialogServerCache
 	dcCache *dialogClientCache
 
-	onInvite           func(call *InboundCall)
-	onRegisterAttempt  func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
-	pendingAuth        *pendingAuthStore
-	onReInvite         func(callID string, offer []byte) []byte // returns SDP answer for 200 OK
-	onUpdate           func(callID string, offer []byte, hasSDP bool) []byte
-	onRefer            func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
-	onNotify           func(callID string, statusCode int, reason string, terminated bool)
-	codecs             []codec.CodecType
-	amrwbMode          int
-	multiStreamEnabled bool
-	multiStreamMax     int
-	strictMLineAnswer  bool
-	amrwbOctetAligned  bool
-	amrnbMode          int
-	amrnbOctetAligned  bool
-	bindIP             string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
-	bindIPV6           string // IPv6 advertised address; empty if v4-only
-	publicHost         string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
-	listenIP           string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
-	listenIPV6         string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
-	bindPort           int
-	tlsPort            int // 0 = TLS disabled
-	tlsCert            string
-	tlsKey             string
-	sipHost            string
-	portAlloc          *PortAllocator
-	log                *slog.Logger
-	sipDebug           bool
-	useSourceSocket    bool
-	destPinned         atomic.Uint64 // count of res.Destination overrides applied
-	registrar          *Registrar
-	trunks             *TrunkManager
+	onInvite          func(call *InboundCall)
+	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
+	pendingAuth       *pendingAuthStore
+	onReInvite        func(callID string, offer []byte) []byte // returns SDP answer for 200 OK
+	onUpdate          func(callID string, offer []byte, hasSDP bool) []byte
+	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
+	onNotify          func(callID string, statusCode int, reason string, terminated bool)
+	codecs            []codec.CodecType
+	amrwbMode         int
+	strictMLineAnswer bool
+	amrwbOctetAligned bool
+	amrnbMode         int
+	amrnbOctetAligned bool
+	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
+	bindIPV6          string // IPv6 advertised address; empty if v4-only
+	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
+	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
+	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
+	bindPort          int
+	tlsPort           int // 0 = TLS disabled
+	tlsCert           string
+	tlsKey            string
+	sipHost           string
+	portAlloc         *PortAllocator
+	log               *slog.Logger
+	sipDebug          bool
+	useSourceSocket   bool
+	destPinned        atomic.Uint64 // count of res.Destination overrides applied
+	registrar         *Registrar
+	trunks            *TrunkManager
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -442,36 +436,34 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		ua:                 ua,
-		server:             server,
-		client:             client,
-		dsCache:            newDialogServerCache(serverUA),
-		dcCache:            newDialogClientCache(clientUA),
-		codecs:             cfg.Codecs,
-		amrwbMode:          cfg.AMRWBMode,
-		multiStreamEnabled: cfg.MultiStreamEnabled,
-		multiStreamMax:     cfg.MultiStreamMax,
-		strictMLineAnswer:  cfg.StrictMLineAnswer,
-		amrwbOctetAligned:  cfg.AMRWBOctetAligned,
-		amrnbMode:          cfg.AMRNBMode,
-		amrnbOctetAligned:  cfg.AMRNBOctetAligned,
-		bindIP:             advertiseIP,
-		bindIPV6:           advertiseIPV6,
-		publicHost:         publicHost,
-		listenIP:           listenIP,
-		listenIPV6:         listenIPV6,
-		bindPort:           cfg.BindPort,
-		tlsPort:            cfg.TLSBindPort,
-		tlsCert:            cfg.TLSCertPath,
-		tlsKey:             cfg.TLSKeyPath,
-		sipHost:            cfg.SIPHost,
-		portAlloc:          cfg.PortAllocator,
-		log:                cfg.Log,
-		sipDebug:           cfg.SIPDebug,
-		useSourceSocket:    cfg.UseSourceSocket,
-		registrar:          cfg.Registrar,
-		trunks:             NewTrunkManager(),
-		pendingAuth:        newPendingAuthStore(cfg.NonceTTL),
+		ua:                ua,
+		server:            server,
+		client:            client,
+		dsCache:           newDialogServerCache(serverUA),
+		dcCache:           newDialogClientCache(clientUA),
+		codecs:            cfg.Codecs,
+		amrwbMode:         cfg.AMRWBMode,
+		strictMLineAnswer: cfg.StrictMLineAnswer,
+		amrwbOctetAligned: cfg.AMRWBOctetAligned,
+		amrnbMode:         cfg.AMRNBMode,
+		amrnbOctetAligned: cfg.AMRNBOctetAligned,
+		bindIP:            advertiseIP,
+		bindIPV6:          advertiseIPV6,
+		publicHost:        publicHost,
+		listenIP:          listenIP,
+		listenIPV6:        listenIPV6,
+		bindPort:          cfg.BindPort,
+		tlsPort:           cfg.TLSBindPort,
+		tlsCert:           cfg.TLSCertPath,
+		tlsKey:            cfg.TLSKeyPath,
+		sipHost:           cfg.SIPHost,
+		portAlloc:         cfg.PortAllocator,
+		log:               cfg.Log,
+		sipDebug:          cfg.SIPDebug,
+		useSourceSocket:   cfg.UseSourceSocket,
+		registrar:         cfg.Registrar,
+		trunks:            NewTrunkManager(),
+		pendingAuth:       newPendingAuthStore(cfg.NonceTTL),
 	}
 
 	if cfg.Log != nil {
@@ -1162,12 +1154,6 @@ func (e *Engine) buildOfferStreams(cfg *SDPConfig, first *RTPSession, codecs []c
 	if len(streams) == 0 || (len(streams) == 1 && streams[0].zero()) {
 		return nil, nil, nil
 	}
-	if !e.multiStreamEnabled && len(streams) > 1 {
-		return nil, nil, fmt.Errorf("multi-stream offers are disabled (SIP_MULTI_STREAM_ENABLED)")
-	}
-	if max := e.MultiStreamMax(); len(streams) > max {
-		return nil, nil, fmt.Errorf("offer requests %d audio streams, cap is %d", len(streams), max)
-	}
 
 	// The first section reuses the socket the caller already bound.
 	base := offerStream(*cfg)
@@ -1488,18 +1474,6 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 // Codecs returns the engine's supported codecs.
 func (e *Engine) Codecs() []codec.CodecType {
 	return e.codecs
-}
-
-// MultiStreamEnabled reports whether dialogs may negotiate more than one
-// m=audio section.
-func (e *Engine) MultiStreamEnabled() bool { return e.multiStreamEnabled }
-
-// MultiStreamMax returns the per-dialog audio stream cap (at least 1).
-func (e *Engine) MultiStreamMax() int {
-	if e.multiStreamMax < 1 {
-		return 1
-	}
-	return e.multiStreamMax
 }
 
 // StrictMLineAnswer reports whether answers cover every offered m= section.

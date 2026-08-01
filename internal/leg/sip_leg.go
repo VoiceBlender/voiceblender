@@ -82,9 +82,7 @@ type SIPLeg struct {
 	// (RFC 3264 §8).
 	mlines sipmod.MLineTable
 	// Negotiation policy, copied from the engine at construction.
-	multiStream    bool
-	multiStreamMax int
-	strictMLines   bool
+	strictMLines bool
 
 	earlyMediaSDP    []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders       map[string]string // X-* headers from inbound INVITE or outbound request

@@ -193,12 +193,6 @@ info:
         - name: SIP_JITTER_BUFFER_MAX_MS
           default: "300"
           description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
-        - name: SIP_MULTI_STREAM_ENABLED
-          default: "false"
-          description: Allow a SIP dialog to negotiate more than one m=audio section (RFC 3264 §5.1), so a call can carry several independent audio streams — e.g. original plus translated audio. When false, extra audio sections offered by a peer are answered with port 0 and the per-leg stream API refuses to add any. Off by default because many endpoints and SBCs assume exactly one m=audio line.
-        - name: SIP_MULTI_STREAM_MAX
-          default: "4"
-          description: Maximum audio sections per SIP dialog when SIP_MULTI_STREAM_ENABLED is true. Each stream consumes one port from the RTP_PORT_MIN/RTP_PORT_MAX pool. Clamped to 1..16.
         - name: SIP_SDP_STRICT_MLINE_ANSWER
           default: "false"
           description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.
@@ -411,7 +405,7 @@ paths:
         post:
             operationId: answerLeg
             summary: Answer a ringing or early-media inbound SIP leg (asynchronous)
-            description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. When the caller offered several m=audio sections and SIP_MULTI_STREAM_ENABLED is on, they are all accepted automatically; `streams` optionally routes each accepted stream beyond the primary into its own room, applied once the answer is negotiated.
+            description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. When the caller offers several m=audio sections they are all accepted; `streams` optionally routes each accepted stream beyond the primary into its own room, applied once the answer is negotiated.
             tags:
                 - Legs
             requestBody:
@@ -1974,7 +1968,7 @@ paths:
         get:
             operationId: listLegStreams
             summary: List a leg's audio streams
-            description: Returns every negotiated m=audio section on the leg, in m-line order. A single-stream call has exactly one entry, the primary. Multiple streams require SIP_MULTI_STREAM_ENABLED.
+            description: Returns every negotiated m=audio section on the leg, in m-line order. A single-stream call has exactly one entry, the primary.
             tags:
                 - Legs
             responses:
@@ -2001,7 +1995,7 @@ paths:
         post:
             operationId: addLegStream
             summary: Add an audio stream to a live call
-            description: Negotiates an additional m=audio section with a re-INVITE (RFC 3264 §8.1). The new section is appended below the existing ones and binds its own RTP port. Use it to carry a second independent audio stream — a translated feed, for example — alongside the original. Set `content` to "alt" and `lang` to the feed's language so the peer can tell them apart. Requires SIP_MULTI_STREAM_ENABLED; a peer that answers the new section with port 0 leaves the call untouched and this returns 409.
+            description: Negotiates an additional m=audio section with a re-INVITE (RFC 3264 §8.1). The new section is appended below the existing ones and binds its own RTP port. Use it to carry a second independent audio stream — a translated feed, for example — alongside the original. Set `content` to "alt" and `lang` to the feed's language so the peer can tell them apart. A peer that answers the new section with port 0 leaves the call untouched and this returns 409.
             tags:
                 - Legs
             requestBody:
@@ -2030,7 +2024,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: Multi-stream disabled, stream cap reached, no negotiated media yet, or the peer rejected the stream
+                    description: Leg has no negotiated media yet, or the peer rejected the stream
                     content:
                         application/json:
                             schema:
@@ -3329,7 +3323,7 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/AnswerLegStream'
-                    description: 'Rooms for the caller''s additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller''s offer decides how many exist, so an entry with no matching stream is ignored. Requires SIP_MULTI_STREAM_ENABLED. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later.'
+                    description: 'Rooms for the caller''s additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller''s offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later.'
         AttachStreamRoomRequest:
             type: object
             properties:
@@ -3448,7 +3442,7 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/CreateLegStream'
-                    description: SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. Requires SIP_MULTI_STREAM_ENABLED; the total (primary + extras) must not exceed SIP_MULTI_STREAM_MAX. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead.
+                    description: SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead.
                 url:
                     type: string
                     description: WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.

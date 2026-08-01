@@ -157,3 +157,64 @@ func TestMatchRemoteStream_PrefersMIDOverPosition(t *testing.T) {
 		t.Errorf("matched port = %v, want 40002 (the a=mid match)", got)
 	}
 }
+
+// TestAdoptOutboundStreams_PeerRejectsExtraStream covers graceful degradation:
+// the peer answers the second offered section with port 0, so that stream is
+// torn down and tombstoned while the call continues on the primary.
+func TestAdoptOutboundStreams_PeerRejectsExtraStream(t *testing.T) {
+	primary, err := sipmod.NewRTPSession()
+	if err != nil {
+		t.Fatalf("NewRTPSession: %v", err)
+	}
+	t.Cleanup(func() { primary.Close() })
+	extra, err := sipmod.NewRTPSession()
+	if err != nil {
+		t.Fatalf("NewRTPSession: %v", err)
+	}
+	t.Cleanup(func() { extra.Close() })
+
+	l := newTestSIPLeg(codec.CodecPCMU)
+	l.log = slog.New(slog.DiscardHandler)
+	l.localIP = "192.0.2.1"
+	l.supportedCodecs = []codec.CodecType{codec.CodecPCMU}
+
+	answer, err := sipmod.ParseSDP([]byte(strings.Join([]string{
+		"v=0",
+		"o=- 1 1 IN IP4 192.0.2.9",
+		"s=-",
+		"c=IN IP4 192.0.2.9",
+		"t=0 0",
+		"m=audio 41000 RTP/AVP 0",
+		"a=rtpmap:0 PCMU/8000",
+		"a=sendrecv",
+		"m=audio 0 RTP/AVP 0", // the peer refused this section
+		"",
+	}, "\r\n")))
+	if err != nil {
+		t.Fatalf("ParseSDP: %v", err)
+	}
+
+	call := &sipmod.OutboundCall{
+		RemoteSDP:    answer,
+		RTPSess:      primary,
+		ExtraRTPSess: []*sipmod.RTPSession{extra},
+		OfferedStreams: []sipmod.AudioStream{
+			{Port: primary.LocalPort(), MID: "0", Direction: sipmod.DirSendRecv},
+			{Port: extra.LocalPort(), MID: "1", Direction: sipmod.DirSendOnly},
+		},
+	}
+
+	if !l.adoptOutboundStreams(call) {
+		t.Fatal("the primary stream must still come up")
+	}
+	if got := l.StreamCount(); got != 1 {
+		t.Errorf("stream count = %d, want 1 — the rejected stream must be dropped", got)
+	}
+	// RFC 3264 §8: the slot survives so subsequent offers keep the same shape.
+	if l.mlines.Len() != 2 {
+		t.Fatalf("m-line count = %d, want 2", l.mlines.Len())
+	}
+	if got := l.mlines.Slot(1).State; got != sipmod.SlotTombstone {
+		t.Errorf("rejected slot state = %v, want tombstone", got)
+	}
+}

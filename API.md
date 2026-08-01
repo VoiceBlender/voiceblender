@@ -121,7 +121,7 @@ Originate an outbound SIP call.
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
-| `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. Requires `SIP_MULTI_STREAM_ENABLED`; primary + extras must not exceed `SIP_MULTI_STREAM_MAX`. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
+| `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -164,7 +164,6 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 **Errors:**
 - `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, or an invalid `streams[].direction`
 - `404` — A `streams[].room_id` names a room that does not exist
-- `409` — `streams` was set with `SIP_MULTI_STREAM_ENABLED=false`, or the request exceeds `SIP_MULTI_STREAM_MAX`
 
 ---
 
@@ -579,7 +578,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
-| `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Requires `SIP_MULTI_STREAM_ENABLED`. See [Choosing a room per stream](#choosing-a-room-per-stream). |
+| `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
 **Response:** `202 Accepted`
 
@@ -590,7 +589,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 **Errors:**
 - `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
 - `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
-- `409` — Leg is not in `ringing` or `early_media` state, or `streams` was set with `SIP_MULTI_STREAM_ENABLED=false`
+- `409` — Leg is not in `ringing` or `early_media` state
 
 ---
 
@@ -2006,10 +2005,10 @@ Pass an empty string to clear the role (the leg falls back to full mesh).
 
 ## Per-leg audio streams (multiple m=audio lines)
 
-A SIP dialog normally carries one `m=audio` section. With
-`SIP_MULTI_STREAM_ENABLED=true` a call can negotiate several independent audio
-streams (RFC 3264 §5.1), each with its own RTP port, direction, language and
-mixer routing. The motivating case is live translation: `m=audio` #0 carries the
+A SIP dialog normally carries one `m=audio` section, but it may carry several
+(RFC 3264 §5.1), each with its own RTP port, direction, language and mixer
+routing. Extra sections are negotiated only when one side offers them, so an
+ordinary call is unaffected. The motivating case is live translation: `m=audio` #0 carries the
 original bidirectional audio while a second, `sendonly` stream carries the
 translated feed, mixed into a different room.
 
@@ -2081,8 +2080,7 @@ call runs on whatever was negotiated.
 re-INVITE (see below).
 
 **Inbound** — the sections are accepted automatically when a peer offers several
-`m=audio` and `SIP_MULTI_STREAM_ENABLED=true`, up to `SIP_MULTI_STREAM_MAX`. To
-route them at the same time you answer, pass `streams` to
+`m=audio`. To route them at the same time you answer, pass `streams` to
 `POST /v1/legs/{id}/answer`:
 
 ```bash
@@ -2201,8 +2199,7 @@ Emits `leg.stream_added`, plus `leg.stream_room_changed` when `room_id` was set.
 A peer that refuses the section emits `leg.stream_rejected`.
 
 **Errors:** `400` — invalid JSON or not a SIP leg; `404` — leg or room not
-found; `409` — multi-stream disabled, stream cap (`SIP_MULTI_STREAM_MAX`)
-reached, leg has no negotiated media yet, or the peer rejected the stream
+found; `409` — leg has no negotiated media yet, or the peer rejected the stream
 
 ---
 

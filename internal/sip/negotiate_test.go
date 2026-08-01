@@ -45,11 +45,7 @@ func baseOpts() AnswerOptions {
 
 func TestPlanAnswer_AlwaysCoversEveryOfferedSection(t *testing.T) {
 	offer := twoAudioOffer(t)
-	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 4
-
-	plans := PlanAnswer(offer, opts)
+	plans := PlanAnswer(offer, baseOpts())
 	if len(plans) != len(offer.MLines) {
 		t.Fatalf("plan count = %d, want %d — RFC 3264 §6 requires one answer section per offered section",
 			len(plans), len(offer.MLines))
@@ -61,26 +57,8 @@ func TestPlanAnswer_AlwaysCoversEveryOfferedSection(t *testing.T) {
 	}
 }
 
-func TestPlanAnswer_MultiStreamDisabledRejectsExtras(t *testing.T) {
+func TestPlanAnswer_AcceptsEveryOfferedAudioSection(t *testing.T) {
 	plans := PlanAnswer(twoAudioOffer(t), baseOpts())
-
-	if plans[0].Action != SlotAccept {
-		t.Errorf("first section = %v, want accept", plans[0].Action)
-	}
-	if plans[1].Action != SlotReject {
-		t.Fatalf("second section = %v, want reject when multi-stream is off", plans[1].Action)
-	}
-	if plans[1].Reason != "multi_stream_disabled" {
-		t.Errorf("reason = %q, want multi_stream_disabled", plans[1].Reason)
-	}
-}
-
-func TestPlanAnswer_MultiStreamAcceptsBoth(t *testing.T) {
-	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 4
-
-	plans := PlanAnswer(twoAudioOffer(t), opts)
 	if plans[0].Action != SlotAccept || plans[1].Action != SlotAccept {
 		t.Fatalf("actions = %v/%v, want both accepted", plans[0].Action, plans[1].Action)
 	}
@@ -97,17 +75,6 @@ func TestPlanAnswer_MultiStreamAcceptsBoth(t *testing.T) {
 	}
 }
 
-func TestPlanAnswer_MaxStreamsCap(t *testing.T) {
-	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 1
-
-	plans := PlanAnswer(twoAudioOffer(t), opts)
-	if plans[1].Action != SlotReject || plans[1].Reason != "max_streams" {
-		t.Errorf("second section = %v (%q), want reject/max_streams", plans[1].Action, plans[1].Reason)
-	}
-}
-
 func TestPlanAnswer_EchoesOfferDisabledSection(t *testing.T) {
 	offer := mustParse(t,
 		"v=0",
@@ -120,11 +87,7 @@ func TestPlanAnswer_EchoesOfferDisabledSection(t *testing.T) {
 		"m=audio 0 RTP/AVP 0",
 		"a=rtpmap:0 PCMU/8000",
 	)
-	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 4
-
-	plans := PlanAnswer(offer, opts)
+	plans := PlanAnswer(offer, baseOpts())
 	if plans[1].Action != SlotReject || plans[1].Reason != "offer_disabled" {
 		t.Errorf("disabled section = %v (%q), want reject/offer_disabled", plans[1].Action, plans[1].Reason)
 	}
@@ -147,8 +110,6 @@ func TestPlanAnswer_NoCommonCodecRejectsOnlyThatSection(t *testing.T) {
 		"a=rtpmap:9 G722/8000",
 	)
 	opts := baseOpts() // PCMU/PCMA only — G.722 is not supported here
-	opts.MultiStream = true
-	opts.MaxStreams = 4
 
 	plans := PlanAnswer(offer, opts)
 	if plans[0].Action != SlotAccept {
@@ -228,8 +189,6 @@ func TestPlanAnswer_PreferredCodecAppliesToFirstStreamOnly(t *testing.T) {
 		"a=rtpmap:8 PCMA/8000",
 	)
 	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 4
 	opts.Preferred = codec.CodecPCMA
 
 	plans := PlanAnswer(offer, opts)
@@ -249,14 +208,8 @@ func TestPlanAnswer_NilOffer(t *testing.T) {
 }
 
 func TestAcceptedAudio(t *testing.T) {
-	opts := baseOpts()
-	opts.MultiStream = true
-	opts.MaxStreams = 4
-	got := AcceptedAudio(PlanAnswer(twoAudioOffer(t), opts))
+	got := AcceptedAudio(PlanAnswer(twoAudioOffer(t), baseOpts()))
 	if len(got) != 2 {
 		t.Fatalf("AcceptedAudio len = %d, want 2", len(got))
-	}
-	if got := AcceptedAudio(PlanAnswer(twoAudioOffer(t), baseOpts())); len(got) != 1 {
-		t.Errorf("AcceptedAudio len = %d, want 1 with multi-stream off", len(got))
 	}
 }

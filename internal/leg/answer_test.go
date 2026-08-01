@@ -49,33 +49,8 @@ func countMLines(sdp []byte) int {
 		strings.Count(string(sdp), "m=text")
 }
 
-func TestNegotiateInboundAnswer_MultiStreamDisabledRejectsExtra(t *testing.T) {
+func TestNegotiateInboundAnswer_AcceptsEveryOfferedSection(t *testing.T) {
 	l := newAnswerLeg(t, twoAudioOfferSDP)
-
-	answer, err := l.negotiateInboundAnswer(codec.CodecUnknown)
-	if err != nil {
-		t.Fatalf("negotiateInboundAnswer: %v", err)
-	}
-
-	// Even with multi-stream off, the answer must carry both sections — the
-	// second one disabled with port 0 (RFC 3264 §6).
-	if got := countMLines(answer); got != 2 {
-		t.Fatalf("answer m-line count = %d, want 2:\n%s", got, answer)
-	}
-	if !strings.Contains(string(answer), "m=audio 0 RTP/AVP") {
-		t.Errorf("extra section not rejected with port 0:\n%s", answer)
-	}
-	if len(l.audioStreams()) != 1 {
-		t.Errorf("materialized %d streams, want 1", len(l.audioStreams()))
-	}
-	if l.mlines.Slot(1).State != sipmod.SlotTombstone {
-		t.Error("the rejected slot must be tombstoned")
-	}
-}
-
-func TestNegotiateInboundAnswer_MultiStreamAcceptsBoth(t *testing.T) {
-	l := newAnswerLeg(t, twoAudioOfferSDP)
-	l.multiStream, l.multiStreamMax = true, 2
 
 	answer, err := l.negotiateInboundAnswer(codec.CodecUnknown)
 	if err != nil {
@@ -144,22 +119,6 @@ func TestNegotiateInboundAnswer_SingleStreamOfferUnchanged(t *testing.T) {
 		if !strings.Contains(string(answer), want) {
 			t.Errorf("answer missing %q:\n%s", want, answer)
 		}
-	}
-}
-
-func TestNegotiateInboundAnswer_MaxStreamsCap(t *testing.T) {
-	l := newAnswerLeg(t, twoAudioOfferSDP)
-	l.multiStream, l.multiStreamMax = true, 1
-
-	answer, err := l.negotiateInboundAnswer(codec.CodecUnknown)
-	if err != nil {
-		t.Fatalf("negotiateInboundAnswer: %v", err)
-	}
-	if !strings.Contains(string(answer), "m=audio 0 RTP/AVP") {
-		t.Errorf("the section past the cap must be rejected:\n%s", answer)
-	}
-	if len(l.audioStreams()) != 1 {
-		t.Errorf("materialized %d streams, want 1", len(l.audioStreams()))
 	}
 }
 

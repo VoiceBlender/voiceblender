@@ -173,9 +173,6 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string,
 			preferred = c
 		}
 		if len(streams) > 0 {
-			if !s.SIPEngine.MultiStreamEnabled() {
-				return newAPIError(http.StatusConflict, "multi-stream is disabled (SIP_MULTI_STREAM_ENABLED)")
-			}
 			for i, st := range streams {
 				if st.RoomID == "" {
 					continue
@@ -927,16 +924,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		return LegView{}, newAPIError(http.StatusBadRequest, "invalid SIP URI: %v", err)
 	}
 
-	// Reject an unsatisfiable multi-stream offer up front: letting it through
-	// would surface as a failed INVITE, which reads like a network problem.
+	// Reject a malformed multi-stream offer up front: letting it through would
+	// surface as a failed INVITE, which reads like a network problem.
 	if len(req.Streams) > 0 {
-		if !s.SIPEngine.MultiStreamEnabled() {
-			return LegView{}, newAPIError(http.StatusConflict, "multi-stream is disabled (SIP_MULTI_STREAM_ENABLED)")
-		}
-		if total, max := len(req.Streams)+1, s.SIPEngine.MultiStreamMax(); total > max {
-			return LegView{}, newAPIError(http.StatusConflict,
-				"request offers %d audio streams (1 primary + %d extra), cap is %d", total, len(req.Streams), max)
-		}
 		for i, st := range req.Streams {
 			switch st.Direction {
 			case "", sipmod.DirSendRecv, sipmod.DirSendOnly, sipmod.DirRecvOnly, sipmod.DirInactive:

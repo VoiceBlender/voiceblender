@@ -8,13 +8,6 @@ type AnswerOptions struct {
 	// Preferred biases codec selection for the first accepted audio section.
 	Preferred codec.CodecType
 
-	// MultiStream allows accepting audio sections beyond the first. With it
-	// off, extras are rejected with port 0 and the call behaves as it always
-	// has.
-	MultiStream bool
-	// MaxStreams caps accepted audio sections. Zero means one.
-	MaxStreams int
-
 	// StrictMLines makes the plan cover every offered m= section, rejecting the
 	// ones we don't handle with port 0 as RFC 3264 §6 requires. With it off
 	// the plan omits unhandled non-audio sections, preserving the legacy
@@ -74,14 +67,6 @@ func PlanAnswer(offer *SDPMedia, opts AnswerOptions) []SlotPlan {
 	if offer == nil {
 		return nil
 	}
-	maxStreams := opts.MaxStreams
-	if maxStreams < 1 {
-		maxStreams = 1
-	}
-	if !opts.MultiStream {
-		maxStreams = 1
-	}
-
 	plans := make([]SlotPlan, 0, len(offer.MLines))
 	accepted := 0
 
@@ -120,13 +105,6 @@ func PlanAnswer(offer *SDPMedia, opts AnswerOptions) []SlotPlan {
 			// The peer already disabled this section; echo the rejection.
 			p.Action = SlotReject
 			p.Reason = "offer_disabled"
-		case accepted >= maxStreams:
-			p.Action = SlotReject
-			if opts.MultiStream {
-				p.Reason = "max_streams"
-			} else {
-				p.Reason = "multi_stream_disabled"
-			}
 		default:
 			preferred := codec.CodecUnknown
 			if accepted == 0 {

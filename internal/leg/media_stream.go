@@ -310,11 +310,8 @@ func offeredTextMLine(offer *sipmod.SDPMedia) int {
 // negotiation never has to reach back into the engine.
 func (l *SIPLeg) applyEngineGates() {
 	if l.engine == nil {
-		l.multiStreamMax = 1
 		return
 	}
-	l.multiStream = l.engine.MultiStreamEnabled()
-	l.multiStreamMax = l.engine.MultiStreamMax()
 	l.strictMLines = l.engine.StrictMLineAnswer()
 }
 
@@ -324,8 +321,6 @@ func (l *SIPLeg) answerOptions(preferred codec.CodecType, textMLine int) sipmod.
 		SupportedCodecs: l.supportedCodecs,
 		Preferred:       preferred,
 		TextMLineIndex:  textMLine,
-		MultiStream:     l.multiStream,
-		MaxStreams:      l.multiStreamMax,
 		StrictMLines:    l.strictMLines,
 	}
 }

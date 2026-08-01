@@ -112,18 +112,11 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 // yields an error naming the rejection.
 func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, error) {
 	l.mu.RLock()
-	enabled, max, count := l.multiStream, l.multiStreamMax, l.mlines.ActiveAudioCount()
 	primaryUp := l.prim.rtpSess != nil
 	l.mu.RUnlock()
 
-	if !enabled {
-		return StreamInfo{}, newStreamError(http.StatusConflict, "multi-stream is disabled (SIP_MULTI_STREAM_ENABLED)")
-	}
 	if !primaryUp {
 		return StreamInfo{}, newStreamError(http.StatusConflict, "leg has no negotiated media yet")
-	}
-	if count >= max {
-		return StreamInfo{}, newStreamError(http.StatusConflict, "leg already carries %d audio streams (cap %d)", count, max)
 	}
 
 	dialog, err := l.dialogForReInvite()

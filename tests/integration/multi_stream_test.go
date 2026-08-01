@@ -7,22 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/emiago/sipgo/sip"
 )
 
+// multiStreamInstance is a plain instance: multiple m=audio sections need no
+// configuration, so this is just a named alias kept for readability.
 func multiStreamInstance(t *testing.T, name string) *testInstance {
-	return newTestInstanceWithOpts(t, name, func(c *config.Config) {
-		c.SIPMultiStreamEnabled = true
-		c.SIPMultiStreamMax = 4
-	})
+	return newTestInstance(t, name)
 }
 
 // dialMultiStream places an outbound INVITE offering the given audio sections
@@ -91,7 +88,7 @@ func TestMultiStream_OfferTwoAudioLines_Answered(t *testing.T) {
 	}
 	for i, a := range call.RemoteSDP.Audio {
 		if a.RemotePort == 0 {
-			t.Errorf("section %d was rejected; the answerer has multi-stream enabled", i)
+			t.Errorf("section %d was rejected; every offered section should be accepted", i)
 		}
 	}
 	// Our sendonly stream must come back recvonly (RFC 3264 §6.1).
@@ -109,39 +106,9 @@ func TestMultiStream_OfferTwoAudioLines_Answered(t *testing.T) {
 	}
 }
 
-// TestMultiStream_PeerRejectsExtraStreamCallSurvives pins the graceful
-// degradation path: B has multi-stream disabled, so it answers the extra
-// section with port 0 and the call continues on the primary stream alone.
-func TestMultiStream_PeerRejectsExtraStreamCallSurvives(t *testing.T) {
-	instA := multiStreamInstance(t, "instance-a")
-	instB := newTestInstance(t, "instance-b") // multi-stream off (the default)
-
-	call := dialMultiStream(t, instA, instB, []sipmod.OfferStream{
-		{Content: "main", Lang: "en"},
-		{Direction: sipmod.DirSendOnly, Content: "alt", Lang: "es"},
-	})
-	defer call.Dialog.Bye(context.Background())
-
-	if got := len(call.RemoteSDP.Audio); got != 2 {
-		t.Fatalf("answer has %d audio sections, want 2 — the count must match the offer", got)
-	}
-	if call.RemoteSDP.Audio[0].RemotePort == 0 {
-		t.Error("the primary section must survive")
-	}
-	if call.RemoteSDP.Audio[1].RemotePort != 0 {
-		t.Error("the extra section must be rejected with port 0 when multi-stream is disabled")
-	}
-
-	// The call itself is up and single-stream.
-	inbound := findSIPLeg(t, instB, func(l *leg.SIPLeg) bool { return l.StreamCount() == 1 })
-	if inbound == nil {
-		t.Error("answering leg should be running exactly one stream")
-	}
-}
-
-// TestMultiStream_DisabledEmitsSingleMLine pins that the feature is genuinely
-// off by default: a plain call still negotiates exactly one m=audio section.
-func TestMultiStream_DisabledEmitsSingleMLine(t *testing.T) {
+// TestMultiStream_PlainCallIsSingleStream pins that an ordinary call is
+// unaffected: offering one m=audio section still yields exactly one stream.
+func TestMultiStream_PlainCallIsSingleStream(t *testing.T) {
 	instA := newTestInstance(t, "instance-a")
 	instB := newTestInstance(t, "instance-b")
 
@@ -157,28 +124,7 @@ func TestMultiStream_DisabledEmitsSingleMLine(t *testing.T) {
 		t.Fatal("expected a SIP leg")
 	}
 	if got := sl.StreamCount(); got != 1 {
-		t.Errorf("stream count = %d, want 1 with multi-stream disabled", got)
-	}
-}
-
-// TestMultiStream_RejectedWhenDisabledOnOfferer keeps the gate honest on the
-// offering side too.
-func TestMultiStream_RejectedWhenDisabledOnOfferer(t *testing.T) {
-	instA := newTestInstance(t, "instance-a") // multi-stream off
-	instB := multiStreamInstance(t, "instance-b")
-
-	recipient := sip.Uri{User: "test", Host: "127.0.0.1", Port: instB.sipPort}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := instA.engine.Invite(ctx, recipient, sipmod.InviteOptions{
-		Streams: []sipmod.OfferStream{{}, {Direction: sipmod.DirSendOnly}},
-	})
-	if err == nil {
-		t.Fatal("want an error when offering multiple streams with the gate off")
-	}
-	if !strings.Contains(err.Error(), "SIP_MULTI_STREAM_ENABLED") {
-		t.Errorf("error = %v, want it to name the disabled gate", err)
+		t.Errorf("stream count = %d, want 1 for a single-section call", got)
 	}
 }
 
@@ -414,31 +360,20 @@ func TestMultiStream_RESTCreateWithStreams(t *testing.T) {
 }
 
 func TestMultiStream_RESTCreateWithStreamsValidation(t *testing.T) {
-	enabled := multiStreamInstance(t, "instance-enabled")
-	disabled := newTestInstance(t, "instance-disabled")
-	target := fmt.Sprintf("sip:test@127.0.0.1:%d", enabled.sipPort)
+	inst := multiStreamInstance(t, "instance-a")
+	peer := multiStreamInstance(t, "instance-b")
+	target := fmt.Sprintf("sip:test@127.0.0.1:%d", peer.sipPort)
 
 	cases := []struct {
 		name   string
-		inst   *testInstance
 		body   map[string]interface{}
 		status int
 	}{
-		{"gate off", disabled, map[string]interface{}{
-			"type": "sip", "to": target,
-			"streams": []map[string]interface{}{{"direction": "sendonly"}},
-		}, http.StatusConflict},
-		{"past the cap", enabled, map[string]interface{}{
-			"type": "sip", "to": target,
-			"streams": []map[string]interface{}{
-				{}, {}, {}, {}, // 4 extras + primary = 5, cap is 4
-			},
-		}, http.StatusConflict},
-		{"bad direction", enabled, map[string]interface{}{
+		{"bad direction", map[string]interface{}{
 			"type": "sip", "to": target,
 			"streams": []map[string]interface{}{{"direction": "sideways"}},
 		}, http.StatusBadRequest},
-		{"unknown room", enabled, map[string]interface{}{
+		{"unknown room", map[string]interface{}{
 			"type": "sip", "to": target,
 			"streams": []map[string]interface{}{{"room_id": "nope"}},
 		}, http.StatusNotFound},
@@ -446,7 +381,7 @@ func TestMultiStream_RESTCreateWithStreamsValidation(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			resp := httpPost(t, c.inst.baseURL()+"/v1/legs", c.body)
+			resp := httpPost(t, inst.baseURL()+"/v1/legs", c.body)
 			defer resp.Body.Close()
 			if resp.StatusCode != c.status {
 				b, _ := io.ReadAll(resp.Body)
@@ -614,22 +549,6 @@ func TestMultiStream_AddLegToRoomStreamValidation(t *testing.T) {
 				t.Errorf("status %d, want %d: %s", resp.StatusCode, c.status, b)
 			}
 		})
-	}
-}
-
-// TestMultiStream_RESTAddRejectedWhenDisabled keeps the gate honest at the API.
-func TestMultiStream_RESTAddRejectedWhenDisabled(t *testing.T) {
-	instA := newTestInstance(t, "instance-a")
-	instB := newTestInstance(t, "instance-b")
-
-	outboundID, _ := establishCall(t, instA, instB)
-
-	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/streams", instA.baseURL(), outboundID), map[string]interface{}{
-		"direction": "sendonly",
-	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Errorf("add stream with the gate off: status %d, want 409", resp.StatusCode)
 	}
 }
 
