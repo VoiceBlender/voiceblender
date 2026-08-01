@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -125,7 +126,7 @@ func runAzureRecvLoop(t *testing.T, frame string, partial bool) []capturedRecord
 		gotMu.Unlock()
 	}
 
-	lw := &azLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 	if err := transcriber.sendConfig(lw, "testreqid"); err != nil {
 		t.Fatalf("sendConfig: %v", err)
 	}
