@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -19,12 +20,20 @@ const (
 	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
+// dgFinalizeFrame flushes Deepgram's server-side buffer and emits a final
+// transcript while leaving the session open.
+var dgFinalizeFrame = []byte(`{"type":"Finalize"}`)
+
 // DeepgramTranscriber streams audio to Deepgram real-time STT over WebSocket.
 type DeepgramTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
 	log     *slog.Logger
+	// lw is the live socket writer, guarded by mu. Non-nil only between a
+	// successful dial and Start returning, so Finalize can reach a socket
+	// that otherwise lives entirely inside Start.
+	lw *wsutilx.LockedWriter
 }
 
 func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
@@ -75,6 +84,11 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 	defer conn.Close()
 
 	lw := wsutilx.NewLockedWriter(conn)
+	// Registered after `defer conn.Close()` so LIFO clears the field before
+	// the socket goes away; a Finalize that already copied the writer out can
+	// still race the close, which is why its write error is surfaced.
+	t.setWriter(lw)
+	defer t.clearWriter()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -109,6 +123,37 @@ func (t *DeepgramTranscriber) Running() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.running
+}
+
+func (t *DeepgramTranscriber) setWriter(lw *wsutilx.LockedWriter) {
+	t.mu.Lock()
+	t.lw = lw
+	t.mu.Unlock()
+}
+
+func (t *DeepgramTranscriber) clearWriter() {
+	t.mu.Lock()
+	t.lw = nil
+	t.mu.Unlock()
+}
+
+// Finalize asks Deepgram for a final transcript covering the audio buffered so
+// far and keeps the socket OPEN — unlike the CloseStream frame sendLoop writes
+// at teardown, which flushes AND ends the session. Fire-and-forget: the flushed
+// final arrives through the existing recvLoop callback, and a silent segment
+// yields no transcript at all because empty transcripts are dropped before the
+// callback.
+func (t *DeepgramTranscriber) Finalize(ctx context.Context) error {
+	t.mu.Lock()
+	lw := t.lw
+	t.mu.Unlock()
+	if lw == nil {
+		return errors.New("deepgram stt session not connected")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return lw.WriteText(dgFinalizeFrame)
 }
 
 func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {

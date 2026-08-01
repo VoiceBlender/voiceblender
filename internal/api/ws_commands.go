@@ -936,6 +936,19 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		}
 		s.wsCommandResult(lw, msg, res)
 
+	// ── STT finalize ────────────────────────────────────────────────
+	case "leg_stt_finalize":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doFinalizeSTTLeg(ctx, p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
 	// ── Agent start (per-provider) ──────────────────────────────────
 	case "leg_agent_elevenlabs":
 		var p agentElevenLabsPayload

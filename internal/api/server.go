@@ -174,6 +174,7 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/record/pause", s.pauseRecordLeg)
 		r.Post("/legs/{id}/record/resume", s.resumeRecordLeg)
 		r.Post("/legs/{id}/stt", s.sttLeg)
+		r.Post("/legs/{id}/stt/finalize", s.finalizeSTTLeg)
 		r.Delete("/legs/{id}/stt", s.stopSTTLeg)
 		r.Post("/legs/{id}/agent/elevenlabs", s.agentLegElevenLabs)
 		r.Post("/legs/{id}/agent/vapi", s.agentLegVAPI)
