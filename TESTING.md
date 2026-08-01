@@ -96,6 +96,10 @@ go test -v -run TestResolveStorage ./internal/api/
 | `internal/leg` (whatsapp) | 6 | Outbound starts `connected`, inbound starts `ringing`, `RequestAnswer` rejects outbound and is idempotent, `Hangup` is idempotent, `SIPHeaders` propagation, Leg interface compliance |
 | `internal/leg` (websocket) | 4 | Outbound lifecycle (ringing → connected via `AttachTransport`, audio + text round-trip, ClaimDisconnect single-flight, Hangup); inbound auto-connect with header capture (X-/P- filter); SendText returns `ErrRTTNotNegotiated` when RTT is disabled; SendDTMF returns "not supported" |
 | `internal/wsmedia` | 11 | Framing (binary s16le and json_base64 round-trips), streamBuffer drop-on-overflow + paced read + Close, Transport echo loopback for both wire formats, text round-trip, hangup frame closes peer, context cancel exits loops, ingress overflow drops increment counters, SendStructured for vendor control messages, write deadline trips after `WriteTimeout` |
+| `internal/wsutilx` | 10 | Shared WebSocket client helpers: read-deadline arming and `WatchCancel`, and `LockedWriter` — every write arms a write deadline (a peer that never drains returns `os.ErrDeadlineExceeded` instead of blocking), concurrent writers never overlap inside `conn.Write` so frames stay intact, and the first failure is latched so a poisoned mid-frame stream is never appended to |
+| `internal/stt` | 22 | Azure framing/full-flow against a mock WS server, transcript and DTMF log-level redaction, and per-provider WebSocket guards: every send loop returns on a wedged write rather than pinning its goroutine, and every recv loop logs the peer's close code and reason |
+| `internal/agent` | 10 | Per-provider WebSocket guards for Deepgram/ElevenLabs/Pipecat/VAPI agent sessions: send loops unblock on a wedged write (VAPI included, whose write was previously neither serialized nor bounded), and recv loops log the peer's close code and reason |
+| `internal/lkmedia` | 60 | LiveKit signaling and transport: token minting, SDP fixups, audio level parsing, config validation, transport lifecycle — plus signal WebSocket guards: `send` is bounded by a write deadline, control-frame replies from the read goroutine go out under `writeMu` as whole frames, close code/reason are logged, and a normal (1000) closure is classified as a clean disconnect rather than an error |
 
 ---
 
@@ -332,6 +336,7 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestIPAllowlist_TrustProxyHeadersUsesXFF` | `TRUST_PROXY_HEADERS=true` — leftmost `X-Forwarded-For` entry is used for the allowlist match. |
 | `TestIPAllowlist_XFFIgnoredWhenTrustProxyOff` | Default `TRUST_PROXY_HEADERS=false` — `X-Forwarded-For` is ignored; only the socket peer is consulted. |
 | `TestIPAllowlist_RejectedBody` | Rejected requests return the standard `{"error":"forbidden"}` envelope with status 403. |
+| `TestAgentSession_StuckPeerReleasesSession` | A local WS server completes the agent handshake and then stops draining (small receive buffer, so the client's send buffer fills in milliseconds). The write deadline breaks the send loop, whose exit cancels the recv loop, so `Start` returns and `Running()` goes false in well under a second instead of stranding the session — no external provider or API key needed. |
 
 ---
 

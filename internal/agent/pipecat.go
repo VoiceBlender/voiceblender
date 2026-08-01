@@ -26,20 +26,8 @@ type PipecatSession struct {
 	running        bool
 	cancel         context.CancelFunc
 	conversationID string
-	lw             *pipecatLockedWriter
+	lw             *wsutilx.LockedWriter
 	log            *slog.Logger
-}
-
-// pipecatLockedWriter serializes all WebSocket binary frame writes to a net.Conn.
-type pipecatLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *pipecatLockedWriter) WriteBinary(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientBinary(lw.conn, data)
 }
 
 func NewPipecat(log *slog.Logger) *PipecatSession {
@@ -81,7 +69,7 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 	p.log.Info("pipecat websocket connected")
 	defer conn.Close()
 
-	lw := &pipecatLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 
 	// Pipecat has no handshake; connection is immediately live.
 	// Use the WebSocket URL as the conversation ID.
@@ -96,13 +84,17 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Either loop exiting cancels the other: a write that fails on its
+	// deadline must not leave Start waiting out the recv read timeout.
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		p.sendLoop(ctx, reader, lw)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		p.recvLoop(ctx, conn, writer, cb)
 	}()
 
@@ -133,7 +125,7 @@ func (p *PipecatSession) ConversationID() string {
 	return p.conversationID
 }
 
-func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, lw *pipecatLockedWriter) {
+func (p *PipecatSession) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -251,7 +243,13 @@ func (p *PipecatSession) recvLoop(ctx context.Context, conn net.Conn, writer io.
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			p.log.Info("pipecat recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				p.log.Debug("pipecat close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			p.log.Info("pipecat recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 

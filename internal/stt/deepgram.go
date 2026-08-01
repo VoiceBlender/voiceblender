@@ -74,18 +74,22 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 	t.log.Info("deepgram stt websocket connected")
 	defer conn.Close()
 
-	lw := &dgLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Either loop exiting cancels the other: a write that fails on its
+	// deadline must not leave Start waiting out the recv read timeout.
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.sendLoop(ctx, reader, lw)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.recvLoop(ctx, conn, lw, cb)
 	}()
 
@@ -107,7 +111,7 @@ func (t *DeepgramTranscriber) Running() bool {
 	return t.running
 }
 
-func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *dgLockedWriter) {
+func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, dgFrameBytes)
 	var sendCount int
 	for {
@@ -161,7 +165,7 @@ type dgResult struct {
 	SpeechFinal bool `json:"speech_final"`
 }
 
-func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *dgLockedWriter, cb TranscriptCallback) {
+func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -201,7 +205,13 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			t.log.Info("deepgram stt recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				t.log.Debug("deepgram stt close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			t.log.Info("deepgram stt recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 		if hdr.OpCode != ws.OpText {
@@ -248,28 +258,4 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 			cb(text, false)
 		}
 	}
-}
-
-// dgLockedWriter serializes all WebSocket frame writes to a net.Conn.
-type dgLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *dgLockedWriter) WriteBinary(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientBinary(lw.conn, data)
-}
-
-func (lw *dgLockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *dgLockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }
