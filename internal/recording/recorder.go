@@ -132,9 +132,14 @@ func (r *Recorder) initRecording(ctx context.Context, dir string, basename strin
 		return nil, cancelCtx{}, fmt.Errorf("recording filename: %w", err)
 	}
 	fpath := filepath.Join(dir, filename)
+	if err := reserveFinalPath(fpath); err != nil {
+		r.mu.Unlock()
+		return nil, cancelCtx{}, err
+	}
 
 	staged, err := createStagedFile(fpath)
 	if err != nil {
+		releaseFinalPath(fpath)
 		r.mu.Unlock()
 		return nil, cancelCtx{}, fmt.Errorf("create recording file: %w", err)
 	}
@@ -156,12 +161,16 @@ func (r *Recorder) initRecording(ctx context.Context, dir string, basename strin
 // reports no error: the encoder only emits the RIFF header on its first write,
 // so its file is not a readable WAV.
 func (r *Recorder) finish(staged *stagedFile, wrote bool, recErr error) {
+	// Always drop the in-process reservation. A published file still blocks
+	// reuse via os.Stat; a discarded capture frees the name for a later start.
+	defer releaseFinalPath(staged.finalPath)
+
 	if recErr != nil || !wrote {
 		discardTemp(staged.f, staged.tmpPath)
 		return
 	}
 	err := publishFile(staged.f, staged.tmpPath, staged.finalPath)
-	// The rename is publishFile's point of no return: a failure after it leaves a
+	// The link is publishFile's point of no return: a failure after it leaves a
 	// complete recording at the final path, so a file present there means the
 	// recording is finalized even though publishFile errored.
 	finalized := err == nil

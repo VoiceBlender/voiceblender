@@ -3455,7 +3455,7 @@ components:
                     description: Object name prefix (e.g. recordings or recordings/). Overrides GCS_OBJECT_NAME_PREFIX env var. A trailing slash is added automatically when missing.
                 filename:
                     type: string
-                    description: Optional output basename for the WAV file. A .wav suffix is added when missing. Must be a single path segment (no directories). When omitted, a timestamped name is generated.
+                    description: Optional output basename for the WAV file. A .wav suffix is added when missing. Must be a single path segment (no directories). Dots inside the name are preserved (only a trailing .wav is treated as the extension). Rejected with 409 if the file already exists or another recording is using the same name. When omitted, a timestamped name is generated.
             required:
                 - storage
                 - multi_channel

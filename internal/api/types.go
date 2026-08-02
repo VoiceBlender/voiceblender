@@ -479,7 +479,7 @@ var recordRequestFields = map[string]FieldEnrichment{
 	"s3_secret_key":          {Description: "AWS secret access key. Must be set together with s3_access_key."},
 	"gcs_bucket":             {Description: "GCS bucket name. Overrides GCS_BUCKET env var. Required if env var is not set when storage=gcs."},
 	"gcs_object_name_prefix": {Description: "Object name prefix (e.g. recordings or recordings/). Overrides GCS_OBJECT_NAME_PREFIX env var. A trailing slash is added automatically when missing."},
-	"filename":               {Description: "Optional output basename for the WAV file. A .wav suffix is added when missing. Must be a single path segment (no directories). When omitted, a timestamped name is generated."},
+	"filename":               {Description: "Optional output basename for the WAV file. A .wav suffix is added when missing. Must be a single path segment (no directories). Dots inside the name are preserved (only a trailing .wav is treated as the extension). Rejected with 409 if the file already exists or another recording is using the same name. When omitted, a timestamped name is generated."},
 }
 
 // ElevenLabsAgentRequest is the request body for POST /v1/legs/{id}/agent/elevenlabs

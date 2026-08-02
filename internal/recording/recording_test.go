@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -238,6 +239,72 @@ func TestRecorder_CustomBasename(t *testing.T) {
 	}
 	if _, err := os.Stat(fpath); err != nil {
 		t.Fatalf("Stat: %v", err)
+	}
+}
+
+func TestRecorder_CustomBasename_DottedStemPreserved(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(slog.Default())
+
+	rd := &cancelOnlyReader{first: make(chan struct{})}
+	fpath, err := r.StartAt(context.Background(), rd, dir, 8000, "call.v2")
+	if err != nil {
+		t.Fatalf("StartAt: %v", err)
+	}
+	<-rd.first
+	r.Stop()
+	r.Wait()
+
+	if filepath.Base(fpath) != "call.v2.wav" {
+		t.Fatalf("basename = %q, want %q", filepath.Base(fpath), "call.v2.wav")
+	}
+}
+
+func TestRecorder_CustomBasename_RejectsExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "reuse.wav")
+	if err := os.WriteFile(existing, []byte("first"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	r := NewRecorder(slog.Default())
+	_, err := r.StartAt(context.Background(), eofReader{}, dir, 8000, "reuse")
+	if !errors.Is(err, ErrRecordingFilenameExists) {
+		t.Fatalf("StartAt err = %v, want ErrRecordingFilenameExists", err)
+	}
+	got, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "first" {
+		t.Fatalf("existing content = %q, want %q", got, "first")
+	}
+}
+
+func TestRecorder_CustomBasename_RejectsInFlightCollision(t *testing.T) {
+	dir := t.TempDir()
+
+	r1 := NewRecorder(slog.Default())
+	rd1 := &cancelOnlyReader{first: make(chan struct{})}
+	fpath, err := r1.StartAt(context.Background(), rd1, dir, 8000, "shared-name")
+	if err != nil {
+		t.Fatalf("StartAt r1: %v", err)
+	}
+	<-rd1.first
+
+	r2 := NewRecorder(slog.Default())
+	_, err = r2.StartAt(context.Background(), eofReader{}, dir, 8000, "shared-name")
+	if !errors.Is(err, ErrRecordingFilenameExists) {
+		t.Fatalf("StartAt r2 err = %v, want ErrRecordingFilenameExists", err)
+	}
+
+	r1.Stop()
+	r1.Wait()
+	if !r1.Finalized() {
+		t.Fatal("expected first recording to finalize")
+	}
+	if _, err := os.Stat(fpath); err != nil {
+		t.Fatalf("Stat first recording: %v", err)
 	}
 }
 

@@ -17,6 +17,8 @@ var ErrInvalidRecordingFilename = errors.New("invalid recording filename")
 
 // SanitizeBasename validates and normalizes a caller-supplied recording name.
 // Only a single path segment is allowed; ".wav" is appended when missing.
+// Non-.wav suffixes (e.g. "call.v2") are kept as part of the stem — only a
+// trailing ".wav" (any case) is treated as the extension.
 func SanitizeBasename(requested string) (string, error) {
 	name := strings.TrimSpace(requested)
 	if name == "" {
@@ -32,9 +34,14 @@ func SanitizeBasename(requested string) (string, error) {
 		return "", ErrInvalidRecordingFilename
 	}
 
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
+	stem := name
+	if len(name) >= 4 && strings.EqualFold(name[len(name)-4:], ".wav") {
+		stem = name[:len(name)-4]
+	}
 	if stem == "" {
+		return "", ErrInvalidRecordingFilename
+	}
+	if strings.HasPrefix(stem, ".") || strings.HasSuffix(stem, ".") {
 		return "", ErrInvalidRecordingFilename
 	}
 	for _, r := range stem {
@@ -44,11 +51,7 @@ func SanitizeBasename(requested string) (string, error) {
 		return "", ErrInvalidRecordingFilename
 	}
 
-	if ext == "" || !strings.EqualFold(ext, ".wav") {
-		name = stem + ".wav"
-	} else {
-		name = stem + ".wav"
-	}
+	name = stem + ".wav"
 	if len(name) > maxRecordingBasenameLen {
 		return "", ErrInvalidRecordingFilename
 	}
