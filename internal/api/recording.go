@@ -75,7 +75,7 @@ func (mc *multiChannelState) startLeg(legID string, m mixerIface, dir string) {
 	m.SetParticipantRecordTap(legID, pw)
 
 	rec := recording.NewRecorder(mc.log)
-	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mc.sampleRate))
+	fpath, err := rec.StartAt(context.Background(), pr, dir, uint32(mc.sampleRate), "")
 	if err != nil {
 		mc.log.Error("multi-channel: failed to start per-leg recording", "leg_id", legID, "error", err)
 		m.ClearParticipantRecordTap(legID)
@@ -359,12 +359,35 @@ type RecordingStartResult struct {
 	File   string `json:"file"`
 }
 
+func recordingBasenameFromRequest(req RecordRequest) (string, error) {
+	if req.Filename == "" {
+		return "", nil
+	}
+	return recording.SanitizeBasename(req.Filename)
+}
+
+// recordingStartAPIError maps recorder start failures to HTTP-facing apiErrors.
+func recordingStartAPIError(err error) error {
+	switch {
+	case errors.Is(err, recording.ErrInvalidRecordingFilename):
+		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	case errors.Is(err, recording.ErrRecordingFilenameExists):
+		return newAPIError(http.StatusConflict, "%s", err.Error())
+	default:
+		return newAPIError(http.StatusInternalServerError, "%s", err.Error())
+	}
+}
+
 func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordRequest) (*RecordingStartResult, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
 	}
 	backend, err := s.resolveStorage(ctx, req)
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
+	basename, err := recordingBasenameFromRequest(req)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -384,11 +407,11 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		mix := rm.Mixer()
 		mix.SetParticipantTap(id, leftPW)
 		mix.SetParticipantOutTap(id, rightPW)
-		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
+		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 		if recErr != nil {
 			mix.ClearParticipantTap(id)
 			mix.ClearParticipantOutTap(id)
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
@@ -402,11 +425,11 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		rightPR, rightPW := createPipe()
 		sipLeg.SetInTap(leftPW)
 		sipLeg.SetOutTap(rightPW)
-		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(l.SampleRate()))
+		fpath, recErr = rec.StartStereo(l.Context(), leftPR, rightPR, s.Config.RecordingDir, uint32(l.SampleRate()), basename)
 		if recErr != nil {
 			sipLeg.ClearInTap()
 			sipLeg.ClearOutTap()
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
@@ -419,9 +442,9 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		if reader == nil {
 			return nil, newAPIError(http.StatusConflict, "leg has no audio reader")
 		}
-		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()))
+		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()), basename)
 		if recErr != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{storage: backend}
@@ -642,6 +665,10 @@ func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req Recor
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
+	basename, err := recordingBasenameFromRequest(req)
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
+	}
 	parts := rm.Participants()
 	if len(parts) == 0 {
 		return nil, newAPIError(http.StatusConflict, "room has no participants")
@@ -652,9 +679,11 @@ func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req Recor
 	rm.Mixer().SetTap(pw)
 
 	rec := recording.NewRecorder(s.Log)
-	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()))
+	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 	if err != nil {
-		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
+		rm.Mixer().SetTap(nil)
+		pw.Close()
+		return nil, recordingStartAPIError(err)
 	}
 
 	roomRecorders.Lock()

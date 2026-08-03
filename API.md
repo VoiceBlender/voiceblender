@@ -1189,6 +1189,7 @@ other channel.
 ```json
 {
   "storage": "s3",
+  "filename": "c3ef9e71-6c9c-43a0-9a55-c51b3894a03c",
   "s3_bucket": "my-recordings",
   "s3_region": "eu-west-1",
   "s3_endpoint": "https://s3.example.com",
@@ -1201,6 +1202,7 @@ other channel.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
+| `filename` | string | no | Optional output basename for the WAV file. A `.wav` suffix is added when missing. Must be a single path segment (no directories). Dots inside the name are preserved — only a trailing `.wav` is treated as the extension (e.g. `call.v2` → `call.v2.wav`). When omitted, a timestamped name is generated. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
@@ -1219,7 +1221,7 @@ Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` 
 ```json
 {
   "status": "recording",
-  "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
+  "file": "/tmp/recordings/c3ef9e71-6c9c-43a0-9a55-c51b3894a03c.wav"
 }
 ```
 
@@ -1227,10 +1229,20 @@ Recording runs asynchronously. Events `recording.started` and `recording.finishe
 
 The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
 
+Custom `filename` values are exclusive: starting a recording when that path already exists on disk, or while another recording has reserved the same name, returns `409` rather than overwriting the earlier file.
+
+**Example — name the WAV after a call id:**
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/record \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"c3ef9e71-6c9c-43a0-9a55-c51b3894a03c"}'
+```
+
 **Errors:**
-- `400` — Invalid storage type, S3/GCS not configured, or invalid credentials
+- `400` — Invalid storage type, S3/GCS not configured, invalid credentials, or invalid `filename`
 - `404` — Leg not found
-- `409` — Leg has no audio reader
+- `409` — Leg has no audio reader, or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---
@@ -2110,6 +2122,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 ```json
 {
   "storage": "s3",
+  "filename": "room-mix-call-42",
   "multi_channel": true,
   "s3_bucket": "my-recordings",
   "s3_region": "eu-west-1",
@@ -2121,6 +2134,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
+| `filename` | string | no | Optional output basename for the room-mix WAV. Same rules as `POST /v1/legs/{id}/record` (`filename`): single path segment, `.wav` appended when missing, dots preserved, `409` on collision. When omitted, a timestamped name is generated. Does not rename the optional multi-channel merge file. |
 | `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
@@ -2140,11 +2154,13 @@ Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` 
 ```json
 {
   "status": "recording",
-  "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
+  "file": "/tmp/recordings/room-mix-call-42.wav"
 }
 ```
 
 When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI. When `storage=gcs`, it will contain a `gs://bucket/object` URI.
+
+Custom `filename` values are exclusive for the room mix: an existing file or an in-flight reservation of the same name returns `409` rather than overwriting.
 
 #### Automatic Stop
 
@@ -2167,9 +2183,9 @@ This gives you one file ready for post-production — each speaker on a clean is
 The per-participant audio capture uses a dedicated mixer tap that is independent of STT/agent taps, so multi-channel recording and STT can run simultaneously without conflict.
 
 **Errors:**
-- `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
+- `400` — Invalid storage type, S3 not configured, invalid S3 credentials, or invalid `filename`
 - `404` — Room not found
-- `409` — Room has no participants
+- `409` — Room has no participants, or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---

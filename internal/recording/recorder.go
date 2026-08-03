@@ -15,7 +15,6 @@ import (
 
 	"github.com/go-audio/audio"
 	"github.com/go-audio/wav"
-	"github.com/google/uuid"
 )
 
 // Recorder captures PCM audio to a WAV file.
@@ -46,13 +45,14 @@ func NewRecorder(log *slog.Logger) *Recorder {
 // Start begins recording from reader to a WAV file in dir at 8kHz sample rate.
 // Returns the file path of the recording.
 func (r *Recorder) Start(ctx context.Context, reader io.Reader, dir string) (string, error) {
-	return r.StartAt(ctx, reader, dir, 8000)
+	return r.StartAt(ctx, reader, dir, 8000, "")
 }
 
 // StartAt begins recording from reader to a mono WAV file in dir at the specified sample rate.
+// When basename is non-empty it must already be sanitized (see SanitizeBasename).
 // Returns the file path of the recording.
-func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sampleRate uint32) (string, error) {
-	staged, cancel, err := r.initRecording(ctx, dir)
+func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sampleRate uint32, basename string) (string, error) {
+	staged, cancel, err := r.initRecording(ctx, dir, basename)
 	if err != nil {
 		return "", err
 	}
@@ -81,8 +81,8 @@ func (r *Recorder) StartAt(ctx context.Context, reader io.Reader, dir string, sa
 // recording is paced by its own clock. See recordStereo.
 //
 // Returns the file path of the recording.
-func (r *Recorder) StartStereo(ctx context.Context, left, right io.Reader, dir string, sampleRate uint32) (string, error) {
-	staged, cancel, err := r.initRecording(ctx, dir)
+func (r *Recorder) StartStereo(ctx context.Context, left, right io.Reader, dir string, sampleRate uint32, basename string) (string, error) {
+	staged, cancel, err := r.initRecording(ctx, dir, basename)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +114,7 @@ type cancelCtx struct {
 // names a file that does not exist yet: the capture goes to a staging file and
 // only appears there once the caller publishes it. The caller must call
 // clearRecording when done.
-func (r *Recorder) initRecording(ctx context.Context, dir string) (*stagedFile, cancelCtx, error) {
+func (r *Recorder) initRecording(ctx context.Context, dir string, basename string) (*stagedFile, cancelCtx, error) {
 	r.mu.Lock()
 	if r.recording {
 		r.mu.Unlock()
@@ -126,11 +126,20 @@ func (r *Recorder) initRecording(ctx context.Context, dir string) (*stagedFile, 
 		return nil, cancelCtx{}, fmt.Errorf("create recording dir: %w", err)
 	}
 
-	filename := fmt.Sprintf("%s_%s.wav", time.Now().Format("20060102_150405"), uuid.New().String()[:8])
+	filename, err := resolveRecordingBasename(basename)
+	if err != nil {
+		r.mu.Unlock()
+		return nil, cancelCtx{}, fmt.Errorf("recording filename: %w", err)
+	}
 	fpath := filepath.Join(dir, filename)
+	if err := reserveFinalPath(fpath); err != nil {
+		r.mu.Unlock()
+		return nil, cancelCtx{}, err
+	}
 
 	staged, err := createStagedFile(fpath)
 	if err != nil {
+		releaseFinalPath(fpath)
 		r.mu.Unlock()
 		return nil, cancelCtx{}, fmt.Errorf("create recording file: %w", err)
 	}
@@ -152,12 +161,16 @@ func (r *Recorder) initRecording(ctx context.Context, dir string) (*stagedFile, 
 // reports no error: the encoder only emits the RIFF header on its first write,
 // so its file is not a readable WAV.
 func (r *Recorder) finish(staged *stagedFile, wrote bool, recErr error) {
+	// Always drop the in-process reservation. A published file still blocks
+	// reuse via os.Stat; a discarded capture frees the name for a later start.
+	defer releaseFinalPath(staged.finalPath)
+
 	if recErr != nil || !wrote {
 		discardTemp(staged.f, staged.tmpPath)
 		return
 	}
 	err := publishFile(staged.f, staged.tmpPath, staged.finalPath)
-	// The rename is publishFile's point of no return: a failure after it leaves a
+	// The link is publishFile's point of no return: a failure after it leaves a
 	// complete recording at the final path, so a file present there means the
 	// recording is finalized even though publishFile errored.
 	finalized := err == nil

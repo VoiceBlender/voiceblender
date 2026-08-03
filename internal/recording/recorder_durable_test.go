@@ -110,7 +110,7 @@ func TestPublishFile(t *testing.T) {
 	assertNoStagingResidue(t, dir)
 }
 
-func TestPublishFile_RenameFailureLeavesNothingBehind(t *testing.T) {
+func TestPublishFile_LinkFailureLeavesNothingBehind(t *testing.T) {
 	dir := t.TempDir()
 	staged, err := createStagedFile(filepath.Join(dir, "unreachable.wav"))
 	if err != nil {
@@ -120,13 +120,41 @@ func TestPublishFile_RenameFailureLeavesNothingBehind(t *testing.T) {
 		t.Fatalf("write staged: %v", err)
 	}
 
-	// A directory that does not exist cannot be renamed into.
+	// A directory that does not exist cannot be linked into.
 	bad := filepath.Join(dir, "absent", "publish.wav")
 	if err := publishFile(staged.f, staged.tmpPath, bad); err == nil {
-		t.Fatal("publishFile succeeded renaming into a missing directory, want error")
+		t.Fatal("publishFile succeeded linking into a missing directory, want error")
 	}
 	if _, err := os.Stat(bad); !os.IsNotExist(err) {
 		t.Errorf("%s exists after a failed publish, os.Stat err = %v", bad, err)
+	}
+	assertNoStagingResidue(t, dir)
+}
+
+func TestPublishFile_DoesNotOverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	final := filepath.Join(dir, "existing.wav")
+	if err := os.WriteFile(final, []byte("keep-me"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	staged, err := createStagedFile(final)
+	if err != nil {
+		t.Fatalf("createStagedFile: %v", err)
+	}
+	if _, err := staged.f.Write([]byte("overwrite-me")); err != nil {
+		t.Fatalf("write staged: %v", err)
+	}
+
+	if err := publishFile(staged.f, staged.tmpPath, staged.finalPath); err == nil {
+		t.Fatal("publishFile overwrote an existing file, want error")
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "keep-me" {
+		t.Fatalf("existing content = %q, want %q", got, "keep-me")
 	}
 	assertNoStagingResidue(t, dir)
 }
@@ -203,7 +231,7 @@ func TestRecorder_StartStop_PublishesFinalOnly(t *testing.T) {
 	pr, pw := newSyncPipe()
 	gate := &frameGate{r: pr, secondRead: make(chan struct{})}
 
-	fpath, err := r.StartAt(context.Background(), gate, dir, sampleRate)
+	fpath, err := r.StartAt(context.Background(), gate, dir, sampleRate, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -257,7 +285,7 @@ func TestRecorder_CaptureError_DiscardsStagedFile(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	fpath, err := r.StartStereo(context.Background(), &blockingReader{}, &blockingReader{}, dir, 8000)
+	fpath, err := r.StartStereo(context.Background(), &blockingReader{}, &blockingReader{}, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}
@@ -344,7 +372,7 @@ func TestRecorder_NormalStopPublishes(t *testing.T) {
 	r := NewRecorder(slog.Default())
 
 	rd := &cancelOnlyReader{first: make(chan struct{})}
-	fpath, err := r.StartAt(context.Background(), rd, dir, 8000)
+	fpath, err := r.StartAt(context.Background(), rd, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -388,7 +416,7 @@ func TestRecorder_ZeroFrameCaptureIsNotPublished(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	fpath, err := r.StartAt(context.Background(), eofReader{}, dir, 8000)
+	fpath, err := r.StartAt(context.Background(), eofReader{}, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -422,7 +450,7 @@ func TestRecorder_StopBeforeFirstFrameIsNotPublished(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fpath, err := r.StartAt(ctx, pr, dir, 8000)
+	fpath, err := r.StartAt(ctx, pr, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartAt: %v", err)
 	}
@@ -445,7 +473,7 @@ func TestRecorder_ZeroFrameStereoCaptureIsNotPublished(t *testing.T) {
 	leftPW.Close()
 	rightPW.Close()
 
-	fpath, err := r.StartStereo(context.Background(), leftPR, rightPR, dir, 8000)
+	fpath, err := r.StartStereo(context.Background(), leftPR, rightPR, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}

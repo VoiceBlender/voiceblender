@@ -5851,6 +5851,8 @@ components:
                     type: string
                 gcs_object_name_prefix:
                     type: string
+                filename:
+                    type: string
             required:
                 - id
                 - storage
@@ -5863,6 +5865,7 @@ components:
                 - s3_secret_key
                 - gcs_bucket
                 - gcs_object_name_prefix
+                - filename
         rejectRegistrationPayload:
             type: object
             properties:

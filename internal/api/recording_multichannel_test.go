@@ -48,7 +48,7 @@ func TestMultiChannelStopAll_SurvivesDiscardedLeg(t *testing.T) {
 	// otherwise cancel it before its first frame, which discards the capture and
 	// omits the leg from the merge, leaving nothing for this test to prove.
 	good := recording.NewRecorder(slog.Default())
-	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000, ""); err != nil {
 		t.Fatalf("start good leg: %v", err)
 	}
 	good.Wait()
@@ -59,7 +59,7 @@ func TestMultiChannelStopAll_SurvivesDiscardedLeg(t *testing.T) {
 	// A failing leg: a stereo companion that cannot be drained without blocking
 	// is a real, reachable capture error, so this staging file is discarded.
 	bad := recording.NewRecorder(slog.Default())
-	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000); err != nil {
+	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000, ""); err != nil {
 		t.Fatalf("start bad leg: %v", err)
 	}
 	bad.Wait()
@@ -107,7 +107,7 @@ func TestMultiChannelStopAll_AllLegsDiscardedFails(t *testing.T) {
 	}
 
 	bad := recording.NewRecorder(slog.Default())
-	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000); err != nil {
+	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000, ""); err != nil {
 		t.Fatalf("start bad leg: %v", err)
 	}
 	bad.Wait()
@@ -144,7 +144,7 @@ func TestStopRoomRecordingIfEmpty_PublishesOmittedLegs(t *testing.T) {
 	// The room mix recorder: cleanupRoomRecording reports no recording at all
 	// without one, and the auto-stop returns silently.
 	mix := recording.NewRecorder(slog.Default())
-	if _, err := mix.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+	if _, err := mix.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000, ""); err != nil {
 		t.Fatalf("start room mix recorder: %v", err)
 	}
 	roomRecorders.Lock()
@@ -157,7 +157,7 @@ func TestStopRoomRecordingIfEmpty_PublishesOmittedLegs(t *testing.T) {
 	})
 
 	good := recording.NewRecorder(slog.Default())
-	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000); err != nil {
+	if _, err := good.StartAt(ctx, bytes.NewReader(make([]byte, 16000)), dir, 8000, ""); err != nil {
 		t.Fatalf("start good leg: %v", err)
 	}
 	good.Wait()
@@ -166,7 +166,7 @@ func TestStopRoomRecordingIfEmpty_PublishesOmittedLegs(t *testing.T) {
 	}
 
 	bad := recording.NewRecorder(slog.Default())
-	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000); err != nil {
+	if _, err := bad.StartStereo(ctx, bytes.NewReader(nil), bytes.NewReader(nil), dir, 8000, ""); err != nil {
 		t.Fatalf("start bad leg: %v", err)
 	}
 	bad.Wait()
