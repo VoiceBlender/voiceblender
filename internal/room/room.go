@@ -24,6 +24,11 @@ type Room struct {
 	// r.mu, in step with participants.
 	legParts map[string]*mixer.Participant
 
+	// legStreams holds the secondary audio streams mixed into this room, keyed
+	// by mixer participant ID ("<legID>#<streamID>"). A stream's leg need not
+	// itself be a participant here. Guarded by r.mu.
+	legStreams map[string]*legStream
+
 	bridgeRefs   int  // synthetic bridge participants keeping the mixer alive
 	mixerRunning bool // tracks whether r.mix is currently started
 
@@ -43,6 +48,7 @@ func NewRoom(id, appID string, sampleRate int, log *slog.Logger) *Room {
 		SampleRate:   sampleRate,
 		participants: make(map[string]leg.Leg),
 		legParts:     make(map[string]*mixer.Participant),
+		legStreams:   make(map[string]*legStream),
 		mix:          mixer.New(log, sampleRate),
 		log:          log,
 	}
@@ -139,6 +145,13 @@ func (r *Room) removeLegLocked(l leg.Leg) {
 	delete(r.participants, l.ID())
 	delete(r.legParts, l.ID())
 	r.mix.RemoveParticipant(l.ID())
+	// Streams of this leg that are mixed here go with it. Streams it parked in
+	// another room are that room's business and are left alone.
+	for pid, ls := range r.legStreams {
+		if ls.legID == l.ID() {
+			r.removeLegStreamLocked(pid)
+		}
+	}
 }
 
 // RemoveLegIfParticipant removes legID only if p is still the mixer participant
@@ -190,13 +203,18 @@ func (r *Room) Close() {
 	for _, l := range r.participants {
 		l.SetRoomID("")
 	}
+	for pid := range r.legStreams {
+		r.removeLegStreamLocked(pid)
+	}
 	r.participants = make(map[string]leg.Leg)
+	r.legStreams = make(map[string]*legStream)
 }
 
-// mixerShouldRun reports whether the mixer has any reason to keep ticking:
-// at least one leg, or at least one attached bridge. Caller must hold r.mu.
+// mixerShouldRun reports whether the mixer has any reason to keep ticking: at
+// least one leg, one secondary stream, or one attached bridge. Caller must hold
+// r.mu.
 func (r *Room) mixerShouldRun() bool {
-	return len(r.participants) > 0 || r.bridgeRefs > 0
+	return len(r.participants) > 0 || len(r.legStreams) > 0 || r.bridgeRefs > 0
 }
 
 // syncMixerLocked starts or stops the mixer to match mixerShouldRun.
@@ -335,32 +353,64 @@ func normalizeMatrix(m map[string][]string) map[string]map[string]struct{} {
 //
 // A leg whose listener row is set never hears legs without a role
 // (matrix-routed listener only hears roled sources).
+// A leg's own secondary streams are always suppressed from its mix, whatever
+// the matrix says. In the translation topology the original and translated
+// streams sit on one leg; without this the original would hear the translation
+// and echo it straight back to the peer.
 func (r *Room) applyRoutingLocked() {
-	if len(r.participants) == 0 {
+	if len(r.participants) == 0 && len(r.legStreams) == 0 {
 		return
 	}
-	updates := make(map[string]map[string]struct{}, len(r.participants))
-	for listenerID, listener := range r.participants {
-		role := listener.Role()
-		if role == "" {
-			updates[listenerID] = nil
+
+	// Flatten legs and their secondary streams into one participant view.
+	type routable struct {
+		legID string
+		role  string
+	}
+	all := make(map[string]routable, len(r.participants)+len(r.legStreams))
+	for id, l := range r.participants {
+		all[id] = routable{legID: id, role: l.Role()}
+	}
+	for pid, ls := range r.legStreams {
+		all[pid] = routable{legID: ls.legID, role: ls.role}
+	}
+
+	// Count streams per leg so we only pay for an explicit hears set where
+	// sibling suppression actually has something to suppress.
+	perLeg := make(map[string]int, len(all))
+	for _, e := range all {
+		perLeg[e.legID]++
+	}
+
+	updates := make(map[string]map[string]struct{}, len(all))
+	for listenerID, listener := range all {
+		allowedRoles, matrixed := r.routing[listener.role]
+		if listener.role == "" || !matrixed {
+			// Full mesh, except that a leg never hears its own other streams.
+			if perLeg[listener.legID] < 2 {
+				updates[listenerID] = nil
+				continue
+			}
+			hears := make(map[string]struct{}, len(all))
+			for sourceID, source := range all {
+				if sourceID == listenerID || source.legID == listener.legID {
+					continue
+				}
+				hears[sourceID] = struct{}{}
+			}
+			updates[listenerID] = hears
 			continue
 		}
-		allowedRoles, ok := r.routing[role]
-		if !ok {
-			updates[listenerID] = nil
-			continue
-		}
+
 		hears := make(map[string]struct{})
-		for sourceID, source := range r.participants {
-			if sourceID == listenerID {
+		for sourceID, source := range all {
+			if sourceID == listenerID || source.legID == listener.legID {
 				continue
 			}
-			srcRole := source.Role()
-			if srcRole == "" {
+			if source.role == "" {
 				continue
 			}
-			if _, ok := allowedRoles[srcRole]; ok {
+			if _, ok := allowedRoles[source.role]; ok {
 				hears[sourceID] = struct{}{}
 			}
 		}

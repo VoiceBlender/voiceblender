@@ -125,6 +125,7 @@ func main() {
 		UseSourceSocket:   cfg.SIPUseSourceSocket,
 		Codecs:            cfg.Codecs,
 		AMRWBMode:         cfg.AMRWBMode,
+		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
 		AMRNBMode:         cfg.AMRNBMode,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,

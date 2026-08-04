@@ -41,6 +41,11 @@ type CreateLegRequest struct {
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
 	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
 
+	// Streams describes audio streams to offer *in addition to* the call's
+	// primary bidirectional audio, so a multi-stream call is up from the first
+	// INVITE rather than after a re-INVITE. SIP outbound only.
+	Streams []CreateLegStream `json:"streams,omitempty"`
+
 	// WebSocket leg fields (only used when Type == "websocket"):
 	URL          string `json:"url,omitempty"`           // ws:// or wss:// target for outbound dial
 	SampleRate   int    `json:"sample_rate,omitempty"`   // 8000/16000/24000/48000; default 16000
@@ -49,6 +54,27 @@ type CreateLegRequest struct {
 
 	// LiveKit leg fields (only used when Type == "livekit_room"):
 	LiveKit *LiveKitParams `json:"livekit,omitempty"`
+}
+
+// CreateLegStream is one extra m=audio section to offer in the initial INVITE.
+// The call's primary stream is implicit and always first; these follow it, each
+// on its own RTP port.
+type CreateLegStream struct {
+	Direction string `json:"direction,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Label     string `json:"label,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+}
+
+var createLegStreamFields = map[string]FieldEnrichment{
+	"direction": {Description: "Media direction for this stream, from this server's point of view. Defaults to sendrecv.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}, Default: "sendrecv"},
+	"lang":      {Description: "BCP 47 language tag advertised as a=lang (RFC 8866), e.g. \"es-ES\" for a Spanish translation feed."},
+	"content":   {Description: "Value advertised as a=content (RFC 4796). Use \"alt\" for an alternative feed such as a translation.", Enum: []string{"main", "alt", "speaker", "slides", "sl"}},
+	"label":     {Description: "Value advertised as a=label (RFC 4574), for correlating the stream with external metadata."},
+	"room_id":   {Description: "Room to mix this stream into once the call connects. May differ from the leg's own room_id, which governs the primary stream."},
+	"role":      {Description: "Routing role for this stream inside its room."},
 }
 
 // LiveKitParams configures a livekit_room leg. Provide either Token (a
@@ -94,6 +120,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
 	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
+	"streams":          {Description: "SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead."},
 	"url":              {Description: "WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.", Format: "uri"},
 	"sample_rate":      {Description: "PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.", Enum: []string{"8000", "16000", "24000", "48000"}, Default: 16000},
 	"wire_format":      {Description: "Audio framing for websocket legs. `binary` ships raw PCM as WebSocket binary frames; `json_base64` wraps PCM as `{\"type\":\"audio\",\"audio\":\"<base64>\"}` text frames (browser-friendly).", Enum: []string{"binary", "json_base64"}, Default: "binary"},
@@ -105,11 +132,29 @@ var createLegRequestFields = map[string]FieldEnrichment{
 type AnswerLegRequest struct {
 	SpeechDetection *bool  `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
 	Codec           string `json:"codec,omitempty"`            // explicit codec to use (must be in the remote offer)
+
+	// Streams routes the caller's additional audio streams to rooms once the
+	// answer is negotiated. Positional: entry i addresses the i-th accepted
+	// stream beyond the primary, in m-line order.
+	Streams []AnswerLegStream `json:"streams,omitempty"`
+}
+
+// AnswerLegStream places one of an inbound call's additional audio streams into
+// a room at answer time.
+type AnswerLegStream struct {
+	RoomID string `json:"room_id,omitempty"`
+	Role   string `json:"role,omitempty"`
+}
+
+var answerLegStreamFields = map[string]FieldEnrichment{
+	"room_id": {Description: "Room to mix this stream into once the answer is negotiated. May differ from the room the leg itself joins."},
+	"role":    {Description: "Routing role for this stream inside its room."},
 }
 
 var answerLegRequestFields = map[string]FieldEnrichment{
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
 	"codec":            {Description: "Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
+	"streams":          {Description: "Rooms for the caller's additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later."},
 }
 
 // EarlyMediaLegRequest is the optional request body for POST /v1/legs/{id}/early-media.
@@ -268,6 +313,22 @@ type AddLegRequest struct {
 	Deaf       *bool   `json:"deaf,omitempty"`
 	AcceptDTMF *bool   `json:"accept_dtmf,omitempty"`
 	Role       *string `json:"role,omitempty"`
+
+	// Streams additionally mixes named audio streams of the leg into this room.
+	// Omit to add only the leg's primary stream, which is the classic behaviour.
+	Streams []AddRoomStream `json:"streams,omitempty"`
+}
+
+// AddRoomStream names one of a leg's additional audio streams to mix into the
+// room being added to.
+type AddRoomStream struct {
+	StreamID string `json:"stream_id"`
+	Role     string `json:"role,omitempty"`
+}
+
+var addRoomStreamFields = map[string]FieldEnrichment{
+	"stream_id": {Description: "Stream identifier from GET /v1/legs/{id}/streams. The primary stream is not addressable here — it joins with the leg itself."},
+	"role":      {Description: "Routing role for this stream inside the room."},
 }
 
 var addLegRequestFields = map[string]FieldEnrichment{
@@ -276,6 +337,78 @@ var addLegRequestFields = map[string]FieldEnrichment{
 	"deaf":        {Description: "If set, apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched."},
 	"accept_dtmf": {Description: "If set, control whether this leg receives DTMF digits broadcast from other legs in the same room. Omit to leave current state untouched (default for new legs is true)."},
 	"role":        {Description: "If set, apply this routing role to the leg atomically before it joins the mixer. The room's routing matrix (see PUT /v1/rooms/{id}/routing) decides which other legs this leg hears and is heard by based on roles. Pass \"\" to clear the role (full mesh). Omit to leave the current role untouched."},
+	"streams":     {Description: "Additional audio streams of the leg to mix into this room, each with its own routing role. Omit to add only the leg's primary stream. A stream already mixed elsewhere is moved here."},
+}
+
+// LegStreamView is one negotiated audio stream (one m=audio section) of a SIP
+// leg. A single-stream call has exactly one, the primary.
+type LegStreamView struct {
+	ID               string `json:"id"`
+	MID              string `json:"mid,omitempty"`
+	Index            int    `json:"index"`
+	Primary          bool   `json:"primary"`
+	State            string `json:"state"`
+	Direction        string `json:"direction"`
+	DesiredDirection string `json:"desired_direction,omitempty"`
+	Codec            string `json:"codec,omitempty"`
+	SampleRate       int    `json:"sample_rate,omitempty"`
+	LocalPort        int    `json:"local_port,omitempty"`
+	RemoteAddr       string `json:"remote_addr,omitempty"`
+	Label            string `json:"label,omitempty"`
+	Content          string `json:"content,omitempty"`
+	Lang             string `json:"lang,omitempty"`
+	RoomID           string `json:"room_id,omitempty"`
+	Role             string `json:"role,omitempty"`
+}
+
+var legStreamViewFields = map[string]FieldEnrichment{
+	"id":                {Description: "Stream identifier, stable for the life of the dialog. The primary stream is always \"0\"."},
+	"mid":               {Description: "The stream's SDP a=mid token (RFC 5888), used to correlate it across offer/answer."},
+	"index":             {Description: "Position of the stream's m= line in the SDP. Fixed for the life of the dialog (RFC 3264 §8)."},
+	"primary":           {Description: "True for the call's main bidirectional audio stream, which cannot be removed or attached to a room independently."},
+	"state":             {Description: "Negotiation state.", Enum: []string{"pending", "active", "removed"}},
+	"direction":         {Description: "Negotiated media direction from this server's point of view.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}},
+	"desired_direction": {Description: "Direction requested by the application. Survives hold/unhold, unlike the negotiated direction.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}},
+	"codec":             {Description: "Codec negotiated for this stream. Streams on one leg may use different codecs."},
+	"sample_rate":       {Description: "Native sample rate of the stream's codec, in Hz."},
+	"local_port":        {Description: "Local RTP port. Each stream binds its own port; a shared transport is undefined without BUNDLE (RFC 9143)."},
+	"remote_addr":       {Description: "Remote RTP address media is currently sent to."},
+	"label":             {Description: "The stream's a=label value (RFC 4574), for correlating it with external metadata."},
+	"content":           {Description: "The stream's a=content value (RFC 4796), e.g. \"main\" for original audio and \"alt\" for a translated feed."},
+	"lang":              {Description: "The stream's a=lang value (RFC 8866): a BCP 47 language tag such as \"en\" or \"es-ES\"."},
+	"room_id":           {Description: "Room this stream's audio is mixed into. A secondary stream may sit in a different room than its leg."},
+	"role":              {Description: "Routing role of this stream within its room. Streams carry their own role, independent of their leg's."},
+}
+
+// AddLegStreamRequest is the request body for POST /v1/legs/{id}/streams.
+type AddLegStreamRequest struct {
+	Direction string `json:"direction,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Label     string `json:"label,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+}
+
+var addLegStreamRequestFields = map[string]FieldEnrichment{
+	"direction": {Description: "Media direction for the new stream, from this server's point of view. Defaults to sendrecv.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}, Default: "sendrecv"},
+	"lang":      {Description: "BCP 47 language tag advertised as a=lang (RFC 8866), e.g. \"es-ES\" for a Spanish translation feed."},
+	"content":   {Description: "Value advertised as a=content (RFC 4796). Use \"main\" for original audio and \"alt\" for an alternative feed such as a translation.", Enum: []string{"main", "alt", "speaker", "slides", "sl"}},
+	"label":     {Description: "Value advertised as a=label (RFC 4574), for correlating the stream with external metadata."},
+	"room_id":   {Description: "If set, attach the new stream to this room once it is negotiated."},
+	"role":      {Description: "Routing role to apply when room_id is set."},
+}
+
+// AttachStreamRoomRequest is the request body for
+// POST /v1/legs/{id}/streams/{streamId}/room.
+type AttachStreamRoomRequest struct {
+	RoomID string `json:"room_id"`
+	Role   string `json:"role,omitempty"`
+}
+
+var attachStreamRoomRequestFields = map[string]FieldEnrichment{
+	"room_id": {Description: "Room to mix this stream into. May differ from the leg's own room."},
+	"role":    {Description: "Routing role for the stream inside that room. The room's routing matrix decides who hears it."},
 }
 
 // SetLegRoleRequest is the request body for PATCH /v1/legs/{id}/role.
@@ -653,6 +786,12 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("AgentMessageRequest", agentMessageRequestFields)
 	collect("WebRTCOfferRequest", webRTCOfferRequestFields)
 	collect("SetLegRoleRequest", setLegRoleRequestFields)
+	collect("LegStreamView", legStreamViewFields)
+	collect("CreateLegStream", createLegStreamFields)
+	collect("AnswerLegStream", answerLegStreamFields)
+	collect("AddRoomStream", addRoomStreamFields)
+	collect("AddLegStreamRequest", addLegStreamRequestFields)
+	collect("AttachStreamRoomRequest", attachStreamRoomRequestFields)
 	collect("RoomRoutingRequest", roomRoutingRequestFields)
 	collect("RoomRoutingUpdateRequest", roomRoutingUpdateRequestFields)
 	collect("RoutingRowUpdate", routingRowUpdateFields)

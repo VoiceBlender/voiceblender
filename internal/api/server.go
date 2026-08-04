@@ -50,6 +50,12 @@ type Server struct {
 	speechOverrideMu sync.Mutex
 	speechOverride   map[string]*bool
 
+	// streamRoomsMu guards streamRooms, the per-stream room placement an
+	// answer request asked for. It is stashed here because the answer is
+	// negotiated asynchronously — the streams do not exist until then.
+	streamRoomsMu sync.Mutex
+	streamRooms   map[string][]AnswerLegStream
+
 	transfers *transferStore
 
 	// pendingRefers tracks inbound REFERs parked awaiting an app accept/decline.
@@ -90,6 +96,7 @@ func NewServer(
 		Log:            log,
 		speakDets:      make(map[string]*speaking.Detector),
 		speechOverride: make(map[string]*bool),
+		streamRooms:    make(map[string][]AnswerLegStream),
 		transfers:      newTransferStore(),
 		pendingRefers:  newPendingReferStore(),
 		regAttempts:    newRegisterAttemptStore(),
@@ -202,6 +209,13 @@ func (s *Server) routes() {
 		r.Put("/rooms/{id}/routing", s.setRoomRouting)
 		r.Patch("/rooms/{id}/routing", s.updateRoomRouting)
 		r.Patch("/legs/{id}/role", s.setLegRole)
+
+		r.Get("/legs/{id}/streams", s.listLegStreams)
+		r.Post("/legs/{id}/streams", s.addLegStream)
+		r.Get("/legs/{id}/streams/{streamId}", s.getLegStream)
+		r.Delete("/legs/{id}/streams/{streamId}", s.removeLegStream)
+		r.Post("/legs/{id}/streams/{streamId}/room", s.attachLegStreamRoom)
+		r.Delete("/legs/{id}/streams/{streamId}/room", s.detachLegStreamRoom)
 		r.Post("/rooms/{id}/play", s.playRoom)
 		r.Delete("/rooms/{id}/play/{playbackID}", s.stopPlayRoom)
 		r.Patch("/rooms/{id}/play/{playbackID}", s.volumePlayRoom)

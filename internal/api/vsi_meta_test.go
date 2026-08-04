@@ -85,7 +85,13 @@ var restOnlyRoutes = map[string]bool{
 // VSI command that mirrors it. Kept explicit (rather than derived) so it reads
 // as a parity contract.
 var routeToVSICommand = map[string]string{
-	"Post /legs":                                      "create_leg",
+	"Post /legs":                                "create_leg",
+	"Get /legs/{id}/streams":                    "leg_stream_list",
+	"Post /legs/{id}/streams":                   "leg_stream_add",
+	"Get /legs/{id}/streams/{streamId}":         "leg_stream_get",
+	"Delete /legs/{id}/streams/{streamId}":      "leg_stream_remove",
+	"Post /legs/{id}/streams/{streamId}/room":   "leg_stream_attach_room",
+	"Delete /legs/{id}/streams/{streamId}/room": "leg_stream_detach_room",
 	"Get /legs":                                       "list_legs",
 	"Get /legs/{id}":                                  "get_leg",
 	"Post /legs/{id}/answer":                          "answer_leg",

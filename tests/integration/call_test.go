@@ -127,6 +127,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		Log:               log,
 		UseSourceSocket:   cfg.SIPUseSourceSocket,
 		Registrar:         registrar,
+		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)

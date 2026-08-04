@@ -14,6 +14,11 @@ The actual outcome of the SIP-level work is observed via webhook/WebSocket event
 |---|---|
 | `leg.connected`, `leg.early_media`, `leg.hold`, `leg.unhold`, `leg.disconnected`, `leg.transfer_*` | Successful completion |
 | `leg.command_failed` | The SIP-level work failed *after* the HTTP `202` was returned. Payload: `{leg_id, command, error}` where `command` is one of `ring`, `early_media`, `hold`, `unhold`, `add_to_room`, etc. |
+| `leg.stream_added` | An additional `m=audio` stream was negotiated on a live dialog. Payload: `{leg_id, stream_id, mid, direction, lang}` |
+| `leg.stream_removed` | A stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone. Payload: `{leg_id, stream_id, mid}` |
+| `leg.stream_rejected` | The peer refused an additional stream, or it could not be negotiated. The call is unaffected. Payload: `{leg_id, reason}` |
+| `leg.stream_failed` | A stream's media loop failed and the stream was torn down; the call continues on its remaining streams. Payload: `{leg_id, stream_id, reason}` |
+| `leg.stream_room_changed` | A stream was attached to or detached from a room (empty `room_id` means detached). Payload: `{leg_id, stream_id, mid, room_id, role}` |
 
 GET endpoints, in-memory state-change endpoints (`/mute`, `/deaf`, `/dtmf/accept`, `/dtmf/reject`), audio-pipeline endpoints (`/play`, `/record`, `/tts`, `/stt`, `/agent/*`), `/dtmf` (sends RTP, not SIP), and room CRUD remain synchronous.
 
@@ -83,6 +88,10 @@ Originate an outbound SIP call.
     "password": "trunk-pass"
   },
   "room_id": "room-123",
+  "streams": [
+    { "direction": "sendonly", "content": "alt", "lang": "es",
+      "room_id": "room-translated", "role": "translator" }
+  ],
   "amd": {
     "initial_silence_timeout": 2500,
     "greeting_duration": 1500,
@@ -112,6 +121,7 @@ Originate an outbound SIP call.
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
+| `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -152,7 +162,8 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
 
 **Errors:**
-- `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
+- `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, or an invalid `streams[].direction`
+- `404` — A `streams[].room_id` names a room that does not exist
 
 ---
 
@@ -556,7 +567,10 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 ```json
 {
   "speech_detection": true,
-  "codec": "PCMA"
+  "codec": "PCMA",
+  "streams": [
+    { "room_id": "room-translated", "role": "translator" }
+  ]
 }
 ```
 
@@ -564,6 +578,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
+| `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
 **Response:** `202 Accepted`
 
@@ -573,7 +588,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 
 **Errors:**
 - `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
-- `404` — Leg not found
+- `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
 - `409` — Leg is not in `ringing` or `early_media` state
 
 ---
@@ -1690,12 +1705,24 @@ Join already muted / deaf:
 }
 ```
 
+Join with one of the leg's additional audio streams:
+
+```json
+{
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "streams": [
+    { "stream_id": "1", "role": "translator" }
+  ]
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `leg_id` | string | yes | ID of the leg to add |
 | `mute` | bool | no | Apply this mute state to the leg atomically before it joins the mixer — prevents the race where one frame of un-muted audio leaks into the mix between add and `/mute`. Omit to leave current state untouched (useful on move). |
 | `deaf` | bool | no | Apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched. |
 | `role` | string | no | Apply a routing role atomically before the leg enters the mixer. The room's routing matrix (see `/v1/rooms/{id}/routing`) decides who hears whom based on roles, so passing `role` on join guarantees no audio bleed between the leg appearing in the mix and the matrix being applied. Pass an empty string to clear the role (full mesh). Omit to leave the current role untouched. |
+| `streams` | object[] | no | **SIP only.** Additional audio streams of the same leg to mix into **this** room, each with its own routing role. Each entry takes `stream_id` (from `GET /v1/legs/{id}/streams`) and `role`. Omit to add only the leg's primary stream, which is the classic behaviour. A stream currently mixed elsewhere is moved here. Because this endpoint is scoped to one room it can only place streams *here* — to fan a leg's streams across different rooms, use [`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom). |
 
 **Response (added):** `200 OK`
 
@@ -1985,6 +2012,258 @@ Pass an empty string to clear the role (the leg falls back to full mesh).
 **Response:** `200 OK` — returns the updated `LegView`.
 
 **Errors:** `400` — invalid JSON; `404` — leg not found
+
+---
+
+## Per-leg audio streams (multiple m=audio lines)
+
+A SIP dialog normally carries one `m=audio` section, but it may carry several
+(RFC 3264 §5.1), each with its own RTP port, direction, language and mixer
+routing. Extra sections are negotiated only when one side offers them, so an
+ordinary call is unaffected. The motivating case is live translation: `m=audio` #0 carries the
+original bidirectional audio while a second, `sendonly` stream carries the
+translated feed, mixed into a different room.
+
+The wire profile follows SIPREC (RFC 7866), the deployed multi-`m=audio` shape
+SBCs already interoperate with: one section per stream, `a=mid` (RFC 5888) for
+stable identity, `a=label` (RFC 4574), `a=content:main|alt` (RFC 4796) and
+`a=lang` (RFC 8866).
+
+```
+m=audio 40000 RTP/AVP 0 101      ; original
+a=sendrecv
+a=mid:0
+a=content:main
+a=lang:en
+
+m=audio 40002 RTP/AVP 0 101      ; translated feed
+a=sendonly
+a=mid:1
+a=content:alt
+a=lang:es
+```
+
+Rules that follow from RFC 3264 and are visible through this API:
+
+- An answer always carries the **same number of `m=` sections, in the same
+  order**, as the offer. Sections we do not accept come back with port 0.
+- The m-line count **never decreases** for the life of a dialog. Removing a
+  stream leaves a tombstone, so a later added stream takes a new position.
+- A peer that rejects an extra stream with port 0 leaves the call running on
+  its remaining streams — the extra stream is simply never established.
+- A leg never hears its own other streams, whatever the room's routing matrix
+  says. Without that rule the original stream would hear the translated one and
+  echo it straight back to the caller.
+
+### Establishing a multi-stream call
+
+There are three ways a call ends up with more than one audio stream:
+
+**Outbound, from the first INVITE** — pass `streams` to `POST /v1/legs`. Each
+entry is an extra `m=audio` section offered alongside the call's primary
+bidirectional audio, so both are negotiated by the initial offer/answer with no
+follow-up re-INVITE:
+
+```bash
+curl -X POST localhost:8080/v1/legs -d '{
+  "type": "sip",
+  "to": "sip:bob@example.com",
+  "codecs": ["PCMU"],
+  "room_id": "room-original",
+  "streams": [
+    {
+      "direction": "sendonly",
+      "content": "alt",
+      "lang": "es",
+      "room_id": "room-translated",
+      "role": "translator"
+    }
+  ]
+}'
+```
+
+The leg's own `room_id` governs the primary stream; each entry's `room_id`
+governs that stream, and the two may differ — that is what lets the original and
+translated audio be mixed separately. Streams are attached to their rooms once
+the call connects. A stream the peer refuses is simply never established; the
+call runs on whatever was negotiated.
+
+**Outbound, after the call is up** — `POST /v1/legs/{id}/streams` triggers a
+re-INVITE (see below).
+
+**Inbound** — the sections are accepted automatically when a peer offers several
+`m=audio`. To route them at the same time you answer, pass `streams` to
+`POST /v1/legs/{id}/answer`:
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/answer -d '{
+  "streams": [
+    {"room_id": "room-translated", "role": "translator"}
+  ]
+}'
+```
+
+Entries are **positional over the accepted secondary streams**, in m-line order:
+entry 0 is the first stream after the primary. The caller's offer decides how
+many exist, so an entry with no matching stream is ignored rather than failing
+the answer. Placement is applied once the answer is negotiated.
+
+### Choosing a room per stream
+
+Every stream can sit in its own room, and a stream's room need not be its leg's.
+Four ways to set it, all equivalent in effect:
+
+| When | How |
+|---|---|
+| Outbound, at create | `streams[].room_id` on `POST /v1/legs` |
+| Inbound, at answer | `streams[].room_id` on `POST /v1/legs/{id}/answer` |
+| Joining a room | `streams[]` on `POST /v1/rooms/{id}/legs` — puts the named streams in **that** room alongside the leg |
+| Any time after | `POST /v1/legs/{id}/streams/{streamId}/room` |
+
+`POST /v1/rooms/{id}/legs` adds only the leg's primary stream unless `streams`
+names others:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/room-shared/legs -d '{
+  "leg_id": "'$LEG_ID'",
+  "streams": [{"stream_id": "1", "role": "translator"}]
+}'
+```
+
+Because that endpoint is scoped to one room, it can only place streams *there*.
+To fan a leg's streams across different rooms, use the per-stream endpoint or the
+create/answer forms above. A stream already mixed elsewhere is moved.
+
+Whichever route you use, a leg never hears its own other streams, so the
+original audio is never fed the translated feed.
+
+---
+
+### GET /v1/legs/{id}/streams
+
+List a leg's negotiated audio streams, in m-line order.
+
+**Response:** `200 OK`
+
+```json
+[
+  {
+    "id": "0",
+    "mid": "0",
+    "index": 0,
+    "primary": true,
+    "state": "active",
+    "direction": "sendrecv",
+    "codec": "PCMU",
+    "sample_rate": 8000,
+    "local_port": 40000,
+    "remote_addr": "198.51.100.7:40000",
+    "content": "main",
+    "lang": "en",
+    "room_id": "room-original"
+  },
+  {
+    "id": "1",
+    "mid": "1",
+    "index": 1,
+    "primary": false,
+    "state": "active",
+    "direction": "sendonly",
+    "desired_direction": "sendonly",
+    "codec": "PCMU",
+    "sample_rate": 8000,
+    "local_port": 40002,
+    "content": "alt",
+    "lang": "es",
+    "room_id": "room-translated",
+    "role": "translator"
+  }
+]
+```
+
+**Errors:** `400` — not a SIP leg; `404` — leg not found
+
+---
+
+### POST /v1/legs/{id}/streams
+
+Negotiate an additional `m=audio` section on a live call via re-INVITE. The new
+section is appended below the existing ones and binds its own RTP port.
+
+**Request:**
+
+```json
+{
+  "direction": "sendonly",
+  "content": "alt",
+  "lang": "es",
+  "room_id": "room-translated",
+  "role": "translator"
+}
+```
+
+`direction` defaults to `sendrecv`. When `room_id` is set the stream is attached
+to that room as soon as it is negotiated.
+
+**Response:** `201 Created` — returns the new `LegStreamView`.
+
+Emits `leg.stream_added`, plus `leg.stream_room_changed` when `room_id` was set.
+A peer that refuses the section emits `leg.stream_rejected`.
+
+**Errors:** `400` — invalid JSON or not a SIP leg; `404` — leg or room not
+found; `409` — leg has no negotiated media yet, or the peer rejected the stream
+
+---
+
+### GET /v1/legs/{id}/streams/{streamId}
+
+Get one stream. **Response:** `200 OK` — a `LegStreamView`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found
+
+---
+
+### DELETE /v1/legs/{id}/streams/{streamId}
+
+Disable a stream with a re-INVITE carrying port 0 for its section and release its
+RTP port. The m-line slot survives as a tombstone. The primary stream carries the
+call and cannot be removed.
+
+**Response:** `204 No Content`. Emits `leg.stream_removed`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found; `409` —
+primary stream, or the re-INVITE failed
+
+---
+
+### POST /v1/legs/{id}/streams/{streamId}/room
+
+Mix a secondary stream into a room. The room may differ from the leg's own — that
+is what lets the original and translated audio be mixed separately.
+
+**Request:**
+
+```json
+{ "room_id": "room-translated", "role": "translator" }
+```
+
+**Response:** `200 OK` — the updated `LegStreamView`. Emits
+`leg.stream_room_changed`.
+
+**Errors:** `400` — invalid JSON, missing `room_id`, not a SIP leg, or the
+primary stream (which follows its leg via `/v1/rooms/{id}/legs`); `404` — leg,
+stream or room not found; `409` — the stream carries no audio in either direction
+
+---
+
+### DELETE /v1/legs/{id}/streams/{streamId}/room
+
+Remove a stream from whichever room mixes it.
+
+**Response:** `200 OK` — the updated `LegStreamView`. Emits
+`leg.stream_room_changed` with an empty `room_id`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found
 
 ---
 

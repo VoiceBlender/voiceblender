@@ -154,6 +154,30 @@ channels:
                 $ref: '#/components/messages/set_leg_role'
             set_leg_role.result:
                 $ref: '#/components/messages/set_leg_roleResult'
+            leg_stream_list:
+                $ref: '#/components/messages/leg_stream_list'
+            leg_stream_list.result:
+                $ref: '#/components/messages/leg_stream_listResult'
+            leg_stream_get:
+                $ref: '#/components/messages/leg_stream_get'
+            leg_stream_get.result:
+                $ref: '#/components/messages/leg_stream_getResult'
+            leg_stream_add:
+                $ref: '#/components/messages/leg_stream_add'
+            leg_stream_add.result:
+                $ref: '#/components/messages/leg_stream_addResult'
+            leg_stream_remove:
+                $ref: '#/components/messages/leg_stream_remove'
+            leg_stream_remove.result:
+                $ref: '#/components/messages/leg_stream_removeResult'
+            leg_stream_attach_room:
+                $ref: '#/components/messages/leg_stream_attach_room'
+            leg_stream_attach_room.result:
+                $ref: '#/components/messages/leg_stream_attach_roomResult'
+            leg_stream_detach_room:
+                $ref: '#/components/messages/leg_stream_detach_room'
+            leg_stream_detach_room.result:
+                $ref: '#/components/messages/leg_stream_detach_roomResult'
             leg_ring:
                 $ref: '#/components/messages/leg_ring'
             leg_ring.result:
@@ -384,6 +408,16 @@ channels:
                 $ref: '#/components/messages/evt_leg_unhold'
             leg.command_failed:
                 $ref: '#/components/messages/evt_leg_command_failed'
+            leg.stream_added:
+                $ref: '#/components/messages/evt_leg_stream_added'
+            leg.stream_removed:
+                $ref: '#/components/messages/evt_leg_stream_removed'
+            leg.stream_rejected:
+                $ref: '#/components/messages/evt_leg_stream_rejected'
+            leg.stream_failed:
+                $ref: '#/components/messages/evt_leg_stream_failed'
+            leg.stream_room_changed:
+                $ref: '#/components/messages/evt_leg_stream_room_changed'
             dtmf.received:
                 $ref: '#/components/messages/evt_dtmf_received'
             rtt.received:
@@ -932,6 +966,84 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/set_leg_role.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_list:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: List a SIP leg's negotiated audio streams
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_list'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_list.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_get:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Get one of a SIP leg's audio streams
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_get'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_get.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_add:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Negotiate an additional m=audio section on a live dialog via re-INVITE
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_add'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_add.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_remove:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Disable one of a leg's audio streams with a port-0 re-INVITE
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_remove'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_remove.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_attach_room:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Mix one of a leg's audio streams into a room (may differ from the leg's own room)
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_attach_room'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_attach_room.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_detach_room:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Remove one of a leg's audio streams from whichever room mixes it
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_detach_room'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_detach_room.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_ring:
         action: receive
@@ -1687,6 +1799,41 @@ operations:
         summary: An asynchronous leg command (202 Accepted) failed during execution
         messages:
             - $ref: '#/channels/vsi/messages/leg.command_failed'
+    send_leg_stream_added:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An additional m=audio stream was negotiated on a live dialog
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_added'
+    send_leg_stream_removed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_removed'
+    send_leg_stream_rejected:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_rejected'
+    send_leg_stream_failed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_failed'
+    send_leg_stream_room_changed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_room_changed'
     send_dtmf_received:
         action: send
         channel:
@@ -3060,6 +3207,188 @@ components:
                         type: string
                     data:
                         $ref: openapi.yaml#/components/schemas/LegView
+                required:
+                    - type
+        leg_stream_list:
+            name: leg_stream_list
+            title: List a SIP leg's negotiated audio streams
+            summary: List a SIP leg's negotiated audio streams
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_list
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        leg_stream_listResult:
+            name: leg_stream_listResult
+            title: List a SIP leg's negotiated audio streams — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_list.result
+                    request_id:
+                        type: string
+                    data:
+                        type: array
+                        items:
+                            $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_stream_get:
+            name: leg_stream_get
+            title: Get one of a SIP leg's audio streams
+            summary: Get one of a SIP leg's audio streams
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_get
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamPayload'
+                required:
+                    - type
+        leg_stream_getResult:
+            name: leg_stream_getResult
+            title: Get one of a SIP leg's audio streams — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_get.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_stream_add:
+            name: leg_stream_add
+            title: Negotiate an additional m=audio section on a live dialog via re-INVITE
+            summary: Negotiate an additional m=audio section on a live dialog via re-INVITE
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_add
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamAddPayload'
+                required:
+                    - type
+        leg_stream_addResult:
+            name: leg_stream_addResult
+            title: Negotiate an additional m=audio section on a live dialog via re-INVITE — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_add.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_stream_remove:
+            name: leg_stream_remove
+            title: Disable one of a leg's audio streams with a port-0 re-INVITE
+            summary: Disable one of a leg's audio streams with a port-0 re-INVITE
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_remove
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamPayload'
+                required:
+                    - type
+        leg_stream_removeResult:
+            name: leg_stream_removeResult
+            title: Disable one of a leg's audio streams with a port-0 re-INVITE — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_remove.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/vsiStatusResponse'
+                required:
+                    - type
+        leg_stream_attach_room:
+            name: leg_stream_attach_room
+            title: Mix one of a leg's audio streams into a room (may differ from the leg's own room)
+            summary: Mix one of a leg's audio streams into a room (may differ from the leg's own room)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_attach_room
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamRoomPayload'
+                required:
+                    - type
+        leg_stream_attach_roomResult:
+            name: leg_stream_attach_roomResult
+            title: Mix one of a leg's audio streams into a room (may differ from the leg's own room) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_attach_room.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_stream_detach_room:
+            name: leg_stream_detach_room
+            title: Remove one of a leg's audio streams from whichever room mixes it
+            summary: Remove one of a leg's audio streams from whichever room mixes it
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_detach_room
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamPayload'
+                required:
+                    - type
+        leg_stream_detach_roomResult:
+            name: leg_stream_detach_roomResult
+            title: Remove one of a leg's audio streams from whichever room mixes it — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_detach_room.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/LegStreamView'
                 required:
                     - type
         leg_ring:
@@ -4685,6 +5014,41 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.command_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.command_failed/post/requestBody/content/application~1json/schema
+        evt_leg_stream_added:
+            name: evt_leg_stream_added
+            title: An additional m=audio stream was negotiated on a live dialog
+            summary: An additional m=audio stream was negotiated on a live dialog
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_added. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_added/post/requestBody/content/application~1json/schema
+        evt_leg_stream_removed:
+            name: evt_leg_stream_removed
+            title: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
+            summary: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_removed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_removed/post/requestBody/content/application~1json/schema
+        evt_leg_stream_rejected:
+            name: evt_leg_stream_rejected
+            title: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
+            summary: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_rejected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_rejected/post/requestBody/content/application~1json/schema
+        evt_leg_stream_failed:
+            name: evt_leg_stream_failed
+            title: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
+            summary: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_failed/post/requestBody/content/application~1json/schema
+        evt_leg_stream_room_changed:
+            name: evt_leg_stream_room_changed
+            title: An audio stream was attached to or detached from a room (an empty room_id means detached)
+            summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_room_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_room_changed/post/requestBody/content/application~1json/schema
         evt_dtmf_received:
             name: evt_dtmf_received
             title: DTMF digit received
@@ -5091,6 +5455,13 @@ components:
                     type: string
             required:
                 - status
+        AnswerLegStream:
+            type: object
+            properties:
+                room_id:
+                    type: string
+                role:
+                    type: string
         BridgeView:
             type: object
             properties:
@@ -5172,6 +5543,47 @@ components:
             properties:
                 peer_uri:
                     type: string
+        LegStreamView:
+            type: object
+            properties:
+                id:
+                    type: string
+                mid:
+                    type: string
+                index:
+                    type: integer
+                primary:
+                    type: boolean
+                state:
+                    type: string
+                direction:
+                    type: string
+                desired_direction:
+                    type: string
+                codec:
+                    type: string
+                sample_rate:
+                    type: integer
+                local_port:
+                    type: integer
+                remote_addr:
+                    type: string
+                label:
+                    type: string
+                content:
+                    type: string
+                lang:
+                    type: string
+                room_id:
+                    type: string
+                role:
+                    type: string
+            required:
+                - id
+                - index
+                - primary
+                - state
+                - direction
         PlaybackStartResult:
             type: object
             properties:
@@ -5587,6 +5999,10 @@ components:
                     type: boolean
                 codec:
                     type: string
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AnswerLegStream'
             required:
                 - id
         bridgeCreatePayload:
@@ -5769,6 +6185,50 @@ components:
                     type: integer
             required:
                 - id
+        legStreamAddPayload:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                direction:
+                    type: string
+                lang:
+                    type: string
+                content:
+                    type: string
+                label:
+                    type: string
+                room_id:
+                    type: string
+                role:
+                    type: string
+            required:
+                - leg_id
+        legStreamPayload:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                stream_id:
+                    type: string
+            required:
+                - leg_id
+                - stream_id
+        legStreamRoomPayload:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                stream_id:
+                    type: string
+                room_id:
+                    type: string
+                role:
+                    type: string
+            required:
+                - leg_id
+                - stream_id
+                - room_id
         playbackStartPayload:
             type: object
             properties:

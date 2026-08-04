@@ -22,6 +22,12 @@ const (
 	LegUnhold        EventType = "leg.unhold"
 	LegCommandFailed EventType = "leg.command_failed"
 
+	LegStreamAdded       EventType = "leg.stream_added"
+	LegStreamRemoved     EventType = "leg.stream_removed"
+	LegStreamRejected    EventType = "leg.stream_rejected"
+	LegStreamFailed      EventType = "leg.stream_failed"
+	LegStreamRoomChanged EventType = "leg.stream_room_changed"
+
 	LegTransferInitiated EventType = "leg.transfer_initiated"
 	LegTransferRequested EventType = "leg.transfer_requested"
 	LegTransferProgress  EventType = "leg.transfer_progress"

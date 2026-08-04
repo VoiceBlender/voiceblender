@@ -60,7 +60,12 @@ type Config struct {
 	RTPPortMax                int
 	SIPJitterBufferMs         int
 	SIPJitterBufferMaxMs      int
-	SIPReferAutoDial          bool
+	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
+	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
+	// separately from multi-stream because it changes the SDP single-stream
+	// calls emit whenever a peer offers a section we don't handle (e.g. video).
+	SIPSDPStrictMLineAnswer bool
+	SIPReferAutoDial        bool
 	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
 	// awaiting an app accept/decline decision (via the transfer commands) before
 	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
@@ -173,6 +178,7 @@ func Load() Config {
 		RTPPortMax:                envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:         envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:      envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
 		SIPAutoRinging:            os.Getenv("SIP_AUTO_RINGING") == "true",
