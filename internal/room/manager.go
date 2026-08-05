@@ -466,6 +466,53 @@ func (m *Manager) SetLegRole(legID, role string) error {
 	return nil
 }
 
+// SetLegStreamRole updates the routing role of one of a leg's secondary audio
+// streams. When the stream is mixed into a room the room's matrix-derived
+// allow-sets are recomputed atomically, so the next mix tick reflects it.
+//
+// Mirrors SetLegRole: a stream not currently in a room still records the role,
+// which then applies wherever it is next attached.
+func (m *Manager) SetLegStreamRole(legID, streamID, role string) error {
+	l, ok := m.legMgr.Get(legID)
+	if !ok {
+		return fmt.Errorf("leg %s not found", legID)
+	}
+	sl, ok := l.(StreamedLeg)
+	if !ok {
+		return fmt.Errorf("leg %s does not carry multiple audio streams", legID)
+	}
+	if _, ok := sl.StreamMedia(streamID); !ok {
+		return fmt.Errorf("stream %s not found on leg %s", streamID, legID)
+	}
+
+	roomID := sl.StreamRooms()[streamID]
+	if roomID == "" {
+		sl.SetStreamRole(streamID, role)
+		return nil
+	}
+	r, ok := m.Get(roomID)
+	if !ok {
+		sl.SetStreamRole(streamID, role)
+		return nil
+	}
+	if !r.SetLegStreamRole(StreamParticipantID(legID, streamID), role) {
+		return fmt.Errorf("stream %s not found in room %s", streamID, roomID)
+	}
+
+	m.bus.Publish(events.LegStreamRoleChanged, &events.LegStreamData{
+		LegScope: events.LegScope{LegID: legID, AppID: l.AppID()},
+		StreamID: streamID,
+		RoomID:   roomID,
+		Role:     role,
+	})
+	m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+		Matrix:    r.RoutingMatrix(),
+		Reason:    "leg_stream_role_changed",
+	})
+	return nil
+}
+
 func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	fromRoom, ok := m.Get(fromRoomID)
 	if !ok {

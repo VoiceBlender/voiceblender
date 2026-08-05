@@ -89,6 +89,7 @@ var routeToVSICommand = map[string]string{
 	"Get /legs/{id}/streams":                    "leg_stream_list",
 	"Post /legs/{id}/streams":                   "leg_stream_add",
 	"Get /legs/{id}/streams/{streamId}":         "leg_stream_get",
+	"Patch /legs/{id}/streams/{streamId}":       "leg_stream_update",
 	"Delete /legs/{id}/streams/{streamId}":      "leg_stream_remove",
 	"Post /legs/{id}/streams/{streamId}/room":   "leg_stream_attach_room",
 	"Delete /legs/{id}/streams/{streamId}/room": "leg_stream_detach_room",

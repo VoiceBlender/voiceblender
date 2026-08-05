@@ -27,6 +27,7 @@ const (
 	LegStreamRejected    EventType = "leg.stream_rejected"
 	LegStreamFailed      EventType = "leg.stream_failed"
 	LegStreamRoomChanged EventType = "leg.stream_room_changed"
+	LegStreamRoleChanged EventType = "leg.stream_role_changed"
 
 	LegTransferInitiated EventType = "leg.transfer_initiated"
 	LegTransferRequested EventType = "leg.transfer_requested"

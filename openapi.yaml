@@ -2061,6 +2061,40 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+        patch:
+            operationId: updateLegStream
+            summary: Change an audio stream's routing role
+            description: |-
+                Updates the stream's role in place and, when the stream is mixed into a room, recomputes that room's matrix-derived allow-sets atomically (single mixer-mutex acquisition), so no audio bleeds through mid-change. Emits `leg.stream_role_changed` and `room.routing_changed` with `reason: leg_stream_role_changed`.
+
+                Only the role is mutable here. The SDP-level attributes — direction, lang, content, label — are fixed when the stream is negotiated; change them by removing the stream and adding a new one.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateLegStreamRequest'
+            responses:
+                '200':
+                    description: Updated stream
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LegStreamView'
+                '400':
+                    description: Invalid JSON, not a SIP leg, or the primary stream (its role follows the leg)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or stream not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
         delete:
             operationId: removeLegStream
             summary: Remove an audio stream from a live call
@@ -3867,6 +3901,12 @@ components:
                     description: ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer.
             required:
                 - target
+        UpdateLegStreamRequest:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: New routing role for this stream inside its room. The room's routing matrix decides who hears it. Pass an empty string to clear the role (full mesh). Omit to leave it untouched. Applied atomically — the room's allow-sets are recomputed in a single mixer-mutex acquisition, so no audio bleeds through mid-change.
         UpdateRoomBridgeRequest:
             type: object
             properties:
@@ -4400,6 +4440,7 @@ components:
                 - leg.stream_rejected
                 - leg.stream_failed
                 - leg.stream_room_changed
+                - leg.stream_role_changed
                 - dtmf.received
                 - rtt.received
                 - speaking.started
@@ -4850,6 +4891,34 @@ x-webhooks:
     leg.stream_room_changed:
         post:
             summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    stream_id:
+                                        type: string
+                                    mid:
+                                        type: string
+                                    direction:
+                                        type: string
+                                    lang:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    role:
+                                        type: string
+                                    reason:
+                                        type: string
+    leg.stream_role_changed:
+        post:
+            summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
             requestBody:
                 content:
                     application/json:

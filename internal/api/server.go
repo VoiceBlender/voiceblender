@@ -213,6 +213,7 @@ func (s *Server) routes() {
 		r.Get("/legs/{id}/streams", s.listLegStreams)
 		r.Post("/legs/{id}/streams", s.addLegStream)
 		r.Get("/legs/{id}/streams/{streamId}", s.getLegStream)
+		r.Patch("/legs/{id}/streams/{streamId}", s.updateLegStream)
 		r.Delete("/legs/{id}/streams/{streamId}", s.removeLegStream)
 		r.Post("/legs/{id}/streams/{streamId}/room", s.attachLegStreamRoom)
 		r.Delete("/legs/{id}/streams/{streamId}/room", s.detachLegStreamRoom)

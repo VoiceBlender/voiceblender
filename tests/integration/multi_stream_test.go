@@ -519,6 +519,58 @@ func TestMultiStream_AddLegToRoomWithStreams(t *testing.T) {
 	}
 }
 
+// TestMultiStream_PatchStreamRole changes a stream's routing role in place and
+// verifies it never leaves the mixer while doing so.
+func TestMultiStream_PatchStreamRole(t *testing.T) {
+	instA := multiStreamInstance(t, "instance-a")
+	instB := multiStreamInstance(t, "instance-b")
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{"id": "room-x"})
+	if roomResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create room: unexpected status %d", roomResp.StatusCode)
+	}
+	roomResp.Body.Close()
+
+	addResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/streams", instA.baseURL(), outboundID),
+		map[string]interface{}{"direction": "sendonly", "room_id": "room-x", "role": "translator"})
+	if addResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(addResp.Body)
+		t.Fatalf("add stream: unexpected status %d: %s", addResp.StatusCode, b)
+	}
+	var added legStreamView
+	decodeJSON(t, addResp, &added)
+	if added.Role != "translator" {
+		t.Fatalf("role = %q, want translator", added.Role)
+	}
+
+	patchResp := httpPatch(t, fmt.Sprintf("%s/v1/legs/%s/streams/%s", instA.baseURL(), outboundID, added.ID),
+		map[string]interface{}{"role": "speaker"})
+	if patchResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(patchResp.Body)
+		t.Fatalf("patch stream: unexpected status %d: %s", patchResp.StatusCode, b)
+	}
+	var patched legStreamView
+	decodeJSON(t, patchResp, &patched)
+
+	if patched.Role != "speaker" {
+		t.Errorf("role = %q, want speaker", patched.Role)
+	}
+	// The role change must not detach the stream.
+	if patched.RoomID != "room-x" {
+		t.Errorf("room = %q, want room-x — a role change must not detach the stream", patched.RoomID)
+	}
+
+	// The primary stream's role follows the leg, so it is not patchable here.
+	resp := httpPatch(t, fmt.Sprintf("%s/v1/legs/%s/streams/0", instA.baseURL(), outboundID),
+		map[string]interface{}{"role": "x"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("patching the primary stream: status %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestMultiStream_AddLegToRoomStreamValidation(t *testing.T) {
 	instA := multiStreamInstance(t, "instance-a")
 	instB := multiStreamInstance(t, "instance-b")
