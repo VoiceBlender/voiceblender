@@ -399,6 +399,18 @@ var addLegStreamRequestFields = map[string]FieldEnrichment{
 	"role":      {Description: "Routing role to apply when room_id is set."},
 }
 
+// UpdateLegStreamRequest is the request body for
+// PATCH /v1/legs/{id}/streams/{streamId}. Only the routing role is mutable in
+// place; the SDP-level attributes (direction, lang, content, label) are fixed
+// at negotiation time.
+type UpdateLegStreamRequest struct {
+	Role *string `json:"role,omitempty"`
+}
+
+var updateLegStreamRequestFields = map[string]FieldEnrichment{
+	"role": {Description: "New routing role for this stream inside its room. The room's routing matrix decides who hears it. Pass an empty string to clear the role (full mesh). Omit to leave it untouched. Applied atomically — the room's allow-sets are recomputed in a single mixer-mutex acquisition, so no audio bleeds through mid-change."},
+}
+
 // AttachStreamRoomRequest is the request body for
 // POST /v1/legs/{id}/streams/{streamId}/room.
 type AttachStreamRoomRequest struct {
@@ -789,6 +801,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("LegStreamView", legStreamViewFields)
 	collect("CreateLegStream", createLegStreamFields)
 	collect("AnswerLegStream", answerLegStreamFields)
+	collect("UpdateLegStreamRequest", updateLegStreamRequestFields)
 	collect("AddRoomStream", addRoomStreamFields)
 	collect("AddLegStreamRequest", addLegStreamRequestFields)
 	collect("AttachStreamRoomRequest", attachStreamRoomRequestFields)

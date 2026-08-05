@@ -19,6 +19,7 @@ The actual outcome of the SIP-level work is observed via webhook/WebSocket event
 | `leg.stream_rejected` | The peer refused an additional stream, or it could not be negotiated. The call is unaffected. Payload: `{leg_id, reason}` |
 | `leg.stream_failed` | A stream's media loop failed and the stream was torn down; the call continues on its remaining streams. Payload: `{leg_id, stream_id, reason}` |
 | `leg.stream_room_changed` | A stream was attached to or detached from a room (empty `room_id` means detached). Payload: `{leg_id, stream_id, mid, room_id, role}` |
+| `leg.stream_role_changed` | A stream's routing role changed; the room's allow-sets were recomputed atomically. Payload: `{leg_id, stream_id, room_id, role}` |
 
 GET endpoints, in-memory state-change endpoints (`/mute`, `/deaf`, `/dtmf/accept`, `/dtmf/reject`), audio-pipeline endpoints (`/play`, `/record`, `/tts`, `/stt`, `/agent/*`), `/dtmf` (sends RTP, not SIP), and room CRUD remain synchronous.
 
@@ -2120,6 +2121,10 @@ Four ways to set it, all equivalent in effect:
 | Joining a room | `streams[]` on `POST /v1/rooms/{id}/legs` — puts the named streams in **that** room alongside the leg |
 | Any time after | `POST /v1/legs/{id}/streams/{streamId}/room` |
 
+A stream's **role** within its room is changed in place with
+[`PATCH /v1/legs/{id}/streams/{streamId}`](#patch-v1legsidstreamsstreamid) —
+no detach/re-attach, so it never drops out of the mix.
+
 `POST /v1/rooms/{id}/legs` adds only the leg's primary stream unless `streams`
 names others:
 
@@ -2220,6 +2225,34 @@ found; `409` — leg has no negotiated media yet, or the peer rejected the strea
 Get one stream. **Response:** `200 OK` — a `LegStreamView`.
 
 **Errors:** `400` — not a SIP leg; `404` — leg or stream not found
+
+---
+
+### PATCH /v1/legs/{id}/streams/{streamId}
+
+Change a stream's routing role in place.
+
+**Request:**
+
+```json
+{ "role": "translator" }
+```
+
+Pass an empty string to clear the role (full mesh). When the stream is mixed
+into a room, that room's matrix-derived allow-sets are recomputed atomically —
+a single mixer-mutex acquisition, so no audio bleeds through mid-change. Emits
+`leg.stream_role_changed` and `room.routing_changed` with
+`reason: "leg_stream_role_changed"`.
+
+Only the role is mutable here. The SDP-level attributes — `direction`, `lang`,
+`content`, `label` — are fixed when the stream is negotiated; to change them,
+remove the stream and add a new one.
+
+**Response:** `200 OK` — the updated `LegStreamView`.
+
+**Errors:** `400` — invalid JSON, not a SIP leg, or the primary stream (its role
+follows the leg, so use [`PATCH /v1/legs/{id}/role`](#patch-v1legsidrole));
+`404` — leg or stream not found
 
 ---
 

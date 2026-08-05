@@ -1105,6 +1105,24 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "PATCH", Path: "/legs/{id}/streams/{streamId}", OperationID: "updateLegStream",
+			Summary: "Change an audio stream's routing role",
+			Description: "Updates the stream's role in place and, when the stream is mixed into a room, " +
+				"recomputes that room's matrix-derived allow-sets atomically (single mixer-mutex " +
+				"acquisition), so no audio bleeds through mid-change. Emits `leg.stream_role_changed` and " +
+				"`room.routing_changed` with `reason: leg_stream_role_changed`.\n\n" +
+				"Only the role is mutable here. The SDP-level attributes — direction, lang, content, " +
+				"label — are fixed when the stream is negotiated; change them by removing the stream and " +
+				"adding a new one.",
+			Tags:        []string{"Legs"},
+			RequestType: UpdateLegStreamRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated stream", Type: LegStreamView{}},
+				400: {Description: "Invalid JSON, not a SIP leg, or the primary stream (its role follows the leg)"},
+				404: {Description: "Leg or stream not found"},
+			},
+		},
+		{
 			Method: "DELETE", Path: "/legs/{id}/streams/{streamId}", OperationID: "removeLegStream",
 			Summary: "Remove an audio stream from a live call",
 			Description: "Disables the stream with a re-INVITE carrying port 0 for its section (RFC 3264 §8.2) " +

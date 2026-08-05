@@ -234,6 +234,13 @@ type legStreamAddPayload struct {
 	Role      string `json:"role,omitempty"`
 }
 
+// legStreamUpdatePayload changes a stream's routing role in place.
+type legStreamUpdatePayload struct {
+	LegID    string  `json:"leg_id"`
+	StreamID string  `json:"stream_id"`
+	Role     *string `json:"role,omitempty"`
+}
+
 // legStreamRoomPayload attaches one of a leg's streams to a room.
 type legStreamRoomPayload struct {
 	LegID    string `json:"leg_id"`
@@ -679,6 +686,18 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			Direction: p.Direction, Lang: p.Lang, Content: p.Content,
 			Label: p.Label, RoomID: p.RoomID, Role: p.Role,
 		})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_update":
+		var p legStreamUpdatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doUpdateLegStream(p.LegID, p.StreamID, UpdateLegStreamRequest{Role: p.Role})
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

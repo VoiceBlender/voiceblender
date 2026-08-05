@@ -37,6 +37,7 @@ type StreamedLeg interface {
 	StreamMedia(streamID string) (leg.StreamMedia, bool)
 	SetStreamRoom(streamID, roomID string)
 	SetStreamRole(streamID, role string)
+	StreamRooms() map[string]string
 }
 
 // legStream is one of a leg's secondary audio streams mixed into this room.

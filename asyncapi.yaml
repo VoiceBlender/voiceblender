@@ -166,6 +166,10 @@ channels:
                 $ref: '#/components/messages/leg_stream_add'
             leg_stream_add.result:
                 $ref: '#/components/messages/leg_stream_addResult'
+            leg_stream_update:
+                $ref: '#/components/messages/leg_stream_update'
+            leg_stream_update.result:
+                $ref: '#/components/messages/leg_stream_updateResult'
             leg_stream_remove:
                 $ref: '#/components/messages/leg_stream_remove'
             leg_stream_remove.result:
@@ -418,6 +422,8 @@ channels:
                 $ref: '#/components/messages/evt_leg_stream_failed'
             leg.stream_room_changed:
                 $ref: '#/components/messages/evt_leg_stream_room_changed'
+            leg.stream_role_changed:
+                $ref: '#/components/messages/evt_leg_stream_role_changed'
             dtmf.received:
                 $ref: '#/components/messages/evt_dtmf_received'
             rtt.received:
@@ -1005,6 +1011,19 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/leg_stream_add.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_stream_update:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Change one of a leg's audio streams' routing role in place
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_stream_update'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_stream_update.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_stream_remove:
         action: receive
@@ -1834,6 +1853,13 @@ operations:
         summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_room_changed'
+    send_leg_stream_role_changed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.stream_role_changed'
     send_dtmf_received:
         action: send
         channel:
@@ -3295,6 +3321,36 @@ components:
                 properties:
                     type:
                         const: leg_stream_add.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_stream_update:
+            name: leg_stream_update
+            title: Change one of a leg's audio streams' routing role in place
+            summary: Change one of a leg's audio streams' routing role in place
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_update
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/legStreamUpdatePayload'
+                required:
+                    - type
+        leg_stream_updateResult:
+            name: leg_stream_updateResult
+            title: Change one of a leg's audio streams' routing role in place — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_stream_update.result
                     request_id:
                         type: string
                     data:
@@ -5049,6 +5105,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_room_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.stream_room_changed/post/requestBody/content/application~1json/schema
+        evt_leg_stream_role_changed:
+            name: evt_leg_stream_role_changed
+            title: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
+            summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.stream_role_changed/post/requestBody/content/application~1json/schema
         evt_dtmf_received:
             name: evt_dtmf_received
             title: DTMF digit received
@@ -6229,6 +6292,18 @@ components:
                 - leg_id
                 - stream_id
                 - room_id
+        legStreamUpdatePayload:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                stream_id:
+                    type: string
+                role:
+                    type: string
+            required:
+                - leg_id
+                - stream_id
         playbackStartPayload:
             type: object
             properties:

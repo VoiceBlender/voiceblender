@@ -85,6 +85,28 @@ func (s *Server) doGetLegStream(legID, streamID string) (LegStreamView, error) {
 	return toLegStreamView(info), nil
 }
 
+func (s *Server) doUpdateLegStream(legID, streamID string, req UpdateLegStreamRequest) (LegStreamView, error) {
+	sl, err := s.resolveStreamLeg(legID)
+	if err != nil {
+		return LegStreamView{}, err
+	}
+	info, ok := sl.Stream(streamID)
+	if !ok {
+		return LegStreamView{}, newAPIError(http.StatusNotFound, "stream not found")
+	}
+	if info.Primary {
+		return LegStreamView{}, newAPIError(http.StatusBadRequest,
+			"the primary stream's role follows the leg; use PATCH /v1/legs/{id}/role")
+	}
+
+	if req.Role != nil {
+		if err := s.RoomMgr.SetLegStreamRole(legID, streamID, *req.Role); err != nil {
+			return LegStreamView{}, newAPIError(http.StatusNotFound, "%s", err.Error())
+		}
+	}
+	return s.doGetLegStream(legID, streamID)
+}
+
 func (s *Server) doAddLegStream(ctx context.Context, legID string, req AddLegStreamRequest) (LegStreamView, error) {
 	sl, err := s.resolveStreamLeg(legID)
 	if err != nil {
@@ -340,6 +362,20 @@ func (s *Server) listLegStreams(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getLegStream(w http.ResponseWriter, r *http.Request) {
 	view, err := s.doGetLegStream(chi.URLParam(r, "id"), chi.URLParam(r, "streamId"))
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) updateLegStream(w http.ResponseWriter, r *http.Request) {
+	var req UpdateLegStreamRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	view, err := s.doUpdateLegStream(chi.URLParam(r, "id"), chi.URLParam(r, "streamId"), req)
 	if err != nil {
 		handleAPIError(w, err)
 		return

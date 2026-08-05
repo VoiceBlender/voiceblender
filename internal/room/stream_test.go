@@ -67,6 +67,16 @@ func (f *streamMockLeg) SetStreamRoom(streamID, roomID string) {
 
 func (f *streamMockLeg) SetStreamRole(string, string) {}
 
+func (f *streamMockLeg) StreamRooms() map[string]string {
+	out := make(map[string]string, len(f.rooms))
+	for id, roomID := range f.rooms {
+		if roomID != "" {
+			out[id] = roomID
+		}
+	}
+	return out
+}
+
 func sendonlyStream(id string, rate int) leg.StreamMedia {
 	return leg.StreamMedia{
 		ID:         id,
@@ -269,5 +279,65 @@ func TestRouting_StreamsCarryTheirOwnRole(t *testing.T) {
 	after, _ := r.mix.ParticipantHears("leg-listener")
 	if _, ok := after["leg-owner#1"]; ok {
 		t.Error("after the role change the stream must drop out of the listener's mix")
+	}
+}
+
+func TestManagerSetLegStreamRole_RecomputesRouting(t *testing.T) {
+	legMgr := leg.NewManager()
+	m := NewManager(legMgr, newTestBus(), slog.New(slog.DiscardHandler))
+
+	listener := newAudioMockLeg("leg-listener")
+	listener.SetRole("listener")
+	owner := newStreamMockLeg("leg-owner", sendonlyStream("1", 16000))
+	owner.SetRole("speaker")
+	legMgr.Add(listener)
+	legMgr.Add(owner)
+
+	r, err := m.Create("room-1", "", 16000)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	r.AddLeg(listener)
+	r.AddLeg(owner)
+	r.AddLegStream(owner, "1", "translator")
+	r.SetRoutingMatrix(map[string][]string{"listener": {"translator"}})
+
+	pid := StreamParticipantID("leg-owner", "1")
+	if hears, _ := r.mix.ParticipantHears("leg-listener"); hears == nil {
+		t.Fatal("a matrixed listener must get an explicit hears set")
+	} else if _, ok := hears[pid]; !ok {
+		t.Fatal("the listener should start out hearing the translator stream")
+	}
+
+	// Changing the stream's role must recompute the matrix without a
+	// detach/re-attach, so the stream stays a participant throughout.
+	if err := m.SetLegStreamRole("leg-owner", "1", "speaker"); err != nil {
+		t.Fatalf("SetLegStreamRole: %v", err)
+	}
+	if hears, _ := r.mix.ParticipantHears("leg-listener"); hears != nil {
+		if _, ok := hears[pid]; ok {
+			t.Error("after the role change the listener must no longer hear the stream")
+		}
+	}
+	if ids := r.LegStreamIDs(); len(ids) != 1 {
+		t.Errorf("stream left the room during a role change: %v", ids)
+	}
+}
+
+func TestManagerSetLegStreamRole_Errors(t *testing.T) {
+	legMgr := leg.NewManager()
+	m := NewManager(legMgr, newTestBus(), slog.New(slog.DiscardHandler))
+
+	if err := m.SetLegStreamRole("nope", "1", "x"); err == nil {
+		t.Error("want an error for an unknown leg")
+	}
+	owner := newStreamMockLeg("leg-owner", sendonlyStream("1", 16000))
+	legMgr.Add(owner)
+	if err := m.SetLegStreamRole("leg-owner", "9", "x"); err == nil {
+		t.Error("want an error for an unknown stream")
+	}
+	// A stream not in any room still records the role for its next attach.
+	if err := m.SetLegStreamRole("leg-owner", "1", "translator"); err != nil {
+		t.Errorf("a detached stream should still accept a role: %v", err)
 	}
 }
