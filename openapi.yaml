@@ -201,7 +201,7 @@ info:
           description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
         - name: SIP_TCP_ENABLED
           default: "false"
-          description: Listen for SIP over TCP on SIP_PORT alongside the UDP listener. UDP caps a SIP message at 1300 bytes (RFC 3261 §18.1.1), which a SIPREC INVITE always exceeds because it carries the recording metadata document alongside the SDP — so this must be on for SIPREC_ENABLED to be usable. Off by default so an existing deployment's listening surface is unchanged.
+          description: 'Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session''s INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP.'
         - name: SIPREC_ENABLED
           default: "false"
           description: 'Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call''s media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488.'

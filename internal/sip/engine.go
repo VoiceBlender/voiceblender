@@ -74,10 +74,9 @@ type EngineConfig struct {
 	// offered section we don't accept, per RFC 3264 §6.
 	StrictMLineAnswer bool
 
-	// TCPEnabled adds a TCP listener on BindPort alongside the UDP one. UDP
-	// caps a SIP message at 1300 bytes (RFC 3261 §18.1.1), which a SIPREC
-	// INVITE — SDP plus the whole recording metadata document — always exceeds,
-	// so an SRS needs this.
+	// TCPEnabled adds a TCP listener on BindPort alongside the UDP one. Needed
+	// for inbound SIPREC: sipgo refuses to send a request over 1300 bytes on
+	// UDP (RFC 3261 §18.1.1), and a recording INVITE always exceeds that.
 	TCPEnabled bool
 }
 

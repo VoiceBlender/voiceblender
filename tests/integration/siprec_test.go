@@ -38,9 +38,8 @@ func siprecInstance(t *testing.T, name string, mutate func(*config.Config)) *tes
 // twoPartyMetadata builds the RFC 7865 document an SRC sends for a two-party
 // call: one stream per participant, labelled to match the SDP.
 //
-// It is deliberately compact. VoiceBlender only listens on UDP (and optionally
-// TLS), so an INVITE carrying a realistically-sized metadata document would
-// exceed the MTU and never reach the server — see TESTING.md.
+// It is deliberately compact so the whole INVITE stays small enough to debug
+// against a UDP peer; the tests themselves dial over TCP, as a real SBC does.
 func twoPartyMetadata(t *testing.T) []byte {
 	t.Helper()
 	rec := &siprec.Recording{
@@ -71,9 +70,9 @@ func twoPartyMetadata(t *testing.T) []byte {
 // Require: siprec and a +sip.src Contact feature tag.
 func dialSIPREC(t *testing.T, from, to *testInstance, metadata []byte) (*sipmod.OutboundCall, error) {
 	t.Helper()
-	// A SIPREC INVITE carries SDP plus the whole metadata document and exceeds
-	// the 1300-byte UDP limit, so it must go over TCP — as it does from a real
-	// SBC.
+	// A SIPREC INVITE carries SDP plus the whole metadata document, past the
+	// 1300 bytes RFC 3261 §18.1.1 allows on UDP, so it goes over TCP — as it
+	// does from a real SBC.
 	params := sip.NewParams()
 	params.Add("transport", "tcp")
 	recipient := sip.Uri{User: "siprec", Host: "127.0.0.1", Port: to.sipPort, UriParams: params}
@@ -665,9 +664,8 @@ func mapKeys(m map[string]map[string]any) []string {
 // instance acts as the recording client and forks a room's participants to a
 // second instance acting as the recording server.
 func TestSIPREC_SRCForksRoomToRecordingServer(t *testing.T) {
-	// The SRC needs TCP too: its own INVITE carries the metadata document.
+	// Only SIPRECSRCEnabled: dialling out over TCP needs no local listener.
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	srs := siprecInstance(t, "srs", nil)
@@ -798,7 +796,6 @@ func TestSIPREC_SRCDisabledByDefault(t *testing.T) {
 
 func TestSIPREC_SRCSelectsSubsetOfRoom(t *testing.T) {
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	srs := siprecInstance(t, "srs", nil)
@@ -852,7 +849,6 @@ func TestSIPREC_SRCSelectsSubsetOfRoom(t *testing.T) {
 
 func TestSIPREC_SRCRejectsUnknownLegID(t *testing.T) {
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	peer := newTestInstance(t, "peer")
@@ -878,7 +874,6 @@ func TestSIPREC_SRCRejectsUnknownLegID(t *testing.T) {
 
 func TestSIPREC_SRCForksASingleCall(t *testing.T) {
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	srs := siprecInstance(t, "srs", nil)
@@ -937,7 +932,6 @@ func TestSIPREC_SRCForksASingleCall(t *testing.T) {
 
 func TestSIPREC_SRCRefusesRecordingALegTwice(t *testing.T) {
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	srs := siprecInstance(t, "srs", nil)
@@ -963,7 +957,6 @@ func TestSIPREC_SRCRefusesRecordingALegTwice(t *testing.T) {
 
 func TestSIPREC_SRCSelectsASecondaryStream(t *testing.T) {
 	src := newTestInstanceWithOpts(t, "src", func(c *config.Config) {
-		c.SIPTCPEnabled = true
 		c.SIPRECSRCEnabled = true
 	})
 	srs := siprecInstance(t, "srs", nil)

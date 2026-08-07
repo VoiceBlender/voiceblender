@@ -3056,14 +3056,25 @@ A recording session is **not a call**. It arrives as an INVITE whose body is
 Disabled by default. Enable with:
 
 ```bash
-SIP_TCP_ENABLED=true    # required: a SIPREC INVITE does not fit in a UDP datagram
+SIP_TCP_ENABLED=true    # required: a SIPREC INVITE is too large to send over UDP
 SIPREC_ENABLED=true
 ```
 
-> **SIP over TCP is mandatory for SIPREC.** UDP caps a SIP message at 1300 bytes
-> (RFC 3261 §18.1.1) and a SIPREC INVITE carries the whole metadata document
-> alongside the SDP, so it always exceeds that. With `SIP_TCP_ENABLED=false` the
-> INVITE never arrives.
+> **SIP over TCP is mandatory for inbound SIPREC.** RFC 3261 §18.1.1 requires a
+> request larger than 1300 bytes to be sent over a congestion-controlled
+> transport when the path MTU is unknown. This is a SIP rule, not a UDP one —
+> a UDP datagram may be far larger and IP will fragment it — but sipgo enforces
+> the rule by refusing to send an oversized request over UDP at all, rather than
+> fragmenting or switching transport itself. A SIPREC INVITE carries the whole
+> metadata document alongside the SDP and always exceeds 1300 bytes, so with
+> `SIP_TCP_ENABLED=false` the INVITE never arrives.
+>
+> `SIP_TCP_ENABLED` is a general inbound transport flag, not a SIPREC one — with
+> it on, any SIP peer can reach this server over TCP, and ordinary calls work
+> over TCP too. It is only *required* by SIPREC because SIPREC is the one thing
+> here that never fits in a datagram. Acting as a recording **client** does not
+> need it: dialling a `;transport=tcp` recording server opens an outbound
+> connection whether or not this server listens on TCP.
 
 ### What arrives on the wire
 
@@ -3282,7 +3293,7 @@ curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
 
 | Field | Meaning |
 |---|---|
-| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the UDP limit. |
+| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. |
 | `leg_ids` | Which participants to record. Omit to record everything in the room. |
 | `session_id` | Communication session ID in the metadata. Defaults to the room ID. |
 | `auth_username` / `auth_password` | Digest credentials, when the recording server challenges. |

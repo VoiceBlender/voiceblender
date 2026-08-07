@@ -73,7 +73,7 @@ type Config struct {
 	// false (the app-driven consult path).
 	SIPReferConsultTimeoutMs int
 	SIPAutoRinging           bool
-	SIPTCPEnabled            bool // listen for SIP over TCP alongside UDP; required for SIPREC, whose INVITEs exceed the 1300-byte UDP limit
+	SIPTCPEnabled            bool // listen for SIP over TCP alongside UDP; needed for inbound SIPREC, whose INVITEs are too large for UDP
 	SIPUseSourceSocket       bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
 
 	SIPRegistrationDefaultExpiresSeconds int

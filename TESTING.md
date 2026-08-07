@@ -607,7 +607,7 @@ go test ./internal/... && go test -tags integration -v -timeout 300s ./tests/int
 
 ## Troubleshooting
 
-**Tests hang or timeout:** Integration tests use loopback UDP for SIP. If the system firewall blocks localhost UDP, tests will timeout waiting for SIP responses. Increase timeout with `-timeout 120s` on slower machines.
+**Tests hang or timeout:** Integration tests use loopback UDP for SIP, except the SIPREC ones, which dial over TCP because a SIPREC INVITE exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. If the system firewall blocks localhost UDP (or TCP for the SIPREC tests), tests will timeout waiting for SIP responses. Increase timeout with `-timeout 120s` on slower machines.
 
 **Port conflicts:** Each test instance picks random free UDP/TCP ports. Conflicts are unlikely but possible under heavy system load. Re-running usually resolves this.
 
