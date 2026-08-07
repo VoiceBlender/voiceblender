@@ -60,7 +60,12 @@ type Config struct {
 	RTPPortMax                int
 	SIPJitterBufferMs         int
 	SIPJitterBufferMaxMs      int
-	SIPReferAutoDial          bool
+	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
+	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
+	// separately from multi-stream because it changes the SDP single-stream
+	// calls emit whenever a peer offers a section we don't handle (e.g. video).
+	SIPSDPStrictMLineAnswer bool
+	SIPReferAutoDial        bool
 	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
 	// awaiting an app accept/decline decision (via the transfer commands) before
 	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
@@ -68,6 +73,7 @@ type Config struct {
 	// false (the app-driven consult path).
 	SIPReferConsultTimeoutMs int
 	SIPAutoRinging           bool
+	SIPTCPEnabled            bool // listen for SIP over TCP alongside UDP; needed for inbound SIPREC, whose INVITEs are too large for UDP
 	SIPUseSourceSocket       bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
 
 	SIPRegistrationDefaultExpiresSeconds int
@@ -108,6 +114,16 @@ type Config struct {
 	// AMR-NB (RFC 4867) codec parameters.
 	AMRNBMode         int  // encoder speech-mode ceiling 0..7 (default 7 = 12.2 kbit/s, GSM-EFR), clamped to the peer's mode-set
 	AMRNBOctetAligned bool // offer octet-aligned framing (default true)
+
+	// SIPREC (RFC 7865 / RFC 7866) session recording server.
+	SIPRECEnabled          bool // accept inbound recording sessions; off by default
+	SIPRECAutoAnswer       bool // answer immediately instead of waiting for POST /legs/{id}/answer
+	SIPRECMaxStreams       int  // cap on accepted m=audio sections per recording session
+	SIPRECMetadataMaxBytes int  // cap on the rs-metadata document size
+	SIPRECAutoRecord       bool // start multi-channel recording when a session starts
+	SIPRECSRCEnabled       bool // originate outbound recording sessions to an external SRS
+	SIPRECRoomMode         string
+	SIPRECRoomID           string
 
 	MoQEnabled     bool
 	MoQListenAddr  string
@@ -173,9 +189,11 @@ func Load() Config {
 		RTPPortMax:                envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:         envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:      envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
 		SIPAutoRinging:            os.Getenv("SIP_AUTO_RINGING") == "true",
+		SIPTCPEnabled:             envBool("SIP_TCP_ENABLED", false),
 		SIPUseSourceSocket:        os.Getenv("SIP_USE_SOURCE_SOCKET") == "true",
 
 		SIPRegistrationDefaultExpiresSeconds: envInt("SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS", 3600),
@@ -204,6 +222,15 @@ func Load() Config {
 		AMRNBMode:         amrnbMode(envInt("AMRNB_MODE", 7)),
 		AMRNBOctetAligned: envBool("AMRNB_OCTET_ALIGNED", true),
 
+		SIPRECEnabled:          envBool("SIPREC_ENABLED", false),
+		SIPRECAutoAnswer:       envBool("SIPREC_AUTO_ANSWER", true),
+		SIPRECMaxStreams:       envInt("SIPREC_MAX_STREAMS", 8),
+		SIPRECMetadataMaxBytes: envInt("SIPREC_METADATA_MAX_BYTES", 65536),
+		SIPRECAutoRecord:       envBool("SIPREC_AUTO_RECORD", false),
+		SIPRECSRCEnabled:       envBool("SIPREC_SRC_ENABLED", false),
+		SIPRECRoomMode:         siprecRoomMode(envOr("SIPREC_ROOM_MODE", "none")),
+		SIPRECRoomID:           os.Getenv("SIPREC_ROOM_ID"),
+
 		MoQEnabled:     os.Getenv("MOQ_ENABLED") == "true",
 		MoQListenAddr:  envOr("MOQ_LISTEN_ADDR", ":8443"),
 		MoQTLSCertFile: os.Getenv("MOQ_TLS_CERT_FILE"),
@@ -217,6 +244,26 @@ func Load() Config {
 		LiveKitAPIKey:              os.Getenv("LIVEKIT_API_KEY"),
 		LiveKitAPISecret:           os.Getenv("LIVEKIT_API_SECRET"),
 		LiveKitDefaultTokenTTL:     envDuration("LIVEKIT_DEFAULT_TOKEN_TTL", 6*time.Hour),
+	}
+}
+
+// Room attachment modes for an inbound SIPREC session.
+const (
+	SIPRECRoomModeNone       = "none"        // nothing auto-attaches; the operator drives the stream API
+	SIPRECRoomModePerSession = "per_session" // one room per recording session, named siprec-<legID>
+	SIPRECRoomModeFixed      = "fixed"       // every session's streams join SIPREC_ROOM_ID
+)
+
+// siprecRoomMode clamps an unrecognized mode to "none" rather than failing
+// startup, so a typo cannot silently route recorded audio somewhere unexpected.
+func siprecRoomMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case SIPRECRoomModePerSession:
+		return SIPRECRoomModePerSession
+	case SIPRECRoomModeFixed:
+		return SIPRECRoomModeFixed
+	default:
+		return SIPRECRoomModeNone
 	}
 }
 

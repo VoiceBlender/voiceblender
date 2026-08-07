@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -75,9 +76,10 @@ type sttStartPayload struct {
 
 // answerLegPayload carries the inputs for answer_leg.
 type answerLegPayload struct {
-	ID              string `json:"id"`
-	SpeechDetection *bool  `json:"speech_detection,omitempty"`
-	Codec           string `json:"codec,omitempty"`
+	ID              string            `json:"id"`
+	SpeechDetection *bool             `json:"speech_detection,omitempty"`
+	Codec           string            `json:"codec,omitempty"`
+	Streams         []AnswerLegStream `json:"streams,omitempty"`
 }
 
 // deleteLegPayload carries the inputs for delete_leg.
@@ -116,6 +118,12 @@ type completeTransferPayload struct {
 type declineTransferPayload struct {
 	ID string `json:"id"`
 	TransferDeclineRequest
+}
+
+// roomSIPRECStartPayload combines a room id with the outbound SIPREC request.
+type roomSIPRECStartPayload struct {
+	ID string `json:"id"`
+	StartSIPRECRequest
 }
 
 // recordStartPayload combines a leg/room id with the record request.
@@ -215,6 +223,38 @@ type setLegRolePayload struct {
 	Role  string `json:"role"`
 }
 
+// legStreamPayload addresses one of a leg's audio streams.
+type legStreamPayload struct {
+	LegID    string `json:"leg_id"`
+	StreamID string `json:"stream_id"`
+}
+
+// legStreamAddPayload adds an audio stream to a live dialog.
+type legStreamAddPayload struct {
+	LegID     string `json:"leg_id"`
+	Direction string `json:"direction,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Label     string `json:"label,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+}
+
+// legStreamUpdatePayload changes a stream's routing role in place.
+type legStreamUpdatePayload struct {
+	LegID    string  `json:"leg_id"`
+	StreamID string  `json:"stream_id"`
+	Role     *string `json:"role,omitempty"`
+}
+
+// legStreamRoomPayload attaches one of a leg's streams to a room.
+type legStreamRoomPayload struct {
+	LegID    string `json:"leg_id"`
+	StreamID string `json:"stream_id"`
+	RoomID   string `json:"room_id"`
+	Role     string `json:"role,omitempty"`
+}
+
 // challengeLegPayload combines a leg id with the digest challenge inputs for
 // challenge_leg.
 type challengeLegPayload struct {
@@ -254,7 +294,7 @@ type deleteRegistrationPayload struct {
 // ctx is scoped to the WebSocket connection. This runs on the recv loop, so any
 // command that waits on the network holds up every later command from the same
 // client.
-func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vsiInMsg) {
+func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, msg vsiInMsg) {
 	switch msg.Type {
 
 	// ── Leg queries ─────────────────────────────────────────────────
@@ -291,7 +331,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -619,6 +659,128 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 		}
 		s.wsCommandResult(lw, msg, view)
 
+	case "leg_siprec_start":
+		var p roomSIPRECStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doStartLegSIPREC(ctx, p.ID, p.StartSIPRECRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "room_siprec_start":
+		var p roomSIPRECStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doStartRoomSIPREC(ctx, p.ID, p.StartSIPRECRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "siprec_get":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetSIPRECSession(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_list":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		views, err := s.doListLegStreams(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, views)
+
+	case "leg_stream_get":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetLegStream(p.LegID, p.StreamID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_add":
+		var p legStreamAddPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doAddLegStream(ctx, p.LegID, AddLegStreamRequest{
+			Direction: p.Direction, Lang: p.Lang, Content: p.Content,
+			Label: p.Label, RoomID: p.RoomID, Role: p.Role,
+		})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_update":
+		var p legStreamUpdatePayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doUpdateLegStream(p.LegID, p.StreamID, UpdateLegStreamRequest{Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_remove":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		if err := s.doRemoveLegStream(ctx, p.LegID, p.StreamID); err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, vsiStatusResponse{Status: "ok"})
+
+	case "leg_stream_attach_room":
+		var p legStreamRoomPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doAttachLegStreamRoom(p.LegID, p.StreamID, AttachStreamRoomRequest{RoomID: p.RoomID, Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_stream_detach_room":
+		var p legStreamPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doDetachLegStreamRoom(p.LegID, p.StreamID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
 	// ── Leg control gaps ────────────────────────────────────────────
 	case "leg_ring":
 		var p idPayload
@@ -935,6 +1097,19 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 		}
 		s.wsCommandResult(lw, msg, res)
 
+	// ── STT finalize ────────────────────────────────────────────────
+	case "leg_stt_finalize":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doFinalizeSTTLeg(ctx, p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+
 	// ── Agent start (per-provider) ──────────────────────────────────
 	case "leg_agent_elevenlabs":
 		var p agentElevenLabsPayload
@@ -1139,7 +1314,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsLockedWriter, msg vs
 }
 
 // wsSimpleLegCommand handles the common pattern: parse {id}, call doFn(id), respond.
-func (s *Server) wsSimpleLegCommand(lw *wsLockedWriter, msg vsiInMsg, doFn func(string) error, status string) {
+func (s *Server) wsSimpleLegCommand(lw *wsutilx.LockedWriter, msg vsiInMsg, doFn func(string) error, status string) {
 	var p idPayload
 	if !s.wsParsePayload(lw, msg, &p) {
 		return
@@ -1153,7 +1328,7 @@ func (s *Server) wsSimpleLegCommand(lw *wsLockedWriter, msg vsiInMsg, doFn func(
 
 // wsParsePayload unmarshals msg.Payload into dst. Returns false and sends an
 // error response if parsing fails.
-func (s *Server) wsParsePayload(lw *wsLockedWriter, msg vsiInMsg, dst interface{}) bool {
+func (s *Server) wsParsePayload(lw *wsutilx.LockedWriter, msg vsiInMsg, dst interface{}) bool {
 	if len(msg.Payload) == 0 {
 		return true
 	}
@@ -1164,11 +1339,11 @@ func (s *Server) wsParsePayload(lw *wsLockedWriter, msg vsiInMsg, dst interface{
 	return true
 }
 
-func (s *Server) wsCommandResult(lw *wsLockedWriter, msg vsiInMsg, data interface{}) {
+func (s *Server) wsCommandResult(lw *wsutilx.LockedWriter, msg vsiInMsg, data interface{}) {
 	s.vsiSendResponse(lw, msg.RequestID, msg.Type+".result", data)
 }
 
-func (s *Server) wsCommandError(lw *wsLockedWriter, msg vsiInMsg, err error) {
+func (s *Server) wsCommandError(lw *wsutilx.LockedWriter, msg vsiInMsg, err error) {
 	code := 500
 	if ae, ok := err.(*apiError); ok {
 		code = ae.Code
@@ -1180,7 +1355,7 @@ func (s *Server) wsCommandError(lw *wsLockedWriter, msg vsiInMsg, err error) {
 }
 
 // wsCreateLeg handles create_leg over the VSI WebSocket, mirroring POST /v1/legs.
-func (s *Server) wsCreateLeg(lw *wsLockedWriter, msg vsiInMsg, req CreateLegRequest) {
+func (s *Server) wsCreateLeg(lw *wsutilx.LockedWriter, msg vsiInMsg, req CreateLegRequest) {
 	var (
 		view LegView
 		err  error

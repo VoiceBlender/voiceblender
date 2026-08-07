@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"sync"
@@ -113,7 +114,8 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 	bus := s.Bus
 	legAppID := l.AppID()
 	cb := func(text string, isFinal bool) {
-		s.Log.Info("stt callback fired", "leg_id", id, "text", text, "is_final", isFinal)
+		s.Log.Info("stt callback fired", "leg_id", id, "is_final", isFinal, "text_len", len(text))
+		s.Log.Debug("stt callback text", "leg_id", id, "is_final", isFinal, "text", text)
 		bus.Publish(events.STTText, &events.STTTextData{
 			LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
 			Text:         text,
@@ -182,6 +184,42 @@ func (s *Server) doStopSTTLeg(legID string) (*STTStopResult, error) {
 func (s *Server) stopSTTLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	res, err := s.doStopSTTLeg(id)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// STTFinalizeResult is the success payload for flushing STT on a leg.
+type STTFinalizeResult struct {
+	Status string `json:"status"`
+}
+
+// doFinalizeSTTLeg flushes the provider's audio buffer and leaves the session
+// running — unlike doStopSTTLeg it must NOT drop the transcriber from the map.
+// Only Deepgram implements the capability; the other providers answer 501
+// rather than pretending the flush happened.
+func (s *Server) doFinalizeSTTLeg(ctx context.Context, legID string) (*STTFinalizeResult, error) {
+	legTranscribers.Lock()
+	transcriber, ok := legTranscribers.m[legID]
+	legTranscribers.Unlock()
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no STT in progress")
+	}
+	f, ok := transcriber.(stt.Finalizer)
+	if !ok {
+		return nil, newAPIError(http.StatusNotImplemented, "STT provider does not support finalize")
+	}
+	if err := f.Finalize(ctx); err != nil {
+		return nil, newAPIError(http.StatusConflict, "finalize failed: %v", err)
+	}
+	return &STTFinalizeResult{Status: "stt_finalized"}, nil
+}
+
+func (s *Server) finalizeSTTLeg(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.doFinalizeSTTLeg(r.Context(), id)
 	if err != nil {
 		handleAPIError(w, err)
 		return

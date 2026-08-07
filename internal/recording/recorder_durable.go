@@ -37,14 +37,16 @@ func createStagedFile(finalPath string) (*stagedFile, error) {
 	return &stagedFile{f: f, tmpPath: f.Name(), finalPath: finalPath}, nil
 }
 
-// publishFile makes a staged recording durable and moves it to its final name in
-// one atomic step, so the final name never refers to a partial file. The caller
-// must have finished writing — including any trailing header rewrite — because
-// the sync here is what puts those bytes on disk.
+// publishFile makes a staged recording durable and publishes it to its final
+// name without overwriting an existing file. The caller must have finished
+// writing — including any trailing header rewrite — because the sync here is
+// what puts those bytes on disk.
 //
-// A failure before the rename leaves nothing at either name. The rename is the
-// point of no return: a failure after it still returns an error, but the
-// recording is present and readable at its final name.
+// A hard link is used instead of rename so a colliding final name fails with
+// EEXIST rather than silently replacing a prior recording. A failure before
+// the link leaves nothing at either name. The link is the point of no return:
+// a failure after it still returns an error, but the recording is present and
+// readable at its final name.
 func publishFile(f *os.File, tmpPath, finalPath string) error {
 	if err := syncForPublish(f); err != nil {
 		f.Close()
@@ -55,11 +57,15 @@ func publishFile(f *os.File, tmpPath, finalPath string) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("close recording: %w", err)
 	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := os.Link(tmpPath, finalPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("publish recording: %w", err)
 	}
-	// The rename itself is only durable once the directory entry has reached
+	// Drop the staging name; finalPath holds the only link to the inode.
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("publish recording: remove staging: %w", err)
+	}
+	// The link itself is only durable once the directory entry has reached
 	// the disk, so the recording is not fully published until this returns.
 	return syncDir(filepath.Dir(finalPath))
 }

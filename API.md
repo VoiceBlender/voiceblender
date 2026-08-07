@@ -14,6 +14,12 @@ The actual outcome of the SIP-level work is observed via webhook/WebSocket event
 |---|---|
 | `leg.connected`, `leg.early_media`, `leg.hold`, `leg.unhold`, `leg.disconnected`, `leg.transfer_*` | Successful completion |
 | `leg.command_failed` | The SIP-level work failed *after* the HTTP `202` was returned. Payload: `{leg_id, command, error}` where `command` is one of `ring`, `early_media`, `hold`, `unhold`, `add_to_room`, etc. |
+| `leg.stream_added` | An additional `m=audio` stream was negotiated on a live dialog. Payload: `{leg_id, stream_id, mid, direction, lang}` |
+| `leg.stream_removed` | A stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone. Payload: `{leg_id, stream_id, mid}` |
+| `leg.stream_rejected` | The peer refused an additional stream, or it could not be negotiated. The call is unaffected. Payload: `{leg_id, reason}` |
+| `leg.stream_failed` | A stream's media loop failed and the stream was torn down; the call continues on its remaining streams. Payload: `{leg_id, stream_id, reason}` |
+| `leg.stream_room_changed` | A stream was attached to or detached from a room (empty `room_id` means detached). Payload: `{leg_id, stream_id, mid, room_id, role}` |
+| `leg.stream_role_changed` | A stream's routing role changed; the room's allow-sets were recomputed atomically. Payload: `{leg_id, stream_id, room_id, role}` |
 
 GET endpoints, in-memory state-change endpoints (`/mute`, `/deaf`, `/dtmf/accept`, `/dtmf/reject`), audio-pipeline endpoints (`/play`, `/record`, `/tts`, `/stt`, `/agent/*`), `/dtmf` (sends RTP, not SIP), and room CRUD remain synchronous.
 
@@ -83,6 +89,10 @@ Originate an outbound SIP call.
     "password": "trunk-pass"
   },
   "room_id": "room-123",
+  "streams": [
+    { "direction": "sendonly", "content": "alt", "lang": "es",
+      "room_id": "room-translated", "role": "translator" }
+  ],
   "amd": {
     "initial_silence_timeout": 2500,
     "greeting_duration": 1500,
@@ -99,7 +109,7 @@ Originate an outbound SIP call.
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
 | `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
-| `from` | string | no | Caller ID — sets the user part of the SIP From header (e.g. `"+15551234567"`, `"alice"`) |
+| `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
@@ -112,6 +122,7 @@ Originate an outbound SIP call.
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
+| `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
 
@@ -152,7 +163,8 @@ WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
 
 **Errors:**
-- `400` — Invalid JSON, bad SIP URI, unknown codec, or unsupported type
+- `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, or an invalid `streams[].direction`
+- `404` — A `streams[].room_id` names a room that does not exist
 
 ---
 
@@ -556,7 +568,10 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 ```json
 {
   "speech_detection": true,
-  "codec": "PCMA"
+  "codec": "PCMA",
+  "streams": [
+    { "room_id": "room-translated", "role": "translator" }
+  ]
 }
 ```
 
@@ -564,6 +579,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
+| `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
 **Response:** `202 Accepted`
 
@@ -573,7 +589,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 
 **Errors:**
 - `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
-- `404` — Leg not found
+- `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
 - `409` — Leg is not in `ringing` or `early_media` state
 
 ---
@@ -786,6 +802,13 @@ When a peer sends **us** a REFER (asks us to transfer its call), the handling de
 - **`SIP_REFER_AUTO_DIAL=false` (default)** — the REFER is **parked** and surfaced as `leg.transfer_requested` (a *decision request*). The app drives the outcome with the commands below, keyed by the **referrer leg** (`{id}` = the leg that received the REFER). If no decision arrives within `SIP_REFER_CONSULT_TIMEOUT_MS` (default 2000 ms), the REFER auto-declines with `603` (fail-closed) and `leg.transfer_failed` fires.
 
 The typical app flow: on `leg.transfer_requested`, call **accept**, perform the re-bridge (route the other party to the target), optionally report **progress**, then **complete**. If the app can't perform the transfer, call **decline** instead.
+
+**Identity on the auto-dialled INVITE.** With `SIP_REFER_AUTO_DIAL=true`, the INVITE the server places toward the target is originated on the referrer leg's behalf:
+
+- If the referrer leg arrived on — or was dialled over — a **registered SIP trunk**, the transfer goes out over that same trunk: `From` and `P-Asserted-Identity` carry the trunk's AOR, and the INVITE picks up the trunk's digest credentials and `Route`. The upstream that delivered the call is the one that can route the target, and it only accepts an identity it authenticated; the transferor's own caller ID would usually match no AOR and be rejected. `Referred-By`, when the referrer sent one, still identifies who asked for the transfer.
+- Otherwise the leg's own identity is reused — the caller's `From` for an inbound leg, the `from` the leg was created with for an outbound one.
+
+The resulting leg's `leg.ringing` reports both, as `from` (a full SIP URI when the host is known) and `trunk_id`.
 
 All four return `202 Accepted` on success, or `404` when there is no matching parked/accepted transfer for the leg. The same actions are available over VSI as `accept_transfer`, `progress_transfer`, `complete_transfer`, and `decline_transfer` (payload `{ "id": "<referrer_leg_id>", ... }`).
 
@@ -1073,6 +1096,8 @@ Change the volume of an active leg playback. Takes effect immediately on the nex
 
 Synthesize speech and play it on a leg.
 
+Transient upstream failures (429, 500/502/503/504, transport timeouts) are retried up to 3 times with jittered backoff, bounded to 5 seconds in total, before `tts.error` is published. Auth failures, rejected input, and unclassifiable errors are not retried.
+
 **Request:**
 
 ```json
@@ -1180,6 +1205,7 @@ other channel.
 ```json
 {
   "storage": "s3",
+  "filename": "c3ef9e71-6c9c-43a0-9a55-c51b3894a03c",
   "s3_bucket": "my-recordings",
   "s3_region": "eu-west-1",
   "s3_endpoint": "https://s3.example.com",
@@ -1192,6 +1218,7 @@ other channel.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
+| `filename` | string | no | Optional output basename for the WAV file. A `.wav` suffix is added when missing. Must be a single path segment (no directories). Dots inside the name are preserved — only a trailing `.wav` is treated as the extension (e.g. `call.v2` → `call.v2.wav`). When omitted, a timestamped name is generated. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
@@ -1210,7 +1237,7 @@ Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` 
 ```json
 {
   "status": "recording",
-  "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
+  "file": "/tmp/recordings/c3ef9e71-6c9c-43a0-9a55-c51b3894a03c.wav"
 }
 ```
 
@@ -1218,10 +1245,20 @@ Recording runs asynchronously. Events `recording.started` and `recording.finishe
 
 The `file` path above does **not** exist while the recording is in progress: the recording is written to a staging file and only appears at this path once it stops, so it is never observed half-written. Read it after `recording.finished`, not during the call.
 
+Custom `filename` values are exclusive: starting a recording when that path already exists on disk, or while another recording has reserved the same name, returns `409` rather than overwriting the earlier file.
+
+**Example — name the WAV after a call id:**
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/record \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"c3ef9e71-6c9c-43a0-9a55-c51b3894a03c"}'
+```
+
 **Errors:**
-- `400` — Invalid storage type, S3/GCS not configured, or invalid credentials
+- `400` — Invalid storage type, S3/GCS not configured, invalid credentials, or invalid `filename`
 - `404` — Leg not found
-- `409` — Leg has no audio reader
+- `409` — Leg has no audio reader, or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---
@@ -1366,6 +1403,42 @@ Stop speech-to-text on a leg.
 ```
 
 **Errors:** `404` — No STT in progress
+
+---
+
+### POST /v1/legs/{id}/stt/finalize
+
+Flush the STT buffer on a leg and force a final transcript for the audio spoken
+so far. **STT keeps running** — the provider session is not closed and no new
+`POST /v1/legs/{id}/stt` is needed afterwards. Use it when the caller already
+knows the speaker has finished (a barge-in, a push-to-talk release, an agent
+turn boundary) and does not want to wait for the provider's own endpointing.
+
+No request body.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "stt_finalized" }
+```
+
+**Provider support:** `deepgram` only. VoiceBlender's ElevenLabs integration
+commits on its own voice-activity detection and its Azure integration has no
+mid-stream flush, so both answer `501`.
+
+**Notes:**
+- The flushed transcript arrives on the usual `stt.text` event with
+  `is_final: true`. A segment containing **no speech produces no event at
+  all** — a `200` here is an acknowledgement that the flush was requested, not
+  a promise that a transcript follows. Do not block waiting for one.
+- Applies to leg-scoped STT started with `POST /v1/legs/{id}/stt`. A leg being
+  transcribed as part of a room STT session is not tracked per leg and returns
+  `404`. There is no room-level finalize.
+
+**Errors:**
+- `404` — No STT in progress on this leg
+- `409` — The STT session is not connected, or the flush could not be written
+- `501` — The active STT provider does not support finalize
 
 ---
 
@@ -1633,12 +1706,24 @@ Join already muted / deaf:
 }
 ```
 
+Join with one of the leg's additional audio streams:
+
+```json
+{
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "streams": [
+    { "stream_id": "1", "role": "translator" }
+  ]
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `leg_id` | string | yes | ID of the leg to add |
 | `mute` | bool | no | Apply this mute state to the leg atomically before it joins the mixer — prevents the race where one frame of un-muted audio leaks into the mix between add and `/mute`. Omit to leave current state untouched (useful on move). |
 | `deaf` | bool | no | Apply this deaf state to the leg atomically before it joins the mixer. Omit to leave current state untouched. |
 | `role` | string | no | Apply a routing role atomically before the leg enters the mixer. The room's routing matrix (see `/v1/rooms/{id}/routing`) decides who hears whom based on roles, so passing `role` on join guarantees no audio bleed between the leg appearing in the mix and the matrix being applied. Pass an empty string to clear the role (full mesh). Omit to leave the current role untouched. |
+| `streams` | object[] | no | **SIP only.** Additional audio streams of the same leg to mix into **this** room, each with its own routing role. Each entry takes `stream_id` (from `GET /v1/legs/{id}/streams`) and `role`. Omit to add only the leg's primary stream, which is the classic behaviour. A stream currently mixed elsewhere is moved here. Because this endpoint is scoped to one room it can only place streams *here* — to fan a leg's streams across different rooms, use [`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom). |
 
 **Response (added):** `200 OK`
 
@@ -1931,6 +2016,290 @@ Pass an empty string to clear the role (the leg falls back to full mesh).
 
 ---
 
+## Per-leg audio streams (multiple m=audio lines)
+
+A SIP dialog normally carries one `m=audio` section, but it may carry several
+(RFC 3264 §5.1), each with its own RTP port, direction, language and mixer
+routing. Extra sections are negotiated only when one side offers them, so an
+ordinary call is unaffected. The motivating case is live translation: `m=audio` #0 carries the
+original bidirectional audio while a second, `sendonly` stream carries the
+translated feed, mixed into a different room.
+
+The wire profile follows SIPREC (RFC 7866), the deployed multi-`m=audio` shape
+SBCs already interoperate with: one section per stream, `a=mid` (RFC 5888) for
+stable identity, `a=label` (RFC 4574), `a=content:main|alt` (RFC 4796) and
+`a=lang` (RFC 8866).
+
+```
+m=audio 40000 RTP/AVP 0 101      ; original
+a=sendrecv
+a=mid:0
+a=content:main
+a=lang:en
+
+m=audio 40002 RTP/AVP 0 101      ; translated feed
+a=sendonly
+a=mid:1
+a=content:alt
+a=lang:es
+```
+
+Rules that follow from RFC 3264 and are visible through this API:
+
+- An answer always carries the **same number of `m=` sections, in the same
+  order**, as the offer. Sections we do not accept come back with port 0.
+- The m-line count **never decreases** for the life of a dialog. Removing a
+  stream leaves a tombstone, so a later added stream takes a new position.
+- A peer that rejects an extra stream with port 0 leaves the call running on
+  its remaining streams — the extra stream is simply never established.
+- A leg never hears its own other streams, whatever the room's routing matrix
+  says. Without that rule the original stream would hear the translated one and
+  echo it straight back to the caller.
+
+### Establishing a multi-stream call
+
+There are three ways a call ends up with more than one audio stream:
+
+**Outbound, from the first INVITE** — pass `streams` to `POST /v1/legs`. Each
+entry is an extra `m=audio` section offered alongside the call's primary
+bidirectional audio, so both are negotiated by the initial offer/answer with no
+follow-up re-INVITE:
+
+```bash
+curl -X POST localhost:8080/v1/legs -d '{
+  "type": "sip",
+  "to": "sip:bob@example.com",
+  "codecs": ["PCMU"],
+  "room_id": "room-original",
+  "streams": [
+    {
+      "direction": "sendonly",
+      "content": "alt",
+      "lang": "es",
+      "room_id": "room-translated",
+      "role": "translator"
+    }
+  ]
+}'
+```
+
+The leg's own `room_id` governs the primary stream; each entry's `room_id`
+governs that stream, and the two may differ — that is what lets the original and
+translated audio be mixed separately. Streams are attached to their rooms once
+the call connects. A stream the peer refuses is simply never established; the
+call runs on whatever was negotiated.
+
+**Outbound, after the call is up** — `POST /v1/legs/{id}/streams` triggers a
+re-INVITE (see below).
+
+**Inbound** — the sections are accepted automatically when a peer offers several
+`m=audio`. To route them at the same time you answer, pass `streams` to
+`POST /v1/legs/{id}/answer`:
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/answer -d '{
+  "streams": [
+    {"room_id": "room-translated", "role": "translator"}
+  ]
+}'
+```
+
+Entries are **positional over the accepted secondary streams**, in m-line order:
+entry 0 is the first stream after the primary. The caller's offer decides how
+many exist, so an entry with no matching stream is ignored rather than failing
+the answer. Placement is applied once the answer is negotiated.
+
+### Choosing a room per stream
+
+Every stream can sit in its own room, and a stream's room need not be its leg's.
+Four ways to set it, all equivalent in effect:
+
+| When | How |
+|---|---|
+| Outbound, at create | `streams[].room_id` on `POST /v1/legs` |
+| Inbound, at answer | `streams[].room_id` on `POST /v1/legs/{id}/answer` |
+| Joining a room | `streams[]` on `POST /v1/rooms/{id}/legs` — puts the named streams in **that** room alongside the leg |
+| Any time after | `POST /v1/legs/{id}/streams/{streamId}/room` |
+
+A stream's **role** within its room is changed in place with
+[`PATCH /v1/legs/{id}/streams/{streamId}`](#patch-v1legsidstreamsstreamid) —
+no detach/re-attach, so it never drops out of the mix.
+
+`POST /v1/rooms/{id}/legs` adds only the leg's primary stream unless `streams`
+names others:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/room-shared/legs -d '{
+  "leg_id": "'$LEG_ID'",
+  "streams": [{"stream_id": "1", "role": "translator"}]
+}'
+```
+
+Because that endpoint is scoped to one room, it can only place streams *there*.
+To fan a leg's streams across different rooms, use the per-stream endpoint or the
+create/answer forms above. A stream already mixed elsewhere is moved.
+
+Whichever route you use, a leg never hears its own other streams, so the
+original audio is never fed the translated feed.
+
+---
+
+### GET /v1/legs/{id}/streams
+
+List a leg's negotiated audio streams, in m-line order.
+
+**Response:** `200 OK`
+
+```json
+[
+  {
+    "id": "0",
+    "mid": "0",
+    "index": 0,
+    "primary": true,
+    "state": "active",
+    "direction": "sendrecv",
+    "codec": "PCMU",
+    "sample_rate": 8000,
+    "local_port": 40000,
+    "remote_addr": "198.51.100.7:40000",
+    "content": "main",
+    "lang": "en",
+    "room_id": "room-original"
+  },
+  {
+    "id": "1",
+    "mid": "1",
+    "index": 1,
+    "primary": false,
+    "state": "active",
+    "direction": "sendonly",
+    "desired_direction": "sendonly",
+    "codec": "PCMU",
+    "sample_rate": 8000,
+    "local_port": 40002,
+    "content": "alt",
+    "lang": "es",
+    "room_id": "room-translated",
+    "role": "translator"
+  }
+]
+```
+
+**Errors:** `400` — not a SIP leg; `404` — leg not found
+
+---
+
+### POST /v1/legs/{id}/streams
+
+Negotiate an additional `m=audio` section on a live call via re-INVITE. The new
+section is appended below the existing ones and binds its own RTP port.
+
+**Request:**
+
+```json
+{
+  "direction": "sendonly",
+  "content": "alt",
+  "lang": "es",
+  "room_id": "room-translated",
+  "role": "translator"
+}
+```
+
+`direction` defaults to `sendrecv`. When `room_id` is set the stream is attached
+to that room as soon as it is negotiated.
+
+**Response:** `201 Created` — returns the new `LegStreamView`.
+
+Emits `leg.stream_added`, plus `leg.stream_room_changed` when `room_id` was set.
+A peer that refuses the section emits `leg.stream_rejected`.
+
+**Errors:** `400` — invalid JSON or not a SIP leg; `404` — leg or room not
+found; `409` — leg has no negotiated media yet, or the peer rejected the stream
+
+---
+
+### GET /v1/legs/{id}/streams/{streamId}
+
+Get one stream. **Response:** `200 OK` — a `LegStreamView`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found
+
+---
+
+### PATCH /v1/legs/{id}/streams/{streamId}
+
+Change a stream's routing role in place.
+
+**Request:**
+
+```json
+{ "role": "translator" }
+```
+
+Pass an empty string to clear the role (full mesh). When the stream is mixed
+into a room, that room's matrix-derived allow-sets are recomputed atomically —
+a single mixer-mutex acquisition, so no audio bleeds through mid-change. Emits
+`leg.stream_role_changed` and `room.routing_changed` with
+`reason: "leg_stream_role_changed"`.
+
+Only the role is mutable here. The SDP-level attributes — `direction`, `lang`,
+`content`, `label` — are fixed when the stream is negotiated; to change them,
+remove the stream and add a new one.
+
+**Response:** `200 OK` — the updated `LegStreamView`.
+
+**Errors:** `400` — invalid JSON, not a SIP leg, or the primary stream (its role
+follows the leg, so use [`PATCH /v1/legs/{id}/role`](#patch-v1legsidrole));
+`404` — leg or stream not found
+
+---
+
+### DELETE /v1/legs/{id}/streams/{streamId}
+
+Disable a stream with a re-INVITE carrying port 0 for its section and release its
+RTP port. The m-line slot survives as a tombstone. The primary stream carries the
+call and cannot be removed.
+
+**Response:** `204 No Content`. Emits `leg.stream_removed`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found; `409` —
+primary stream, or the re-INVITE failed
+
+---
+
+### POST /v1/legs/{id}/streams/{streamId}/room
+
+Mix a secondary stream into a room. The room may differ from the leg's own — that
+is what lets the original and translated audio be mixed separately.
+
+**Request:**
+
+```json
+{ "room_id": "room-translated", "role": "translator" }
+```
+
+**Response:** `200 OK` — the updated `LegStreamView`. Emits
+`leg.stream_room_changed`.
+
+**Errors:** `400` — invalid JSON, missing `room_id`, not a SIP leg, or the
+primary stream (which follows its leg via `/v1/rooms/{id}/legs`); `404` — leg,
+stream or room not found; `409` — the stream carries no audio in either direction
+
+---
+
+### DELETE /v1/legs/{id}/streams/{streamId}/room
+
+Remove a stream from whichever room mixes it.
+
+**Response:** `200 OK` — the updated `LegStreamView`. Emits
+`leg.stream_room_changed` with an empty `room_id`.
+
+**Errors:** `400` — not a SIP leg; `404` — leg or stream not found
+
+---
+
 ### POST /v1/rooms/{id}/play
 
 Play audio to a room. Accepts a URL or a built-in telephone tone (same tone names as leg playback).
@@ -2013,6 +2382,8 @@ Change the volume of an active room playback. Takes effect immediately on the ne
 
 Synthesize speech and play it into a room.
 
+Transient upstream failures (429, 500/502/503/504, transport timeouts) are retried up to 3 times with jittered backoff, bounded to 5 seconds in total, before `tts.error` is published. Auth failures, rejected input, and unclassifiable errors are not retried.
+
 **Request:**
 
 ```json
@@ -2063,6 +2434,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 ```json
 {
   "storage": "s3",
+  "filename": "room-mix-call-42",
   "multi_channel": true,
   "s3_bucket": "my-recordings",
   "s3_region": "eu-west-1",
@@ -2074,6 +2446,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
+| `filename` | string | no | Optional output basename for the room-mix WAV. Same rules as `POST /v1/legs/{id}/record` (`filename`): single path segment, `.wav` appended when missing, dots preserved, `409` on collision. When omitted, a timestamped name is generated. Does not rename the optional multi-channel merge file. |
 | `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
@@ -2093,11 +2466,13 @@ Creating a per-request S3 backend probes the bucket with a bounded `HeadBucket` 
 ```json
 {
   "status": "recording",
-  "file": "/tmp/recordings/20260301_110500_a1b2c3d4.wav"
+  "file": "/tmp/recordings/room-mix-call-42.wav"
 }
 ```
 
 When `storage=s3`, the `file` field in the stop response and the `recording.finished` event will contain an `s3://bucket/key` URI. When `storage=gcs`, it will contain a `gs://bucket/object` URI.
+
+Custom `filename` values are exclusive for the room mix: an existing file or an in-flight reservation of the same name returns `409` rather than overwriting.
 
 #### Automatic Stop
 
@@ -2120,9 +2495,9 @@ This gives you one file ready for post-production — each speaker on a clean is
 The per-participant audio capture uses a dedicated mixer tap that is independent of STT/agent taps, so multi-channel recording and STT can run simultaneously without conflict.
 
 **Errors:**
-- `400` — Invalid storage type, S3 not configured, or invalid S3 credentials
+- `400` — Invalid storage type, S3 not configured, invalid S3 credentials, or invalid `filename`
 - `404` — Room not found
-- `409` — Room has no participants
+- `409` — Room has no participants, or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---
@@ -2621,6 +2996,7 @@ The commands below mirror the corresponding REST endpoints and use **resource-fi
 | `room_play_volume` | `{"id":"...","playback_id":"pb-...","volume":2}` | Adjust active room playback volume |
 | `leg_stt_start` | `{"id":"...","provider":"deepgram","language":"en"}` | Start speech-to-text on a leg |
 | `leg_stt_stop` | `{"id":"..."}` | Stop STT on a leg |
+| `leg_stt_finalize` | `{"id":"..."}` | Flush the STT buffer on a leg and emit a final transcript without stopping STT (Deepgram only) |
 | `room_stt_start` | `{"id":"...","provider":"elevenlabs"}` | Start STT on every participant of a room (auto-extends to legs that join later) |
 | `room_stt_stop` | `{"id":"..."}` | Stop room STT |
 | `leg_tts` | `{"id":"...","text":"Hello","voice":"Joanna","provider":"aws"}` | Synthesize and play TTS on a leg; returns `{tts_id, status}` |
@@ -2655,11 +3031,324 @@ The per-connection buffer size defaults to **256 events** and is configurable vi
 
 The default of 256 is sized for healthy clients on a normal event stream (one inbound call generates ~10 events). Increase only when you have a legitimate slow-consumer scenario you can't fix at the client.
 
+**Write deadline.** Buffering only covers a client that reads slowly. A client that stops reading altogether eventually fills the socket send buffer, and every server → client frame is bounded by a **5 second write deadline**: a frame that cannot be written within that window fails the write and the server closes the connection, logging the disconnect with `reason=write_timeout`. Previously such a write blocked indefinitely; a client that kept *sending* while it had stopped reading held its connection, its send loop and its event subscription open for the lifetime of the process, because the inbound traffic kept refreshing the idle read deadline that would otherwise have torn it down. Note the `events_dropped` notice is written before the event that triggered it, so a connection wedged badly enough may be closed while reporting drops — the socket was already stuck; the notice is the messenger. Clients should reconnect and resync via REST.
+
 **Example:**
 
 ```bash
 websocat ws://localhost:8080/v1/vsi
 ```
+
+---
+
+## SIPREC session recording
+
+VoiceBlender can act as a **Session Recording Server (SRS)**: an SBC or PBX acting
+as a Session Recording Client (SRC) forks a call's media to it as a *recording
+session* (RFC 7866), and a metadata document (RFC 7865) says whose audio arrives
+on which stream.
+
+A recording session is **not a call**. It arrives as an INVITE whose body is
+`multipart/mixed` — the SDP plus an `application/rs-metadata+xml` part — with one
+`sendonly m=audio` section per recorded party. VoiceBlender answers every section
+`recvonly` and never transmits.
+
+Disabled by default. Enable with:
+
+```bash
+SIP_TCP_ENABLED=true    # required: a SIPREC INVITE is too large to send over UDP
+SIPREC_ENABLED=true
+```
+
+> **SIP over TCP is mandatory for inbound SIPREC.** RFC 3261 §18.1.1 requires a
+> request larger than 1300 bytes to be sent over a congestion-controlled
+> transport when the path MTU is unknown. This is a SIP rule, not a UDP one —
+> a UDP datagram may be far larger and IP will fragment it — but sipgo enforces
+> the rule by refusing to send an oversized request over UDP at all, rather than
+> fragmenting or switching transport itself. A SIPREC INVITE carries the whole
+> metadata document alongside the SDP and always exceeds 1300 bytes, so with
+> `SIP_TCP_ENABLED=false` the INVITE never arrives.
+>
+> `SIP_TCP_ENABLED` is a general inbound transport flag, not a SIPREC one — with
+> it on, any SIP peer can reach this server over TCP, and ordinary calls work
+> over TCP too. It is only *required* by SIPREC because SIPREC is the one thing
+> here that never fits in a datagram. Acting as a recording **client** does not
+> need it: dialling a `;transport=tcp` recording server opens an outbound
+> connection whether or not this server listens on TCP.
+
+### What arrives on the wire
+
+```
+INVITE sip:srs@voiceblender.example SIP/2.0
+Require: siprec
+Contact: <sip:sbc@10.0.0.9:5060>;+sip.src
+Content-Type: multipart/mixed;boundary=unique-boundary-1
+
+--unique-boundary-1
+Content-Type: application/sdp
+Content-Disposition: session;handling=required
+
+m=audio 40000 RTP/AVP 0        ; Alice
+a=sendonly
+a=label:1
+m=audio 40002 RTP/AVP 0        ; Bob
+a=sendonly
+a=label:2
+
+--unique-boundary-1
+Content-Type: application/rs-metadata+xml
+Content-Disposition: recording-session
+
+<recording xmlns="urn:ietf:params:xml:ns:recording:1">
+  <datamode>complete</datamode>
+  <participant participant_id="pa"><nameID aor="sip:alice@example.com"/></participant>
+  <stream stream_id="ta"><label>1</label></stream>
+  <participantstreamassoc participant_id="pa"><send>ta</send></participantstreamassoc>
+</recording>
+--unique-boundary-1--
+```
+
+The binding chain is `a=label` → `<stream label=…  stream_id=…>` →
+`<participantstreamassoc send=stream_id>` → `<participant><nameID aor=…>`. That is
+what lets a recorded m= section be named after a real person.
+
+An INVITE is treated as SIPREC when **any** of these holds, because SBC
+conformance varies: `Require`/`Proxy-Require` contains `siprec`, the `Contact`
+carries the `+sip.src` feature tag, or the body carries an rs-metadata part.
+
+### Rejection cases
+
+| Condition | Response |
+|---|---|
+| `SIPREC_ENABLED=false` and `Require: siprec` present | `420 Bad Extension` + `Unsupported: siprec` |
+| `SIPREC_ENABLED=false`, SIPREC only hinted at (`+sip.src` or a stray metadata part, no `Require`) | Not claimed — handled as an ordinary call, exactly as before SIPREC existed |
+| Claims SIPREC but carries no rs-metadata part | `400 Bad Request` |
+| rs-metadata is not parseable | `400 Bad Request` |
+| rs-metadata exceeds `SIPREC_METADATA_MAX_BYTES` | `413 Request Entity Too Large` |
+| More `m=audio` sections than `SIPREC_MAX_STREAMS` | `486 Busy Here` |
+
+### The resulting leg
+
+The session becomes a leg of type `siprec_in`. It is answered without any
+`POST /v1/legs/{id}/answer` unless `SIPREC_AUTO_ANSWER=false`.
+
+Unlike an ordinary SIP leg it has **no privileged primary stream**: `m=audio` #0
+is simply the first recorded party. Every stream — including `"0"` — is attached
+to a room with `POST /v1/legs/{id}/streams/{streamId}/room` and takes its own
+routing role. A recording session is receive-only, so DTMF, playback, TTS, hold
+and transfer do not apply to it.
+
+### GET /v1/legs/{id}/siprec
+
+Returns the session's participants, streams, and the binding between them.
+
+```bash
+curl localhost:8080/v1/legs/$LEG_ID/siprec
+```
+
+```json
+{
+  "instance_id": "vb-1",
+  "leg_id": "9f1c...",
+  "session_id": "s1",
+  "data_mode": "complete",
+  "room_id": "siprec-9f1c...",
+  "participants": [
+    {"participant_id": "pa", "aor": "sip:alice@example.com", "name": "Alice Smith"},
+    {"participant_id": "pb", "aor": "sip:bob@example.com",   "name": "Bob Jones"}
+  ],
+  "streams": [
+    {
+      "leg_stream_id": "0", "mid": "1", "label": "1",
+      "direction": "recvonly", "codec": "PCMU",
+      "room_id": "siprec-9f1c...", "role": "Alice Smith",
+      "participant_id": "pa",
+      "participant_aor": "sip:alice@example.com",
+      "participant_name": "Alice Smith"
+    },
+    {
+      "leg_stream_id": "1", "mid": "2", "label": "2",
+      "direction": "recvonly", "codec": "PCMU",
+      "room_id": "siprec-9f1c...", "role": "Bob Jones",
+      "participant_id": "pb",
+      "participant_aor": "sip:bob@example.com",
+      "participant_name": "Bob Jones"
+    }
+  ],
+  "metadata": "<?xml version=\"1.0\"...?>"
+}
+```
+
+The VSI equivalent is the `siprec_get` command with `{"id": "<leg id>"}`.
+
+### Using the recorded audio
+
+Because the streams are ordinary leg streams, everything that already works on a
+room applies to a passively recorded call.
+
+**Mix each party into a room automatically** — set `SIPREC_ROOM_MODE=per_session`
+and every session gets a room named `siprec-<legID>` with one participant per
+recorded party, each roled by identity. Then point the existing endpoints at it:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/siprec-$LEG_ID/stt -d '{"provider":"deepgram"}'
+```
+
+**Record one channel per party** with the ordinary recording endpoint — no new
+API. On a `siprec_in` leg, `/record` captures every stream separately and merges
+them into a single multi-channel WAV, one channel per recorded party:
+
+```bash
+curl -X POST   localhost:8080/v1/legs/$LEG_ID/record
+curl -X DELETE localhost:8080/v1/legs/$LEG_ID/record
+```
+
+`recording.finished` then carries `multi_channel_file` and a `channels` map
+**keyed by participant identity** — their AOR, display name or participant ID —
+rather than by leg ID as a room recording is:
+
+```json
+{
+  "type": "recording.finished",
+  "leg_id": "9f1c...",
+  "file": "/recordings/20260807_124420_multichannel_d4989c5a.wav",
+  "multi_channel_file": "/recordings/20260807_124420_multichannel_d4989c5a.wav",
+  "channels": {
+    "sip:alice@example.com": {"channel": 0, "start_ms": 0, "end_ms": 505},
+    "sip:bob@example.com":   {"channel": 1, "start_ms": 0, "end_ms": 505}
+  }
+}
+```
+
+Streams on one session can negotiate different codecs, so every capture is
+resampled to `DEFAULT_SAMPLE_RATE` before the merge — all channels share one
+rate. A party whose capture produced nothing is listed in `omitted_legs` rather
+than failing the merge. `/record/pause` and `/record/resume` apply to every
+channel at once, so they stay time-aligned. Set `SIPREC_AUTO_RECORD=true` to
+start this automatically when a session arrives.
+
+**Or place streams yourself** with `SIPREC_ROOM_MODE=none` (the default):
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/streams/0/room \
+  -d '{"room_id": "analysis", "role": "customer"}'
+curl -X POST localhost:8080/v1/legs/$LEG_ID/streams/1/room \
+  -d '{"room_id": "analysis", "role": "agent"}'
+```
+
+A leg never hears its own sibling streams, and every recording stream is
+receive-only, so the recorded parties cannot bleed into each other's mixes.
+
+### Events
+
+| Event | When |
+|---|---|
+| `siprec.session_started` | A recording session was accepted. Carries the participants and the stream→participant bindings — this is the event a controller listens for to decide what to do with the audio. |
+| `siprec.session_ended` | The recording session ended. |
+| `siprec.metadata_updated` | The metadata document was updated on a re-INVITE or UPDATE. Carries the joined/left participant IDs, added/removed stream IDs, and the refreshed stream bindings. |
+| `siprec.participant_joined` | A party joined the call being recorded, with the stream now carrying them. |
+| `siprec.participant_left` | A party left the call being recorded, with the stream that had carried them. |
+
+`leg.ringing`, `leg.connected` and `leg.disconnected` also fire, with
+`leg_type: "siprec_in"`.
+
+### Mid-session changes
+
+An SRC signals a party joining or leaving with a re-INVITE carrying an updated
+metadata document, usually `datamode=partial`.
+
+- **A party joins** — the re-offer adds an `m=audio` section and the metadata
+  names the participant and binds it to the new `a=label`. VoiceBlender
+  negotiates the section `recvonly`, binds it, publishes
+  `siprec.participant_joined`, and — under `SIPREC_ROOM_MODE=per_session` —
+  attaches the new stream to the session room with the participant's role.
+- **A party leaves** — the metadata closes the association with a
+  `disassociate-time`. The participant and the stream it was sending on are
+  dropped and `siprec.participant_left` fires. A re-offer that also disables the
+  section with port 0 tears the stream down and returns its RTP port.
+- **Metadata-only re-INVITE** — legal and common for a rename or a hold. There
+  is no SDP part; the update applies and the negotiated media is untouched.
+
+`datamode` semantics follow RFC 7865 §6.1: a `complete` document replaces the
+server's whole view, so anything absent from it is gone; a `partial` one is
+merged and **never** deletes on absence — removal is always signalled positively
+with a `disassociate-time`.
+
+### POST /v1/rooms/{id}/siprec — recording *client*
+
+The other direction: VoiceBlender as the **Session Recording Client**, forking a
+room it already hosts to an external recording server. Each participant's *own*
+audio goes on its own `sendonly m=audio` section — not the room mix — and the
+metadata names them.
+
+Requires `SIPREC_SRC_ENABLED=true`. Off by default: it lets an API caller stream
+a room's audio to an arbitrary SIP destination.
+
+```bash
+curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp",
+  "session_id": "conf-1-rec"
+}'
+```
+
+| Field | Meaning |
+|---|---|
+| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. |
+| `leg_ids` | Which participants to record. Omit to record everything in the room. |
+| `session_id` | Communication session ID in the metadata. Defaults to the room ID. |
+| `auth_username` / `auth_password` | Digest credentials, when the recording server challenges. |
+| `headers` | Extra SIP headers. `Require: siprec` is always sent. |
+| `app_id` | Tagged onto the resulting leg and its events. |
+
+Returns the resulting `siprec_out` leg. **Delete that leg to end the session** —
+`DELETE /v1/legs/{id}` sends the BYE and tears down the taps.
+
+#### Choosing what to record
+
+By default every participant of the room is forked. `leg_ids` narrows that, and
+addresses **streams as well as legs**:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp",
+  "leg_ids": ["leg-abc", "leg-def#1"]
+}'
+```
+
+`"leg-abc"` is that leg's own audio; `"leg-def#1"` is one of `leg-def`'s
+secondary streams, such as a translated feed.
+
+An entry is either a leg ID or `<legID>#<streamID>` — the same participant IDs
+the mixer and the routing matrix use. A secondary stream may belong to a leg that
+is not itself in the room, which is the point of a cross-room stream, and it is
+still addressable. An entry that names nothing in the room is a `404`.
+
+Selection is by identity, not by position: whatever order you list them in, the
+parties are assigned to m-lines in a stable sorted order, so the same selection
+always produces the same layout.
+
+#### A single call, without a room
+
+`POST /v1/legs/{id}/siprec` forks one call directly as a two-section session —
+what the far end says, and what this server sends them — with no room involved:
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp"
+}'
+```
+
+`leg_ids` is ignored here; the two sections are fixed. This path taps the leg
+directly rather than the mixer, using tap slots of its own, so an ordinary
+`/record` on the same leg keeps working alongside it. A leg that is itself a
+recording session cannot be forked onward.
+
+A participant's address of record in the metadata comes from the leg's
+`X-SIPREC-AOR` header when it has one, otherwise a synthetic
+`sip:<leg-id>@voiceblender.local`. Recording-session legs are never themselves
+recorded, so pointing two SRC sessions at one room does not nest.
+
+The VSI equivalent is `room_siprec_start`.
 
 ---
 
@@ -2972,7 +3661,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `playback.error` | Playback failed | `leg_id` or `room_id`, `playback_id`, `error` |
 | `tts.started` | TTS synthesis began playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id`, `reason`, `played_ms` |
-| `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error` |
+| `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error`, `category` |
 > **Note:** `playback.finished` and `tts.finished` carry `reason` and `played_ms` so you can tell whether a prompt was heard in full or was cut short, and by how much.
 >
 > `reason` is `completed` when the audio played through to its end, and `stopped` when it did **not** reach the end — **for any reason**. That includes an app-initiated stop, a barge-in, and a leg hanging up: all three cancel the same playback, and they cannot be told apart from `reason` alone. To distinguish a hangup from a deliberate stop, look for a co-emitted `leg.disconnected` event. Tone playback never ends on its own, so it always reports `stopped`.
@@ -3151,7 +3840,7 @@ All errors return:
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `RECORDING_DIR` | `/tmp/recordings` | Recording output directory |
-| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | _(none)_ | Global webhook URL. Events without a per-leg or per-room webhook are delivered here. |
 | `WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 signing secret for the global webhook. |
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
@@ -3166,6 +3855,10 @@ All errors return:
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio is stored on disk and persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files. |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
+
+Verbatim transcript text, DTMF digits and full event payloads appear only at
+`LOG_LEVEL=debug`. Debug output is therefore PII-bearing and should not be
+shipped to a general-purpose log sink.
 
 ---
 

@@ -77,7 +77,7 @@ func (t *AzureTranscriber) Start(ctx context.Context, reader io.Reader, apiKey s
 	t.log.Info("azure stt websocket connected")
 	defer conn.Close()
 
-	lw := &azLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
 	requestID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	// Send speech.config message.
@@ -89,13 +89,17 @@ func (t *AzureTranscriber) Start(ctx context.Context, reader io.Reader, apiKey s
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Either loop exiting cancels the other: a write that fails on its
+	// deadline must not leave Start waiting out the recv read timeout.
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.sendLoop(ctx, reader, lw, requestID)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.recvLoop(ctx, conn, lw, cb, opts.Partial)
 	}()
 
@@ -117,14 +121,14 @@ func (t *AzureTranscriber) Running() bool {
 	return t.running
 }
 
-func (t *AzureTranscriber) sendConfig(lw *azLockedWriter, requestID string) error {
+func (t *AzureTranscriber) sendConfig(lw *wsutilx.LockedWriter, requestID string) error {
 	configJSON := `{"context":{"system":{"version":"1.0.0"},"os":{"platform":"Go","name":"VoiceBlender"},"audio":{"source":{"connectivity":"Unknown","manufacturer":"Unknown","model":"Unknown","type":"Unknown"},"format":{"encoding":"pcm","sampleRate":16000,"bitsPerSample":16,"channels":1}}}}`
 
 	msg := buildAzureTextFrame("speech.config", requestID, "application/json", []byte(configJSON))
 	return lw.WriteText(msg)
 }
 
-func (t *AzureTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *azLockedWriter, requestID string) {
+func (t *AzureTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter, requestID string) {
 	buf := make([]byte, azFrameBytes)
 	var sendCount int
 	for {
@@ -175,7 +179,7 @@ type azSpeechPhrase struct {
 	DisplayText       string `json:"DisplayText"`
 }
 
-func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLockedWriter, cb TranscriptCallback, partial bool) {
+func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback, partial bool) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -215,7 +219,13 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			t.log.Info("azure stt recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				t.log.Debug("azure stt close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			t.log.Info("azure stt recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 		if hdr.OpCode != ws.OpText {
@@ -249,7 +259,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 				continue
 			}
 			if h.Text != "" {
-				t.log.Info("azure stt interim transcript", "text", h.Text)
+				t.log.Debug("azure stt interim transcript", "text", h.Text)
 				cb(h.Text, false)
 			}
 		case "speech.phrase":
@@ -259,7 +269,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *azLo
 				continue
 			}
 			if p.RecognitionStatus == "Success" && p.DisplayText != "" {
-				t.log.Info("azure stt final transcript", "text", p.DisplayText)
+				t.log.Debug("azure stt final transcript", "text", p.DisplayText)
 				cb(p.DisplayText, true)
 			}
 		default:
@@ -306,28 +316,4 @@ func buildAzureBinaryFrame(path, requestID, contentType string, payload []byte) 
 	copy(buf[2:], headerBytes)
 	copy(buf[2+len(headerBytes):], payload)
 	return buf
-}
-
-// azLockedWriter serializes all WebSocket frame writes to a net.Conn.
-type azLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *azLockedWriter) WriteBinary(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientBinary(lw.conn, data)
-}
-
-func (lw *azLockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *azLockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }

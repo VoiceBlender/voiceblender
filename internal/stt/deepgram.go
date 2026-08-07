@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -19,12 +20,20 @@ const (
 	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
+// dgFinalizeFrame flushes Deepgram's server-side buffer and emits a final
+// transcript while leaving the session open.
+var dgFinalizeFrame = []byte(`{"type":"Finalize"}`)
+
 // DeepgramTranscriber streams audio to Deepgram real-time STT over WebSocket.
 type DeepgramTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
 	log     *slog.Logger
+	// lw is the live socket writer, guarded by mu. Non-nil only between a
+	// successful dial and Start returning, so Finalize can reach a socket
+	// that otherwise lives entirely inside Start.
+	lw *wsutilx.LockedWriter
 }
 
 func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
@@ -74,18 +83,27 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 	t.log.Info("deepgram stt websocket connected")
 	defer conn.Close()
 
-	lw := &dgLockedWriter{conn: conn}
+	lw := wsutilx.NewLockedWriter(conn)
+	// Registered after `defer conn.Close()` so LIFO clears the field before
+	// the socket goes away; a Finalize that already copied the writer out can
+	// still race the close, which is why its write error is surfaced.
+	t.setWriter(lw)
+	defer t.clearWriter()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Either loop exiting cancels the other: a write that fails on its
+	// deadline must not leave Start waiting out the recv read timeout.
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.sendLoop(ctx, reader, lw)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		t.recvLoop(ctx, conn, lw, cb)
 	}()
 
@@ -107,7 +125,38 @@ func (t *DeepgramTranscriber) Running() bool {
 	return t.running
 }
 
-func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *dgLockedWriter) {
+func (t *DeepgramTranscriber) setWriter(lw *wsutilx.LockedWriter) {
+	t.mu.Lock()
+	t.lw = lw
+	t.mu.Unlock()
+}
+
+func (t *DeepgramTranscriber) clearWriter() {
+	t.mu.Lock()
+	t.lw = nil
+	t.mu.Unlock()
+}
+
+// Finalize asks Deepgram for a final transcript covering the audio buffered so
+// far and keeps the socket OPEN — unlike the CloseStream frame sendLoop writes
+// at teardown, which flushes AND ends the session. Fire-and-forget: the flushed
+// final arrives through the existing recvLoop callback, and a silent segment
+// yields no transcript at all because empty transcripts are dropped before the
+// callback.
+func (t *DeepgramTranscriber) Finalize(ctx context.Context) error {
+	t.mu.Lock()
+	lw := t.lw
+	t.mu.Unlock()
+	if lw == nil {
+		return errors.New("deepgram stt session not connected")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return lw.WriteText(dgFinalizeFrame)
+}
+
+func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, dgFrameBytes)
 	var sendCount int
 	for {
@@ -161,7 +210,7 @@ type dgResult struct {
 	SpeechFinal bool `json:"speech_final"`
 }
 
-func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *dgLockedWriter, cb TranscriptCallback) {
+func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -201,7 +250,13 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			t.log.Info("deepgram stt recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				t.log.Debug("deepgram stt close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			t.log.Info("deepgram stt recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 		if hdr.OpCode != ws.OpText {
@@ -241,35 +296,11 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *d
 		}
 
 		if result.IsFinal {
-			t.log.Info("deepgram stt final transcript", "text", text)
+			t.log.Debug("deepgram stt final transcript", "text", text)
 			cb(text, true)
 		} else {
-			t.log.Info("deepgram stt interim transcript", "text", text)
+			t.log.Debug("deepgram stt interim transcript", "text", text)
 			cb(text, false)
 		}
 	}
-}
-
-// dgLockedWriter serializes all WebSocket frame writes to a net.Conn.
-type dgLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *dgLockedWriter) WriteBinary(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientBinary(lw.conn, data)
-}
-
-func (lw *dgLockedWriter) WriteText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientText(lw.conn, data)
-}
-
-func (lw *dgLockedWriter) WriteControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteClientMessage(lw.conn, op, payload)
 }

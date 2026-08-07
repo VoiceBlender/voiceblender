@@ -2,16 +2,12 @@ package api
 
 import (
 	"io"
-	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/VoiceBlender/voiceblender/internal/wsmedia"
 	"github.com/go-chi/chi/v5"
-	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 	"github.com/google/uuid"
 )
 
@@ -19,27 +15,6 @@ const (
 	wsPingInterval = 30 * time.Second
 	wsPongTimeout  = 10 * time.Second
 )
-
-// wsLockedWriter serializes all WebSocket frame writes to a net.Conn (server
-// side). Kept here for the VSI commands path (internal/api/agent.go,
-// internal/api/ws_events.go), which still hand-rolls WS framing for
-// command/result messages. The room-WS handler itself uses wsmedia.Transport.
-type wsLockedWriter struct {
-	mu   sync.Mutex
-	conn net.Conn
-}
-
-func (lw *wsLockedWriter) writeText(data []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteServerText(lw.conn, data)
-}
-
-func (lw *wsLockedWriter) writeControl(op ws.OpCode, payload []byte) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return wsutil.WriteServerMessage(lw.conn, op, payload)
-}
 
 // wsRoom upgrades an HTTP request to a WebSocket and wires it as a raw
 // participant of the named room. The wire protocol is identical to the

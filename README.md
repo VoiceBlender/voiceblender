@@ -17,6 +17,8 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Multi-party rooms** -- mix N participants with mixed-minus-self audio at a configurable sample rate (8 kHz, 16 kHz, or 48 kHz per room; default 16 kHz)
 - **Room bridging** -- join two rooms' mixers (same sample rate) with live-configurable direction (bidirectional, one-way each way, or parked); echo-free via mixed-minus-self
 - **Audio routing matrix** -- per-room role-based routing for asymmetric audio (barge-in / whisper / supervisor monitor). Tag legs with a free-form `role` and declare a matrix of who-hears-whom by role. Applied atomically at leg-join time so a supervisor cannot momentarily bleed into the customer's audio. See [API.md](API.md#audio-routing-matrix).
+- **Multi-stream SIP calls** -- several `m=audio` sections in one dialog (RFC 3264), each with its own RTP port, direction, language and mixer room; built for live translation, where the original audio and a translated feed are mixed separately. Follows the SIPREC (RFC 7866) wire profile for interoperability. See [API.md](API.md#per-leg-audio-streams-multiple-maudio-lines).
+- **SIPREC session recording server (RFC 7865 / RFC 7866)** -- accept recording sessions forked from an SBC or PBX: multipart `SDP` + `rs-metadata` INVITEs are answered receive-only on every `m=audio` section, and each section is bound to the participant the metadata names. The received audio is an ordinary set of leg streams, so it can be recorded to file *and* attached to rooms for live STT/agents. Disabled by default; enable with `SIPREC_ENABLED=true` (needs `SIP_TCP_ENABLED=true`). VoiceBlender can also act as the **recording client**, forking a room's participants to an external recording server one stream each (`POST /v1/rooms/{id}/siprec`, `SIPREC_SRC_ENABLED=true`). See [API.md](API.md#siprec-session-recording).
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
@@ -70,12 +72,12 @@ All configuration is via environment variables:
 | `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
 | `SIP_TLS_KEY` | | Path to PEM-encoded TLS private key (e.g. `privkey.pem`). |
 | `SIP_DEBUG` | `false` | When `true`, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting. |
-| `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on **all** outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
+| `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on outbound SIP signalling (classic trunks and WhatsApp). Two exceptions apply to the From host only: a call matched to a registered SIP trunk uses that trunk's AOR realm, and a `from` given as a full SIP URI uses the host in that URI. Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `WEBRTC_EXTERNAL_IPS` | *(empty)* | Comma-separated public IPs advertised as host ICE candidates (pion `SetNAT1To1IPs`). Set this when VoiceBlender runs behind NAT/Docker and the gathered host interface IPs aren't routable from the remote peer — otherwise WebRTC peers behind firewalls won't be able to reach VB. Supports IPv4 and IPv6 literals. The literal value `auto` performs STUN-based public-IP discovery at startup against the first reachable `ICE_SERVERS` entry; discovery failure is non-fatal and logs a warning. |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |
-| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
 | `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
@@ -101,12 +103,14 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
+| `SIP_SDP_STRICT_MLINE_ANSWER` | `false` | Emit a port-0 placeholder for every offered `m=` section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP **single-stream** calls emit whenever a peer offers a section we don't handle, such as video. |
 | `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
 | `SIP_CODECS` | `PCMU,PCMA` | Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs **and** accepts on inbound INVITEs (a codec absent from this list cannot be negotiated in either direction). Recognized names (case-insensitive): `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB` (the bare token `AMR` also resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently; if the parsed list ends up empty the default is used. Example: `SIP_CODECS=opus,G722,PCMU,PCMA,AMR-WB,AMR-NB` enables every supported codec, ranked Opus-first. |
 | `SIP_REFER_AUTO_DIAL` | `false` | When `true`, the server accepts an incoming SIP REFER (202) and **dials the target itself**. When `false` (default), the REFER is parked and surfaced as `leg.transfer_requested` for the app to drive via the transfer commands (`accept`/`progress`/`complete`/`decline`); an undecided REFER auto-declines (603, **default-deny** — toll-fraud risk). Outbound transfers via the REST API are unaffected. |
 | `SIP_REFER_CONSULT_TIMEOUT_MS` | `2000` | How long an inbound REFER is parked awaiting an app accept/decline decision before it auto-declines with `603` (fail-closed). Only used when `SIP_REFER_AUTO_DIAL=false`. |
 | `SIP_AUTO_RINGING` | `false` | **Behavior change vs prior releases**: previously the server always sent `180 Ringing` after `100 Trying`. The new default sends only `100 Trying`; the API caller drives ringing explicitly via `POST /v1/legs/{id}/ring`, `/early-media`, or `/answer`. Set to `true` to restore the legacy auto-180 behavior. |
+| `SIP_TCP_ENABLED` | `false` | Listen for SIP over TCP on `SIP_PORT` alongside the UDP listener. Recommended with SIPREC: a recording session's INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 §18.1.1 allows over UDP. |
 | `SIP_USE_SOURCE_SOCKET` | `false` | When `true`, route SIP responses **and** in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's `Contact` URI / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in `Contact` from behind NAT, or Via sent-by hosts that don't resolve). Equivalent to sipgo's `DialogUA.RewriteContact` plus per-response `SetDestination(req.Source())`. |
 | `SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS` | `3600` | Expiry used when an inbound `REGISTER` carries no `Expires` value. |
 | `SIP_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the granted expiry. Requests above this value are honored at this maximum. |
@@ -126,6 +130,14 @@ All configuration is via environment variables:
 | `AMRNB_MODE` | `7` | AMR-NB (RFC 4867) encoder speech-mode **ceiling** `0..7`: `0`=4.75, `1`=5.15, `2`=5.90, `3`=6.70, `4`=7.40, `5`=7.95, `6`=10.2, `7`=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set`. Default `7` is the GSM-EFR-equivalent 12.2 kbit/s, the highest AMR-NB quality and the rate most enterprise PBXes and mobile networks default to. Out-of-range values clamp to `0..7`. |
 | `AMRNB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
 | `VSI_EVENT_BUFFER_SIZE` | `256` | Per-client buffer (in events) on the `/v1/vsi` WebSocket. When the client consumes events slower than they're produced, the buffer fills and new events are dropped (with a warn log on the leading edge of each drop burst and at every 10× threshold; the next delivered event also includes an `events_dropped` notification to the client). Clamped to `[16, 1_000_000]`. **Tuning:** larger values absorb longer back-pressure spikes at the cost of higher peak memory per client (roughly the average JSON event size × buffer size, e.g. ~1 KB × 256 ≈ 256 KB per connection at the default) and longer end-to-end latency for buffered events when the client recovers. Increase only if you observe drops on legitimate slow-consumer scenarios you can't fix at the client. |
+| `SIPREC_ENABLED` | `false` | Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call's media to VoiceBlender. When off, an INVITE carrying `Require: siprec` is rejected with `420 Bad Extension` and one that only hints at SIPREC with `488`. Requires `SIP_TCP_ENABLED=true`. |
+| `SIPREC_AUTO_ANSWER` | `true` | Answer an inbound recording session immediately instead of parking it until `POST /v1/legs/{id}/answer`. A session recording client does not wait for an application decision, so leaving this on is usually correct; turn it off to gate sessions from a controller. |
+| `SIPREC_MAX_STREAMS` | `8` | Maximum number of `m=audio` sections accepted on one recording session. A session offering more is rejected with `486`, bounding the RTP ports and goroutines a single peer can claim. |
+| `SIPREC_METADATA_MAX_BYTES` | `65536` | Maximum size of the `rs-metadata` XML document in a SIPREC INVITE. A larger document is rejected with `413` rather than parsed. |
+| `SIPREC_SRC_ENABLED` | `false` | Allow `POST /v1/rooms/{id}/siprec` to originate outbound recording sessions, forking a room's participants to an external session recording server. Off by default: it lets an API caller stream a room's audio to an arbitrary SIP destination. |
+| `SIPREC_AUTO_RECORD` | `false` | Start multi-channel recording automatically when a SIPREC session is accepted, one channel per recorded participant. When false, recording is driven through the usual `/v1/legs/{id}/record` endpoint. |
+| `SIPREC_ROOM_MODE` | `none` | Where a recording session's audio streams are mixed. `none` attaches nothing and leaves placement to the stream API; `per_session` creates a room named `siprec-<legID>` and attaches every stream, which is what makes live STT and agents apply to a recorded call; `fixed` attaches every session's streams into `SIPREC_ROOM_ID`. |
+| `SIPREC_ROOM_ID` | _(empty)_ | Room every recording session's streams join when `SIPREC_ROOM_MODE=fixed`. Ignored in the other modes. |
 | `MOQ_ENABLED` | `false` | Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at `CONNECT /v1/legs/moq` over WebTransport/HTTP/3. PoC quality: tracks IETF draft-11 via `mengelbart/moqtransport`, single MoQ session per leg, Opus framed one frame per MoQ Object (LOC-style). When enabled, both `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE` must be set. |
 | `MOQ_LISTEN_ADDR` | `:8443` | UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of `HTTP_ADDR` — TCP/`:8080` and UDP/`:8443` can run side-by-side. |
 | `MOQ_TLS_CERT_FILE` | _(none)_ | Path to the TLS certificate used by the HTTP/3 listener. Required when `MOQ_ENABLED=true`. |
@@ -138,6 +150,10 @@ All configuration is via environment variables:
 | `LIVEKIT_API_KEY` | _(none)_ | LiveKit API key used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. |
 | `LIVEKIT_API_SECRET` | _(none)_ | LiveKit API secret used to sign minted JWTs. Required only when `LIVEKIT_TOKEN_SIGNING_ENABLED=true`. Treat as a high-value secret; redact in logs. |
 | `LIVEKIT_DEFAULT_TOKEN_TTL` | `6h` | Default TTL applied to minted JWTs when the request omits `livekit.token_ttl`. Go duration string. LiveKit recommends ≤ 6 hours. |
+
+Verbatim transcript text, DTMF digits and full event payloads appear only at
+`LOG_LEVEL=debug`. Debug output is therefore PII-bearing and should not be
+shipped to a general-purpose log sink.
 
 ### S3 bucket preflight
 
@@ -219,6 +235,7 @@ DELETE /v1/legs/{id}/record        # Stop recording
 POST   /v1/legs/{id}/record/pause  # Pause recording (writes silence)
 POST   /v1/legs/{id}/record/resume # Resume recording
 POST   /v1/legs/{id}/stt           # Start speech-to-text
+POST   /v1/legs/{id}/stt/finalize  # Flush STT and emit a final transcript
 DELETE /v1/legs/{id}/stt           # Stop speech-to-text
 POST   /v1/legs/{id}/amd            # Start answering machine detection
 POST   /v1/legs/{id}/agent         # Attach AI agent
@@ -314,8 +331,32 @@ DELETE /v1/sip/trunks/{id}                 # Unregister + remove (202 Accepted, 
 Outbound calls placed with `POST /v1/legs` whose `from` matches a registered
 trunk's AOR (or AOR user-part) automatically attach the trunk's digest
 credentials and traverse the trunk's upstream proxy via a Route header.
+Such calls also send `From` and `P-Asserted-Identity` in the trunk's AOR realm
+rather than `SIP_DOMAIN`, so the call claims the identity the registrar
+actually authenticated. An AOR port, if configured, is not carried into the
+From — `sip:alice@pbx.example.com:5070` yields a From host of
+`pbx.example.com`.
+
+> **Changed outcome.** This can flip how an upstream responds to calls that
+> previously went out under `SIP_DOMAIN`. A registrar that accepted them
+> un-challenged may now challenge them — which resolves on its own for a
+> correctly provisioned trunk, since the digest credentials are already
+> attached, but surfaces as a `401`/`407` failure for one with stale
+> credentials. It can flip the other way too: a registrar that rejected an
+> unknown From domain may now accept the call. There is no toggle. The only
+> way to keep `SIP_DOMAIN` on the From is to use a `from` that matches no
+> trunk AOR and no trunk AOR user-part, which also drops the trunk's
+> credentials and Route.
+
 Inbound INVITEs arriving from a registered trunk's registrar are tagged with
 `trunk_id` on the `leg.ringing` event.
+
+A leg associated with a trunk — in either direction — transfers out over that
+same trunk. With `SIP_REFER_AUTO_DIAL=true`, an inbound REFER on such a leg
+originates the target under the trunk's AOR, with its credentials and Route
+attached, rather than under the transferor's caller ID (which would usually
+match no AOR and be rejected upstream). See
+[Receiving a transfer](API.md#receiving-a-transfer-inbound-refer).
 
 ## WhatsApp Business Calling
 
@@ -530,6 +571,29 @@ See [TESTING.md](TESTING.md) for details.
 | [cloud.google.com/go/texttospeech](https://cloud.google.com/go/docs/reference/cloud.google.com/go/texttospeech/latest) | Google Cloud TTS | |
 | [protobuf](https://github.com/protocolbuffers/protobuf-go) | Protocol Buffers | Pipecat agent |
 | [x/sync](https://pkg.go.dev/golang.org/x/sync) | Concurrency utilities | |
+
+## Contributing
+
+[CLAUDE.md](CLAUDE.md) is the canonical checklist for changes to this repository. Read it before opening a pull request.
+
+It is named for [Claude Code](https://claude.com/claude-code), which picks it up automatically — if you are working with Claude, no setup is needed. **Nothing in it is Claude-specific, though: the same rules apply to human contributors and to any other agentic coding tool** (Codex, Cursor, Copilot, Aider, and so on). If your tool expects a project instructions file under a different name, point it at `CLAUDE.md` rather than adding a second copy that will drift out of sync.
+
+In short, every change is expected to:
+
+- **Format** — run `gofmt` on all changed Go files.
+- **Regenerate specs** — run `make specs` when REST endpoints, request/response schemas, VSI commands, events, or config env vars change. `openapi.yaml` and `asyncapi.yaml` are generated; never hand-edit them.
+- **Update the docs it affects** — `API.md`, `README.md`, `TESTING.md`, and `voiceblender.env.example`.
+- **Ship tests** — unit tests for every new package or feature, plus integration tests in `tests/integration/`.
+- **Preserve the public API** — backwards compatibility is the default; break it only when there is no alternative.
+- **Keep comments minimal** — explain a non-obvious *why*, never restate what the code already says.
+
+CI enforces the first of these plus `go vet` and the unit tests, so run them locally before pushing:
+
+```bash
+gofmt -l .
+go vet ./...
+go test ./internal/... -count=1 -timeout=60s
+```
 
 ## AI-Assisted Development
 

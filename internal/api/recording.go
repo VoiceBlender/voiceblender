@@ -365,6 +365,18 @@ func recordingBasenameFromRequest(req RecordRequest) (string, error) {
 	return recording.SanitizeBasename(req.Filename)
 }
 
+// recordingStartAPIError maps recorder start failures to HTTP-facing apiErrors.
+func recordingStartAPIError(err error) error {
+	switch {
+	case errors.Is(err, recording.ErrInvalidRecordingFilename):
+		return newAPIError(http.StatusBadRequest, "%s", err.Error())
+	case errors.Is(err, recording.ErrRecordingFilenameExists):
+		return newAPIError(http.StatusConflict, "%s", err.Error())
+	default:
+		return newAPIError(http.StatusInternalServerError, "%s", err.Error())
+	}
+}
+
 func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordRequest) (*RecordingStartResult, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
@@ -379,10 +391,18 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
+	id := legID
+
+	// A recording session's audio is N receive-only streams belonging to N
+	// different people, so it is captured per participant and merged, rather
+	// than as one leg's in/out pair.
+	if l.Type().IsSIPREC() {
+		return s.startSIPRECLegRecording(l, backend)
+	}
+
 	rec := recording.NewRecorder(s.Log)
 	var fpath string
 	var recErr error
-	id := legID
 
 	if roomID := l.RoomID(); roomID != "" {
 		rm, rmOK := s.RoomMgr.Get(roomID)
@@ -398,7 +418,7 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		if recErr != nil {
 			mix.ClearParticipantTap(id)
 			mix.ClearParticipantOutTap(id)
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
@@ -416,7 +436,7 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		if recErr != nil {
 			sipLeg.ClearInTap()
 			sipLeg.ClearOutTap()
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{
@@ -431,7 +451,7 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		}
 		fpath, recErr = rec.StartAt(l.Context(), reader, s.Config.RecordingDir, uint32(l.SampleRate()), basename)
 		if recErr != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "%s", recErr.Error())
+			return nil, recordingStartAPIError(recErr)
 		}
 		legRecordState.Lock()
 		legRecordState.m[id] = &legRecordInfo{storage: backend}
@@ -468,6 +488,10 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 // REST endpoint and cleanupLeg (on disconnect). Returns the file path and
 // true if a recording was stopped.
 func (s *Server) stopLegRecording(legID string) (string, bool) {
+	if loc, ok := s.stopSIPRECLegRecording(legID); ok {
+		return loc, true
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	if ok {
@@ -584,6 +608,13 @@ func (s *Server) stopRecordLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doPauseRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
+	if status, ok := s.setSIPRECRecordingPaused(legID, true); ok {
+		if status == "paused" {
+			s.publishRecordingPaused(legID, true)
+		}
+		return &RecordingPauseResumeResult{Status: status}, nil
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	legRecorders.Unlock()
@@ -614,6 +645,13 @@ func (s *Server) pauseRecordLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doResumeRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
+	if status, ok := s.setSIPRECRecordingPaused(legID, false); ok {
+		if status == "resumed" {
+			s.publishRecordingPaused(legID, false)
+		}
+		return &RecordingPauseResumeResult{Status: status}, nil
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	legRecorders.Unlock()
@@ -668,7 +706,9 @@ func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req Recor
 	rec := recording.NewRecorder(s.Log)
 	fpath, err := rec.StartAt(parts[0].Context(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 	if err != nil {
-		return nil, newAPIError(http.StatusInternalServerError, "%s", err.Error())
+		rm.Mixer().SetTap(nil)
+		pw.Close()
+		return nil, recordingStartAPIError(err)
 	}
 
 	roomRecorders.Lock()

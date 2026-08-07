@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<recording>
+  <datamode>complete</datamode>
+  <participant participant_id="p1">
+    <nameID aor="sip:dave@example.com"/>
+  </participant>
+  <stream stream_id="s1">
+    <label>11</label>
+  </stream>
+  <participantstreamassoc participant_id="p1">
+    <send>s1</send>
+  </participantstreamassoc>
+</recording>

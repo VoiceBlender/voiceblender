@@ -134,6 +134,20 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "room_routing_update", Summary: "Update selected rows of a room's audio routing matrix", PayloadType: roomRoutingUpdatePayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{400, 404}},
 		{Name: "set_leg_role", Summary: "Change a leg's routing role (recomputes the room matrix if the leg is in a room)", PayloadType: setLegRolePayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 404}},
 
+		// ── Per-leg audio streams (multiple m=audio sections) ───────────
+		{Name: "leg_stream_list", Summary: "List a SIP leg's negotiated audio streams", PayloadType: idPayload{}, ResultType: []LegStreamView{}, ErrorCodes: []int{400, 404}},
+		{Name: "leg_stream_get", Summary: "Get one of a SIP leg's audio streams", PayloadType: legStreamPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404}},
+		{Name: "leg_stream_add", Summary: "Negotiate an additional m=audio section on a live dialog via re-INVITE", PayloadType: legStreamAddPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_stream_update", Summary: "Change one of a leg's audio streams' routing role in place", PayloadType: legStreamUpdatePayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404}},
+		{Name: "leg_stream_remove", Summary: "Disable one of a leg's audio streams with a port-0 re-INVITE", PayloadType: legStreamPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_stream_attach_room", Summary: "Mix one of a leg's audio streams into a room (may differ from the leg's own room)", PayloadType: legStreamRoomPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_stream_detach_room", Summary: "Remove one of a leg's audio streams from whichever room mixes it", PayloadType: legStreamPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404}},
+
+		// ── SIPREC recording sessions (RFC 7865 / RFC 7866) ─────────────
+		{Name: "leg_siprec_start", Summary: "Fork a single call to an external SIPREC recording server", PayloadType: roomSIPRECStartPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 403, 404, 409, 502}},
+		{Name: "room_siprec_start", Summary: "Fork a room's participants to an external SIPREC recording server", PayloadType: roomSIPRECStartPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 403, 404, 409, 502}},
+		{Name: "siprec_get", Summary: "Get an inbound SIPREC recording session's participants, streams and metadata", PayloadType: idPayload{}, ResultType: SIPRECSessionView{}, ErrorCodes: []int{400, 404}},
+
 		// ── Leg control ─────────────────────────────────────────────────
 		// New commands use resource-first naming (leg_*, room_*) by design.
 		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
@@ -165,6 +179,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "room_stt_start", Summary: "Start speech-to-text on every participant of a room (auto-extends to legs that join later)", PayloadType: sttStartPayload{}, ResultType: STTStartRoomResult{}, ErrorCodes: []int{400, 404, 409, 503}},
 		{Name: "leg_stt_stop", Summary: "Stop speech-to-text on a leg", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
 		{Name: "room_stt_stop", Summary: "Stop speech-to-text on a room", PayloadType: idPayload{}, ResultType: STTStopResult{}, ErrorCodes: []int{404}},
+		{Name: "leg_stt_finalize", Summary: "Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT", PayloadType: idPayload{}, ResultType: STTFinalizeResult{}, ErrorCodes: []int{404, 409, 501}},
 
 		// ── TTS ─────────────────────────────────────────────────────────
 		{Name: "leg_tts", Summary: "Synthesize speech and play it on a leg", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
@@ -237,6 +252,17 @@ func EventsMetadata() []EventMeta {
 		{events.LegHold, "Leg put on hold (local or remote)", reflect.TypeOf(events.LegHoldData{})},
 		{events.LegUnhold, "Leg taken off hold (local or remote)", reflect.TypeOf(events.LegUnholdData{})},
 		{events.LegCommandFailed, "An asynchronous leg command (202 Accepted) failed during execution", reflect.TypeOf(events.LegCommandFailedData{})},
+		{events.LegStreamAdded, "An additional m=audio stream was negotiated on a live dialog", reflect.TypeOf(events.LegStreamData{})},
+		{events.LegStreamRemoved, "An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone", reflect.TypeOf(events.LegStreamData{})},
+		{events.LegStreamRejected, "The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected", reflect.TypeOf(events.LegStreamData{})},
+		{events.LegStreamFailed, "An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams", reflect.TypeOf(events.LegStreamData{})},
+		{events.LegStreamRoomChanged, "An audio stream was attached to or detached from a room (an empty room_id means detached)", reflect.TypeOf(events.LegStreamData{})},
+		{events.LegStreamRoleChanged, "An audio stream's routing role changed; the room's allow-sets were recomputed atomically", reflect.TypeOf(events.LegStreamData{})},
+		{events.SIPRECSessionStarted, "An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings", reflect.TypeOf(events.SIPRECSessionStartedData{})},
+		{events.SIPRECSessionEnded, "A SIPREC recording session ended", reflect.TypeOf(events.SIPRECSessionEndedData{})},
+		{events.SIPRECMetadataUpdated, "A SIPREC recording session's metadata document was updated on a re-INVITE", reflect.TypeOf(events.SIPRECMetadataUpdatedData{})},
+		{events.SIPRECParticipantJoined, "A party joined the call being recorded by a SIPREC session", reflect.TypeOf(events.SIPRECParticipantJoinedData{})},
+		{events.SIPRECParticipantLeft, "A party left the call being recorded by a SIPREC session", reflect.TypeOf(events.SIPRECParticipantLeftData{})},
 		{events.DTMFReceived, "DTMF digit received", reflect.TypeOf(events.DTMFReceivedData{})},
 		{events.RTTReceived, "Real-Time Text (T.140 / RFC 4103) chunk received from the remote", reflect.TypeOf(events.RTTReceivedData{})},
 		{events.SpeakingStarted, "Participant started speaking", reflect.TypeOf(events.SpeakingData{})},

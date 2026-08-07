@@ -429,8 +429,18 @@ func TestTrunk_SIPRegister_Unregister(t *testing.T) {
 	}
 }
 
-func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
-	inst := newTestInstance(t, "trunk-out")
+// originateOverRegisteredTrunk brings up a sip_register trunk with AOR
+// sip:alice@vb.test, originates one outbound leg with the given `from`, and
+// returns the INVITE the fake registrar received.
+//
+// The AOR host "vb.test" is deliberately not the engine's public host: the
+// harness builds its engine from a literal EngineConfig with BindIP
+// "127.0.0.1" and no PublicHost (call_test.go), so publicHost resolves to
+// "127.0.0.1". Any assertion below that finds "vb.test" therefore proves the
+// host came from the trunk and not from the engine.
+func originateOverRegisteredTrunk(t *testing.T, name, from string) *sip.Request {
+	t.Helper()
+	inst := newTestInstance(t, name)
 	reg := newRawSIPRegistrar(t, rawRegistrarOpts{grantExpires: 600})
 
 	createResp, body := createTrunkRequest(t, inst.baseURL(), map[string]interface{}{
@@ -450,12 +460,12 @@ func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
 	id, _ := created["id"].(string)
 	waitForTrunkStatus(t, inst.baseURL(), id, "active", 3*time.Second)
 
-	// Originate a leg with from=alice@vb.test — should auto-attach
-	// the trunk's auth and Route header.
+	// Originating with a `from` that matches the trunk should auto-attach the
+	// trunk's auth, Route header, and From identity.
 	createLegResp := httpPost(t, inst.baseURL()+"/v1/legs", map[string]interface{}{
 		"type":   "sip",
 		"to":     fmt.Sprintf("sip:bob@127.0.0.1:%d", reg.port),
-		"from":   "alice",
+		"from":   from,
 		"codecs": []string{"PCMU"},
 	})
 	if createLegResp.StatusCode != http.StatusCreated && createLegResp.StatusCode != http.StatusAccepted {
@@ -464,8 +474,7 @@ func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
 	createLegResp.Body.Close()
 
 	// The fake registrar should receive the INVITE; it returns 503 to keep
-	// the test quick, but we just need to verify the request hit and carried
-	// the Route header.
+	// the test quick, but we just need the request itself.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		reg.mu.Lock()
@@ -481,10 +490,69 @@ func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
 	if len(reg.receivedInvites) == 0 {
 		t.Fatal("fake registrar did not receive INVITE — trunk wiring not applied")
 	}
-	inv := reg.receivedInvites[0]
+	return reg.receivedInvites[0]
+}
+
+// assertInviteFromIdentity checks the From and P-Asserted-Identity of a
+// received INVITE. From() returns nil when the header failed to parse — which
+// is exactly what a malformed two-'@' From produces — so guard before
+// dereferencing to get a diagnosable failure instead of a panic.
+func assertInviteFromIdentity(t *testing.T, inv *sip.Request, wantUser, wantHost string) {
+	t.Helper()
+	f := inv.From()
+	if f == nil {
+		t.Fatalf("INVITE has no parseable From header; raw request:\n%s", inv.String())
+	}
+	if f.Address.User != wantUser {
+		t.Errorf("From user = %q, want %q", f.Address.User, wantUser)
+	}
+	if f.Address.Host != wantHost {
+		t.Errorf("From host = %q, want %q", f.Address.Host, wantHost)
+	}
+	pai := inv.GetHeader("P-Asserted-Identity")
+	if pai == nil {
+		t.Fatal("INVITE missing P-Asserted-Identity")
+	}
+	want := "sip:" + wantUser + "@" + wantHost
+	if pai.Value() != want {
+		t.Errorf("P-Asserted-Identity = %q, want %q", pai.Value(), want)
+	}
+}
+
+func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
+	inv := originateOverRegisteredTrunk(t, "trunk-out", "alice")
 	if route := inv.GetHeader("Route"); route == nil {
 		t.Error("INVITE missing Route header (trunk routing not wired)")
 	}
+	// A bare `from` carries no host, so the trunk's AOR realm supplies one.
+	assertInviteFromIdentity(t, inv, "alice", "vb.test")
+}
+
+// TestTrunk_SIPRegister_OutboundCallFromFullURI covers `from` given as a full
+// SIP URI. Before the identity split, the whole URI landed in the user part and
+// the peer received From: <sip:sip:alice@vb.test@vb.test> — two '@' and an
+// embedded scheme.
+func TestTrunk_SIPRegister_OutboundCallFromFullURI(t *testing.T) {
+	inv := originateOverRegisteredTrunk(t, "trunk-out-uri", "sip:alice@vb.test")
+	if route := inv.GetHeader("Route"); route == nil {
+		t.Error("INVITE missing Route header (full-URI `from` broke trunk matching)")
+	}
+	assertInviteFromIdentity(t, inv, "alice", "vb.test")
+}
+
+// TestTrunk_SIPRegister_OutboundCallFromHostNormalized pins that the caller's
+// spelling of the host does not reach the wire: trunk matching canonicalizes
+// the AOR and the identity split lowercases the host, so the same identity in
+// any case produces one From.
+//
+// The user-part is checked unchanged in the same assertion — SIP user-parts are
+// case-sensitive and must survive verbatim.
+func TestTrunk_SIPRegister_OutboundCallFromHostNormalized(t *testing.T) {
+	inv := originateOverRegisteredTrunk(t, "trunk-out-case", "sip:alice@VB.TEST")
+	if route := inv.GetHeader("Route"); route == nil {
+		t.Error("INVITE missing Route header (case-differing host broke trunk matching)")
+	}
+	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
 func TestTrunk_SIPRegister_RefreshFailedEmitsExpired(t *testing.T) {

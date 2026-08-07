@@ -132,6 +132,13 @@ func (m *Manager) tearDownPanickedParticipant(roomID string, p *mixer.Participan
 		m.tearDownPanickedBridge(roomID, bridgeID, loop)
 		return
 	}
+	// Must precede the leg lookup: a stream's participant ID is not a leg ID,
+	// so it would otherwise fall through to the "nobody owns it" warning and
+	// leak the participant.
+	if legID, streamID, ok := SplitStreamParticipantID(participantID); ok {
+		m.tearDownPanickedLegStream(roomID, legID, streamID, p, loop)
+		return
+	}
 	if l, ok := m.legMgr.Get(participantID); ok {
 		m.tearDownPanickedLeg(roomID, l, p, loop)
 		return
@@ -145,6 +152,46 @@ func (m *Manager) tearDownPanickedParticipant(roomID string, p *mixer.Participan
 		"participant_id", participantID,
 		"loop", loop,
 	)
+}
+
+// tearDownPanickedLegStream detaches one of a leg's secondary audio streams
+// whose mixer IO loop panicked. Unlike the primary stream, a secondary one is
+// not load-bearing for the call: the leg stays up and keeps talking on its
+// remaining streams.
+//
+// Election is on the participant instance, for the same reason as
+// tearDownPanickedLeg: this runs asynchronously, so the stream may already have
+// been replaced by a fresh participant.
+func (m *Manager) tearDownPanickedLegStream(roomID, legID, streamID string, p *mixer.Participant, loop string) {
+	r, ok := m.Get(roomID)
+	if !ok {
+		m.log.Debug("room of panicked leg stream already deleted",
+			"room_id", roomID, "leg_id", legID, "stream_id", streamID)
+		return
+	}
+	if !r.RemoveStreamIfParticipant(p.ID, p) {
+		m.log.Debug("panicked leg stream already replaced or detached",
+			"room_id", roomID, "leg_id", legID, "stream_id", streamID, "loop", loop)
+		return
+	}
+
+	m.log.Warn("detaching leg stream after mixer IO panic; call continues",
+		"room_id", roomID,
+		"leg_id", legID,
+		"stream_id", streamID,
+		"loop", loop,
+	)
+
+	appID := ""
+	if l, ok := m.legMgr.Get(legID); ok {
+		appID = l.AppID()
+	}
+	m.bus.Publish(events.LegStreamFailed, &events.LegStreamData{
+		LegScope: events.LegScope{LegID: legID, AppID: appID},
+		StreamID: streamID,
+		RoomID:   roomID,
+		Reason:   "mixer_panic",
+	})
 }
 
 // tearDownPanickedLeg removes a leg whose mixer IO loop panicked and hangs it
@@ -415,6 +462,53 @@ func (m *Manager) SetLegRole(legID, role string) error {
 		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
 		Matrix:    r.RoutingMatrix(),
 		Reason:    "leg_role_changed",
+	})
+	return nil
+}
+
+// SetLegStreamRole updates the routing role of one of a leg's secondary audio
+// streams. When the stream is mixed into a room the room's matrix-derived
+// allow-sets are recomputed atomically, so the next mix tick reflects it.
+//
+// Mirrors SetLegRole: a stream not currently in a room still records the role,
+// which then applies wherever it is next attached.
+func (m *Manager) SetLegStreamRole(legID, streamID, role string) error {
+	l, ok := m.legMgr.Get(legID)
+	if !ok {
+		return fmt.Errorf("leg %s not found", legID)
+	}
+	sl, ok := l.(StreamedLeg)
+	if !ok {
+		return fmt.Errorf("leg %s does not carry multiple audio streams", legID)
+	}
+	if _, ok := sl.StreamMedia(streamID); !ok {
+		return fmt.Errorf("stream %s not found on leg %s", streamID, legID)
+	}
+
+	roomID := sl.StreamRooms()[streamID]
+	if roomID == "" {
+		sl.SetStreamRole(streamID, role)
+		return nil
+	}
+	r, ok := m.Get(roomID)
+	if !ok {
+		sl.SetStreamRole(streamID, role)
+		return nil
+	}
+	if !r.SetLegStreamRole(StreamParticipantID(legID, streamID), role) {
+		return fmt.Errorf("stream %s not found in room %s", streamID, roomID)
+	}
+
+	m.bus.Publish(events.LegStreamRoleChanged, &events.LegStreamData{
+		LegScope: events.LegScope{LegID: legID, AppID: l.AppID()},
+		StreamID: streamID,
+		RoomID:   roomID,
+		Role:     role,
+	})
+	m.bus.Publish(events.RoomRoutingChanged, &events.RoomRoutingChangedData{
+		RoomScope: events.RoomScope{RoomID: roomID, AppID: r.AppID},
+		Matrix:    r.RoutingMatrix(),
+		Reason:    "leg_stream_role_changed",
 	})
 	return nil
 }

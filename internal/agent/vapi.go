@@ -109,16 +109,22 @@ func (v *VAPISession) Start(ctx context.Context, reader io.Reader, writer io.Wri
 	v.log.Info("vapi websocket connected")
 	defer conn.Close()
 
+	lw := wsutilx.NewLockedWriter(conn)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Either loop exiting cancels the other: a write that fails on its
+	// deadline must not leave Start waiting out the recv read timeout.
 	go func() {
 		defer wg.Done()
-		v.sendLoop(ctx, reader, conn)
+		defer cancel()
+		v.sendLoop(ctx, reader, lw)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		v.recvLoop(ctx, conn, writer, cb)
 	}()
 
@@ -254,7 +260,7 @@ func (v *VAPISession) createCall(ctx context.Context, apiKey string, opts Option
 	return &callResp, nil
 }
 
-func (v *VAPISession) sendLoop(ctx context.Context, reader io.Reader, conn net.Conn) {
+func (v *VAPISession) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {
 	buf := make([]byte, frameBytes)
 	var sendCount int
 	for {
@@ -279,7 +285,7 @@ func (v *VAPISession) sendLoop(ctx context.Context, reader io.Reader, conn net.C
 		}
 
 		// VAPI expects raw PCM as binary WebSocket frames.
-		if err := wsutil.WriteClientBinary(conn, buf[:n]); err != nil {
+		if err := lw.WriteBinary(buf[:n]); err != nil {
 			v.log.Debug("vapi send error", "error", err, "sent_frames", sendCount)
 			return
 		}
@@ -338,7 +344,13 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 		}
 
 		if hdr.OpCode == ws.OpClose {
-			v.log.Info("vapi recv close frame")
+			payload, perr := io.ReadAll(rd)
+			if perr != nil {
+				v.log.Debug("vapi close payload read error", "error", perr)
+				return
+			}
+			code, reason := ws.ParseCloseFrameData(payload)
+			v.log.Info("vapi recv close frame", "code", int(code), "reason", reason)
 			return
 		}
 
@@ -371,12 +383,12 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 				if err := json.Unmarshal(raw, &msg); err == nil && msg.Transcript != "" {
 					switch msg.Role {
 					case "user":
-						v.log.Info("vapi user transcript", "text", msg.Transcript)
+						v.log.Debug("vapi user transcript", "text", msg.Transcript)
 						if cb.OnUserTranscript != nil {
 							cb.OnUserTranscript(msg.Transcript)
 						}
 					case "assistant":
-						v.log.Info("vapi agent response", "text", msg.Transcript)
+						v.log.Debug("vapi agent response", "text", msg.Transcript)
 						if cb.OnAgentResponse != nil {
 							cb.OnAgentResponse(msg.Transcript)
 						}

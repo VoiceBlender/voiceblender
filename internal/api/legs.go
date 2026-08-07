@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/emiago/sipgo"
@@ -151,7 +153,7 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
@@ -170,6 +172,17 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 			}
 			preferred = c
 		}
+		if len(streams) > 0 {
+			for i, st := range streams {
+				if st.RoomID == "" {
+					continue
+				}
+				if _, ok := s.RoomMgr.Get(st.RoomID); !ok {
+					return newAPIError(http.StatusNotFound, "streams[%d]: room %q not found", i, st.RoomID)
+				}
+			}
+			s.setStreamRoomsOverride(id, streams)
+		}
 		if speechDetection != nil {
 			s.setSpeechOverride(id, speechDetection)
 		}
@@ -178,6 +191,9 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string)
 	case *leg.WhatsAppLeg:
 		if codecName != "" {
 			return newAPIError(http.StatusBadRequest, "codec selection is not supported for WhatsApp legs")
+		}
+		if len(streams) > 0 {
+			return newAPIError(http.StatusBadRequest, "multiple audio streams are not supported for WhatsApp legs")
 		}
 		if err := tl.RequestAnswer(); err != nil {
 			return newAPIError(http.StatusConflict, "%s", err.Error())
@@ -269,7 +285,7 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -549,46 +565,53 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // HandleReInvite processes a remote re-INVITE by finding the matching SIPLeg
 // via Call-ID and delegating to its hold/unhold handler. Returns the SDP
 // answer to include in the 200 OK response.
-func (s *Server) HandleReInvite(callID string, direction string) []byte {
-	for _, l := range s.LegMgr.List() {
-		sl, ok := l.(*leg.SIPLeg)
-		if !ok {
-			continue
-		}
-		if sl.CallID() == callID {
-			sdp := sl.ReInviteAnswerSDP(direction)
-			sl.HandleRemoteHold(direction)
-			// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
-			sl.ResetSessionTimer()
-			return sdp
-		}
+//
+// A SIPREC re-INVITE may also carry an updated recording metadata document,
+// with or without SDP. The SDP is applied first so any newly negotiated stream
+// exists and carries its a=label before the metadata is joined to it.
+func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte {
+	sl := s.LegMgr.FindSIPByCallID(callID)
+	if sl == nil {
+		s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
+		return nil
 	}
-	s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
-	return nil
+
+	// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
+	sl.ResetSessionTimer()
+
+	var answer []byte
+	if offer, ok := body.SDP(); ok {
+		direction := ""
+		answer, direction = sl.ApplyRemoteOffer(offer)
+		sl.HandleRemoteHold(direction)
+	}
+	s.applySIPRECMetadata(sl, body)
+	return answer
 }
 
 // HandleUpdate processes a remote in-dialog UPDATE (RFC 3311). For session-
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, direction string, hasSDP bool) []byte {
-	for _, l := range s.LegMgr.List() {
-		sl, ok := l.(*leg.SIPLeg)
-		if !ok {
-			continue
-		}
-		if sl.CallID() == callID {
-			sl.ResetSessionTimer()
-			if hasSDP {
-				sdp := sl.ReInviteAnswerSDP(direction)
-				sl.HandleRemoteHold(direction)
-				return sdp
-			}
-			return nil
+func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) []byte {
+	sl := s.LegMgr.FindSIPByCallID(callID)
+	if sl == nil {
+		s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
+		return nil
+	}
+
+	sl.ResetSessionTimer()
+
+	var answer []byte
+	if hasSDP {
+		if offer, ok := body.SDP(); ok {
+			direction := ""
+			answer, direction = sl.ApplyRemoteOffer(offer)
+			sl.HandleRemoteHold(direction)
 		}
 	}
-	s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
-	return nil
+	s.applySIPRECMetadata(sl, body)
+	return answer
 }
 
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
@@ -610,6 +633,11 @@ func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 // mixer stops pushing frames before Hangup closes the socket.
 // Caller MUST publish LegDisconnected before any webhook is cleared.
 func (s *Server) cleanupLeg(l leg.Leg) {
+	// Secondary streams may be mixed into rooms other than the leg's own, so
+	// they have to be detached explicitly — removing the leg from its room only
+	// reaches the streams parked there.
+	s.detachLegStreams(l)
+
 	if roomID := l.RoomID(); roomID != "" {
 		// A failed removal is logged and swallowed: the rest of the teardown
 		// still has to run, so this never returns an error to abort on.
@@ -628,7 +656,83 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.stopSpeakingDetector(l.ID())
 	s.cleanupLegAgent(l.ID())
 	s.stopLegRecording(l.ID())
+	s.cleanupSIPRECSession(l)
+	s.cleanupSIPRECSRC(l)
 	s.LegMgr.Remove(l.ID())
+}
+
+// applyLegWebhook routes this leg's events to the per-leg webhook named by the
+// INVITE's X-Webhook-URL header, falling back to the configured default.
+func (s *Server) applyLegWebhook(l leg.Leg, call *sipmod.InboundCall) {
+	webhookURL := ""
+	if h := call.Request.GetHeader("X-Webhook-URL"); h != nil {
+		webhookURL = h.Value()
+	}
+	if webhookURL == "" {
+		webhookURL = s.Config.WebhookURL
+	}
+	webhookSecret := ""
+	if h := call.Request.GetHeader("X-Webhook-Secret"); h != nil {
+		webhookSecret = h.Value()
+	}
+	if webhookSecret == "" {
+		webhookSecret = s.Config.WebhookSecret
+	}
+	if webhookURL != "" {
+		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
+	}
+}
+
+// detachLegStreams removes every secondary audio stream of l from whichever
+// room it was attached to.
+func (s *Server) detachLegStreams(l leg.Leg) {
+	sl, ok := l.(*leg.SIPLeg)
+	if !ok {
+		return
+	}
+	for streamID, roomID := range sl.StreamRooms() {
+		rm, ok := s.RoomMgr.Get(roomID)
+		if !ok {
+			continue
+		}
+		rm.RemoveLegStream(room.StreamParticipantID(l.ID(), streamID))
+	}
+}
+
+// watchLegDialogEnd blocks until a connected leg ends, then tears it down and
+// publishes leg.disconnected — unless it was already torn down locally. It
+// returns when the dialog ends (the remote BYE), when maxDuration elapses
+// (skipped when <= 0), or when the leg's own context is cancelled.
+//
+// The leg context is in the select because a local teardown — an API hangup, a
+// room delete, an RTP timeout — hangs the leg up and cancels its context, but
+// our BYE to a vanished peer may never get the 200 that ends the sipgo dialog,
+// so waiting on the dialog alone would block for the process lifetime. Every
+// path that cancels a leg's context sets StateHungUp first, so the state guard
+// below can only suppress the disconnect that teardown already published; it
+// never publishes a spurious one.
+func (s *Server) watchLegDialogEnd(l leg.Leg, dialogCtx context.Context, maxDuration time.Duration) {
+	// A nil channel blocks forever, which is what "no cap" means here.
+	var maxC <-chan time.Time
+	if maxDuration > 0 {
+		maxTimer := time.NewTimer(maxDuration)
+		defer maxTimer.Stop()
+		maxC = maxTimer.C
+	}
+
+	reason := "remote_bye"
+	select {
+	case <-dialogCtx.Done():
+	case <-l.Context().Done():
+	case <-maxC:
+		reason = "max_duration"
+		s.Log.Info("max duration reached", "leg_id", l.ID(), "max_duration", maxDuration)
+	}
+
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, reason)
+	}
 }
 
 // rejectionMapping maps a user-supplied disconnect reason to a SIP final
@@ -760,6 +864,84 @@ func (s *Server) createSIPOutboundLeg(w http.ResponseWriter, r *http.Request, re
 	writeJSON(w, http.StatusCreated, view)
 }
 
+// splitFromIdentity splits a POST /v1/legs `from` value into the user and host
+// parts of the outbound From URI.
+//
+// A full SIP URI ("sip:alice@pbx.example.com") yields both parts. Anything else
+// ("alice", "+15551234567", "tel:+15551234567") yields the raw value as the
+// user with an empty host, leaving the host to the matched trunk's AOR realm or
+// the engine's public host.
+//
+// The accept condition matches the full-URI branch of the trunk lookup below,
+// so the two can never disagree about what counts as a full URI. The lookup's
+// user-only fallback deliberately does NOT reuse the split user: a `from` that
+// names a host matching no trunk AOR is a caller asking for a different
+// identity, and must not silently borrow a trunk's credentials on a user-part
+// collision.
+//
+// Port and URI params are discarded on purpose: a From URI should carry
+// neither. The host is lowercased to match CanonicalizeAOR, so the wire form
+// does not vary with the caller's spelling.
+func splitFromIdentity(from string) (user, host string) {
+	if from == "" {
+		return "", ""
+	}
+	u := sip.Uri{}
+	if err := sip.ParseUri(from, &u); err == nil && u.User != "" && u.Host != "" {
+		return u.User, strings.ToLower(u.Host)
+	}
+	return from, ""
+}
+
+// applyFromIdentity resolves a caller-supplied `from` into opts.FromUser /
+// opts.FromHost and, when it matches a registered outbound trunk's AOR (either
+// as a full URI or just a user-part), auto-attaches that trunk's digest
+// credentials, routes the INVITE through its upstream proxy, and places the
+// From / P-Asserted-Identity in its AOR realm. Credentials already on opts
+// (caller-supplied auth) win.
+//
+// Returns the matched trunk ID, or "" when nothing matched.
+//
+// Shared by POST /v1/legs and the REFER originate path so a transferred call
+// claims the same identity — and reaches the same upstream — as one the app
+// dialled itself.
+func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) string {
+	opts.FromUser, opts.FromHost = splitFromIdentity(from)
+	if from == "" {
+		return ""
+	}
+
+	var matchedTrunk sipmod.Trunk
+	// Full-URI match first.
+	fromURI := sip.Uri{}
+	if err := sip.ParseUri(from, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
+		matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
+	}
+	// User-only fallback (POST /v1/legs with `from: "alice"`).
+	if matchedTrunk == nil {
+		matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(from)
+	}
+	if matchedTrunk == nil || matchedTrunk.Type() != sipmod.TrunkTypeSIPRegister {
+		return ""
+	}
+	reg, ok := matchedTrunk.(*sipmod.OutboundRegistration)
+	if !ok {
+		return ""
+	}
+
+	if opts.AuthUsername == "" && opts.AuthPassword == "" {
+		opts.AuthUsername, opts.AuthPassword = reg.Credentials()
+	}
+	regURI := reg.RegistrarURI()
+	opts.RouteURI = &regURI
+	// The registrar authenticated us under the AOR realm; claim that identity
+	// on the wire unless the caller named a host explicitly.
+	if opts.FromHost == "" {
+		opts.FromHost = reg.FromHost()
+	}
+	return reg.ID()
+}
+
 // doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
 // outbound SIP originate and kicks off the async INVITE, returning the leg view.
 // Shared by the REST handler and the VSI create_leg dispatch.
@@ -771,6 +953,23 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	recipient := sip.Uri{}
 	if err := sip.ParseUri(target, &recipient); err != nil {
 		return LegView{}, newAPIError(http.StatusBadRequest, "invalid SIP URI: %v", err)
+	}
+
+	// Reject a malformed multi-stream offer up front: letting it through would
+	// surface as a failed INVITE, which reads like a network problem.
+	if len(req.Streams) > 0 {
+		for i, st := range req.Streams {
+			switch st.Direction {
+			case "", sipmod.DirSendRecv, sipmod.DirSendOnly, sipmod.DirRecvOnly, sipmod.DirInactive:
+			default:
+				return LegView{}, newAPIError(http.StatusBadRequest, "streams[%d]: invalid direction %q", i, st.Direction)
+			}
+			if st.RoomID != "" {
+				if _, ok := s.RoomMgr.Get(st.RoomID); !ok {
+					return LegView{}, newAPIError(http.StatusNotFound, "streams[%d]: room %q not found", i, st.RoomID)
+				}
+			}
+		}
 	}
 
 	// Parse codec overrides from request.
@@ -837,7 +1036,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	}
 
 	// Build invite options.
-	inviteOpts := sipmod.InviteOptions{Codecs: codecs, FromUser: req.From}
+	inviteOpts := sipmod.InviteOptions{Codecs: codecs}
 	if req.Auth != nil {
 		inviteOpts.AuthUsername = req.Auth.Username
 		inviteOpts.AuthPassword = req.Auth.Password
@@ -845,34 +1044,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	if req.RTT {
 		inviteOpts.RTTEnabled = true
 	}
-
-	// Implicit trunk match: if `from` matches a registered outbound trunk's
-	// AOR (either as a full URI or just a user-part), auto-attach digest
-	// credentials and route the INVITE through the trunk's upstream proxy.
-	// Caller-supplied auth wins.
-	var trunkIDForLeg string
-	var matchedTrunk sipmod.Trunk
-	if req.From != "" {
-		// Full-URI match first.
-		fromURI := sip.Uri{}
-		if err := sip.ParseUri(req.From, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
-			matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
-		}
-		// User-only fallback (POST /v1/legs with `from: "alice"`).
-		if matchedTrunk == nil {
-			matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(req.From)
-		}
-	}
-	if matchedTrunk != nil && matchedTrunk.Type() == sipmod.TrunkTypeSIPRegister {
-		if reg, ok := matchedTrunk.(*sipmod.OutboundRegistration); ok {
-			trunkIDForLeg = reg.ID()
-			if inviteOpts.AuthUsername == "" && inviteOpts.AuthPassword == "" {
-				inviteOpts.AuthUsername, inviteOpts.AuthPassword = reg.Credentials()
-			}
-			regURI := reg.RegistrarURI()
-			inviteOpts.RouteURI = &regURI
-		}
-	}
+	trunkIDForLeg := s.applyFromIdentity(req.From, &inviteOpts)
+	l.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
+	l.SetTrunkID(trunkIDForLeg)
 
 	// AOR auto-resolve: if the recipient URI matches a known registration,
 	// route the INVITE to the bound socket(s) instead of letting sipgo
@@ -905,6 +1079,20 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		// greeting and would cause false "human" classifications. AMD
 		// starts only after the call is answered (200 OK).
 		addToRoom()
+	}
+	if len(req.Streams) > 0 {
+		// The engine's first entry is the call's primary audio; the request
+		// lists only the extras, so prepend an unadorned primary section.
+		inviteOpts.Streams = make([]sipmod.OfferStream, 0, len(req.Streams)+1)
+		inviteOpts.Streams = append(inviteOpts.Streams, sipmod.OfferStream{})
+		for _, st := range req.Streams {
+			inviteOpts.Streams = append(inviteOpts.Streams, sipmod.OfferStream{
+				Direction: st.Direction,
+				Lang:      st.Lang,
+				Content:   st.Content,
+				Label:     st.Label,
+			})
+		}
 	}
 	if req.Privacy != "" {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Privacy", req.Privacy))
@@ -971,31 +1159,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
 		startAMD()
 		addToRoom()
+		s.attachOfferedStreamRooms(l, req.Streams)
 
 		// Monitor for remote hangup or max duration.
-		if req.MaxDuration > 0 {
-			maxTimer := time.NewTimer(time.Duration(req.MaxDuration) * time.Second)
-			defer maxTimer.Stop()
-			select {
-			case <-call.Dialog.Context().Done():
-				if l.State() != leg.StateHungUp {
-					s.cleanupLeg(l)
-					s.publishDisconnect(l, "remote_bye")
-				}
-			case <-maxTimer.C:
-				if l.State() != leg.StateHungUp {
-					s.Log.Info("max duration reached", "leg_id", l.ID(), "max_duration", req.MaxDuration)
-					s.cleanupLeg(l)
-					s.publishDisconnect(l, "max_duration")
-				}
-			}
-		} else {
-			<-call.Dialog.Context().Done()
-			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "remote_bye")
-			}
-		}
+		s.watchLegDialogEnd(l, call.Dialog.Context(), time.Duration(req.MaxDuration)*time.Second)
 	}()
 
 	return toLegView(l), nil
@@ -1007,6 +1174,13 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// WebRTC-over-SIP media path instead of the classic RTP pipeline.
 	if sipmod.IsWhatsAppInvite(call) {
 		s.handleWhatsAppInbound(call)
+		return
+	}
+
+	// A SIPREC recording session (RFC 7866) is not a call: it is answered
+	// receive-only and its m= sections carry other parties' audio. An INVITE
+	// the recording path declines to claim carries on as an ordinary call.
+	if s.ClaimSIPREC(call) {
 		return
 	}
 
@@ -1056,25 +1230,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// SIP_JITTER_BUFFER_MS env var.
 	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 
-	// Route events for this leg to the per-leg webhook. Extract URL from SIP
-	// X-Webhook-URL header, falling back to the configured default.
-	webhookURL := ""
-	if h := call.Request.GetHeader("X-Webhook-URL"); h != nil {
-		webhookURL = h.Value()
-	}
-	if webhookURL == "" {
-		webhookURL = s.Config.WebhookURL
-	}
-	webhookSecret := ""
-	if h := call.Request.GetHeader("X-Webhook-Secret"); h != nil {
-		webhookSecret = h.Value()
-	}
-	if webhookSecret == "" {
-		webhookSecret = s.Config.WebhookSecret
-	}
-	if webhookURL != "" {
-		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
-	}
+	s.applyLegWebhook(l, call)
 
 	// Tag the call with a trunk_id when the INVITE's source socket matches
 	// a known outbound trunk's registrar — informational, not a gate.
@@ -1089,6 +1245,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			}
 		}
 	}
+	l.SetTrunkID(trunkID)
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:      events.LegScope{LegID: l.ID(), AppID: l.AppID()},
@@ -1129,13 +1286,10 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			LegType:  string(l.Type()),
 		})
 		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+		s.attachAnsweredStreamRooms(l, s.takeStreamRoomsOverride(l.ID()))
 
 		// Block until call ends (BYE received or context cancelled)
-		<-call.Dialog.Context().Done()
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "remote_bye")
-		}
+		s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
 		return
 
 	case <-call.Dialog.Context().Done():
@@ -1438,6 +1592,25 @@ func (s *Server) setSpeechOverride(legID string, override *bool) {
 	s.speechOverrideMu.Lock()
 	s.speechOverride[legID] = override
 	s.speechOverrideMu.Unlock()
+}
+
+func (s *Server) setStreamRoomsOverride(legID string, streams []AnswerLegStream) {
+	if len(streams) == 0 {
+		return
+	}
+	s.streamRoomsMu.Lock()
+	s.streamRooms[legID] = streams
+	s.streamRoomsMu.Unlock()
+}
+
+func (s *Server) takeStreamRoomsOverride(legID string) []AnswerLegStream {
+	s.streamRoomsMu.Lock()
+	defer s.streamRoomsMu.Unlock()
+	streams, ok := s.streamRooms[legID]
+	if ok {
+		delete(s.streamRooms, legID)
+	}
+	return streams
 }
 
 func (s *Server) takeSpeechOverride(legID string) *bool {

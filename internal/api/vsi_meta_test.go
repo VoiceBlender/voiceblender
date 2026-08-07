@@ -20,7 +20,7 @@ func TestVSIMetadata_AllNewCommandsRegistered(t *testing.T) {
 		"leg_play_start", "leg_play_stop", "leg_play_volume",
 		"room_play_start", "room_play_stop", "room_play_volume",
 		// STT
-		"leg_stt_start", "leg_stt_stop", "room_stt_start", "room_stt_stop",
+		"leg_stt_start", "leg_stt_stop", "leg_stt_finalize", "room_stt_start", "room_stt_stop",
 		// TTS
 		"leg_tts", "room_tts",
 		// Agent
@@ -85,7 +85,17 @@ var restOnlyRoutes = map[string]bool{
 // VSI command that mirrors it. Kept explicit (rather than derived) so it reads
 // as a parity contract.
 var routeToVSICommand = map[string]string{
-	"Post /legs":                                      "create_leg",
+	"Post /legs":                                "create_leg",
+	"Get /legs/{id}/siprec":                     "siprec_get",
+	"Post /rooms/{id}/siprec":                   "room_siprec_start",
+	"Post /legs/{id}/siprec":                    "leg_siprec_start",
+	"Get /legs/{id}/streams":                    "leg_stream_list",
+	"Post /legs/{id}/streams":                   "leg_stream_add",
+	"Get /legs/{id}/streams/{streamId}":         "leg_stream_get",
+	"Patch /legs/{id}/streams/{streamId}":       "leg_stream_update",
+	"Delete /legs/{id}/streams/{streamId}":      "leg_stream_remove",
+	"Post /legs/{id}/streams/{streamId}/room":   "leg_stream_attach_room",
+	"Delete /legs/{id}/streams/{streamId}/room": "leg_stream_detach_room",
 	"Get /legs":                                       "list_legs",
 	"Get /legs/{id}":                                  "get_leg",
 	"Post /legs/{id}/answer":                          "answer_leg",
@@ -119,6 +129,7 @@ var routeToVSICommand = map[string]string{
 	"Post /legs/{id}/record/pause":                    "leg_record_pause",
 	"Post /legs/{id}/record/resume":                   "leg_record_resume",
 	"Post /legs/{id}/stt":                             "leg_stt_start",
+	"Post /legs/{id}/stt/finalize":                    "leg_stt_finalize",
 	"Delete /legs/{id}/stt":                           "leg_stt_stop",
 	"Post /legs/{id}/agent/elevenlabs":                "leg_agent_elevenlabs",
 	"Post /legs/{id}/agent/vapi":                      "leg_agent_vapi",

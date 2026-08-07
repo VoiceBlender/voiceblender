@@ -52,6 +52,92 @@ func TestTransfer_Blind_Outbound(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instC.baseURL(), inboundOnC.ID))
 }
 
+// TestTransfer_Blind_RemoteByeEndsTransferredLeg: once a blind transfer
+// completes, the leg B originated toward C is observed by nothing but its own
+// dialog monitor — the referrer that would otherwise have watched it is already
+// torn down. When C hangs up, B must publish leg.disconnected with reason
+// remote_bye and drop the leg from its manager. Without the monitor the BYE is
+// swallowed: no event, no CDR, and the leg is stuck on B for the process
+// lifetime.
+func TestTransfer_Blind_RemoteByeEndsTransferredLeg(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferAutoDial = true
+	})
+	instC := newTestInstance(t, "instance-c")
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	transferResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
+		"target": fmt.Sprintf("sip:test@127.0.0.1:%d", instC.sipPort),
+	})
+	if transferResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d", transferResp.StatusCode)
+	}
+
+	inboundOnC := waitForInboundLeg(t, instC.baseURL(), 5*time.Second)
+	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instC.baseURL(), inboundOnC.ID), nil); r.StatusCode != http.StatusAccepted {
+		t.Fatalf("answer on C: %d", r.StatusCode)
+	}
+
+	instA.collector.waitForMatch(t, events.LegTransferCompleted, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+
+	// B's surviving leg is the one it originated toward C.
+	transferred := waitForConnectedOutboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	// C hangs up. B learns of it only through the transferred leg's dialog.
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instC.baseURL(), inboundOnC.ID))
+
+	disc := instB.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == transferred.ID
+	}, 5*time.Second)
+	if got := disc.Data.(*events.LegDisconnectedData).CDR.Reason; got != "remote_bye" {
+		t.Errorf("B cdr.reason = %q, want remote_bye", got)
+	}
+
+	// The event is not enough: the leg must also be gone from B's manager.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := httpGet(t, instB.baseURL()+"/v1/legs")
+		var legs []legView
+		decodeJSON(t, resp, &legs)
+		found := false
+		for _, l := range legs {
+			if l.ID == transferred.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("transferred leg still registered on B after the remote BYE — cleanupLeg never ran")
+}
+
+// waitForConnectedOutboundLeg polls instance's leg list until a connected
+// sip_outbound leg appears.
+func waitForConnectedOutboundLeg(t *testing.T, baseURL string, timeout time.Duration) legView {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp := httpGet(t, baseURL+"/v1/legs")
+		var legs []legView
+		decodeJSON(t, resp, &legs)
+		for _, l := range legs {
+			if l.Type == "sip_outbound" && l.State == "connected" {
+				return l
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("no connected outbound leg found within %v", timeout)
+	return legView{}
+}
+
 // TestTransfer_Inbound_AutoDeclineOnTimeout: with the default (auto-dial off),
 // an inbound REFER is parked for an app decision and surfaced as
 // leg.transfer_requested. When no app accepts/declines within

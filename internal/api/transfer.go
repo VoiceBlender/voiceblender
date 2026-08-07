@@ -305,6 +305,36 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 	})
 }
 
+// referIdentity picks the `from` value to originate a REFER target under.
+//
+// A leg that arrived on (or was dialled over) a registered trunk transfers out
+// over that same trunk, under its AOR: the upstream that delivered the call is
+// the one that can route the target, and it only accepts an identity it
+// authenticated. The transferor's own caller ID would usually match no AOR, so
+// the INVITE would go out un-credentialed and be rejected — the transferor
+// survives in Referred-By instead.
+//
+// Without a trunk there is nothing to inherit, so the leg falls back to its own
+// identity. Returns "" when it has none, which leaves the From to sipgo.
+func (s *Server) referIdentity(referrer *leg.SIPLeg) string {
+	if id := referrer.TrunkID(); id != "" {
+		if t := s.SIPEngine.Trunks().Get(id); t != nil {
+			if aor := t.AOR(); aor != "" {
+				return aor
+			}
+		}
+	}
+	user, host := referrer.OriginatingIdentity()
+	switch {
+	case user == "":
+		return ""
+	case host == "":
+		return user
+	default:
+		return "sip:" + user + "@" + host
+	}
+}
+
 // originateForRefer dials the REFER target and NOTIFYs sipfrag back to referrer.
 func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces *sipmod.ReplacesParams) {
 	recipient := sip.Uri{}
@@ -315,16 +345,8 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 
 	newLeg := leg.NewSIPOutboundPendingLeg(s.SIPEngine, nil, s.Log)
 	newLeg.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
-	s.LegMgr.Add(newLeg)
-	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
-		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
-		LegType:  string(newLeg.Type()),
-		URI:      target,
-	})
-
-	if err := referrer.SendNotifySipfrag(context.Background(), 100, "Trying", false); err != nil {
-		s.Log.Warn("transfer NOTIFY 100 failed", "error", err)
-	}
+	s.setupLegEventForwarding(newLeg)
+	s.setupHoldCallbacks(newLeg)
 
 	inviteOpts := sipmod.InviteOptions{
 		OnEarlyMedia: func(remoteSDP *sipmod.SDPMedia, rtpSess *sipmod.RTPSession) {
@@ -332,8 +354,26 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 			referrer.SendNotifySipfrag(context.Background(), 180, "Ringing", false)
 		},
 	}
+	// Dial on the referrer's behalf so the INVITE picks up the same trunk
+	// credentials, Route and From realm that POST /v1/legs would give it.
+	referFrom := s.referIdentity(referrer)
+	trunkID := s.applyFromIdentity(referFrom, &inviteOpts)
+	newLeg.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
 	if replaces != nil {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Replaces", replaces.String()))
+	}
+
+	s.LegMgr.Add(newLeg)
+	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
+		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
+		LegType:  string(newLeg.Type()),
+		URI:      target,
+		From:     referFrom,
+		TrunkID:  trunkID,
+	})
+
+	if err := referrer.SendNotifySipfrag(context.Background(), 100, "Trying", false); err != nil {
+		s.Log.Warn("transfer NOTIFY 100 failed", "error", err)
 	}
 
 	call, err := s.SIPEngine.Invite(context.Background(), recipient, inviteOpts)
@@ -354,6 +394,14 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		return
 	}
 
+	// Wire session timer expiry to hangup + event.
+	newLeg.OnSessionExpired(func() {
+		if newLeg.State() != leg.StateHungUp {
+			s.cleanupLeg(newLeg)
+			s.publishDisconnect(newLeg, "session_expired")
+		}
+	})
+
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 		LegScope: events.LegScope{LegID: newLeg.ID(), AppID: newLeg.AppID()},
 		LegType:  string(newLeg.Type()),
@@ -370,6 +418,10 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 
 	s.cleanupLeg(referrer)
 	s.publishDisconnect(referrer, "transfer_completed")
+
+	// The referrer is gone, so nothing else observes the transferred leg's
+	// dialog: the engine's BYE handling publishes no event of its own.
+	s.watchLegDialogEnd(newLeg, call.Dialog.Context(), 0)
 }
 
 func (s *Server) notifyAndFail(referrer *leg.SIPLeg, statusCode int, reason string) {

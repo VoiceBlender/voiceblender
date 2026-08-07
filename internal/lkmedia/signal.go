@@ -9,6 +9,7 @@ package lkmedia
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -149,7 +150,14 @@ type SignalClient struct {
 	join *livekit.JoinResponse
 	url  string
 
-	writeMu sync.Mutex // serializes Send* calls
+	writeMu sync.Mutex // serializes Send* calls and control-frame replies
+
+	// Read-goroutine state: the frame reader and the buffer its control
+	// replies (pong, close echo) are staged in before flushing under
+	// writeMu. Touched only from the goroutine that calls readMessage.
+	rd     *wsutil.Reader
+	ctl    wsutil.ControlHandler
+	ctlBuf bytes.Buffer
 
 	events chan SignalEvent
 	done   chan struct{}
@@ -307,14 +315,70 @@ func (c *SignalClient) readJoin(ctx context.Context) (*livekit.JoinResponse, err
 	}
 }
 
+// readData reads one data frame, answering any control frames that precede
+// it. gobwas's own ReadServerData would write those replies straight to the
+// conn from this goroutine, interleaving them with an in-flight Send*, so
+// the replies are buffered here and flushed under writeMu instead.
+func (c *SignalClient) readData() ([]byte, ws.OpCode, error) {
+	if c.rd == nil {
+		c.rd = &wsutil.Reader{Source: c.conn, State: ws.StateClientSide}
+		c.rd.OnIntermediate = c.handleControl
+		c.ctl = wsutil.ControlHandler{Dst: &c.ctlBuf, State: ws.StateClientSide}
+	}
+	for {
+		hdr, err := c.rd.NextFrame()
+		if err != nil {
+			return nil, 0, err
+		}
+		if hdr.OpCode.IsControl() {
+			if err := c.handleControl(hdr, c.rd); err != nil {
+				return nil, 0, err
+			}
+			continue
+		}
+		data, err := io.ReadAll(c.rd)
+		return data, hdr.OpCode, err
+	}
+}
+
+// handleControl answers a ping or close frame. The reply lands in ctlBuf as
+// a whole frame, so flushing it takes a single conn.Write that cannot be
+// split across another writer's header and payload.
+func (c *SignalClient) handleControl(hdr ws.Header, src io.Reader) error {
+	c.ctlBuf.Reset()
+	c.ctl.Src = src
+	err := c.ctl.Handle(hdr)
+	c.flushControl()
+	return err
+}
+
+func (c *SignalClient) flushControl() {
+	if c.ctlBuf.Len() == 0 {
+		return
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	defer c.ctlBuf.Reset()
+	if c.closed.Load() {
+		return
+	}
+	wsutilx.SetWriteDeadline(c.conn, wsutilx.DefaultWriteTimeout.Load())
+	_, _ = c.conn.Write(c.ctlBuf.Bytes())
+}
+
 // readMessage reads one binary frame and unmarshals it as a SignalResponse.
 func (c *SignalClient) readMessage() (*livekit.SignalResponse, error) {
-	data, op, err := wsutil.ReadServerData(c.conn)
+	data, op, err := c.readData()
 	if err != nil {
+		// gobwas answers close frames inside the reader and reports them as
+		// a ClosedError rather than returning op == ws.OpClose, so the error
+		// path is the only place the peer's code and reason are visible.
+		var closed wsutil.ClosedError
+		if errors.As(err, &closed) {
+			c.log.Info("livekit signal recv close frame",
+				"code", int(closed.Code), "reason", closed.Reason)
+		}
 		return nil, err
-	}
-	if op == ws.OpClose {
-		return nil, io.EOF
 	}
 	if op != ws.OpBinary {
 		return nil, fmt.Errorf("expected binary frame, got op=%d", op)
@@ -348,7 +412,7 @@ func (c *SignalClient) recvLoop(ctx context.Context, stopWatch func()) {
 
 		resp, err := c.readMessage()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if isCleanClose(err) {
 				c.setCloseErr(nil, "livekit_signal_closed")
 			} else {
 				c.setCloseErr(err, "livekit_signal_error")
@@ -487,6 +551,25 @@ func (c *SignalClient) shutdown() {
 	close(c.done)
 }
 
+// isCleanClose reports whether err is an orderly end of the signal stream
+// rather than a failure. A peer that sends a close frame surfaces as a
+// wsutil.ClosedError, never as io.EOF, so both shapes have to be matched or
+// every graceful LiveKit disconnect is reported as an error.
+func isCleanClose(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var closed wsutil.ClosedError
+	if !errors.As(err, &closed) {
+		return false
+	}
+	switch closed.Code {
+	case ws.StatusNormalClosure, ws.StatusGoingAway, ws.StatusNoStatusRcvd:
+		return true
+	}
+	return false
+}
+
 // setCloseErr records the disconnect reason. First call wins.
 func (c *SignalClient) setCloseErr(err error, reason string) {
 	if c.closeErr.Load() == nil && err != nil {
@@ -611,6 +694,9 @@ func (c *SignalClient) send(req *livekit.SignalRequest) error {
 	if c.closed.Load() {
 		return errors.New("signal client closed")
 	}
+	// Bound the write: a peer that stops draining would otherwise pin this
+	// goroutine — and writeMu with it — until the kernel TCP timer fires.
+	wsutilx.SetWriteDeadline(c.conn, wsutilx.DefaultWriteTimeout.Load())
 	return wsutil.WriteClientBinary(c.conn, data)
 }
 
