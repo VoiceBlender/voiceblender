@@ -120,6 +120,12 @@ type declineTransferPayload struct {
 	TransferDeclineRequest
 }
 
+// roomSIPRECStartPayload combines a room id with the outbound SIPREC request.
+type roomSIPRECStartPayload struct {
+	ID string `json:"id"`
+	StartSIPRECRequest
+}
+
 // recordStartPayload combines a leg/room id with the record request.
 type recordStartPayload struct {
 	ID string `json:"id"`
@@ -647,6 +653,42 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		view, err := s.doSetLegRole(p.LegID, SetLegRoleRequest{Role: p.Role})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "leg_siprec_start":
+		var p roomSIPRECStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doStartLegSIPREC(ctx, p.ID, p.StartSIPRECRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "room_siprec_start":
+		var p roomSIPRECStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doStartRoomSIPREC(ctx, p.ID, p.StartSIPRECRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "siprec_get":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doGetSIPRECSession(p.ID)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

@@ -123,6 +123,7 @@ func main() {
 		SIPDebug:          cfg.SIPDebug,
 		SIPHost:           cfg.SIPHost,
 		UseSourceSocket:   cfg.SIPUseSourceSocket,
+		TCPEnabled:        cfg.SIPTCPEnabled,
 		Codecs:            cfg.Codecs,
 		AMRWBMode:         cfg.AMRWBMode,
 		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,

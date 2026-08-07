@@ -22,7 +22,17 @@ const (
 	TypeMoQInbound         LegType = "moq_in"
 	TypeLiveKitPublish     LegType = "livekit_publish"
 	TypeLiveKitParticipant LegType = "livekit_participant"
+	// SIPREC recording sessions (RFC 7866). Inbound is the recording server
+	// role, outbound the recording client role.
+	TypeSIPRECInbound  LegType = "siprec_in"
+	TypeSIPRECOutbound LegType = "siprec_out"
 )
+
+// IsSIPREC reports whether the leg carries a SIPREC recording session rather
+// than a call. Such a leg has no DTMF, playback, TTS, hold or transfer.
+func (t LegType) IsSIPREC() bool {
+	return t == TypeSIPRECInbound || t == TypeSIPRECOutbound
+}
 
 type LegState string
 

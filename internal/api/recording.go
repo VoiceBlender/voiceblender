@@ -392,10 +392,18 @@ func (s *Server) doStartRecordLeg(ctx context.Context, legID string, req RecordR
 		return nil, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
 
+	id := legID
+
+	// A recording session's audio is N receive-only streams belonging to N
+	// different people, so it is captured per participant and merged, rather
+	// than as one leg's in/out pair.
+	if l.Type().IsSIPREC() {
+		return s.startSIPRECLegRecording(l, backend)
+	}
+
 	rec := recording.NewRecorder(s.Log)
 	var fpath string
 	var recErr error
-	id := legID
 
 	if roomID := l.RoomID(); roomID != "" {
 		rm, rmOK := s.RoomMgr.Get(roomID)
@@ -481,6 +489,10 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 // REST endpoint and cleanupLeg (on disconnect). Returns the file path and
 // true if a recording was stopped.
 func (s *Server) stopLegRecording(legID string) (string, bool) {
+	if loc, ok := s.stopSIPRECLegRecording(legID); ok {
+		return loc, true
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	if ok {
@@ -597,6 +609,13 @@ func (s *Server) stopRecordLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doPauseRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
+	if status, ok := s.setSIPRECRecordingPaused(legID, true); ok {
+		if status == "paused" {
+			s.publishRecordingPaused(legID, true)
+		}
+		return &RecordingPauseResumeResult{Status: status}, nil
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	legRecorders.Unlock()
@@ -627,6 +646,13 @@ func (s *Server) pauseRecordLeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doResumeRecordLeg(legID string) (*RecordingPauseResumeResult, error) {
+	if status, ok := s.setSIPRECRecordingPaused(legID, false); ok {
+		if status == "resumed" {
+			s.publishRecordingPaused(legID, false)
+		}
+		return &RecordingPauseResumeResult{Status: status}, nil
+	}
+
 	legRecorders.Lock()
 	rec, ok := legRecorders.m[legID]
 	legRecorders.Unlock()

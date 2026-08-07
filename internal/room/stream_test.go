@@ -143,17 +143,49 @@ func TestAddLegStream_RecvonlyIsDeaf(t *testing.T) {
 	}
 }
 
-func TestAddLegStream_RejectsPrimaryAndInactive(t *testing.T) {
+func TestAddLegStream_RejectsInactive(t *testing.T) {
 	r := NewRoom("room-1", "", 16000, slog.New(slog.DiscardHandler))
-
-	primary := newStreamMockLeg("leg-1", leg.StreamMedia{ID: "0", Primary: true, Writer: io.Discard})
-	if _, ok := r.AddLegStream(primary, "0", ""); ok {
-		t.Error("the primary stream joins via AddLeg, not AddLegStream")
-	}
 
 	inactive := newStreamMockLeg("leg-2", leg.StreamMedia{ID: "1", Direction: sipmod.DirInactive})
 	if _, ok := r.AddLegStream(inactive, "1", ""); ok {
 		t.Error("an inactive stream carries nothing and must not join the mixer")
+	}
+}
+
+func TestAddLegStream_RejectsPrimaryWhenLegIsAParticipant(t *testing.T) {
+	r := NewRoom("room-1", "", 16000, slog.New(slog.DiscardHandler))
+
+	l := newStreamMockLeg("leg-1", leg.StreamMedia{ID: "0", Primary: true, Writer: io.Discard})
+	r.AddLeg(l)
+
+	if _, ok := r.AddLegStream(l, "0", ""); ok {
+		t.Error("a participant leg's primary stream is already mixed via AddLeg")
+	}
+}
+
+func TestAddLegStream_AcceptsPrimaryWhenLegIsNotAParticipant(t *testing.T) {
+	r := NewRoom("room-1", "", 16000, slog.New(slog.DiscardHandler))
+
+	// A recording session has no privileged m-line 0: stream "0" is one
+	// recorded party's audio and must be mixable on its own. Handing the whole
+	// leg to AddLeg instead would give the mixer a writer nothing ever drains.
+	l := newStreamMockLeg("leg-1", leg.StreamMedia{
+		ID:         "0",
+		MID:        "0",
+		Primary:    true,
+		SampleRate: 16000,
+		Direction:  sipmod.DirRecvOnly,
+		Reader:     eofReader{},
+	})
+
+	if _, ok := r.AddLegStream(l, "0", "caller"); !ok {
+		t.Fatal("AddLegStream refused the primary stream of a non-participant leg")
+	}
+	if got := l.rooms["0"]; got != "room-1" {
+		t.Errorf("stream room = %q, want room-1", got)
+	}
+	if got := r.LegStreamIDs(); len(got) != 1 || got[0] != "leg-1#0" {
+		t.Errorf("LegStreamIDs = %v, want [leg-1#0]", got)
 	}
 }
 

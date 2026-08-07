@@ -246,6 +246,8 @@ var KnownDisconnectReasons = []string{
 	"transfer_completed", "transfer_originate_failed", "transfer_connect_failed",
 	// WhatsApp.
 	"bad_answer",
+	// SIPREC recording sessions.
+	"siprec_answer_failed",
 	// Room mixer teardown.
 	"mixer_panic",
 	// WebSocket legs (classifyWSReason, classifyWSDialError).
@@ -1063,6 +1065,59 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
 				400: {Description: "Invalid JSON"},
 				404: {Description: "Room not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/rooms/{id}/siprec", OperationID: "startRoomSIPREC",
+			Summary: "Fork a room to an external SIPREC recording server",
+			Description: "Originates a SIPREC recording session (RFC 7866) to the given recording server, " +
+				"offering one `sendonly` `m=audio` section per room participant and carrying an RFC 7865 " +
+				"metadata document that names each party and binds it to a section's `a=label`. Each " +
+				"participant's own audio is forked to its own section — not the room mix. Returns the " +
+				"resulting `siprec_out` leg; delete that leg to end the session. " +
+				"Requires `SIPREC_SRC_ENABLED=true`.",
+			Tags:        []string{"Rooms"},
+			RequestType: StartSIPRECRequest{},
+			Responses: map[int]ResponseMeta{
+				201: {Description: "Recording session established", Type: LegView{}},
+				400: {Description: "Invalid JSON or srs_uri"},
+				403: {Description: "Outbound SIPREC is disabled"},
+				404: {Description: "Room not found"},
+				409: {Description: "Room has no participants, or more than SIPREC_MAX_STREAMS"},
+				502: {Description: "The recording server rejected the session"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/siprec", OperationID: "startLegSIPREC",
+			Summary: "Fork a single call to an external SIPREC recording server",
+			Description: "Originates a SIPREC recording session (RFC 7866) carrying one call as two " +
+				"`sendonly` sections: what the far end says, and what this server sends them. No room " +
+				"is involved. `leg_ids` is ignored here — the two sections are fixed. Returns the " +
+				"resulting `siprec_out` leg; delete it to end the session. Requires `SIPREC_SRC_ENABLED=true`.",
+			Tags:        []string{"Legs"},
+			RequestType: StartSIPRECRequest{},
+			Responses: map[int]ResponseMeta{
+				201: {Description: "Recording session established", Type: LegView{}},
+				400: {Description: "Invalid JSON, invalid srs_uri, or not a SIP leg"},
+				403: {Description: "Outbound SIPREC is disabled"},
+				404: {Description: "Leg not found"},
+				409: {Description: "The leg is itself a recording session"},
+				502: {Description: "The recording server rejected the session"},
+			},
+		},
+		{
+			Method: "GET", Path: "/legs/{id}/siprec", OperationID: "getSIPRECSession",
+			Summary: "Get a SIPREC recording session",
+			Description: "Returns the RFC 7865 recording metadata of an inbound SIPREC session (leg type " +
+				"`siprec_in`): every recorded participant, every negotiated media stream, and the binding " +
+				"between them. A stream's `a=label` is what ties the m= section to a participant, so the " +
+				"`streams` entries carry both the leg stream ID and the participant identity. The raw " +
+				"metadata document is returned verbatim in `metadata`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Recording session state", Type: SIPRECSessionView{}},
+				400: {Description: "Leg is not a SIPREC recording session"},
+				404: {Description: "Leg or recording session state not found"},
 			},
 		},
 		{

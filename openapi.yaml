@@ -199,6 +199,33 @@ info:
         - name: SIP_REFER_AUTO_DIAL
           default: "false"
           description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
+        - name: SIP_TCP_ENABLED
+          default: "false"
+          description: 'Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session''s INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP.'
+        - name: SIPREC_ENABLED
+          default: "false"
+          description: 'Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call''s media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488.'
+        - name: SIPREC_AUTO_ANSWER
+          default: "true"
+          description: Answer an inbound recording session immediately instead of parking it until POST /v1/legs/{id}/answer. A session recording client does not wait for an application decision, so leaving this on is usually correct; turn it off to gate sessions from a controller.
+        - name: SIPREC_MAX_STREAMS
+          default: "8"
+          description: Maximum number of m=audio sections accepted on one recording session. A session offering more is rejected with 486, bounding the RTP ports and goroutines a single peer can claim.
+        - name: SIPREC_METADATA_MAX_BYTES
+          default: "65536"
+          description: Maximum size of the rs-metadata XML document in a SIPREC INVITE. A larger document is rejected with 413 rather than parsed.
+        - name: SIPREC_SRC_ENABLED
+          default: "false"
+          description: 'Allow POST /v1/rooms/{id}/siprec to originate outbound recording sessions, forking a room''s participants to an external session recording server. Off by default: it lets an API caller stream a room''s audio to an arbitrary SIP destination.'
+        - name: SIPREC_AUTO_RECORD
+          default: "false"
+          description: Start multi-channel recording automatically when a SIPREC session is accepted, one channel per recorded participant. When false, recording is driven through the usual /v1/legs/{id}/record endpoint.
+        - name: SIPREC_ROOM_MODE
+          default: none
+          description: Where a recording session's audio streams are mixed. "none" attaches nothing and leaves placement to the stream API; "per_session" creates a room named siprec-<legID> and attaches every stream, which is what makes live STT and agents apply to a recorded call; "fixed" attaches every session's streams into SIPREC_ROOM_ID.
+        - name: SIPREC_ROOM_ID
+          default: ""
+          description: Room every recording session's streams join when SIPREC_ROOM_MODE=fixed. Ignored in the other modes.
         - name: MOQ_ENABLED
           default: "false"
           description: Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at CONNECT /v1/legs/moq over WebTransport/HTTP/3. PoC quality, tracks IETF draft-11. When enabled, both MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE must be set.
@@ -1958,6 +1985,135 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '404':
                     description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /rooms/{id}/siprec:
+        parameters:
+            - $ref: '#/components/parameters/RoomId'
+        post:
+            operationId: startRoomSIPREC
+            summary: Fork a room to an external SIPREC recording server
+            description: Originates a SIPREC recording session (RFC 7866) to the given recording server, offering one `sendonly` `m=audio` section per room participant and carrying an RFC 7865 metadata document that names each party and binds it to a section's `a=label`. Each participant's own audio is forked to its own section — not the room mix. Returns the resulting `siprec_out` leg; delete that leg to end the session. Requires `SIPREC_SRC_ENABLED=true`.
+            tags:
+                - Rooms
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StartSIPRECRequest'
+            responses:
+                '201':
+                    description: Recording session established
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '400':
+                    description: Invalid JSON or srs_uri
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '403':
+                    description: Outbound SIPREC is disabled
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Room not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Room has no participants, or more than SIPREC_MAX_STREAMS
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '502':
+                    description: The recording server rejected the session
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/siprec:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: startLegSIPREC
+            summary: Fork a single call to an external SIPREC recording server
+            description: 'Originates a SIPREC recording session (RFC 7866) carrying one call as two `sendonly` sections: what the far end says, and what this server sends them. No room is involved. `leg_ids` is ignored here — the two sections are fixed. Returns the resulting `siprec_out` leg; delete it to end the session. Requires `SIPREC_SRC_ENABLED=true`.'
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StartSIPRECRequest'
+            responses:
+                '201':
+                    description: Recording session established
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '400':
+                    description: Invalid JSON, invalid srs_uri, or not a SIP leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '403':
+                    description: Outbound SIPREC is disabled
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: The leg is itself a recording session
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '502':
+                    description: The recording server rejected the session
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        get:
+            operationId: getSIPRECSession
+            summary: Get a SIPREC recording session
+            description: 'Returns the RFC 7865 recording metadata of an inbound SIPREC session (leg type `siprec_in`): every recorded participant, every negotiated media stream, and the binding between them. A stream''s `a=label` is what ties the m= section to a participant, so the `streams` entries carry both the leg stream ID and the participant identity. The raw metadata document is returned verbatim in `metadata`.'
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Recording session state
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/SIPRECSessionView'
+                '400':
+                    description: Leg is not a SIPREC recording session
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg or recording session state not found
                     content:
                         application/json:
                             schema:
@@ -3823,6 +3979,36 @@ components:
                     description: New routing role for the leg. The room's routing matrix decides which other legs this leg hears and is heard by based on roles. Pass an empty string to clear the role (full mesh).
             required:
                 - role
+        StartSIPRECRequest:
+            type: object
+            properties:
+                srs_uri:
+                    type: string
+                    description: SIP URI of the session recording server, e.g. "sip:srs@recorder.example.com:5060". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP.
+                leg_ids:
+                    type: array
+                    items:
+                        type: string
+                    description: Which participants to record. Each entry is either a leg ID (that leg's own audio) or "<legID>#<streamID>" for one of a leg's secondary audio streams mixed into the room. Empty or absent records every participant. An entry that is not in the room is a 404.
+                session_id:
+                    type: string
+                    description: Communication session identifier put in the recording metadata. Defaults to the room ID.
+                app_id:
+                    type: string
+                    description: Application identifier tagged onto the resulting leg and its events.
+                auth_username:
+                    type: string
+                    description: SIP digest username, when the recording server challenges the INVITE.
+                auth_password:
+                    type: string
+                    description: SIP digest password, when the recording server challenges the INVITE.
+                headers:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: 'Extra SIP headers to include in the INVITE. Require: siprec is always sent.'
+            required:
+                - srs_uri
         TTSRequest:
             type: object
             properties:
@@ -4287,6 +4473,93 @@ components:
                     description: Digest auth password.
             required:
                 - password
+        SIPRECParticipantView:
+            type: object
+            properties:
+                participant_id:
+                    type: string
+                    description: The participant_id attribute from the recording metadata document.
+                aor:
+                    type: string
+                    description: The participant's address of record, e.g. "sip:alice@example.com".
+                name:
+                    type: string
+                    description: The participant's display name, when the metadata carries one.
+            required:
+                - participant_id
+        SIPRECSessionView:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                    description: Leg carrying the recording session.
+                session_id:
+                    type: string
+                    description: Communication session being recorded, from the metadata's sessionrecordingassoc.
+                data_mode:
+                    type: string
+                    description: Data mode of the most recently applied metadata document (RFC 7865 §6.1).
+                    enum:
+                        - complete
+                        - partial
+                room_id:
+                    type: string
+                    description: Room this session's streams were attached to, when SIPREC_ROOM_MODE placed them in one.
+                participants:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SIPRECParticipantView'
+                    description: Every party currently recorded by this session.
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SIPRECStreamView'
+                    description: Every negotiated media stream, joined to the participant it carries.
+                metadata:
+                    type: string
+                    description: The raw rs-metadata XML document as most recently received.
+            required:
+                - leg_id
+                - participants
+                - streams
+        SIPRECStreamView:
+            type: object
+            properties:
+                leg_stream_id:
+                    type: string
+                    description: Identifier of the leg stream carrying this recorded media, as used by /v1/legs/{id}/streams.
+                mid:
+                    type: string
+                    description: The stream's SDP a=mid token (RFC 5888).
+                label:
+                    type: string
+                    description: The stream's a=label value (RFC 4574). This is the key that binds the m= section to the recording metadata.
+                direction:
+                    type: string
+                    description: 'Negotiated media direction. Always recvonly or inactive: a recording server never transmits.'
+                    enum:
+                        - recvonly
+                        - inactive
+                codec:
+                    type: string
+                    description: Codec negotiated for this stream.
+                room_id:
+                    type: string
+                    description: Room this stream's audio is mixed into, when it has been attached to one.
+                role:
+                    type: string
+                    description: Routing role of this stream within its room. Defaults to the participant's identity.
+                participant_id:
+                    type: string
+                    description: Participant whose audio arrives on this stream, from the metadata's participantstreamassoc send binding.
+                participant_aor:
+                    type: string
+                    description: Address of record of the participant sending on this stream.
+                participant_name:
+                    type: string
+                    description: Display name of the participant sending on this stream.
+            required:
+                - leg_stream_id
         SIPRegisterTrunkSpec:
             type: object
             properties:
@@ -4441,6 +4714,11 @@ components:
                 - leg.stream_failed
                 - leg.stream_room_changed
                 - leg.stream_role_changed
+                - siprec.session_started
+                - siprec.session_ended
+                - siprec.metadata_updated
+                - siprec.participant_joined
+                - siprec.participant_left
                 - dtmf.received
                 - rtt.received
                 - speaking.started
@@ -4595,7 +4873,7 @@ x-webhooks:
                                         properties:
                                             reason:
                                                 type: string
-                                                description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}. This is an open set — treat an unrecognized value as a new reason rather than an error. Known values: api_hangup, room_deleted, remote_bye, caller_cancel, max_duration, session_expired, rtp_timeout, busy, declined, rejected, unavailable, not_found, forbidden, server_error, ring_timeout, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, invite_failed, connect_failed, challenged, transfer_completed, transfer_originate_failed, transfer_connect_failed, bad_answer, mixer_panic, hangup, peer_slow, connection_reset, ws_error, ws_dial_failed, moq_error, ice_failure, ice_failed, ice_disconnected, livekit_client_initiated, livekit_duplicate_identity, livekit_server_shutdown, livekit_kicked, livekit_room_deleted, livekit_state_mismatch, livekit_join_failure, livekit_migration, livekit_signal_close, livekit_room_closed, livekit_user_unavailable, livekit_user_rejected, livekit_token_expired, livekit_media_failure, livekit_disconnected, livekit_client_closed, livekit_signal_closed, livekit_signal_error, livekit_pc_setup_failed, livekit_add_track_failed, livekit_publisher_failed, livekit_subscriber_failed, livekit_signal_loop_exit, livekit_set_remote_desc_failed, livekit_create_answer_failed, livekit_set_local_desc_failed, livekit_signal_send_failed, livekit_set_publisher_remote_failed, livekit_participant_left.'
+                                                description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}. This is an open set — treat an unrecognized value as a new reason rather than an error. Known values: api_hangup, room_deleted, remote_bye, caller_cancel, max_duration, session_expired, rtp_timeout, busy, declined, rejected, unavailable, not_found, forbidden, server_error, ring_timeout, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, invite_failed, connect_failed, challenged, transfer_completed, transfer_originate_failed, transfer_connect_failed, bad_answer, siprec_answer_failed, mixer_panic, hangup, peer_slow, connection_reset, ws_error, ws_dial_failed, moq_error, ice_failure, ice_failed, ice_disconnected, livekit_client_initiated, livekit_duplicate_identity, livekit_server_shutdown, livekit_kicked, livekit_room_deleted, livekit_state_mismatch, livekit_join_failure, livekit_migration, livekit_signal_close, livekit_room_closed, livekit_user_unavailable, livekit_user_rejected, livekit_token_expired, livekit_media_failure, livekit_disconnected, livekit_client_closed, livekit_signal_closed, livekit_signal_error, livekit_pc_setup_failed, livekit_add_track_failed, livekit_publisher_failed, livekit_subscriber_failed, livekit_signal_loop_exit, livekit_set_remote_desc_failed, livekit_create_answer_failed, livekit_set_local_desc_failed, livekit_signal_send_failed, livekit_set_publisher_remote_failed, livekit_participant_left.'
                                             duration_total:
                                                 type: number
                                                 description: Seconds from leg creation to disconnect
@@ -4943,6 +5221,140 @@ x-webhooks:
                                     role:
                                         type: string
                                     reason:
+                                        type: string
+    siprec.session_started:
+        post:
+            summary: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    session_id:
+                                        type: string
+                                    data_mode:
+                                        type: string
+                                    participants:
+                                        type: array
+                                        items:
+                                            $ref: '#/components/schemas/ParticipantInfo'
+                                    streams:
+                                        type: array
+                                        items:
+                                            $ref: '#/components/schemas/SIPRECStream'
+    siprec.session_ended:
+        post:
+            summary: A SIPREC recording session ended
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    session_id:
+                                        type: string
+                                    reason:
+                                        type: string
+    siprec.metadata_updated:
+        post:
+            summary: A SIPREC recording session's metadata document was updated on a re-INVITE
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    session_id:
+                                        type: string
+                                    data_mode:
+                                        type: string
+                                    participants_joined:
+                                        type: array
+                                        items:
+                                            type: string
+                                    participants_left:
+                                        type: array
+                                        items:
+                                            type: string
+                                    streams_added:
+                                        type: array
+                                        items:
+                                            type: string
+                                    streams_removed:
+                                        type: array
+                                        items:
+                                            type: string
+                                    streams:
+                                        type: array
+                                        items:
+                                            $ref: '#/components/schemas/SIPRECStream'
+    siprec.participant_joined:
+        post:
+            summary: A party joined the call being recorded by a SIPREC session
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    session_id:
+                                        type: string
+                                    label:
+                                        type: string
+                                    leg_stream_id:
+                                        type: string
+                                    participant_id:
+                                        type: string
+                                    participant_aor:
+                                        type: string
+                                    participant_name:
+                                        type: string
+    siprec.participant_left:
+        post:
+            summary: A party left the call being recorded by a SIPREC session
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    session_id:
+                                        type: string
+                                    label:
+                                        type: string
+                                    leg_stream_id:
+                                        type: string
+                                    participant_id:
+                                        type: string
+                                    participant_aor:
+                                        type: string
+                                    participant_name:
                                         type: string
     dtmf.received:
         post:

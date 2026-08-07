@@ -73,6 +73,11 @@ type EngineConfig struct {
 	// StrictMLineAnswer makes answers carry a port-0 placeholder for every
 	// offered section we don't accept, per RFC 3264 §6.
 	StrictMLineAnswer bool
+
+	// TCPEnabled adds a TCP listener on BindPort alongside the UDP one. Needed
+	// for inbound SIPREC: sipgo refuses to send a request over 1300 bytes on
+	// UDP (RFC 3261 §18.1.1), and a recording INVITE always exceeds that.
+	TCPEnabled bool
 }
 
 // Engine wraps sipgo server/client + dialog caches for SIP signaling.
@@ -86,8 +91,8 @@ type Engine struct {
 	onInvite          func(call *InboundCall)
 	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
 	pendingAuth       *pendingAuthStore
-	onReInvite        func(callID string, offer []byte) []byte // returns SDP answer for 200 OK
-	onUpdate          func(callID string, offer []byte, hasSDP bool) []byte
+	onReInvite        func(callID string, body *MessageBody) []byte // returns SDP answer for 200 OK
+	onUpdate          func(callID string, body *MessageBody, hasSDP bool) []byte
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify          func(callID string, statusCode int, reason string, terminated bool)
 	codecs            []codec.CodecType
@@ -102,6 +107,7 @@ type Engine struct {
 	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
 	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
 	bindPort          int
+	tcpEnabled        bool
 	tlsPort           int // 0 = TLS disabled
 	tlsCert           string
 	tlsKey            string
@@ -239,6 +245,10 @@ type InboundCall struct {
 	To        string    // callee URI user part
 	RemoteSDP *SDPMedia // parsed offer SDP
 	Request   *sip.Request
+
+	// Body is the parsed INVITE body. Multipart offers (SIPREC) carry the
+	// rs-metadata document alongside the SDP.
+	Body *MessageBody
 
 	// Session timer (RFC 4028) — populated when remote requests timers.
 	SessionTimer *SessionTimerParams // nil when remote didn't request timers
@@ -453,6 +463,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		listenIP:          listenIP,
 		listenIPV6:        listenIPV6,
 		bindPort:          cfg.BindPort,
+		tcpEnabled:        cfg.TCPEnabled,
 		tlsPort:           cfg.TLSBindPort,
 		tlsCert:           cfg.TLSCertPath,
 		tlsKey:            cfg.TLSKeyPath,
@@ -501,7 +512,7 @@ func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
 // The handler receives the SIP Call-ID and the SDP direction attribute, and
 // returns the SDP body to include in the 200 OK response (nil = no SDP).
-func (e *Engine) OnReInvite(handler func(callID string, offer []byte) []byte) {
+func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) []byte) {
 	e.onReInvite = handler
 }
 
@@ -511,7 +522,7 @@ func (e *Engine) OnReInvite(handler func(callID string, offer []byte) []byte) {
 // direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
 // and the returned []byte is the SDP answer for the 200 OK. When false,
 // direction is "" and the handler should only refresh session-timer state.
-func (e *Engine) OnUpdate(handler func(callID string, offer []byte, hasSDP bool) []byte) {
+func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) []byte) {
 	e.onUpdate = handler
 }
 
@@ -556,9 +567,15 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 	}
 
-	// The offer body goes to the handler untouched: only the leg holds the
-	// m-line table this re-offer has to be matched against positionally.
-	body := req.Body()
+	// The SDP part goes to the handler untouched: only the leg holds the
+	// m-line table this re-offer has to be matched against positionally. A
+	// body we cannot split is passed through as a single part rather than
+	// failing the re-INVITE.
+	body, berr := BodyOf(req)
+	if berr != nil {
+		e.log.Warn("re-INVITE: parse body failed, treating as single part", "error", berr)
+		body = &MessageBody{Raw: req.Body(), Parts: []BodyPart{{Data: req.Body()}}}
+	}
 
 	// Call the handler before responding so it can provide the SDP answer
 	// and update hold state.
@@ -590,7 +607,8 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "has_sdp", len(body) > 0)
+	_, hadSDP := body.SDP()
+	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "has_sdp", hadSDP)
 }
 
 // handleUpdate processes an in-dialog UPDATE (RFC 3311). Typical uses are
@@ -632,12 +650,21 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	body := req.Body()
-	hasSDP := len(body) > 0
+	body, berr := BodyOf(req)
+	if berr != nil {
+		e.log.Warn("UPDATE: parse body failed", "error", berr)
+		res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Request Body", nil)
+		res.AppendHeader(e.ServerHeader())
+		if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+			e.log.Error("UPDATE: respond 400 failed", "error", rerr)
+		}
+		return
+	}
+	offer, hasSDP := body.SDP()
 	if hasSDP {
 		// Reject a malformed offer up front; the handler renegotiates against
 		// the leg's m-line table only once the body is known to parse.
-		if _, err := ParseSDP(body); err != nil {
+		if _, err := ParseSDP(offer); err != nil {
 			e.log.Warn("UPDATE: parse SDP failed", "error", err)
 			res := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad SDP", nil)
 			res.AppendHeader(e.ServerHeader())
@@ -692,12 +719,20 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 // ACK is written, so local media state is already consistent by the time the
 // peer is cleared to send.
 func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdpBody []byte, apply func(answer []byte)) ([]byte, error) {
+	return e.SendReInviteBody(ctx, dialog, sdpBody, nil, apply)
+}
+
+// SendReInviteBody is SendReInviteAnswer with extra body parts appended, so a
+// re-INVITE can carry an updated SIPREC metadata document alongside the offer.
+// With no extra parts the request is byte-identical to the plain SDP form.
+func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBody []byte, extra []BodyPart, apply func(answer []byte)) ([]byte, error) {
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
-		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		if err := setRequestBody(req, sdpBody, extra); err != nil {
+			return nil, err
+		}
 		req.AppendHeader(e.AllowHeader())
-		req.SetBody(sdpBody)
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
@@ -723,9 +758,10 @@ func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdp
 	case *sipgo.DialogClientSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
 		req.AppendHeader(d.InviteRequest.Contact())
-		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		if err := setRequestBody(req, sdpBody, extra); err != nil {
+			return nil, err
+		}
 		req.AppendHeader(e.AllowHeader())
-		req.SetBody(sdpBody)
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
@@ -787,7 +823,19 @@ func (e *Engine) registerHandlers() {
 			return
 		}
 
-		remoteSDP, err := ParseSDP(req.Body())
+		body, err := BodyOf(req)
+		if err != nil {
+			e.log.Error("parse INVITE body failed", "error", err)
+			ds.Respond(sip.StatusBadRequest, "Bad Request Body", nil, e.ServerHeader(), e.AllowHeader())
+			return
+		}
+		offer, ok := body.SDP()
+		if !ok {
+			e.log.Error("INVITE carries no SDP offer")
+			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil, e.ServerHeader(), e.AllowHeader())
+			return
+		}
+		remoteSDP, err := ParseSDP(offer)
 		if err != nil {
 			e.log.Error("parse offer SDP failed", "error", err)
 			ds.Respond(sip.StatusBadRequest, "Bad SDP", nil, e.ServerHeader(), e.AllowHeader())
@@ -844,6 +892,7 @@ func (e *Engine) registerHandlers() {
 			To:           to,
 			RemoteSDP:    remoteSDP,
 			Request:      req,
+			Body:         body,
 			SessionTimer: sessionTimer,
 		}
 
@@ -1040,7 +1089,7 @@ func (e *Engine) Serve(ctx context.Context) error {
 
 	dualBind := e.listenIPV6 != "" && e.listenIPV6 != e.listenIP && UDPNetwork(e.listenIP) != "udp"
 
-	if e.tlsPort == 0 && !dualBind {
+	if e.tlsPort == 0 && !dualBind && !e.tcpEnabled {
 		return e.server.ListenAndServe(ctx, udpNet, udpAddr)
 	}
 
@@ -1058,6 +1107,16 @@ func (e *Engine) Serve(ctx context.Context) error {
 		g.Go(func() error {
 			if err := e.server.ListenAndServe(gCtx, v6Net, v6Addr); err != nil && gCtx.Err() == nil {
 				return fmt.Errorf("UDP v6 listener: %w", err)
+			}
+			return nil
+		})
+	}
+
+	if e.tcpEnabled {
+		tcpAddr := JoinHostPort(e.listenIP, e.bindPort)
+		g.Go(func() error {
+			if err := e.server.ListenAndServe(gCtx, "tcp", tcpAddr); err != nil && gCtx.Err() == nil {
+				return fmt.Errorf("TCP listener: %w", err)
 			}
 			return nil
 		})
@@ -1128,6 +1187,12 @@ type InviteOptions struct {
 	// are additional streams (e.g. a translated feed). Empty or single-entry
 	// offers emit exactly the SDP a single-stream call always has.
 	Streams []OfferStream
+
+	// BodyParts, when non-empty, sends the offer as a multipart/mixed body with
+	// the SDP as its first part and these appended — how RFC 7866 carries the
+	// rs-metadata document alongside the offer. Empty emits the plain
+	// application/sdp body every other call uses.
+	BodyParts []BodyPart
 }
 
 // OfferStream describes one m=audio section to offer beyond the defaults.
@@ -1295,8 +1360,12 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// a proper typed FromHeader when FromUser is specified (appending a
 	// generic "From" header would create a duplicate).
 	req := sip.NewRequest(sip.INVITE, recipient)
-	req.SetBody(sdpOffer)
-	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	if err := setRequestBody(req, sdpOffer, opts.BodyParts); err != nil {
+		for _, s := range extraSess {
+			s.Close()
+		}
+		return nil, err
+	}
 	req.AppendHeader(e.AllowHeader())
 	req.AppendHeader(e.UserAgentHeader())
 
@@ -1377,7 +1446,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		if len(body) == 0 {
 			return nil
 		}
-		remoteSDP, err := ParseSDP(body)
+		remoteSDP, err := ParseSDPMessage(res)
 		if err != nil {
 			e.log.Warn("early media: parse 183 SDP failed", "error", err)
 			return nil // non-fatal, keep waiting for 200
@@ -1410,7 +1479,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	byeOnError = true
 
 	// Parse answer SDP from 200 OK response
-	remoteSDP, err := ParseSDP(ds.InviteResponse.Body())
+	remoteSDP, err := ParseSDPMessage(ds.InviteResponse)
 	if err != nil {
 		return nil, fmt.Errorf("parse answer SDP: %w", err)
 	}

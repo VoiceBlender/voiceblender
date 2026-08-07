@@ -142,6 +142,22 @@ func MirrorDirection(offered string) string {
 	}
 }
 
+// NarrowDirection restricts a mirrored answer direction to at most max, which
+// RFC 3264 §6.1 permits: an answer to sendrecv may be recvonly. An empty max
+// leaves the mirrored direction alone. A recording session uses this to stay
+// receive-only even when the offer was sendrecv.
+func NarrowDirection(mirrored, max string) string {
+	if max != DirRecvOnly {
+		return mirrored
+	}
+	switch mirrored {
+	case DirSendRecv, DirRecvOnly:
+		return DirRecvOnly
+	default:
+		return DirInactive
+	}
+}
+
 // HoldDirection returns the direction to advertise for a stream whose intent is
 // desired while the leg is on hold. Off hold the intent passes through.
 func HoldDirection(desired string, held bool) string {

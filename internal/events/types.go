@@ -29,6 +29,12 @@ const (
 	LegStreamRoomChanged EventType = "leg.stream_room_changed"
 	LegStreamRoleChanged EventType = "leg.stream_role_changed"
 
+	SIPRECSessionStarted    EventType = "siprec.session_started"
+	SIPRECSessionEnded      EventType = "siprec.session_ended"
+	SIPRECMetadataUpdated   EventType = "siprec.metadata_updated"
+	SIPRECParticipantJoined EventType = "siprec.participant_joined"
+	SIPRECParticipantLeft   EventType = "siprec.participant_left"
+
 	LegTransferInitiated EventType = "leg.transfer_initiated"
 	LegTransferRequested EventType = "leg.transfer_requested"
 	LegTransferProgress  EventType = "leg.transfer_progress"

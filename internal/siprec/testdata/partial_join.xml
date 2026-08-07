@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<recording xmlns="urn:ietf:params:xml:ns:recording:1">
+  <datamode>partial</datamode>
+  <participant participant_id="Cj5tXQwGSJm9K1lPuo0Rug==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <nameID aor="sip:carol@example.com">
+      <name>Carol Danvers</name>
+    </nameID>
+  </participant>
+  <participantsessionassoc participant_id="Cj5tXQwGSJm9K1lPuo0Rug==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <associate-time>2026-08-07T09:15:41Z</associate-time>
+  </participantsessionassoc>
+  <stream stream_id="RvGKz9pyTA6H0Y2QpVXLDw==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <label>3</label>
+  </stream>
+  <participantstreamassoc participant_id="Cj5tXQwGSJm9K1lPuo0Rug==">
+    <send>RvGKz9pyTA6H0Y2QpVXLDw==</send>
+    <associate-time>2026-08-07T09:15:41Z</associate-time>
+  </participantstreamassoc>
+</recording>

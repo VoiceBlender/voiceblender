@@ -565,46 +565,53 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // HandleReInvite processes a remote re-INVITE by finding the matching SIPLeg
 // via Call-ID and delegating to its hold/unhold handler. Returns the SDP
 // answer to include in the 200 OK response.
-func (s *Server) HandleReInvite(callID string, offer []byte) []byte {
-	for _, l := range s.LegMgr.List() {
-		sl, ok := l.(*leg.SIPLeg)
-		if !ok {
-			continue
-		}
-		if sl.CallID() == callID {
-			// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
-			sl.ResetSessionTimer()
-			sdp, direction := sl.ApplyRemoteOffer(offer)
-			sl.HandleRemoteHold(direction)
-			return sdp
-		}
+//
+// A SIPREC re-INVITE may also carry an updated recording metadata document,
+// with or without SDP. The SDP is applied first so any newly negotiated stream
+// exists and carries its a=label before the metadata is joined to it.
+func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte {
+	sl := s.LegMgr.FindSIPByCallID(callID)
+	if sl == nil {
+		s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
+		return nil
 	}
-	s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
-	return nil
+
+	// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
+	sl.ResetSessionTimer()
+
+	var answer []byte
+	if offer, ok := body.SDP(); ok {
+		direction := ""
+		answer, direction = sl.ApplyRemoteOffer(offer)
+		sl.HandleRemoteHold(direction)
+	}
+	s.applySIPRECMetadata(sl, body)
+	return answer
 }
 
 // HandleUpdate processes a remote in-dialog UPDATE (RFC 3311). For session-
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, offer []byte, hasSDP bool) []byte {
-	for _, l := range s.LegMgr.List() {
-		sl, ok := l.(*leg.SIPLeg)
-		if !ok {
-			continue
-		}
-		if sl.CallID() == callID {
-			sl.ResetSessionTimer()
-			if hasSDP {
-				sdp, direction := sl.ApplyRemoteOffer(offer)
-				sl.HandleRemoteHold(direction)
-				return sdp
-			}
-			return nil
+func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) []byte {
+	sl := s.LegMgr.FindSIPByCallID(callID)
+	if sl == nil {
+		s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
+		return nil
+	}
+
+	sl.ResetSessionTimer()
+
+	var answer []byte
+	if hasSDP {
+		if offer, ok := body.SDP(); ok {
+			direction := ""
+			answer, direction = sl.ApplyRemoteOffer(offer)
+			sl.HandleRemoteHold(direction)
 		}
 	}
-	s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
-	return nil
+	s.applySIPRECMetadata(sl, body)
+	return answer
 }
 
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
@@ -649,7 +656,31 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.stopSpeakingDetector(l.ID())
 	s.cleanupLegAgent(l.ID())
 	s.stopLegRecording(l.ID())
+	s.cleanupSIPRECSession(l)
+	s.cleanupSIPRECSRC(l)
 	s.LegMgr.Remove(l.ID())
+}
+
+// applyLegWebhook routes this leg's events to the per-leg webhook named by the
+// INVITE's X-Webhook-URL header, falling back to the configured default.
+func (s *Server) applyLegWebhook(l leg.Leg, call *sipmod.InboundCall) {
+	webhookURL := ""
+	if h := call.Request.GetHeader("X-Webhook-URL"); h != nil {
+		webhookURL = h.Value()
+	}
+	if webhookURL == "" {
+		webhookURL = s.Config.WebhookURL
+	}
+	webhookSecret := ""
+	if h := call.Request.GetHeader("X-Webhook-Secret"); h != nil {
+		webhookSecret = h.Value()
+	}
+	if webhookSecret == "" {
+		webhookSecret = s.Config.WebhookSecret
+	}
+	if webhookURL != "" {
+		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
+	}
 }
 
 // detachLegStreams removes every secondary audio stream of l from whichever
@@ -1146,6 +1177,13 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		return
 	}
 
+	// A SIPREC recording session (RFC 7866) is not a call: it is answered
+	// receive-only and its m= sections carry other parties' audio. An INVITE
+	// the recording path declines to claim carries on as an ordinary call.
+	if s.ClaimSIPREC(call) {
+		return
+	}
+
 	// Inbound digest auth: a credentialed re-INVITE (the retry after a prior
 	// 401 challenge) is verified here before the call is surfaced. An invalid
 	// response is rejected with 403; a valid one is surfaced as authenticated.
@@ -1192,25 +1230,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// SIP_JITTER_BUFFER_MS env var.
 	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 
-	// Route events for this leg to the per-leg webhook. Extract URL from SIP
-	// X-Webhook-URL header, falling back to the configured default.
-	webhookURL := ""
-	if h := call.Request.GetHeader("X-Webhook-URL"); h != nil {
-		webhookURL = h.Value()
-	}
-	if webhookURL == "" {
-		webhookURL = s.Config.WebhookURL
-	}
-	webhookSecret := ""
-	if h := call.Request.GetHeader("X-Webhook-Secret"); h != nil {
-		webhookSecret = h.Value()
-	}
-	if webhookSecret == "" {
-		webhookSecret = s.Config.WebhookSecret
-	}
-	if webhookURL != "" {
-		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
-	}
+	s.applyLegWebhook(l, call)
 
 	// Tag the call with a trunk_id when the INVITE's source socket matches
 	// a known outbound trunk's registrar — informational, not a gate.

@@ -90,6 +90,8 @@ type mediaStream struct {
 	inTap       io.Writer // copy of decoded incoming PCM (before inFrames)
 	outTap      io.Writer // copy of outgoing PCM (from writeLoop, including silence)
 	amdTap      io.Writer // separate from inTap so recording and AMD can coexist
+	srcInTap    io.Writer // decoded incoming PCM forked to a SIPREC recording server
+	srcOutTap   io.Writer // outgoing PCM forked to a SIPREC recording server
 	speakingTap io.Writer // decoded incoming PCM for voice activity detection
 
 	// Inbound RTP stream statistics for MOS calculation.
@@ -168,14 +170,61 @@ func (l *SIPLeg) StreamMedia(streamID string) (StreamMedia, bool) {
 	return sm, true
 }
 
+// StreamsIndependent reports whether the leg's m-line 0 is an ordinary stream
+// rather than "the call". True for recording sessions.
+func (l *SIPLeg) StreamsIndependent() bool { return l.streamsIndependent }
+
+// SetSRCTaps forks a leg's own audio to a recording server: w receives every
+// decoded incoming frame, out every outgoing one. Kept separate from
+// SetInTap/SetOutTap so a recording session and a file recording can run on the
+// same leg at once.
+func (l *SIPLeg) SetSRCTaps(in, out io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prim.srcInTap = in
+	l.prim.srcOutTap = out
+}
+
+// ClearSRCTaps removes the recording-server taps.
+func (l *SIPLeg) ClearSRCTaps() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prim.srcInTap = nil
+	l.prim.srcOutTap = nil
+}
+
+// SetStreamInTap routes a copy of one stream's decoded incoming PCM to w.
+// SetInTap is the leg-wide equivalent, which only ever reaches the primary; a
+// recording session needs each participant's stream captured separately.
+func (l *SIPLeg) SetStreamInTap(streamID string, w io.Writer) bool {
+	s, ok := l.streamByID(streamID)
+	if !ok {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s.inTap = w
+	return true
+}
+
+// ClearStreamInTap removes one stream's incoming tap.
+func (l *SIPLeg) ClearStreamInTap(streamID string) {
+	if s, ok := l.streamByID(streamID); ok {
+		l.mu.Lock()
+		s.inTap = nil
+		l.mu.Unlock()
+	}
+}
+
 // SecondaryStreamIDs returns the IDs of every stream other than the primary,
-// in m-line order.
+// in m-line order. A leg whose streams are independent has no privileged
+// primary, so every stream is returned.
 func (l *SIPLeg) SecondaryStreamIDs() []string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	var out []string
 	for _, s := range l.streams {
-		if !s.primary {
+		if !s.primary || l.streamsIndependent {
 			out = append(out, s.id)
 		}
 	}
@@ -184,13 +233,14 @@ func (l *SIPLeg) SecondaryStreamIDs() []string {
 
 // StreamRooms returns the room each secondary stream is attached to, keyed by
 // stream ID. The primary stream is excluded — its room is the leg's own
-// RoomID, which every existing caller already tracks.
+// RoomID, which every existing caller already tracks — unless the leg's streams
+// are independent, where it has a room of its own and teardown must see it.
 func (l *SIPLeg) StreamRooms() map[string]string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	var out map[string]string
 	for _, s := range l.streams {
-		if s.primary || s.roomID == "" {
+		if (s.primary && !l.streamsIndependent) || s.roomID == "" {
 			continue
 		}
 		if out == nil {
@@ -204,7 +254,7 @@ func (l *SIPLeg) StreamRooms() map[string]string {
 // SetStreamRole records a secondary stream's routing role inside its room.
 func (l *SIPLeg) SetStreamRole(streamID, role string) {
 	s, ok := l.streamByID(streamID)
-	if !ok || s.primary {
+	if !ok || (s.primary && !l.streamsIndependent) {
 		return
 	}
 	l.mu.Lock()
@@ -215,7 +265,7 @@ func (l *SIPLeg) SetStreamRole(streamID, role string) {
 // SetStreamRoom records which room a secondary stream is mixed into.
 func (l *SIPLeg) SetStreamRoom(streamID, roomID string) {
 	s, ok := l.streamByID(streamID)
-	if !ok || s.primary {
+	if !ok || (s.primary && !l.streamsIndependent) {
 		return
 	}
 	l.mu.Lock()
@@ -322,6 +372,7 @@ func (l *SIPLeg) answerOptions(preferred codec.CodecType, textMLine int) sipmod.
 		Preferred:       preferred,
 		TextMLineIndex:  textMLine,
 		StrictMLines:    l.strictMLines,
+		MaxDirection:    l.maxAnswerDirection,
 	}
 }
 
@@ -342,6 +393,7 @@ func (l *SIPLeg) buildAnswerStreams(offer *sipmod.SDPMedia, plans []sipmod.SlotP
 			continue
 		case sipmod.SlotReject:
 			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID})
+			l.closeStreamAtIndex(p.Index)
 			l.recordSlot(p, "", sipmod.SlotTombstone, sipmod.AudioStream{})
 			continue
 		}
@@ -349,6 +401,7 @@ func (l *SIPLeg) buildAnswerStreams(offer *sipmod.SDPMedia, plans []sipmod.SlotP
 		s, sec, ok := l.materializeStream(offer, p)
 		if !ok {
 			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID})
+			l.closeStreamAtIndex(p.Index)
 			l.recordSlot(p, "", sipmod.SlotTombstone, sipmod.AudioStream{})
 			continue
 		}
@@ -423,6 +476,26 @@ func (l *SIPLeg) newRTPSession() (*sipmod.RTPSession, error) {
 		return sipmod.NewRTPSession()
 	}
 	return sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
+}
+
+// closeStreamAtIndex tears down whatever stream currently occupies an m-line
+// the answer is rejecting. Without it a re-offer that disables a section leaves
+// the old stream's readLoop running and its RTP port never returned to the
+// allocator.
+func (l *SIPLeg) closeStreamAtIndex(index int) {
+	l.mu.RLock()
+	var found *mediaStream
+	for _, s := range l.streams {
+		if s.index == index {
+			found = s
+			break
+		}
+	}
+	l.mu.RUnlock()
+
+	if found != nil {
+		l.closeStream(found)
+	}
 }
 
 // streamForIndex returns the stream occupying an m-line, creating it if this is

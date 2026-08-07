@@ -380,6 +380,93 @@ var legStreamViewFields = map[string]FieldEnrichment{
 	"role":              {Description: "Routing role of this stream within its room. Streams carry their own role, independent of their leg's."},
 }
 
+// StartSIPRECRequest is the request body for POST /v1/rooms/{id}/siprec, which
+// forks a room's participants to an external session recording server.
+type StartSIPRECRequest struct {
+	SRSURI string `json:"srs_uri"`
+	// LegIDs narrows what is recorded. Empty records everything in the room.
+	LegIDs       []string          `json:"leg_ids,omitempty"`
+	SessionID    string            `json:"session_id,omitempty"`
+	AppID        string            `json:"app_id,omitempty"`
+	AuthUsername string            `json:"auth_username,omitempty"`
+	AuthPassword string            `json:"auth_password,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+}
+
+var startSIPRECRequestFields = map[string]FieldEnrichment{
+	"leg_ids":       {Description: "Which participants to record. Each entry is either a leg ID (that leg's own audio) or \"<legID>#<streamID>\" for one of a leg's secondary audio streams mixed into the room. Empty or absent records every participant. An entry that is not in the room is a 404."},
+	"srs_uri":       {Description: "SIP URI of the session recording server, e.g. \"sip:srs@recorder.example.com:5060\". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP."},
+	"session_id":    {Description: "Communication session identifier put in the recording metadata. Defaults to the room ID."},
+	"app_id":        {Description: "Application identifier tagged onto the resulting leg and its events."},
+	"auth_username": {Description: "SIP digest username, when the recording server challenges the INVITE."},
+	"auth_password": {Description: "SIP digest password, when the recording server challenges the INVITE."},
+	"headers":       {Description: "Extra SIP headers to include in the INVITE. Require: siprec is always sent."},
+}
+
+// SIPRECParticipantView is one party recorded by a SIPREC session, as named by
+// the RFC 7865 metadata document.
+type SIPRECParticipantView struct {
+	ParticipantID string `json:"participant_id"`
+	AOR           string `json:"aor,omitempty"`
+	Name          string `json:"name,omitempty"`
+}
+
+var siprecParticipantViewFields = map[string]FieldEnrichment{
+	"participant_id": {Description: "The participant_id attribute from the recording metadata document."},
+	"aor":            {Description: "The participant's address of record, e.g. \"sip:alice@example.com\"."},
+	"name":           {Description: "The participant's display name, when the metadata carries one."},
+}
+
+// SIPRECStreamView is one recorded media stream: the m=audio section carrying
+// it, joined to the participant the metadata binds to its a=label.
+type SIPRECStreamView struct {
+	LegStreamID     string `json:"leg_stream_id"`
+	MID             string `json:"mid,omitempty"`
+	Label           string `json:"label,omitempty"`
+	Direction       string `json:"direction,omitempty"`
+	Codec           string `json:"codec,omitempty"`
+	RoomID          string `json:"room_id,omitempty"`
+	Role            string `json:"role,omitempty"`
+	ParticipantID   string `json:"participant_id,omitempty"`
+	ParticipantAOR  string `json:"participant_aor,omitempty"`
+	ParticipantName string `json:"participant_name,omitempty"`
+}
+
+var siprecStreamViewFields = map[string]FieldEnrichment{
+	"leg_stream_id":    {Description: "Identifier of the leg stream carrying this recorded media, as used by /v1/legs/{id}/streams."},
+	"mid":              {Description: "The stream's SDP a=mid token (RFC 5888)."},
+	"label":            {Description: "The stream's a=label value (RFC 4574). This is the key that binds the m= section to the recording metadata."},
+	"direction":        {Description: "Negotiated media direction. Always recvonly or inactive: a recording server never transmits.", Enum: []string{"recvonly", "inactive"}},
+	"codec":            {Description: "Codec negotiated for this stream."},
+	"room_id":          {Description: "Room this stream's audio is mixed into, when it has been attached to one."},
+	"role":             {Description: "Routing role of this stream within its room. Defaults to the participant's identity."},
+	"participant_id":   {Description: "Participant whose audio arrives on this stream, from the metadata's participantstreamassoc send binding."},
+	"participant_aor":  {Description: "Address of record of the participant sending on this stream."},
+	"participant_name": {Description: "Display name of the participant sending on this stream."},
+}
+
+// SIPRECSessionView is the state of one inbound SIPREC recording session
+// (RFC 7866): who is being recorded, on which stream, and where that audio went.
+type SIPRECSessionView struct {
+	LegID        string                  `json:"leg_id"`
+	SessionID    string                  `json:"session_id,omitempty"`
+	DataMode     string                  `json:"data_mode,omitempty"`
+	RoomID       string                  `json:"room_id,omitempty"`
+	Participants []SIPRECParticipantView `json:"participants"`
+	Streams      []SIPRECStreamView      `json:"streams"`
+	Metadata     string                  `json:"metadata,omitempty"`
+}
+
+var siprecSessionViewFields = map[string]FieldEnrichment{
+	"leg_id":       {Description: "Leg carrying the recording session."},
+	"session_id":   {Description: "Communication session being recorded, from the metadata's sessionrecordingassoc."},
+	"data_mode":    {Description: "Data mode of the most recently applied metadata document (RFC 7865 §6.1).", Enum: []string{"complete", "partial"}},
+	"room_id":      {Description: "Room this session's streams were attached to, when SIPREC_ROOM_MODE placed them in one."},
+	"participants": {Description: "Every party currently recorded by this session."},
+	"streams":      {Description: "Every negotiated media stream, joined to the participant it carries."},
+	"metadata":     {Description: "The raw rs-metadata XML document as most recently received."},
+}
+
 // AddLegStreamRequest is the request body for POST /v1/legs/{id}/streams.
 type AddLegStreamRequest struct {
 	Direction string `json:"direction,omitempty"`
@@ -799,6 +886,10 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("WebRTCOfferRequest", webRTCOfferRequestFields)
 	collect("SetLegRoleRequest", setLegRoleRequestFields)
 	collect("LegStreamView", legStreamViewFields)
+	collect("StartSIPRECRequest", startSIPRECRequestFields)
+	collect("SIPRECSessionView", siprecSessionViewFields)
+	collect("SIPRECParticipantView", siprecParticipantViewFields)
+	collect("SIPRECStreamView", siprecStreamViewFields)
 	collect("CreateLegStream", createLegStreamFields)
 	collect("AnswerLegStream", answerLegStreamFields)
 	collect("UpdateLegStreamRequest", updateLegStreamRequestFields)
