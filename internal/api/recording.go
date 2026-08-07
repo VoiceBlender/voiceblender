@@ -255,7 +255,6 @@ var (
 // resolveStorage returns the appropriate storage backend for the request.
 // Per-request object-store config (s3_bucket / gcs_bucket) creates a backend
 // on the fly; otherwise the matching server-level backend is used.
-//
 // ctx bounds the bucket preflight, so a caller that goes away stops the probe
 // instead of holding the request — or, on VSI, the connection's command loop.
 func (s *Server) resolveStorage(ctx context.Context, req RecordRequest) (storage.Backend, error) {

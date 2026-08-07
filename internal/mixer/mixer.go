@@ -55,6 +55,10 @@ type Participant struct {
 
 	// incoming holds PCM frames read from this participant (read goroutine → mixer).
 	incoming chan []byte
+	// lastIncoming is the most recent frame observed for this participant.
+	// mixTick replays it on a brief underrun instead of splicing digital
+	// silence into the live mix (audible as mid-word cracks on PSTN).
+	lastIncoming []byte
 	// outgoing holds mixed-minus-self frames to send (mixer → write goroutine).
 	outgoing chan []byte
 	// done is closed when this participant is removed, stopping its goroutines.
@@ -746,7 +750,11 @@ func (m *Mixer) mixTick() {
 		return
 	}
 
-	// Collect latest frames from each participant (non-blocking)
+	// Collect latest frames from each participant (non-blocking).
+	// An empty ingress slot used to write digital zeros into the mix — that
+	// is audible on the live PSTN path whenever a producer is a few ms late
+	// relative to the mix tick. Hold the last good frame instead; fall back
+	// to silence only before the first frame has arrived.
 	frames := make([][]int16, len(parts))
 	muted := make([]bool, len(parts))
 	for i, p := range parts {
@@ -754,8 +762,13 @@ func (m *Mixer) mixTick() {
 		var raw []byte
 		select {
 		case raw = <-p.incoming:
+			p.lastIncoming = raw
 		default:
-			raw = make([]byte, m.frameSizeBytes) // silence
+			if len(p.lastIncoming) == m.frameSizeBytes {
+				raw = p.lastIncoming
+			} else {
+				raw = make([]byte, m.frameSizeBytes) // leading silence only
+			}
 		}
 		// Write raw PCM to per-participant tap (for STT) before conversion.
 		// Tap still receives audio even when muted (recording/STT of own audio).
