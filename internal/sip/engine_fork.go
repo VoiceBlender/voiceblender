@@ -135,7 +135,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 						return nil
 					}
 					earlyMediaOnce.Do(func() {
-						remoteSDP, perr := ParseSDP(body)
+						remoteSDP, perr := ParseSDPMessage(res)
 						if perr != nil {
 							e.log.Warn("fork early media: parse 183 SDP", "error", perr)
 							return
@@ -218,7 +218,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		return nil, fmt.Errorf("ack: %w", err)
 	}
 
-	remoteSDP, err := ParseSDP(ds.InviteResponse.Body())
+	remoteSDP, err := ParseSDPMessage(ds.InviteResponse)
 	if err != nil {
 		ds.Bye(context.Background())
 		rtpSess.Close()

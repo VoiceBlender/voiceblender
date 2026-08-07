@@ -126,6 +126,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
 		Log:               log,
 		UseSourceSocket:   cfg.SIPUseSourceSocket,
+		TCPEnabled:        cfg.SIPTCPEnabled,
 		Registrar:         registrar,
 		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
 	})

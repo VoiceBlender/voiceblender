@@ -81,7 +81,7 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 		Role:      s.role,
 		RoomID:    s.roomID,
 	}
-	if s.primary {
+	if s.primary && !l.streamsIndependent {
 		info.RoomID = l.roomID
 	}
 	if info.Direction == "" {

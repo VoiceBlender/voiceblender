@@ -143,6 +143,11 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "leg_stream_attach_room", Summary: "Mix one of a leg's audio streams into a room (may differ from the leg's own room)", PayloadType: legStreamRoomPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404, 409}},
 		{Name: "leg_stream_detach_room", Summary: "Remove one of a leg's audio streams from whichever room mixes it", PayloadType: legStreamPayload{}, ResultType: LegStreamView{}, ErrorCodes: []int{400, 404}},
 
+		// ── SIPREC recording sessions (RFC 7865 / RFC 7866) ─────────────
+		{Name: "leg_siprec_start", Summary: "Fork a single call to an external SIPREC recording server", PayloadType: roomSIPRECStartPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 403, 404, 409, 502}},
+		{Name: "room_siprec_start", Summary: "Fork a room's participants to an external SIPREC recording server", PayloadType: roomSIPRECStartPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 403, 404, 409, 502}},
+		{Name: "siprec_get", Summary: "Get an inbound SIPREC recording session's participants, streams and metadata", PayloadType: idPayload{}, ResultType: SIPRECSessionView{}, ErrorCodes: []int{400, 404}},
+
 		// ── Leg control ─────────────────────────────────────────────────
 		// New commands use resource-first naming (leg_*, room_*) by design.
 		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
@@ -253,6 +258,11 @@ func EventsMetadata() []EventMeta {
 		{events.LegStreamFailed, "An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams", reflect.TypeOf(events.LegStreamData{})},
 		{events.LegStreamRoomChanged, "An audio stream was attached to or detached from a room (an empty room_id means detached)", reflect.TypeOf(events.LegStreamData{})},
 		{events.LegStreamRoleChanged, "An audio stream's routing role changed; the room's allow-sets were recomputed atomically", reflect.TypeOf(events.LegStreamData{})},
+		{events.SIPRECSessionStarted, "An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings", reflect.TypeOf(events.SIPRECSessionStartedData{})},
+		{events.SIPRECSessionEnded, "A SIPREC recording session ended", reflect.TypeOf(events.SIPRECSessionEndedData{})},
+		{events.SIPRECMetadataUpdated, "A SIPREC recording session's metadata document was updated on a re-INVITE", reflect.TypeOf(events.SIPRECMetadataUpdatedData{})},
+		{events.SIPRECParticipantJoined, "A party joined the call being recorded by a SIPREC session", reflect.TypeOf(events.SIPRECParticipantJoinedData{})},
+		{events.SIPRECParticipantLeft, "A party left the call being recorded by a SIPREC session", reflect.TypeOf(events.SIPRECParticipantLeftData{})},
 		{events.DTMFReceived, "DTMF digit received", reflect.TypeOf(events.DTMFReceivedData{})},
 		{events.RTTReceived, "Real-Time Text (T.140 / RFC 4103) chunk received from the remote", reflect.TypeOf(events.RTTReceivedData{})},
 		{events.SpeakingStarted, "Participant started speaking", reflect.TypeOf(events.SpeakingData{})},

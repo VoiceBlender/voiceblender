@@ -17,6 +17,11 @@ type AnswerOptions struct {
 	// TextMLineIndex is the m= section the caller renders itself as m=text, or
 	// -1 when there is none.
 	TextMLineIndex int
+
+	// MaxDirection caps every accepted section's answer direction. Empty means
+	// no cap; DirRecvOnly makes the answer receive-only whatever was offered,
+	// which is what a recording session (RFC 7866) needs.
+	MaxDirection string
 }
 
 // SlotAction is what an answer does with one offered m= section.
@@ -119,7 +124,7 @@ func PlanAnswer(offer *SDPMedia, opts AnswerOptions) []SlotPlan {
 			p.Action = SlotAccept
 			p.Codec = selected
 			p.PT = pt
-			p.Direction = MirrorDirection(ra.EffectiveDirection())
+			p.Direction = NarrowDirection(MirrorDirection(ra.EffectiveDirection()), opts.MaxDirection)
 			accepted++
 		}
 

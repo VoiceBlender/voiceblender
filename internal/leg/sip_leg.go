@@ -84,6 +84,14 @@ type SIPLeg struct {
 	// Negotiation policy, copied from the engine at construction.
 	strictMLines bool
 
+	// maxAnswerDirection caps every answered section's direction. Empty for an
+	// ordinary call; DirRecvOnly for a recording session, which never transmits.
+	maxAnswerDirection string
+	// streamsIndependent drops the primary stream's privileges: on a recording
+	// session m-line 0 is just another participant's audio, so it takes a room
+	// and a role of its own like any other stream.
+	streamsIndependent bool
+
 	earlyMediaSDP    []byte            // SDP sent in 183, reused in 200 OK on Answer
 	sipHeaders       map[string]string // X-* headers from inbound INVITE or outbound request
 	originUser       string            // user part of the identity to originate under on this leg's behalf (see OriginatingIdentity)
@@ -223,6 +231,35 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		l.sessionRefresher = call.SessionTimer.Refresher
 	}
 
+	return l
+}
+
+// NewSIPRECInboundLeg builds the leg for an inbound SIPREC recording session
+// (RFC 7866). It shares every media path with an ordinary inbound leg and
+// differs only in negotiation policy: it never transmits, and m-line 0 carries
+// one recorded party's audio rather than "the call".
+func NewSIPRECInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
+	l := NewSIPInboundLeg(call, engine, log)
+	l.legType = TypeSIPRECInbound
+	l.maxAnswerDirection = sipmod.DirRecvOnly
+	l.streamsIndependent = true
+	// A recording session must answer every offered section positionally,
+	// whatever the server-wide default says.
+	l.strictMLines = true
+	l.acceptDTMF.Store(false)
+	return l
+}
+
+// NewSIPRECOutboundLeg builds the leg for an outbound SIPREC recording session
+// (RFC 7866): VoiceBlender as the recording client, forking a call's audio to
+// an external recording server. It shares every media path with an ordinary
+// outbound leg and differs only in policy — each m= section carries one
+// recorded party rather than "the call", and nothing is received.
+func NewSIPRECOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
+	l := NewSIPOutboundLeg(call, engine, log)
+	l.legType = TypeSIPRECOutbound
+	l.streamsIndependent = true
+	l.acceptDTMF.Store(false)
 	return l
 }
 
@@ -1146,6 +1183,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		l.mu.RLock()
 		tap := s.inTap
 		at := s.amdTap
+		srcTap := s.srcInTap
 		st := s.speakingTap
 		l.mu.RUnlock()
 		if tap != nil {
@@ -1153,6 +1191,9 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		}
 		if at != nil {
 			at.Write(pcm)
+		}
+		if srcTap != nil {
+			srcTap.Write(pcm)
 		}
 		if st != nil {
 			st.Write(pcm)
@@ -1342,9 +1383,13 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 		// Write to outgoing tap (for recording) before encoding.
 		l.mu.RLock()
 		oTap := s.outTap
+		srcOut := s.srcOutTap
 		l.mu.RUnlock()
 		if oTap != nil {
 			oTap.Write(frame)
+		}
+		if srcOut != nil {
+			srcOut.Write(frame)
 		}
 
 		// Parse PCM bytes to int16 samples (already at native rate)

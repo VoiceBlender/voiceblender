@@ -66,8 +66,20 @@ func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
 // mixed separately.
 func (r *Room) AddLegStream(l StreamedLeg, streamID, role string) (*mixer.Participant, bool) {
 	sm, ok := l.StreamMedia(streamID)
-	if !ok || sm.Primary {
+	if !ok {
 		return nil, false
+	}
+	// The primary stream normally joins with its leg, via AddLeg. It may only
+	// join as a stream when the leg itself is not a participant here — the case
+	// for a recording session, whose m-line 0 is just another party's audio and
+	// which must never be handed to the mixer as a whole leg.
+	if sm.Primary {
+		r.mu.RLock()
+		_, isParticipant := r.participants[l.ID()]
+		r.mu.RUnlock()
+		if isParticipant {
+			return nil, false
+		}
 	}
 
 	reader, writer := streamEndpoints(sm)

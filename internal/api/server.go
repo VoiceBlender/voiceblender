@@ -56,6 +56,17 @@ type Server struct {
 	streamRoomsMu sync.Mutex
 	streamRooms   map[string][]AnswerLegStream
 
+	// siprecMu guards siprecSessions, the RFC 7865 metadata state of every live
+	// inbound recording session, keyed by leg ID.
+	siprecMu       sync.Mutex
+	siprecSessions map[string]*siprecSession
+	// siprecRecordings holds the per-participant capture of each recording
+	// session currently being written to disk, keyed by leg ID.
+	siprecRecordings map[string]*siprecRecording
+	// siprecSRCs holds the outbound recording sessions this server originated,
+	// keyed by the siprec_out leg's ID.
+	siprecSRCs map[string]*siprecSRC
+
 	transfers *transferStore
 
 	// pendingRefers tracks inbound REFERs parked awaiting an app accept/decline.
@@ -81,25 +92,28 @@ func NewServer(
 ) *Server {
 	instanceID = cfg.InstanceID
 	s := &Server{
-		Router:         chi.NewRouter(),
-		LegMgr:         legMgr,
-		RoomMgr:        roomMgr,
-		SIPEngine:      engine,
-		Bus:            bus,
-		Webhooks:       webhooks,
-		TTS:            ttsProvider,
-		TTSCache:       ttsCache,
-		S3:             s3Backend,
-		Metrics:        metricsCollector,
-		Config:         cfg,
-		AllowedIPs:     allowedIPs,
-		Log:            log,
-		speakDets:      make(map[string]*speaking.Detector),
-		speechOverride: make(map[string]*bool),
-		streamRooms:    make(map[string][]AnswerLegStream),
-		transfers:      newTransferStore(),
-		pendingRefers:  newPendingReferStore(),
-		regAttempts:    newRegisterAttemptStore(),
+		Router:           chi.NewRouter(),
+		LegMgr:           legMgr,
+		RoomMgr:          roomMgr,
+		SIPEngine:        engine,
+		Bus:              bus,
+		Webhooks:         webhooks,
+		TTS:              ttsProvider,
+		TTSCache:         ttsCache,
+		S3:               s3Backend,
+		Metrics:          metricsCollector,
+		Config:           cfg,
+		AllowedIPs:       allowedIPs,
+		Log:              log,
+		speakDets:        make(map[string]*speaking.Detector),
+		speechOverride:   make(map[string]*bool),
+		streamRooms:      make(map[string][]AnswerLegStream),
+		siprecSessions:   make(map[string]*siprecSession),
+		siprecRecordings: make(map[string]*siprecRecording),
+		siprecSRCs:       make(map[string]*siprecSRC),
+		transfers:        newTransferStore(),
+		pendingRefers:    newPendingReferStore(),
+		regAttempts:      newRegisterAttemptStore(),
 	}
 	// The room layer tears down a mixer-panicked leg but cannot finish the job:
 	// the CDR, the span, the webhook and the LegMgr entry are API-layer state.
@@ -209,6 +223,10 @@ func (s *Server) routes() {
 		r.Put("/rooms/{id}/routing", s.setRoomRouting)
 		r.Patch("/rooms/{id}/routing", s.updateRoomRouting)
 		r.Patch("/legs/{id}/role", s.setLegRole)
+
+		r.Get("/legs/{id}/siprec", s.getSIPRECSession)
+		r.Post("/legs/{id}/siprec", s.startLegSIPREC)
+		r.Post("/rooms/{id}/siprec", s.startRoomSIPREC)
 
 		r.Get("/legs/{id}/streams", s.listLegStreams)
 		r.Post("/legs/{id}/streams", s.addLegStream)

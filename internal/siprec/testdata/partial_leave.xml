@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<recording xmlns="urn:ietf:params:xml:ns:recording:1">
+  <datamode>partial</datamode>
+  <participantsessionassoc participant_id="zSfPoSGiSVKGsxDT2SBjRQ==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+    <disassociate-time>2026-08-07T09:18:22Z</disassociate-time>
+  </participantsessionassoc>
+</recording>

@@ -3041,6 +3041,306 @@ websocat ws://localhost:8080/v1/vsi
 
 ---
 
+## SIPREC session recording
+
+VoiceBlender can act as a **Session Recording Server (SRS)**: an SBC or PBX acting
+as a Session Recording Client (SRC) forks a call's media to it as a *recording
+session* (RFC 7866), and a metadata document (RFC 7865) says whose audio arrives
+on which stream.
+
+A recording session is **not a call**. It arrives as an INVITE whose body is
+`multipart/mixed` — the SDP plus an `application/rs-metadata+xml` part — with one
+`sendonly m=audio` section per recorded party. VoiceBlender answers every section
+`recvonly` and never transmits.
+
+Disabled by default. Enable with:
+
+```bash
+SIP_TCP_ENABLED=true    # required: a SIPREC INVITE does not fit in a UDP datagram
+SIPREC_ENABLED=true
+```
+
+> **SIP over TCP is mandatory for SIPREC.** UDP caps a SIP message at 1300 bytes
+> (RFC 3261 §18.1.1) and a SIPREC INVITE carries the whole metadata document
+> alongside the SDP, so it always exceeds that. With `SIP_TCP_ENABLED=false` the
+> INVITE never arrives.
+
+### What arrives on the wire
+
+```
+INVITE sip:srs@voiceblender.example SIP/2.0
+Require: siprec
+Contact: <sip:sbc@10.0.0.9:5060>;+sip.src
+Content-Type: multipart/mixed;boundary=unique-boundary-1
+
+--unique-boundary-1
+Content-Type: application/sdp
+Content-Disposition: session;handling=required
+
+m=audio 40000 RTP/AVP 0        ; Alice
+a=sendonly
+a=label:1
+m=audio 40002 RTP/AVP 0        ; Bob
+a=sendonly
+a=label:2
+
+--unique-boundary-1
+Content-Type: application/rs-metadata+xml
+Content-Disposition: recording-session
+
+<recording xmlns="urn:ietf:params:xml:ns:recording:1">
+  <datamode>complete</datamode>
+  <participant participant_id="pa"><nameID aor="sip:alice@example.com"/></participant>
+  <stream stream_id="ta"><label>1</label></stream>
+  <participantstreamassoc participant_id="pa"><send>ta</send></participantstreamassoc>
+</recording>
+--unique-boundary-1--
+```
+
+The binding chain is `a=label` → `<stream label=…  stream_id=…>` →
+`<participantstreamassoc send=stream_id>` → `<participant><nameID aor=…>`. That is
+what lets a recorded m= section be named after a real person.
+
+An INVITE is treated as SIPREC when **any** of these holds, because SBC
+conformance varies: `Require`/`Proxy-Require` contains `siprec`, the `Contact`
+carries the `+sip.src` feature tag, or the body carries an rs-metadata part.
+
+### Rejection cases
+
+| Condition | Response |
+|---|---|
+| `SIPREC_ENABLED=false` and `Require: siprec` present | `420 Bad Extension` + `Unsupported: siprec` |
+| `SIPREC_ENABLED=false`, SIPREC only hinted at (`+sip.src` or a stray metadata part, no `Require`) | Not claimed — handled as an ordinary call, exactly as before SIPREC existed |
+| Claims SIPREC but carries no rs-metadata part | `400 Bad Request` |
+| rs-metadata is not parseable | `400 Bad Request` |
+| rs-metadata exceeds `SIPREC_METADATA_MAX_BYTES` | `413 Request Entity Too Large` |
+| More `m=audio` sections than `SIPREC_MAX_STREAMS` | `486 Busy Here` |
+
+### The resulting leg
+
+The session becomes a leg of type `siprec_in`. It is answered without any
+`POST /v1/legs/{id}/answer` unless `SIPREC_AUTO_ANSWER=false`.
+
+Unlike an ordinary SIP leg it has **no privileged primary stream**: `m=audio` #0
+is simply the first recorded party. Every stream — including `"0"` — is attached
+to a room with `POST /v1/legs/{id}/streams/{streamId}/room` and takes its own
+routing role. A recording session is receive-only, so DTMF, playback, TTS, hold
+and transfer do not apply to it.
+
+### GET /v1/legs/{id}/siprec
+
+Returns the session's participants, streams, and the binding between them.
+
+```bash
+curl localhost:8080/v1/legs/$LEG_ID/siprec
+```
+
+```json
+{
+  "instance_id": "vb-1",
+  "leg_id": "9f1c...",
+  "session_id": "s1",
+  "data_mode": "complete",
+  "room_id": "siprec-9f1c...",
+  "participants": [
+    {"participant_id": "pa", "aor": "sip:alice@example.com", "name": "Alice Smith"},
+    {"participant_id": "pb", "aor": "sip:bob@example.com",   "name": "Bob Jones"}
+  ],
+  "streams": [
+    {
+      "leg_stream_id": "0", "mid": "1", "label": "1",
+      "direction": "recvonly", "codec": "PCMU",
+      "room_id": "siprec-9f1c...", "role": "Alice Smith",
+      "participant_id": "pa",
+      "participant_aor": "sip:alice@example.com",
+      "participant_name": "Alice Smith"
+    },
+    {
+      "leg_stream_id": "1", "mid": "2", "label": "2",
+      "direction": "recvonly", "codec": "PCMU",
+      "room_id": "siprec-9f1c...", "role": "Bob Jones",
+      "participant_id": "pb",
+      "participant_aor": "sip:bob@example.com",
+      "participant_name": "Bob Jones"
+    }
+  ],
+  "metadata": "<?xml version=\"1.0\"...?>"
+}
+```
+
+The VSI equivalent is the `siprec_get` command with `{"id": "<leg id>"}`.
+
+### Using the recorded audio
+
+Because the streams are ordinary leg streams, everything that already works on a
+room applies to a passively recorded call.
+
+**Mix each party into a room automatically** — set `SIPREC_ROOM_MODE=per_session`
+and every session gets a room named `siprec-<legID>` with one participant per
+recorded party, each roled by identity. Then point the existing endpoints at it:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/siprec-$LEG_ID/stt -d '{"provider":"deepgram"}'
+```
+
+**Record one channel per party** with the ordinary recording endpoint — no new
+API. On a `siprec_in` leg, `/record` captures every stream separately and merges
+them into a single multi-channel WAV, one channel per recorded party:
+
+```bash
+curl -X POST   localhost:8080/v1/legs/$LEG_ID/record
+curl -X DELETE localhost:8080/v1/legs/$LEG_ID/record
+```
+
+`recording.finished` then carries `multi_channel_file` and a `channels` map
+**keyed by participant identity** — their AOR, display name or participant ID —
+rather than by leg ID as a room recording is:
+
+```json
+{
+  "type": "recording.finished",
+  "leg_id": "9f1c...",
+  "file": "/recordings/20260807_124420_multichannel_d4989c5a.wav",
+  "multi_channel_file": "/recordings/20260807_124420_multichannel_d4989c5a.wav",
+  "channels": {
+    "sip:alice@example.com": {"channel": 0, "start_ms": 0, "end_ms": 505},
+    "sip:bob@example.com":   {"channel": 1, "start_ms": 0, "end_ms": 505}
+  }
+}
+```
+
+Streams on one session can negotiate different codecs, so every capture is
+resampled to `DEFAULT_SAMPLE_RATE` before the merge — all channels share one
+rate. A party whose capture produced nothing is listed in `omitted_legs` rather
+than failing the merge. `/record/pause` and `/record/resume` apply to every
+channel at once, so they stay time-aligned. Set `SIPREC_AUTO_RECORD=true` to
+start this automatically when a session arrives.
+
+**Or place streams yourself** with `SIPREC_ROOM_MODE=none` (the default):
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/streams/0/room \
+  -d '{"room_id": "analysis", "role": "customer"}'
+curl -X POST localhost:8080/v1/legs/$LEG_ID/streams/1/room \
+  -d '{"room_id": "analysis", "role": "agent"}'
+```
+
+A leg never hears its own sibling streams, and every recording stream is
+receive-only, so the recorded parties cannot bleed into each other's mixes.
+
+### Events
+
+| Event | When |
+|---|---|
+| `siprec.session_started` | A recording session was accepted. Carries the participants and the stream→participant bindings — this is the event a controller listens for to decide what to do with the audio. |
+| `siprec.session_ended` | The recording session ended. |
+| `siprec.metadata_updated` | The metadata document was updated on a re-INVITE or UPDATE. Carries the joined/left participant IDs, added/removed stream IDs, and the refreshed stream bindings. |
+| `siprec.participant_joined` | A party joined the call being recorded, with the stream now carrying them. |
+| `siprec.participant_left` | A party left the call being recorded, with the stream that had carried them. |
+
+`leg.ringing`, `leg.connected` and `leg.disconnected` also fire, with
+`leg_type: "siprec_in"`.
+
+### Mid-session changes
+
+An SRC signals a party joining or leaving with a re-INVITE carrying an updated
+metadata document, usually `datamode=partial`.
+
+- **A party joins** — the re-offer adds an `m=audio` section and the metadata
+  names the participant and binds it to the new `a=label`. VoiceBlender
+  negotiates the section `recvonly`, binds it, publishes
+  `siprec.participant_joined`, and — under `SIPREC_ROOM_MODE=per_session` —
+  attaches the new stream to the session room with the participant's role.
+- **A party leaves** — the metadata closes the association with a
+  `disassociate-time`. The participant and the stream it was sending on are
+  dropped and `siprec.participant_left` fires. A re-offer that also disables the
+  section with port 0 tears the stream down and returns its RTP port.
+- **Metadata-only re-INVITE** — legal and common for a rename or a hold. There
+  is no SDP part; the update applies and the negotiated media is untouched.
+
+`datamode` semantics follow RFC 7865 §6.1: a `complete` document replaces the
+server's whole view, so anything absent from it is gone; a `partial` one is
+merged and **never** deletes on absence — removal is always signalled positively
+with a `disassociate-time`.
+
+### POST /v1/rooms/{id}/siprec — recording *client*
+
+The other direction: VoiceBlender as the **Session Recording Client**, forking a
+room it already hosts to an external recording server. Each participant's *own*
+audio goes on its own `sendonly m=audio` section — not the room mix — and the
+metadata names them.
+
+Requires `SIPREC_SRC_ENABLED=true`. Off by default: it lets an API caller stream
+a room's audio to an arbitrary SIP destination.
+
+```bash
+curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp",
+  "session_id": "conf-1-rec"
+}'
+```
+
+| Field | Meaning |
+|---|---|
+| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the UDP limit. |
+| `leg_ids` | Which participants to record. Omit to record everything in the room. |
+| `session_id` | Communication session ID in the metadata. Defaults to the room ID. |
+| `auth_username` / `auth_password` | Digest credentials, when the recording server challenges. |
+| `headers` | Extra SIP headers. `Require: siprec` is always sent. |
+| `app_id` | Tagged onto the resulting leg and its events. |
+
+Returns the resulting `siprec_out` leg. **Delete that leg to end the session** —
+`DELETE /v1/legs/{id}` sends the BYE and tears down the taps.
+
+#### Choosing what to record
+
+By default every participant of the room is forked. `leg_ids` narrows that, and
+addresses **streams as well as legs**:
+
+```bash
+curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp",
+  "leg_ids": ["leg-abc", "leg-def#1"]
+}'
+```
+
+`"leg-abc"` is that leg's own audio; `"leg-def#1"` is one of `leg-def`'s
+secondary streams, such as a translated feed.
+
+An entry is either a leg ID or `<legID>#<streamID>` — the same participant IDs
+the mixer and the routing matrix use. A secondary stream may belong to a leg that
+is not itself in the room, which is the point of a cross-room stream, and it is
+still addressable. An entry that names nothing in the room is a `404`.
+
+Selection is by identity, not by position: whatever order you list them in, the
+parties are assigned to m-lines in a stable sorted order, so the same selection
+always produces the same layout.
+
+#### A single call, without a room
+
+`POST /v1/legs/{id}/siprec` forks one call directly as a two-section session —
+what the far end says, and what this server sends them — with no room involved:
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/siprec -d '{
+  "srs_uri": "sip:srs@recorder.example.com:5060;transport=tcp"
+}'
+```
+
+`leg_ids` is ignored here; the two sections are fixed. This path taps the leg
+directly rather than the mixer, using tap slots of its own, so an ordinary
+`/record` on the same leg keeps working alongside it. A leg that is itself a
+recording session cannot be forked onward.
+
+A participant's address of record in the metadata comes from the leg's
+`X-SIPREC-AOR` header when it has one, otherwise a synthetic
+`sip:<leg-id>@voiceblender.local`. Recording-session legs are never themselves
+recorded, so pointing two SRC sessions at one room does not nest.
+
+The VSI equivalent is `room_siprec_start`.
+
+---
+
 ## WebRTC
 
 ### POST /v1/webrtc/offer

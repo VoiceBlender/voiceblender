@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<recording xmlns="urn:ietf:params:xml:ns:recording:1">
+  <datamode>complete</datamode>
+  <group group_id="7+OTCyoxTmqmqyA/1weDAg==">
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </group>
+  <session session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <group-ref>7+OTCyoxTmqmqyA/1weDAg==</group-ref>
+    <start-time>2026-08-07T09:12:03Z</start-time>
+  </session>
+  <sessionrecordingassoc session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </sessionrecordingassoc>
+  <participant participant_id="srfBElmCRp2QB23b7Mpluw==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <nameID aor="sip:alice@example.com">
+      <name xml:lang="en">Alice Smith</name>
+    </nameID>
+  </participant>
+  <participant participant_id="zSfPoSGiSVKGsxDT2SBjRQ==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <nameID aor="sip:bob@example.com">
+      <name xml:lang="en">Bob Jones</name>
+    </nameID>
+  </participant>
+  <participantsessionassoc participant_id="srfBElmCRp2QB23b7Mpluw==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </participantsessionassoc>
+  <participantsessionassoc participant_id="zSfPoSGiSVKGsxDT2SBjRQ==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </participantsessionassoc>
+  <stream stream_id="UAAMm5GRQKSCMVvLyl4rFw==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <label>1</label>
+  </stream>
+  <stream stream_id="i1Pz3to5hGk8fuXl+PbwCw==" session_id="hVpd7YQgRW2nD22h7q60JQ==">
+    <label>2</label>
+  </stream>
+  <participantstreamassoc participant_id="srfBElmCRp2QB23b7Mpluw==">
+    <send>UAAMm5GRQKSCMVvLyl4rFw==</send>
+    <recv>i1Pz3to5hGk8fuXl+PbwCw==</recv>
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </participantstreamassoc>
+  <participantstreamassoc participant_id="zSfPoSGiSVKGsxDT2SBjRQ==">
+    <send>i1Pz3to5hGk8fuXl+PbwCw==</send>
+    <recv>UAAMm5GRQKSCMVvLyl4rFw==</recv>
+    <associate-time>2026-08-07T09:12:03Z</associate-time>
+  </participantstreamassoc>
+</recording>

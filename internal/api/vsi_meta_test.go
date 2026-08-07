@@ -86,6 +86,9 @@ var restOnlyRoutes = map[string]bool{
 // as a parity contract.
 var routeToVSICommand = map[string]string{
 	"Post /legs":                                "create_leg",
+	"Get /legs/{id}/siprec":                     "siprec_get",
+	"Post /rooms/{id}/siprec":                   "room_siprec_start",
+	"Post /legs/{id}/siprec":                    "leg_siprec_start",
 	"Get /legs/{id}/streams":                    "leg_stream_list",
 	"Post /legs/{id}/streams":                   "leg_stream_add",
 	"Get /legs/{id}/streams/{streamId}":         "leg_stream_get",

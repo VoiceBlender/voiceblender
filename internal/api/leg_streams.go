@@ -94,7 +94,7 @@ func (s *Server) doUpdateLegStream(legID, streamID string, req UpdateLegStreamRe
 	if !ok {
 		return LegStreamView{}, newAPIError(http.StatusNotFound, "stream not found")
 	}
-	if info.Primary {
+	if info.Primary && !sl.StreamsIndependent() {
 		return LegStreamView{}, newAPIError(http.StatusBadRequest,
 			"the primary stream's role follows the leg; use PATCH /v1/legs/{id}/role")
 	}
@@ -307,7 +307,7 @@ func (s *Server) attachStreamRoom(sl *leg.SIPLeg, streamID, roomID, role string)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "stream not found")
 	}
-	if info.Primary {
+	if info.Primary && !sl.StreamsIndependent() {
 		return newAPIError(http.StatusBadRequest, "the primary stream follows the leg's own room; use /v1/rooms/{id}/legs")
 	}
 	rm, ok := s.RoomMgr.Get(roomID)

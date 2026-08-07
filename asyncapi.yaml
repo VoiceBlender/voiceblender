@@ -182,6 +182,18 @@ channels:
                 $ref: '#/components/messages/leg_stream_detach_room'
             leg_stream_detach_room.result:
                 $ref: '#/components/messages/leg_stream_detach_roomResult'
+            leg_siprec_start:
+                $ref: '#/components/messages/leg_siprec_start'
+            leg_siprec_start.result:
+                $ref: '#/components/messages/leg_siprec_startResult'
+            room_siprec_start:
+                $ref: '#/components/messages/room_siprec_start'
+            room_siprec_start.result:
+                $ref: '#/components/messages/room_siprec_startResult'
+            siprec_get:
+                $ref: '#/components/messages/siprec_get'
+            siprec_get.result:
+                $ref: '#/components/messages/siprec_getResult'
             leg_ring:
                 $ref: '#/components/messages/leg_ring'
             leg_ring.result:
@@ -424,6 +436,16 @@ channels:
                 $ref: '#/components/messages/evt_leg_stream_room_changed'
             leg.stream_role_changed:
                 $ref: '#/components/messages/evt_leg_stream_role_changed'
+            siprec.session_started:
+                $ref: '#/components/messages/evt_siprec_session_started'
+            siprec.session_ended:
+                $ref: '#/components/messages/evt_siprec_session_ended'
+            siprec.metadata_updated:
+                $ref: '#/components/messages/evt_siprec_metadata_updated'
+            siprec.participant_joined:
+                $ref: '#/components/messages/evt_siprec_participant_joined'
+            siprec.participant_left:
+                $ref: '#/components/messages/evt_siprec_participant_left'
             dtmf.received:
                 $ref: '#/components/messages/evt_dtmf_received'
             rtt.received:
@@ -1063,6 +1085,45 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/leg_stream_detach_room.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_siprec_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Fork a single call to an external SIPREC recording server
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_siprec_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_siprec_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_room_siprec_start:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Fork a room's participants to an external SIPREC recording server
+        messages:
+            - $ref: '#/channels/vsi/messages/room_siprec_start'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/room_siprec_start.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_siprec_get:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Get an inbound SIPREC recording session's participants, streams and metadata
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec_get'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/siprec_get.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_ring:
         action: receive
@@ -1860,6 +1921,41 @@ operations:
         summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_role_changed'
+    send_siprec_session_started:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec.session_started'
+    send_siprec_session_ended:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A SIPREC recording session ended
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec.session_ended'
+    send_siprec_metadata_updated:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A SIPREC recording session's metadata document was updated on a re-INVITE
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec.metadata_updated'
+    send_siprec_participant_joined:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A party joined the call being recorded by a SIPREC session
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec.participant_joined'
+    send_siprec_participant_left:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: A party left the call being recorded by a SIPREC session
+        messages:
+            - $ref: '#/channels/vsi/messages/siprec.participant_left'
     send_dtmf_received:
         action: send
         channel:
@@ -3445,6 +3541,96 @@ components:
                         type: string
                     data:
                         $ref: '#/components/schemas/LegStreamView'
+                required:
+                    - type
+        leg_siprec_start:
+            name: leg_siprec_start
+            title: Fork a single call to an external SIPREC recording server
+            summary: Fork a single call to an external SIPREC recording server
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_siprec_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/roomSIPRECStartPayload'
+                required:
+                    - type
+        leg_siprec_startResult:
+            name: leg_siprec_startResult
+            title: Fork a single call to an external SIPREC recording server — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_siprec_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/LegView
+                required:
+                    - type
+        room_siprec_start:
+            name: room_siprec_start
+            title: Fork a room's participants to an external SIPREC recording server
+            summary: Fork a room's participants to an external SIPREC recording server
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_siprec_start
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/roomSIPRECStartPayload'
+                required:
+                    - type
+        room_siprec_startResult:
+            name: room_siprec_startResult
+            title: Fork a room's participants to an external SIPREC recording server — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: room_siprec_start.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/LegView
+                required:
+                    - type
+        siprec_get:
+            name: siprec_get
+            title: Get an inbound SIPREC recording session's participants, streams and metadata
+            summary: Get an inbound SIPREC recording session's participants, streams and metadata
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: siprec_get
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        siprec_getResult:
+            name: siprec_getResult
+            title: Get an inbound SIPREC recording session's participants, streams and metadata — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: siprec_get.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/SIPRECSessionView'
                 required:
                     - type
         leg_ring:
@@ -5112,6 +5298,41 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.stream_role_changed/post/requestBody/content/application~1json/schema
+        evt_siprec_session_started:
+            name: evt_siprec_session_started
+            title: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
+            summary: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.session_started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/siprec.session_started/post/requestBody/content/application~1json/schema
+        evt_siprec_session_ended:
+            name: evt_siprec_session_ended
+            title: A SIPREC recording session ended
+            summary: A SIPREC recording session ended
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.session_ended. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/siprec.session_ended/post/requestBody/content/application~1json/schema
+        evt_siprec_metadata_updated:
+            name: evt_siprec_metadata_updated
+            title: A SIPREC recording session's metadata document was updated on a re-INVITE
+            summary: A SIPREC recording session's metadata document was updated on a re-INVITE
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.metadata_updated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/siprec.metadata_updated/post/requestBody/content/application~1json/schema
+        evt_siprec_participant_joined:
+            name: evt_siprec_participant_joined
+            title: A party joined the call being recorded by a SIPREC session
+            summary: A party joined the call being recorded by a SIPREC session
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.participant_joined. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/siprec.participant_joined/post/requestBody/content/application~1json/schema
+        evt_siprec_participant_left:
+            name: evt_siprec_participant_left
+            title: A party left the call being recorded by a SIPREC session
+            summary: A party left the call being recorded by a SIPREC session
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.participant_left. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/siprec.participant_left/post/requestBody/content/application~1json/schema
         evt_dtmf_received:
             name: evt_dtmf_received
             title: DTMF digit received
@@ -5777,6 +5998,67 @@ components:
             required:
                 - listener_role
                 - sources
+        SIPRECParticipantView:
+            type: object
+            properties:
+                participant_id:
+                    type: string
+                aor:
+                    type: string
+                name:
+                    type: string
+            required:
+                - participant_id
+        SIPRECSessionView:
+            type: object
+            properties:
+                leg_id:
+                    type: string
+                session_id:
+                    type: string
+                data_mode:
+                    type: string
+                room_id:
+                    type: string
+                participants:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SIPRECParticipantView'
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SIPRECStreamView'
+                metadata:
+                    type: string
+            required:
+                - leg_id
+                - participants
+                - streams
+        SIPRECStreamView:
+            type: object
+            properties:
+                leg_stream_id:
+                    type: string
+                mid:
+                    type: string
+                label:
+                    type: string
+                direction:
+                    type: string
+                codec:
+                    type: string
+                room_id:
+                    type: string
+                role:
+                    type: string
+                participant_id:
+                    type: string
+                participant_aor:
+                    type: string
+                participant_name:
+                    type: string
+            required:
+                - leg_stream_id
         SIPRegisterTrunkSpec:
             type: object
             properties:
@@ -6448,6 +6730,32 @@ components:
             required:
                 - room_id
                 - updates
+        roomSIPRECStartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                srs_uri:
+                    type: string
+                leg_ids:
+                    type: array
+                    items:
+                        type: string
+                session_id:
+                    type: string
+                app_id:
+                    type: string
+                auth_username:
+                    type: string
+                auth_password:
+                    type: string
+                headers:
+                    type: object
+                    additionalProperties:
+                        type: string
+            required:
+                - id
+                - srs_uri
         rttPayload:
             type: object
             properties:

@@ -1,6 +1,9 @@
 package events
 
-import "github.com/VoiceBlender/voiceblender/internal/recording"
+import (
+	"github.com/VoiceBlender/voiceblender/internal/recording"
+	"github.com/VoiceBlender/voiceblender/internal/siprec"
+)
 
 // EventData is the interface all typed event data structs must implement.
 type EventData interface {
@@ -357,6 +360,56 @@ type TTSErrorData struct {
 	// set — no omitempty — so a path that forgets it emits a loud "" rather
 	// than a silently absent key. The value set is open.
 	Category string `json:"category"`
+}
+
+// --- SIPREC (RFC 7865 / RFC 7866) ---
+
+// SIPRECStream is one recorded media stream as exposed on an event: the SDP
+// label that identifies it on the wire, the leg stream carrying it, and the
+// participant whose audio it is.
+type SIPRECStream struct {
+	Label           string `json:"label,omitempty"`
+	LegStreamID     string `json:"leg_stream_id,omitempty"`
+	ParticipantID   string `json:"participant_id,omitempty"`
+	ParticipantAOR  string `json:"participant_aor,omitempty"`
+	ParticipantName string `json:"participant_name,omitempty"`
+}
+
+type SIPRECSessionStartedData struct {
+	LegScope
+	SessionID    string                   `json:"session_id,omitempty"`
+	DataMode     string                   `json:"data_mode,omitempty"`
+	Participants []siprec.ParticipantInfo `json:"participants"`
+	Streams      []SIPRECStream           `json:"streams"`
+}
+
+type SIPRECSessionEndedData struct {
+	LegScope
+	SessionID string `json:"session_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type SIPRECMetadataUpdatedData struct {
+	LegScope
+	SessionID          string         `json:"session_id,omitempty"`
+	DataMode           string         `json:"data_mode,omitempty"`
+	ParticipantsJoined []string       `json:"participants_joined,omitempty"`
+	ParticipantsLeft   []string       `json:"participants_left,omitempty"`
+	StreamsAdded       []string       `json:"streams_added,omitempty"`
+	StreamsRemoved     []string       `json:"streams_removed,omitempty"`
+	Streams            []SIPRECStream `json:"streams"`
+}
+
+type SIPRECParticipantJoinedData struct {
+	LegScope
+	SessionID string `json:"session_id,omitempty"`
+	SIPRECStream
+}
+
+type SIPRECParticipantLeftData struct {
+	LegScope
+	SessionID string `json:"session_id,omitempty"`
+	SIPRECStream
 }
 
 // --- Recording ---
