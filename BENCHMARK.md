@@ -21,6 +21,7 @@ paper's open harness rather than a VoiceBlender-specific one.
 | Sustainable concurrent sessions | **≥ 800** (rig-valid); ≥ 1,200 observed clean (§6.4) |
 | Capacity knee | **not found** — p95 flat across a 48× concurrency range |
 | CPU per concurrent session | **0.0049–0.0058 cores**, near-constant with load |
+| Sessions per core consumed | **~180** — see §6.3.1 on why this is not the paper's "per vCPU" |
 | Memory | ~65 MB base + **0.16 MB/session** (257 MB at 1,200 sessions) |
 | Turn latency | p50 2,077 ms, p95 2,210 ms — unchanged from N=25 to N=1,200 |
 | Failures | 3 in 14,025 calls, all lost-loopback-ACK, not load-correlated |
@@ -229,11 +230,47 @@ HTTP request per turn and touches no audio. That is worth stating explicitly:
 the published paper found its own customer-code tier became the ceiling before
 the platform did, twice. Ours did not.
 
-For orientation, the published paper measured 0.014 cores/session for jambonz's
-shared media process and 0.110 for LiveKit's per-call agent subprocess. Do not
-read the ratio as a platform comparison: this is x86 desktop silicon rather than
-Graviton, and this session genuinely does less work (§7, items 1–3). What the figure
-does establish is the *regime* — VoiceBlender's cost is that of a shared media
+### 6.3.1 Sessions per vCPU — which denominator
+
+"Sessions per vCPU" names two different quantities, and the difference is large
+enough that mixing them produces nonsense.
+
+**Sessions per core *consumed*** is the inverse of the per-session cost above: a
+property of the code, measurable at any load, and what this run establishes. A
+linear fit over the whole ladder gives 0.00556 cores/session:
+
+| | cores/session | sessions per consumed core |
+|---|---|---|
+| VoiceBlender (this run) | 0.0056 | **180** |
+| jambonz media process | 0.014 | 71 |
+| LiveKit agent process | 0.110 | 9 |
+
+Per step, VoiceBlender's figure ranges 172–206 with no trend against
+concurrency. The jambonz and LiveKit rows are the mechanism figures from the
+published paper, inverted onto the same basis.
+
+**Sessions per vCPU *allocated*** is capacity at the knee divided by the vCPUs
+the deployment was given — the paper's headline 31.3 for jambonz and 3.1 for
+LiveKit. **This run cannot state it**, because no step reached a knee: there is
+no numerator.
+
+The two are not interchangeable. In the paper's own data jambonz consumed 0.014
+cores/session (71 per consumed core) yet reported 31.3 per allocated vCPU, a
+factor of ~2.3, because its single node hit its limit at roughly 52% mean box
+CPU — it ran out of headroom to inter-tier contention rather than running out of
+cores. Allocated vCPU is what you pay for; consumed cores is what the code
+costs, and the gap between them is a property of the deployment, not the
+software.
+
+Applying that same ~52% packing fraction to VoiceBlender would suggest something
+near 90–95 sessions per allocated vCPU. That is a projection stacked on an
+assumption borrowed from a different platform, and it is recorded here only to
+show the size of the gap — it is not a result and should not be quoted as one.
+
+Two further reasons not to read the table as a platform ranking: this is x86
+desktop silicon rather than Graviton, and a VoiceBlender session here genuinely
+does less work than a jambonz one (§7, items 1–3). What the numbers do establish
+is the *regime* — VoiceBlender's per-session cost is that of a shared media
 plane, flat in concurrency, not that of a process per call.
 
 ### 6.4 Where the local rig stops being valid
