@@ -298,7 +298,7 @@ func (s *Server) resolveTTSProvider(req TTSRequest) (tts.Provider, string) {
 		if apiKey == "" {
 			return nil, ""
 		}
-		provider, name = tts.NewDeepgram(apiKey, s.Log), "deepgram"
+		provider, name = tts.NewDeepgram(apiKey, s.Config.DeepgramTTSURL, s.Log), "deepgram"
 	case "azure":
 		if apiKey == "" {
 			apiKey = s.Config.AzureSpeechKey

@@ -77,7 +77,7 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 	var transcriber stt.Provider
 	switch req.Provider {
 	case "deepgram":
-		transcriber = stt.NewDeepgram(s.Log)
+		transcriber = stt.NewDeepgram(s.Log, s.Config.DeepgramSTTURL)
 	case "azure":
 		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
 	default:
@@ -310,7 +310,7 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	var transcriber stt.Provider
 	switch state.provider {
 	case "deepgram":
-		transcriber = stt.NewDeepgram(s.Log)
+		transcriber = stt.NewDeepgram(s.Log, s.Config.DeepgramSTTURL)
 	case "azure":
 		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
 	default:

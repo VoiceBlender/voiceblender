@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	deepgramWSURL = "wss://api.deepgram.com/v1/listen"
-	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	// DefaultDeepgramWSURL is the public Deepgram streaming endpoint, used
+	// when NewDeepgram is given an empty base URL.
+	DefaultDeepgramWSURL = "wss://api.deepgram.com/v1/listen"
+
+	dgFrameBytes = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
 // dgFinalizeFrame flushes Deepgram's server-side buffer and emits a final
@@ -34,10 +37,17 @@ type DeepgramTranscriber struct {
 	// successful dial and Start returning, so Finalize can reach a socket
 	// that otherwise lives entirely inside Start.
 	lw *wsutilx.LockedWriter
+	// baseURL is the streaming endpoint, minus query string.
+	baseURL string
 }
 
-func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
-	return &DeepgramTranscriber{log: log}
+// NewDeepgram builds a transcriber against baseURL; empty means the public
+// Deepgram endpoint.
+func NewDeepgram(log *slog.Logger, baseURL string) *DeepgramTranscriber {
+	if baseURL == "" {
+		baseURL = DefaultDeepgramWSURL
+	}
+	return &DeepgramTranscriber{log: log, baseURL: baseURL}
 }
 
 func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKey string, opts Options, cb TranscriptCallback) error {
@@ -63,7 +73,7 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 		lang = "en"
 	}
 
-	url := deepgramWSURL + "?encoding=linear16&sample_rate=16000&channels=1&model=nova-3&language=" + lang
+	url := t.baseURL + "?encoding=linear16&sample_rate=16000&channels=1&model=nova-3&language=" + lang
 	if opts.Partial {
 		url += "&interim_results=true"
 	}

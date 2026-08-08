@@ -150,7 +150,7 @@ func TestDeepgramFinalize_AfterSessionEndsErrors(t *testing.T) {
 func TestSTTFinalizerConformance(t *testing.T) {
 	log := slog.Default()
 
-	if _, ok := Provider(NewDeepgram(log)).(Finalizer); !ok {
+	if _, ok := Provider(NewDeepgram(log, "")).(Finalizer); !ok {
 		t.Error("*DeepgramTranscriber does not implement Finalizer")
 	}
 	if _, ok := Provider(NewAzure("region", log)).(Finalizer); ok {

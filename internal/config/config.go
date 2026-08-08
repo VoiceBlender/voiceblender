@@ -11,31 +11,37 @@ import (
 )
 
 type Config struct {
-	InstanceID          string
-	SIPBindIP           string
-	SIPBindIPV6         string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
-	SIPListenIP         string
-	SIPListenIPV6       string // IPv6 socket bind; falls back to SIPBindIPV6
-	SIPExternalIP       string
-	SIPPort             string
-	SIPTLSPort          string // "" = TLS disabled
-	SIPTLSCert          string // path to CA-signed cert (fullchain.pem)
-	SIPTLSKey           string // path to private key (privkey.pem)
-	SIPDebug            bool   // dump full SIP message content for every request and response
-	SIPDomain           string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
-	SIPHost             string
-	HTTPAddr            string
-	AllowedIPs          string // comma-separated IPs and CIDR ranges; empty = allow all
-	TrustProxyHeaders   bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
-	ICEServers          []string
-	WebRTCExternalIPs   []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
-	RecordingDir        string
-	LogLevel            string
-	WebhookURL          string
-	WebhookSecret       string
-	ElevenLabsAPIKey    string
-	VAPIAPIKey          string
-	DeepgramAPIKey      string
+	InstanceID        string
+	SIPBindIP         string
+	SIPBindIPV6       string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
+	SIPListenIP       string
+	SIPListenIPV6     string // IPv6 socket bind; falls back to SIPBindIPV6
+	SIPExternalIP     string
+	SIPPort           string
+	SIPTLSPort        string // "" = TLS disabled
+	SIPTLSCert        string // path to CA-signed cert (fullchain.pem)
+	SIPTLSKey         string // path to private key (privkey.pem)
+	SIPDebug          bool   // dump full SIP message content for every request and response
+	SIPDomain         string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
+	SIPHost           string
+	HTTPAddr          string
+	AllowedIPs        string // comma-separated IPs and CIDR ranges; empty = allow all
+	TrustProxyHeaders bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
+	ICEServers        []string
+	WebRTCExternalIPs []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
+	RecordingDir      string
+	LogLevel          string
+	WebhookURL        string
+	WebhookSecret     string
+	ElevenLabsAPIKey  string
+	VAPIAPIKey        string
+	DeepgramAPIKey    string
+	// DeepgramSTTURL and DeepgramTTSURL override the Deepgram service
+	// endpoints. Set them to point the Deepgram protocol dialect at a
+	// compatible non-Deepgram host (a local emulator, a proxy, a load-test
+	// mock); empty keeps the public endpoints.
+	DeepgramSTTURL      string
+	DeepgramTTSURL      string
 	AzureSpeechKey      string
 	AzureSpeechRegion   string
 	S3Bucket            string
@@ -171,6 +177,8 @@ func Load() Config {
 		ElevenLabsAPIKey:          os.Getenv("ELEVENLABS_API_KEY"),
 		VAPIAPIKey:                os.Getenv("VAPI_API_KEY"),
 		DeepgramAPIKey:            os.Getenv("DEEPGRAM_API_KEY"),
+		DeepgramSTTURL:            os.Getenv("DEEPGRAM_STT_URL"),
+		DeepgramTTSURL:            os.Getenv("DEEPGRAM_TTS_URL"),
 		AzureSpeechKey:            os.Getenv("AZURE_SPEECH_KEY"),
 		AzureSpeechRegion:         envOr("AZURE_SPEECH_REGION", "eastus"),
 		S3Bucket:                  os.Getenv("S3_BUCKET"),

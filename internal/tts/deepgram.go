@@ -10,21 +10,29 @@ import (
 	"net/http"
 )
 
-const deepgramTTSURL = "https://api.deepgram.com/v1/speak"
+// DefaultDeepgramTTSURL is the public Deepgram speak endpoint, used when
+// NewDeepgram is given an empty base URL.
+const DefaultDeepgramTTSURL = "https://api.deepgram.com/v1/speak"
 
 // Deepgram implements Provider using the Deepgram TTS API.
 type Deepgram struct {
-	apiKey string
-	client *http.Client
-	log    *slog.Logger
+	apiKey  string
+	baseURL string
+	client  *http.Client
+	log     *slog.Logger
 }
 
-// NewDeepgram creates a Deepgram TTS provider.
-func NewDeepgram(apiKey string, log *slog.Logger) *Deepgram {
+// NewDeepgram creates a Deepgram TTS provider against baseURL; empty means the
+// public Deepgram endpoint.
+func NewDeepgram(apiKey, baseURL string, log *slog.Logger) *Deepgram {
+	if baseURL == "" {
+		baseURL = DefaultDeepgramTTSURL
+	}
 	return &Deepgram{
-		apiKey: apiKey,
-		client: &http.Client{},
-		log:    log,
+		apiKey:  apiKey,
+		baseURL: baseURL,
+		client:  &http.Client{},
+		log:     log,
 	}
 }
 
@@ -49,7 +57,7 @@ func (d *Deepgram) Synthesize(ctx context.Context, text string, opts Options) (*
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s?model=%s&encoding=linear16&sample_rate=16000&container=none", deepgramTTSURL, model)
+	url := fmt.Sprintf("%s?model=%s&encoding=linear16&sample_rate=16000&container=none", d.baseURL, model)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

@@ -83,6 +83,8 @@ All configuration is via environment variables:
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
+| `DEEPGRAM_STT_URL` | `wss://api.deepgram.com/v1/listen` | Streaming STT endpoint. Override to point the Deepgram protocol dialect at a compatible host — a self-hosted deployment, an egress proxy, or a mock used for load testing. The query string VoiceBlender appends (`encoding=linear16&sample_rate=16000&channels=1&model=nova-3&language=…`) is unchanged, so the target must accept it. |
+| `DEEPGRAM_TTS_URL` | `https://api.deepgram.com/v1/speak` | Speech synthesis endpoint, overridable on the same terms as `DEEPGRAM_STT_URL`. VoiceBlender appends `model=…&encoding=linear16&sample_rate=16000&container=none` and streams the response body as it arrives. |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
 | `S3_BUCKET` | | S3 bucket for recording uploads. See [S3 bucket preflight](#s3-bucket-preflight). |

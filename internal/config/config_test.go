@@ -258,6 +258,36 @@ func TestLoad_MoQOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_DeepgramEndpointOverrides(t *testing.T) {
+	t.Setenv("DEEPGRAM_STT_URL", "ws://mock:8080/v1/listen")
+	t.Setenv("DEEPGRAM_TTS_URL", "http://mock:8080/v1/speak")
+
+	cfg := Load()
+
+	if cfg.DeepgramSTTURL != "ws://mock:8080/v1/listen" {
+		t.Errorf("DeepgramSTTURL = %q, want ws://mock:8080/v1/listen", cfg.DeepgramSTTURL)
+	}
+	if cfg.DeepgramTTSURL != "http://mock:8080/v1/speak" {
+		t.Errorf("DeepgramTTSURL = %q, want http://mock:8080/v1/speak", cfg.DeepgramTTSURL)
+	}
+}
+
+// Unset means the providers fall back to their own public defaults, so the
+// config layer must not invent one.
+func TestLoad_DeepgramEndpointsEmptyByDefault(t *testing.T) {
+	t.Setenv("DEEPGRAM_STT_URL", "")
+	t.Setenv("DEEPGRAM_TTS_URL", "")
+
+	cfg := Load()
+
+	if cfg.DeepgramSTTURL != "" {
+		t.Errorf("DeepgramSTTURL = %q, want empty", cfg.DeepgramSTTURL)
+	}
+	if cfg.DeepgramTTSURL != "" {
+		t.Errorf("DeepgramTTSURL = %q, want empty", cfg.DeepgramTTSURL)
+	}
+}
+
 func TestLoad_DefaultSampleRate_Invalid(t *testing.T) {
 	t.Setenv("DEFAULT_SAMPLE_RATE", "44100")
 	cfg := Load()

@@ -481,6 +481,31 @@ Misclassified files:
 
 ---
 
+## Voice-agent concurrency benchmark (external load generator)
+
+The scaling test below runs the caller and the system under test in **one Go
+test process**, with no STT/TTS in the path — it characterises the mixer, not a
+voice-agent deployment. For sustainable-concurrency numbers under a realistic
+conversational workload, driven by an external SIP/RTP load generator against
+mocked speech and language-model vendors, see **[BENCHMARK.md](BENCHMARK.md)**:
+methodology, the success threshold, ladder results and limitations.
+
+That benchmark lives in a fork of the published jambonz harness
+(`github.com/jambonz/jambonz-livekit-load-testing-benchmarks`) with a
+VoiceBlender controller added. It needs `DEEPGRAM_STT_URL` / `DEEPGRAM_TTS_URL`
+pointed at the harness's mock vendor host:
+
+```bash
+# in the harness checkout
+VB_SRC=../VoiceBlender scripts/local-voiceblender/up.sh   # mocks + VB + controller
+go run ./cmd/calibrate                                     # mock latencies honored?
+go run ./cmd/driver -scenario scenarios/vb-local-smoke.yaml
+scripts/local-voiceblender/ladder.sh runs/vb-ladder-1 "25 50 100 200 300"
+scripts/local-voiceblender/down.sh
+```
+
+---
+
 ## Benchmark / Scaling Test
 
 The scaling benchmark creates many concurrent rooms with 2 SIP legs each and measures:
