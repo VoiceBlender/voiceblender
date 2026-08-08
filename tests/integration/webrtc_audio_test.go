@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"testing"
@@ -29,7 +30,7 @@ import (
 func TestWebRTC_AudioFlowToRoomRecording(t *testing.T) {
 	inst := newTestInstance(t, "webrtc-audio")
 
-	clientPC, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	clientPC, err := loopbackWebRTCAPI().NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatalf("client NewPeerConnection: %v", err)
 	}
@@ -160,6 +161,18 @@ func TestWebRTC_AudioFlowToRoomRecording(t *testing.T) {
 	assertToneInWAV(t, recStop.File, 16000, 1000.0)
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), offerResult.LegID))
+}
+
+// loopbackWebRTCAPI builds a pion API whose peer connections gather host
+// candidates on loopback only. Gathering on every interface of a developer or
+// CI host (docker bridges, VPN tunnels, VM adapters) lets ICE nominate a
+// virtual interface that carries STUN but drops the DTLS handshake: ICE reaches
+// connected while the peer connection stays stuck in connecting.
+func loopbackWebRTCAPI() *webrtc.API {
+	se := webrtc.SettingEngine{}
+	se.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+	se.SetIncludeLoopbackCandidate(true)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
 }
 
 // trickleICEUntilConnected pushes client-gathered candidates up to the server

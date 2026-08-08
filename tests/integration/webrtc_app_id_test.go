@@ -15,7 +15,7 @@ import (
 // closed once the connection is established.
 func newWebRTCClient(t *testing.T) (*webrtc.PeerConnection, chan webrtc.ICECandidateInit, <-chan struct{}) {
 	t.Helper()
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	pc, err := loopbackWebRTCAPI().NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatalf("client NewPeerConnection: %v", err)
 	}
