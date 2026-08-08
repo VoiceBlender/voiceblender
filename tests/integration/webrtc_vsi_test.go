@@ -16,7 +16,7 @@ import (
 // VSI. The caller owns the PC and must Close() it.
 func makeClientPC(t *testing.T) (*webrtc.PeerConnection, string) {
 	t.Helper()
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	pc, err := loopbackWebRTCAPI().NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatalf("client NewPeerConnection: %v", err)
 	}
