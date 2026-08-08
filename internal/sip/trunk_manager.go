@@ -181,6 +181,33 @@ func (m *TrunkManager) RefreshIndex(id string) {
 	}
 }
 
+// Deindex strips the trunk's AOR and peer-socket entries while leaving it
+// registered under its id — the strip half of RefreshIndex without the
+// re-add. A trunk that has been deindexed no longer matches outbound
+// POST /v1/legs (LookupByFromAOR / LookupByAORUser) and no longer tags
+// inbound INVITEs (LookupByPeerSocket), but GET /v1/sip/trunks/{id} still
+// reports it so an operator can see why it stopped.
+//
+// Unknown ids are a no-op: the loops are id-scoped, so no byID lookup is
+// needed.
+func (m *TrunkManager) Deindex(id string) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, cur := range m.byAOR {
+		if cur.ID() == id {
+			delete(m.byAOR, k)
+		}
+	}
+	for k, cur := range m.bySocket {
+		if cur.ID() == id {
+			delete(m.bySocket, k)
+		}
+	}
+}
+
 // Shutdown stops every trunk in parallel, honouring ctx. After return the
 // manager is empty.
 func (m *TrunkManager) Shutdown(ctx context.Context) {
