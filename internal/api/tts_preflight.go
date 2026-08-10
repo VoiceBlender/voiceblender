@@ -186,6 +186,17 @@ func (s *Server) synthesizeStaged(ctx context.Context, entry *stagedTTS, req TTS
 
 	if err != nil {
 		entry.finish()
+		// A leg ending mid-synthesis is a discard, not a provider failure.
+		// Without this, whichever of watchStaged and this goroutine wins the
+		// race would decide which event the app sees.
+		if !committed && entry.target.leg.Context().Err() != nil {
+			s.Bus.Publish(events.TTSDiscarded, &events.TTSDiscardedData{
+				LegRoomScope: scope,
+				TTSID:        entry.ttsID,
+				Reason:       discardLegGone,
+			})
+			return
+		}
 		category := tts.Categorize(err)
 		if oversize {
 			category = tts.CategoryPermanentInput
