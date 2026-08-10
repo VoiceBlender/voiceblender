@@ -24,8 +24,8 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 or Google Cloud Storage upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
-- **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly)
-- **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs)
+- **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly, Deepgram, Azure), with optional **preflight staging**: synthesize a speculative reply off the critical path, then commit it for instant playback or discard it
+- **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs, Deepgram, Deepgram Flux, Azure). Deepgram Flux adds conversational turn detection (`stt.turn`), including eager end-of-turn signals for speculative generation
 - **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat, Deepgram) with mid-session context injection
 - **Answering Machine Detection (AMD)** -- per-call analysis of outbound call audio to classify the answerer as human, machine, no-speech, or not-sure; optional voicemail beep detection via Goertzel frequency analysis
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; a stable per-event `event_id` (also sent as `X-Event-Id`) for receiver-side deduplication; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
@@ -99,6 +99,9 @@ All configuration is via environment variables:
 | `TTS_CACHE_ENABLED` | `false` | Enable disk-backed TTS audio cache. Cached audio persists across restarts. |
 | `TTS_CACHE_DIR` | `/tmp/tts_cache` | Directory for cached TTS audio files (used when `TTS_CACHE_ENABLED=true`) |
 | `TTS_CACHE_INCLUDE_API_KEY` | `false` | Include API key in TTS cache key (set `true` if different keys map to different voice clones) |
+| `TTS_PREFLIGHT_TTL` | `30s` | How long a staged (preflight) TTS utterance is held before being discarded |
+| `TTS_PREFLIGHT_MAX_PER_LEG` | `3` | Maximum staged TTS utterances per leg; staging past the cap returns 409 |
+| `TTS_PREFLIGHT_MAX_BYTES` | `4194304` | Maximum buffered audio per staged TTS utterance, in bytes |
 | `RTP_PORT_MIN` | `10000` | Minimum UDP port for RTP/RTCP media |
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
@@ -230,6 +233,9 @@ POST   /v1/legs/{id}/rtt/reject    # Stop emitting rtt.received events
 POST   /v1/legs/{id}/play          # Play audio or tone
 DELETE /v1/legs/{id}/play/{pbID}   # Stop playback
 POST   /v1/legs/{id}/tts           # Text-to-speech
+POST   /v1/legs/{id}/tts/preflight # Synthesize and hold for a later commit (speculative reply)
+POST   /v1/legs/{id}/tts/{ttsID}/commit # Play a staged utterance
+DELETE /v1/legs/{id}/tts/{ttsID}   # Drop a staged utterance without playing it
 POST   /v1/legs/{id}/record        # Start recording
 DELETE /v1/legs/{id}/record        # Stop recording
 POST   /v1/legs/{id}/record/pause  # Pause recording (writes silence)

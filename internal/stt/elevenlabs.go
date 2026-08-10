@@ -90,7 +90,7 @@ func (t *ElevenLabsTranscriber) Start(ctx context.Context, reader io.Reader, api
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		t.recvLoop(ctx, conn, lw, opts.Partial, cb)
+		t.recvLoop(ctx, conn, lw, opts, cb)
 	}()
 
 	wg.Wait()
@@ -164,7 +164,7 @@ type sttResponse struct {
 	Text        string `json:"text"`
 }
 
-func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, emitPartial bool, cb TranscriptCallback) {
+func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, opts Options, cb TranscriptCallback) {
 	// Use wsutil.Reader directly so that control frame responses (pong)
 	// go through the shared writer instead of writing to conn directly.
 	// Without this, pong writes and sendLoop writes race on the conn,
@@ -249,14 +249,14 @@ func (t *ElevenLabsTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw 
 
 		switch resp.MessageType {
 		case "partial_transcript":
-			if resp.Text != "" && emitPartial {
+			if resp.Text != "" && opts.Partial {
 				t.log.Debug("stt partial transcript", "text", resp.Text)
-				cb(resp.Text, false)
+				emitTranscript(opts, cb, TranscriptEvent{Text: resp.Text})
 			}
 		case "committed_transcript":
 			if resp.Text != "" {
 				t.log.Debug("stt committed transcript", "text", resp.Text)
-				cb(resp.Text, true)
+				emitTranscript(opts, cb, TranscriptEvent{Text: resp.Text, IsFinal: true})
 			}
 		}
 	}

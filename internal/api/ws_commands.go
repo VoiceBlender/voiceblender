@@ -68,6 +68,12 @@ type ttsStartPayload struct {
 	TTSRequest
 }
 
+// ttsTargetPayload addresses an existing TTS utterance on a leg.
+type ttsTargetPayload struct {
+	ID    string `json:"id"`
+	TTSID string `json:"tts_id"`
+}
+
 // sttStartPayload combines a leg/room id with the STT request.
 type sttStartPayload struct {
 	ID string `json:"id"`
@@ -957,6 +963,39 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		res, err := s.doLegTTS(p.ID, p.TTSRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_tts_preflight":
+		var p ttsStartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doPreflightLegTTS(p.ID, p.TTSRequest)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_tts_commit":
+		var p ttsTargetPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doCommitLegTTS(p.ID, p.TTSID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, res)
+	case "leg_tts_discard":
+		var p ttsTargetPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		res, err := s.doDiscardLegTTS(p.ID, p.TTSID)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

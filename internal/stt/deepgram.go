@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
@@ -16,8 +19,9 @@ import (
 )
 
 const (
-	deepgramWSURL = "wss://api.deepgram.com/v1/listen"
-	dgFrameBytes  = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	deepgramWSURL  = "wss://api.deepgram.com/v1/listen"
+	dgFrameBytes   = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	dgDefaultModel = "nova-3"
 )
 
 // dgFinalizeFrame flushes Deepgram's server-side buffer and emits a final
@@ -40,6 +44,42 @@ func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
 	return &DeepgramTranscriber{log: log}
 }
 
+func buildDeepgramV1URL(opts Options) string {
+	lang := opts.Language
+	if lang == "" {
+		lang = "en"
+	}
+	model := opts.Model
+	if model == "" {
+		model = dgDefaultModel
+	}
+
+	var b strings.Builder
+	b.WriteString(deepgramWSURL)
+	b.WriteString("?encoding=linear16&sample_rate=16000&channels=1&model=")
+	b.WriteString(url.QueryEscape(model))
+	b.WriteString("&language=")
+	b.WriteString(url.QueryEscape(lang))
+
+	// Deepgram only emits UtteranceEnd when it is also sending interim
+	// results, so utterance_end_ms forces them on the wire; recvLoop then
+	// drops the interims locally unless the caller asked for partials.
+	if opts.Partial || opts.UtteranceEndMs != nil {
+		b.WriteString("&interim_results=true")
+	}
+	if opts.Endpointing != nil {
+		fmt.Fprintf(&b, "&endpointing=%d", *opts.Endpointing)
+	}
+	if opts.UtteranceEndMs != nil {
+		fmt.Fprintf(&b, "&utterance_end_ms=%d", *opts.UtteranceEndMs)
+	}
+	for _, kt := range opts.Keyterms {
+		b.WriteString("&keyterm=")
+		b.WriteString(url.QueryEscape(kt))
+	}
+	return b.String()
+}
+
 func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKey string, opts Options, cb TranscriptCallback) error {
 	t.mu.Lock()
 	if t.running {
@@ -58,24 +98,15 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 		t.mu.Unlock()
 	}()
 
-	lang := opts.Language
-	if lang == "" {
-		lang = "en"
-	}
-
-	url := deepgramWSURL + "?encoding=linear16&sample_rate=16000&channels=1&model=nova-3&language=" + lang
-	if opts.Partial {
-		url += "&interim_results=true"
-	}
-
 	dialer := ws.Dialer{
 		Header: ws.HandshakeHeaderHTTP{
 			"Authorization": []string{"token " + apiKey},
 		},
 	}
 
-	t.log.Info("deepgram stt dialing", "url", url)
-	conn, _, _, err := dialer.Dial(ctx, url)
+	wsURL := buildDeepgramV1URL(opts)
+	t.log.Info("deepgram stt dialing", "url", wsURL)
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {
 		t.log.Error("deepgram stt dial failed", "error", err)
 		return err
@@ -104,7 +135,7 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		t.recvLoop(ctx, conn, lw, cb)
+		t.recvLoop(ctx, conn, lw, opts, cb)
 	}()
 
 	wg.Wait()
@@ -198,6 +229,13 @@ func (t *DeepgramTranscriber) sendLoop(ctx context.Context, reader io.Reader, lw
 	}
 }
 
+// dgEnvelope discriminates the message type before the full payload is
+// decoded. Two-stage parsing is required because "channel" is an object on
+// Results and an array of indexes on UtteranceEnd — one struct cannot hold both.
+type dgEnvelope struct {
+	Type string `json:"type"`
+}
+
 // dgResult represents the Deepgram streaming response.
 type dgResult struct {
 	Type    string `json:"type"`
@@ -210,7 +248,13 @@ type dgResult struct {
 	SpeechFinal bool `json:"speech_final"`
 }
 
-func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback) {
+// dgUtteranceEnd is sent when utterance_end_ms is configured and Deepgram
+// detects the speaker has stopped. It carries no transcript.
+type dgUtteranceEnd struct {
+	LastWordEnd float64 `json:"last_word_end"`
+}
+
+func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, opts Options, cb TranscriptCallback) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -276,31 +320,47 @@ func (t *DeepgramTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *w
 		raw := buf.Bytes()
 		t.log.Debug("deepgram stt recv msg", "raw", string(raw[:min(len(raw), 300)]))
 
-		var result dgResult
-		if err := json.Unmarshal(raw, &result); err != nil {
+		var env dgEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
 			t.log.Debug("deepgram stt parse error", "error", err)
 			continue
 		}
 
-		if result.Type != "Results" {
-			continue
-		}
+		switch env.Type {
+		case "Results":
+			var result dgResult
+			if err := json.Unmarshal(raw, &result); err != nil {
+				t.log.Debug("deepgram stt results parse error", "error", err)
+				continue
+			}
+			if len(result.Channel.Alternatives) == 0 {
+				continue
+			}
+			text := result.Channel.Alternatives[0].Transcript
+			if text == "" {
+				continue
+			}
+			// A speech_final always closes an utterance, so never let one
+			// through as an interim even if is_final were somehow unset.
+			isFinal := result.IsFinal || result.SpeechFinal
+			if !isFinal && !opts.Partial {
+				continue
+			}
+			t.log.Debug("deepgram stt transcript", "text", text, "is_final", isFinal, "speech_final", result.SpeechFinal)
+			emitTranscript(opts, cb, TranscriptEvent{
+				Text:        text,
+				IsFinal:     isFinal,
+				SpeechFinal: result.SpeechFinal,
+			})
 
-		if len(result.Channel.Alternatives) == 0 {
-			continue
-		}
-
-		text := result.Channel.Alternatives[0].Transcript
-		if text == "" {
-			continue
-		}
-
-		if result.IsFinal {
-			t.log.Debug("deepgram stt final transcript", "text", text)
-			cb(text, true)
-		} else {
-			t.log.Debug("deepgram stt interim transcript", "text", text)
-			cb(text, false)
+		case "UtteranceEnd":
+			var ue dgUtteranceEnd
+			if err := json.Unmarshal(raw, &ue); err != nil {
+				t.log.Debug("deepgram stt utterance end parse error", "error", err)
+				continue
+			}
+			t.log.Debug("deepgram stt utterance end", "last_word_end", ue.LastWordEnd)
+			emitTurn(opts, TurnEvent{Event: TurnUtteranceEnd, LastWordEnd: ue.LastWordEnd})
 		}
 	}
 }
