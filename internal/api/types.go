@@ -676,13 +676,35 @@ type STTRequest struct {
 	Partial  bool   `json:"partial"`
 	Provider string `json:"provider,omitempty"`
 	APIKey   string `json:"api_key,omitempty"`
+
+	Model    string   `json:"model,omitempty"`
+	Keyterms []string `json:"keyterms,omitempty"`
+
+	// Deepgram v1. Pointers so that 0 (which disables endpointing) is
+	// distinguishable from an absent field.
+	Endpointing    *int `json:"endpointing,omitempty"`
+	UtteranceEndMs *int `json:"utterance_end_ms,omitempty"`
+
+	// Deepgram Flux.
+	EagerEOTThreshold *float64 `json:"eager_eot_threshold,omitempty"`
+	EOTThreshold      *float64 `json:"eot_threshold,omitempty"`
+	EOTTimeoutMs      *int     `json:"eot_timeout_ms,omitempty"`
+	LanguageHints     []string `json:"language_hints,omitempty"`
 }
 
 var sttRequestFields = map[string]FieldEnrichment{
-	"language": {Description: `Language code (e.g. "en", "es")`},
-	"partial":  {Description: "Emit partial (non-final) transcripts", Default: false},
-	"provider": {Description: `STT provider: "elevenlabs" (default) or "deepgram"`, Enum: []string{"elevenlabs", "deepgram"}},
-	"api_key":  {Description: "API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)"},
+	"language":            {Description: `Language code (e.g. "en", "es")`},
+	"partial":             {Description: "Emit partial (non-final) transcripts", Default: false},
+	"provider":            {Description: `STT provider: "elevenlabs" (default), "deepgram" (/v1/listen), "deepgram_flux" (/v2/listen, conversational turn detection) or "azure"`, Enum: []string{"elevenlabs", "deepgram", "deepgram_flux", "azure"}},
+	"api_key":             {Description: "API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY or AZURE_SPEECH_KEY env var depending on provider)"},
+	"model":               {Description: `Provider-specific model. Deepgram: default "nova-3". Deepgram Flux: "flux-general-en" (default) or "flux-general-multi".`},
+	"keyterms":            {Description: "Terms to boost recognition of (Deepgram and Deepgram Flux)."},
+	"endpointing":         {Description: "Deepgram only: milliseconds of silence before a segment is finalized. 0 disables endpointing."},
+	"utterance_end_ms":    {Description: "Deepgram only: milliseconds of silence after which an stt.turn event with event=utterance_end is emitted. Deepgram requires interim results for this, which are requested automatically and still suppressed unless partial is true."},
+	"eager_eot_threshold": {Description: "Deepgram Flux only: end-of-turn confidence that fires an eager_end_of_turn stt.turn event, enabling speculative generation. Must be between 0.3 and 0.9. When unset, no eager_end_of_turn or turn_resumed events are emitted at all."},
+	"eot_threshold":       {Description: "Deepgram Flux only: end-of-turn confidence required to close a turn. Deepgram default 0.7.", Minimum: intPtr(0), Maximum: intPtr(1)},
+	"eot_timeout_ms":      {Description: "Deepgram Flux only: milliseconds of silence after which a turn is closed regardless of confidence. Deepgram default 5000."},
+	"language_hints":      {Description: `Deepgram Flux only: candidate language codes for the "flux-general-multi" model.`},
 }
 
 // RecordRequest is the request body for POST /v1/legs/{id}/record and POST /v1/rooms/{id}/record.

@@ -114,6 +114,15 @@ func WebhookFieldDescriptions() map[string]string {
 		"tts.error.error":        "Error message",
 		"tts.error.category":     "Failure category: permanent_auth, permanent_input, rate_limited, service_unavailable, retryable, canceled or unknown for a synthesis failure, playback for a failure while streaming the audio. New values may be added; treat an unrecognised value as unknown",
 
+		// tts.staged / tts.discarded
+		"tts.staged.leg_id":      "Leg identifier",
+		"tts.staged.tts_id":      "TTS playback identifier, to commit or discard",
+		"tts.staged.bytes":       "Size of the buffered audio",
+		"tts.staged.duration_ms": "How long the buffered audio will play for. 0 when the duration is not derivable from the audio format",
+		"tts.discarded.leg_id":   "Leg identifier",
+		"tts.discarded.tts_id":   "TTS playback identifier",
+		"tts.discarded.reason":   "Why the staged utterance was dropped: 'app' (explicitly discarded), 'expired' (TTS_PREFLIGHT_TTL elapsed) or 'leg_gone' (the leg ended while it was staged)",
+
 		// recording
 		"recording.started.leg_id":        "Leg identifier",
 		"recording.started.room_id":       "Room identifier",
@@ -167,10 +176,24 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.transfer_failed.error":               "Local error message (when no SIP status applies)",
 
 		// stt
-		"stt.text.leg_id":   "Leg identifier",
-		"stt.text.room_id":  "Room identifier",
-		"stt.text.text":     "Transcribed text",
-		"stt.text.is_final": "Whether this is a final or partial transcript",
+		"stt.text.leg_id":       "Leg identifier",
+		"stt.text.room_id":      "Room identifier",
+		"stt.text.text":         "Transcribed text",
+		"stt.text.is_final":     "Whether this is a final or partial transcript",
+		"stt.text.speech_final": "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+
+		// stt.turn
+		"stt.turn.leg_id":                 "Leg identifier",
+		"stt.turn.room_id":                "Room identifier",
+		"stt.turn.event":                  "Turn boundary: start_of_turn, update, eager_end_of_turn, turn_resumed or end_of_turn (Deepgram Flux), or utterance_end (Deepgram, when utterance_end_ms is set). New values may be added",
+		"stt.turn.turn_index":             "Index of the turn within the session, incrementing after each end_of_turn",
+		"stt.turn.text":                   "Transcript of the turn so far. Empty on utterance_end",
+		"stt.turn.end_of_turn_confidence": "How confident the model is that the turn has ended",
+		"stt.turn.audio_window_start_ms":  "Start of the audio window this transcript covers",
+		"stt.turn.audio_window_end_ms":    "End of the audio window this transcript covers",
+		"stt.turn.last_word_end_ms":       "When the last word ended (utterance_end only)",
+		"stt.turn.words":                  "Per-word transcript with timings and confidence, when the provider supplies it",
+		"stt.turn.languages":              "Languages detected in the turn",
 
 		// agent
 		"agent.connected.leg_id":          "Leg identifier",
@@ -708,6 +731,46 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/tts/preflight", OperationID: "preflightTTSLeg",
+			Summary: "Synthesize speech and hold it for a later commit",
+			Description: "Stages a speculative reply. The audio is synthesized and buffered in memory but not played, so that committing it starts playback with no synthesis delay. " +
+				"Intended for the turn-taking loop of a voice agent: start a draft reply on the `eager_end_of_turn` `stt.turn` event, then commit it on `end_of_turn` or discard it on `turn_resumed`. " +
+				"A `tts.staged` event reports when the audio is ready; synthesis failures are reported on `tts.error`. " +
+				"Staged utterances are dropped after `TTS_PREFLIGHT_TTL` or when the leg ends, and at most `TTS_PREFLIGHT_MAX_PER_LEG` may be staged on one leg at a time. Preflight is leg-scoped; use `POST /rooms/{id}/tts` for room announcements.",
+			Tags:        []string{"Legs"},
+			RequestType: TTSRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "TTS staged"},
+				400: {Description: "Invalid JSON, missing text/voice, or volume out of range"},
+				404: {Description: "Leg not found"},
+				409: {Description: "Leg has no audio writer, or too many staged utterances on this leg"},
+				503: {Description: "No API key provided for the selected provider"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/tts/{ttsID}/commit", OperationID: "commitTTSLeg",
+			Summary: "Play a staged TTS utterance",
+			Description: "Starts playback of an utterance staged by the preflight endpoint. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on `tts.error`, exactly as for `POST /legs/{id}/tts`. " +
+				"Once committed, stop playback with `DELETE /legs/{id}/play/{playbackID}` using the same `tts_id`.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "TTS committed; playback starts as soon as the audio is ready"},
+				404: {Description: "No staged TTS with that id"},
+				409: {Description: "Staged TTS already committed"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/tts/{ttsID}", OperationID: "discardTTSLeg",
+			Summary:     "Drop a staged TTS utterance without playing it",
+			Description: "Discards an utterance staged by the preflight endpoint, aborting synthesis if it is still in flight. Already-committed utterances are stopped with `DELETE /legs/{id}/play/{playbackID}` instead.",
+			Tags:        []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Staged TTS discarded"},
+				404: {Description: "No staged TTS with that id"},
+				409: {Description: "Staged TTS already committed"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/record", OperationID: "recordLeg",
 			Summary: "Start recording a leg to a WAV file",
 			Description: "For SIP legs, recording is stereo (left=incoming, right=outgoing). " +
@@ -782,7 +845,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/stt/finalize", OperationID: "finalizeSTTLeg",
 			Summary: "Flush the STT buffer on a leg without stopping STT",
 			Description: "Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. " +
-				"Only Deepgram supports this; the Azure and ElevenLabs integrations answer 501. " +
+				"Only the `deepgram` provider supports this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. " +
 				"The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.",
 			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{

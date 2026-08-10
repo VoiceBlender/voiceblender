@@ -49,9 +49,11 @@ const (
 	PlaybackFinished EventType = "playback.finished"
 	PlaybackError    EventType = "playback.error"
 
-	TTSStarted  EventType = "tts.started"
-	TTSFinished EventType = "tts.finished"
-	TTSError    EventType = "tts.error"
+	TTSStarted   EventType = "tts.started"
+	TTSFinished  EventType = "tts.finished"
+	TTSError     EventType = "tts.error"
+	TTSStaged    EventType = "tts.staged"
+	TTSDiscarded EventType = "tts.discarded"
 
 	RecordingStarted  EventType = "recording.started"
 	RecordingFinished EventType = "recording.finished"
@@ -72,6 +74,7 @@ const (
 	LegRoleChanged     EventType = "leg.role_changed"
 
 	STTText EventType = "stt.text"
+	STTTurn EventType = "stt.turn"
 
 	AgentConnected      EventType = "agent.connected"
 	AgentDisconnected   EventType = "agent.disconnected"

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
 	"github.com/VoiceBlender/voiceblender/internal/playback"
 	"github.com/VoiceBlender/voiceblender/internal/tts"
@@ -19,7 +20,16 @@ type TTSStartResult struct {
 	Status string `json:"status"`
 }
 
-func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error) {
+// legTTSTarget is a validated leg TTS request: the leg, its resolved provider
+// and the writer that will receive the audio.
+type legTTSTarget struct {
+	leg          leg.Leg
+	provider     tts.Provider
+	apiKey       string
+	directWriter io.Writer
+}
+
+func (s *Server) validateLegTTS(legID string, req TTSRequest) (*legTTSTarget, error) {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
@@ -45,38 +55,113 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 	if directWriter == nil {
 		return nil, newAPIError(http.StatusConflict, "leg has no audio writer")
 	}
+	return &legTTSTarget{leg: l, provider: provider, apiKey: apiKey, directWriter: directWriter}, nil
+}
 
-	id := legID
+// registerLegTTSPlayer allocates a TTS id and registers its player, so that
+// leg_play_stop can reach the utterance from the moment the command returns.
+func (s *Server) registerLegTTSPlayer(legID string, volume int) (string, *playback.Player) {
+	ttsID := newTTSID()
+	return ttsID, s.registerLegPlayerAs(legID, ttsID, volume)
+}
 
-	ttsID := "tts-" + uuid.New().String()[:8]
-	appID := l.AppID()
+func (s *Server) registerLegPlayerAs(legID, playerID string, volume int) *playback.Player {
 	player := playback.NewPlayer(s.Log)
-	player.SetVolume(req.Volume)
+	player.SetVolume(volume)
 
 	legPlayers.Lock()
-	if legPlayers.m[id] == nil {
-		legPlayers.m[id] = make(map[string]*playback.Player)
+	if legPlayers.m[legID] == nil {
+		legPlayers.m[legID] = make(map[string]*playback.Player)
 	}
-	legPlayers.m[id][ttsID] = player
+	legPlayers.m[legID][playerID] = player
 	legPlayers.Unlock()
 
-	go func() {
-		result, err := provider.Synthesize(l.Context(), req.Text, tts.Options{
-			Voice:    req.Voice,
-			ModelID:  req.ModelID,
-			Language: req.Language,
-			Prompt:   req.Prompt,
-			APIKey:   apiKey,
+	return player
+}
+
+func newTTSID() string {
+	return "tts-" + uuid.New().String()[:8]
+}
+
+func legPlayerExists(legID, playerID string) bool {
+	legPlayers.Lock()
+	defer legPlayers.Unlock()
+	_, ok := legPlayers.m[legID][playerID]
+	return ok
+}
+
+func deregisterLegPlayer(legID, playerID string) {
+	legPlayers.Lock()
+	delete(legPlayers.m[legID], playerID)
+	if len(legPlayers.m[legID]) == 0 {
+		delete(legPlayers.m, legID)
+	}
+	legPlayers.Unlock()
+}
+
+// playLegTTSAudio plays synthesized audio on a leg and publishes the
+// tts.started / tts.finished / tts.error lifecycle. Shared by immediate and
+// committed-preflight playback.
+func (s *Server) playLegTTSAudio(t *legTTSTarget, ttsID string, player *playback.Player, audio io.Reader, mimeType string) {
+	l := t.leg
+	legID := l.ID()
+	scope := events.LegRoomScope{LegID: legID, AppID: l.AppID()}
+
+	player.OnStart(func() {
+		s.Bus.Publish(events.TTSStarted, &events.TTSStartedData{LegRoomScope: scope, TTSID: ttsID})
+	})
+
+	ttsRate := uint32(mixer.DefaultSampleRate)
+	if roomID := l.RoomID(); roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			ttsRate = uint32(rm.Mixer().SampleRate())
+		}
+	}
+	// Built here, not at command time, so srcRate reflects whichever rate the
+	// player will actually produce — the rate is decided after synthesis, and
+	// the leg may have moved rooms in between.
+	writer := &legPlaybackWriter{
+		legID:        legID,
+		leg:          l,
+		directWriter: t.directWriter,
+		roomMgr:      s.RoomMgr,
+		srcRate:      ttsRate,
+	}
+	playErr := player.PlayReaderAtRate(l.Context(), writer, audio, mimeType, ttsRate)
+
+	deregisterLegPlayer(legID, ttsID)
+
+	if playErr != nil && playErr != context.Canceled {
+		s.Bus.Publish(events.TTSError, &events.TTSErrorData{
+			LegRoomScope: scope,
+			TTSID:        ttsID,
+			Error:        playErr.Error(),
+			Category:     string(tts.CategoryPlayback),
 		})
+		return
+	}
+	s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
+		LegRoomScope: scope,
+		TTSID:        ttsID,
+		Reason:       playbackReason(playErr),
+		PlayedMs:     player.PlayedMillis(),
+	})
+}
+
+func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error) {
+	t, err := s.validateLegTTS(legID, req)
+	if err != nil {
+		return nil, err
+	}
+
+	ttsID, player := s.registerLegTTSPlayer(legID, req.Volume)
+
+	go func() {
+		result, err := t.provider.Synthesize(t.leg.Context(), req.Text, ttsOptions(req, t.apiKey))
 		if err != nil {
-			legPlayers.Lock()
-			delete(legPlayers.m[id], ttsID)
-			if len(legPlayers.m[id]) == 0 {
-				delete(legPlayers.m, id)
-			}
-			legPlayers.Unlock()
+			deregisterLegPlayer(legID, ttsID)
 			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
+				LegRoomScope: events.LegRoomScope{LegID: legID, AppID: t.leg.AppID()},
 				TTSID:        ttsID,
 				Error:        err.Error(),
 				Category:     string(tts.Categorize(err)),
@@ -85,56 +170,20 @@ func (s *Server) doLegTTS(legID string, req TTSRequest) (*TTSStartResult, error)
 		}
 		defer result.Audio.Close()
 
-		player.OnStart(func() {
-			s.Bus.Publish(events.TTSStarted, &events.TTSStartedData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
-				TTSID:        ttsID,
-			})
-		})
-
-		ttsRate := uint32(mixer.DefaultSampleRate)
-		if roomID := l.RoomID(); roomID != "" {
-			if rm, ok := s.RoomMgr.Get(roomID); ok {
-				ttsRate = uint32(rm.Mixer().SampleRate())
-			}
-		}
-		// Built here, not at command time, so srcRate reflects whichever
-		// rate the player will actually produce — the rate is decided
-		// after Synthesize, and the leg may have moved rooms in between.
-		writer := &legPlaybackWriter{
-			legID:        id,
-			leg:          l,
-			directWriter: directWriter,
-			roomMgr:      s.RoomMgr,
-			srcRate:      ttsRate,
-		}
-		playErr := player.PlayReaderAtRate(l.Context(), writer, result.Audio, result.MimeType, ttsRate)
-
-		legPlayers.Lock()
-		delete(legPlayers.m[id], ttsID)
-		if len(legPlayers.m[id]) == 0 {
-			delete(legPlayers.m, id)
-		}
-		legPlayers.Unlock()
-
-		if playErr != nil && playErr != context.Canceled {
-			s.Bus.Publish(events.TTSError, &events.TTSErrorData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
-				TTSID:        ttsID,
-				Error:        playErr.Error(),
-				Category:     string(tts.CategoryPlayback),
-			})
-		} else {
-			s.Bus.Publish(events.TTSFinished, &events.TTSFinishedData{
-				LegRoomScope: events.LegRoomScope{LegID: id, AppID: appID},
-				TTSID:        ttsID,
-				Reason:       playbackReason(playErr),
-				PlayedMs:     player.PlayedMillis(),
-			})
-		}
+		s.playLegTTSAudio(t, ttsID, player, result.Audio, result.MimeType)
 	}()
 
 	return &TTSStartResult{TTSID: ttsID, Status: "playing"}, nil
+}
+
+func ttsOptions(req TTSRequest, apiKey string) tts.Options {
+	return tts.Options{
+		Voice:    req.Voice,
+		ModelID:  req.ModelID,
+		Language: req.Language,
+		Prompt:   req.Prompt,
+		APIKey:   apiKey,
+	}
 }
 
 func (s *Server) ttsLeg(w http.ResponseWriter, r *http.Request) {

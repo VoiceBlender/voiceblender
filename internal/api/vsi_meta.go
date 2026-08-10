@@ -183,6 +183,9 @@ func VSICommandsMetadata() []VSICommandMeta {
 
 		// ── TTS ─────────────────────────────────────────────────────────
 		{Name: "leg_tts", Summary: "Synthesize speech and play it on a leg", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_tts_preflight", Summary: "Synthesize speech and hold it for a later commit", Description: "Stages a speculative reply: the audio is synthesized and buffered but not played, so that committing it starts playback with no synthesis delay. Use with the eager_end_of_turn stt.turn event to begin generating a reply before the caller has finished speaking, then commit on end_of_turn or discard on turn_resumed. A tts.staged event reports when the audio is ready. Staged utterances are dropped after TTS_PREFLIGHT_TTL or when the leg ends.", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
+		{Name: "leg_tts_commit", Summary: "Play a staged TTS utterance", Description: "Starts playback of an utterance staged by leg_tts_preflight. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on tts.error, exactly as for leg_tts. Once committed, stop it with leg_play_stop using the same tts_id.", PayloadType: ttsTargetPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{404, 409}},
+		{Name: "leg_tts_discard", Summary: "Drop a staged TTS utterance without playing it", PayloadType: ttsTargetPayload{}, ResultType: TTSDiscardResult{}, ErrorCodes: []int{404, 409}},
 		{Name: "room_tts", Summary: "Synthesize speech and play it into a room mix", PayloadType: ttsStartPayload{}, ResultType: TTSStartResult{}, ErrorCodes: []int{400, 404, 409, 503}},
 
 		// ── Transfer ────────────────────────────────────────────────────
@@ -273,6 +276,8 @@ func EventsMetadata() []EventMeta {
 		{events.TTSStarted, "TTS synthesis began playing", reflect.TypeOf(events.TTSStartedData{})},
 		{events.TTSFinished, "TTS synthesis finished playing", reflect.TypeOf(events.TTSFinishedData{})},
 		{events.TTSError, "TTS synthesis or playback failed", reflect.TypeOf(events.TTSErrorData{})},
+		{events.TTSStaged, "Preflight TTS finished synthesizing and is ready to commit", reflect.TypeOf(events.TTSStagedData{})},
+		{events.TTSDiscarded, "Staged TTS was dropped without being played", reflect.TypeOf(events.TTSDiscardedData{})},
 		{events.RecordingStarted, "Recording began", reflect.TypeOf(events.RecordingStartedData{})},
 		{events.RecordingFinished, "Recording ended", reflect.TypeOf(events.RecordingFinishedData{})},
 		{events.RecordingPaused, "Recording paused (audio replaced with silence)", reflect.TypeOf(events.RecordingPausedData{})},
@@ -290,6 +295,7 @@ func EventsMetadata() []EventMeta {
 		{events.RoomRoutingChanged, "The room's audio routing matrix changed", reflect.TypeOf(events.RoomRoutingChangedData{})},
 		{events.LegRoleChanged, "A leg's routing role changed", reflect.TypeOf(events.LegRoleChangedData{})},
 		{events.STTText, "Speech-to-text transcript", reflect.TypeOf(events.STTTextData{})},
+		{events.STTTurn, "Speech-to-text turn boundary", reflect.TypeOf(events.STTTurnData{})},
 		{events.AgentConnected, "Agent connected to provider", reflect.TypeOf(events.AgentConnectedData{})},
 		{events.AgentDisconnected, "Agent session ended", reflect.TypeOf(events.AgentDisconnectedData{})},
 		{events.AgentUserTranscript, "User speech transcribed by agent", reflect.TypeOf(events.AgentTranscriptData{})},

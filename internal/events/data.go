@@ -362,6 +362,27 @@ type TTSErrorData struct {
 	Category string `json:"category"`
 }
 
+// TTSStagedData reports that a preflight utterance has finished synthesizing
+// and is held in memory, so committing it will start playback immediately.
+type TTSStagedData struct {
+	LegRoomScope
+	TTSID string `json:"tts_id"`
+	// Bytes is the size of the buffered audio.
+	Bytes int `json:"bytes"`
+	// DurationMs is how long the buffered audio will play for.
+	DurationMs int `json:"duration_ms"`
+}
+
+// TTSDiscardedData reports that a staged utterance was dropped without ever
+// being played.
+type TTSDiscardedData struct {
+	LegRoomScope
+	TTSID string `json:"tts_id"`
+	// Reason is "app" (explicitly discarded), "expired" (staging TTL elapsed)
+	// or "leg_gone" (the leg ended while the utterance was staged).
+	Reason string `json:"reason"`
+}
+
 // --- SIPREC (RFC 7865 / RFC 7866) ---
 
 // SIPRECStream is one recorded media stream as exposed on an event: the SDP
@@ -445,6 +466,39 @@ type STTTextData struct {
 	LegRoomScope
 	Text    string `json:"text"`
 	IsFinal bool   `json:"is_final"`
+	// SpeechFinal distinguishes "the speaker stopped talking" from IsFinal's
+	// "this segment will not change again". Always false for providers that
+	// do not report it (ElevenLabs, Azure).
+	SpeechFinal bool `json:"speech_final"`
+}
+
+// STTTurnData is a turn-boundary signal from a provider that models
+// conversational turns. Deepgram Flux emits the full state machine; Deepgram
+// v1 emits only "utterance_end" (and only when utterance_end_ms is set).
+type STTTurnData struct {
+	LegRoomScope
+	// Event is "start_of_turn", "update", "eager_end_of_turn", "turn_resumed",
+	// "end_of_turn" or "utterance_end".
+	Event string `json:"event"`
+	// TurnIndex counts turns within the session, incrementing after end_of_turn.
+	TurnIndex int `json:"turn_index,omitempty"`
+	// Text is the transcript of the turn so far. Empty on utterance_end.
+	Text string `json:"text,omitempty"`
+	// EndOfTurnConfidence is how sure the model is that the turn has ended.
+	EndOfTurnConfidence float64   `json:"end_of_turn_confidence,omitempty"`
+	AudioWindowStartMs  int       `json:"audio_window_start_ms,omitempty"`
+	AudioWindowEndMs    int       `json:"audio_window_end_ms,omitempty"`
+	LastWordEndMs       int       `json:"last_word_end_ms,omitempty"`
+	Words               []STTWord `json:"words,omitempty"`
+	Languages           []string  `json:"languages,omitempty"`
+}
+
+// STTWord is one word of a turn transcript with its timing and confidence.
+type STTWord struct {
+	Word       string  `json:"word"`
+	Confidence float64 `json:"confidence"`
+	StartMs    int     `json:"start_ms"`
+	EndMs      int     `json:"end_ms"`
 }
 
 // --- Agent ---

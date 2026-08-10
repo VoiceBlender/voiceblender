@@ -1100,6 +1100,118 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/tts/preflight:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: preflightTTSLeg
+            summary: Synthesize speech and hold it for a later commit
+            description: 'Stages a speculative reply. The audio is synthesized and buffered in memory but not played, so that committing it starts playback with no synthesis delay. Intended for the turn-taking loop of a voice agent: start a draft reply on the `eager_end_of_turn` `stt.turn` event, then commit it on `end_of_turn` or discard it on `turn_resumed`. A `tts.staged` event reports when the audio is ready; synthesis failures are reported on `tts.error`. Staged utterances are dropped after `TTS_PREFLIGHT_TTL` or when the leg ends, and at most `TTS_PREFLIGHT_MAX_PER_LEG` may be staged on one leg at a time. Preflight is leg-scoped; use `POST /rooms/{id}/tts` for room announcements.'
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TTSRequest'
+            responses:
+                '200':
+                    description: TTS staged
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '400':
+                    description: Invalid JSON, missing text/voice, or volume out of range
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg has no audio writer, or too many staged utterances on this leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: No API key provided for the selected provider
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/tts/{ttsID}/commit:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+            - name: ttsID
+              in: path
+              required: true
+              schema:
+                type: string
+        post:
+            operationId: commitTTSLeg
+            summary: Play a staged TTS utterance
+            description: Starts playback of an utterance staged by the preflight endpoint. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on `tts.error`, exactly as for `POST /legs/{id}/tts`. Once committed, stop playback with `DELETE /legs/{id}/play/{playbackID}` using the same `tts_id`.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: TTS committed; playback starts as soon as the audio is ready
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No staged TTS with that id
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Staged TTS already committed
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/tts/{ttsID}:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+            - name: ttsID
+              in: path
+              required: true
+              schema:
+                type: string
+        delete:
+            operationId: discardTTSLeg
+            summary: Drop a staged TTS utterance without playing it
+            description: Discards an utterance staged by the preflight endpoint, aborting synthesis if it is still in flight. Already-committed utterances are stopped with `DELETE /legs/{id}/play/{playbackID}` instead.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Staged TTS discarded
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: No staged TTS with that id
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Staged TTS already committed
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/record:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -1269,7 +1381,7 @@ paths:
         post:
             operationId: finalizeSTTLeg
             summary: Flush the STT buffer on a leg without stopping STT
-            description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only Deepgram supports this; the Azure and ElevenLabs integrations answer 501. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
+            description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only the `deepgram` provider supports this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
             tags:
                 - Legs
             responses:
@@ -3961,13 +4073,45 @@ components:
                     default: false
                 provider:
                     type: string
-                    description: 'STT provider: "elevenlabs" (default) or "deepgram"'
+                    description: 'STT provider: "elevenlabs" (default), "deepgram" (/v1/listen), "deepgram_flux" (/v2/listen, conversational turn detection) or "azure"'
                     enum:
                         - elevenlabs
                         - deepgram
+                        - deepgram_flux
+                        - azure
                 api_key:
                     type: string
-                    description: API key override (falls back to ELEVENLABS_API_KEY or DEEPGRAM_API_KEY env var depending on provider)
+                    description: API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY or AZURE_SPEECH_KEY env var depending on provider)
+                model:
+                    type: string
+                    description: 'Provider-specific model. Deepgram: default "nova-3". Deepgram Flux: "flux-general-en" (default) or "flux-general-multi".'
+                keyterms:
+                    type: array
+                    items:
+                        type: string
+                    description: Terms to boost recognition of (Deepgram and Deepgram Flux).
+                endpointing:
+                    type: integer
+                    description: 'Deepgram only: milliseconds of silence before a segment is finalized. 0 disables endpointing.'
+                utterance_end_ms:
+                    type: integer
+                    description: 'Deepgram only: milliseconds of silence after which an stt.turn event with event=utterance_end is emitted. Deepgram requires interim results for this, which are requested automatically and still suppressed unless partial is true.'
+                eager_eot_threshold:
+                    type: number
+                    description: 'Deepgram Flux only: end-of-turn confidence that fires an eager_end_of_turn stt.turn event, enabling speculative generation. Must be between 0.3 and 0.9. When unset, no eager_end_of_turn or turn_resumed events are emitted at all.'
+                eot_threshold:
+                    type: number
+                    description: 'Deepgram Flux only: end-of-turn confidence required to close a turn. Deepgram default 0.7.'
+                    minimum: 0
+                    maximum: 1
+                eot_timeout_ms:
+                    type: integer
+                    description: 'Deepgram Flux only: milliseconds of silence after which a turn is closed regardless of confidence. Deepgram default 5000.'
+                language_hints:
+                    type: array
+                    items:
+                        type: string
+                    description: 'Deepgram Flux only: candidate language codes for the "flux-general-multi" model.'
             required:
                 - language
                 - partial
@@ -4729,6 +4873,8 @@ components:
                 - tts.started
                 - tts.finished
                 - tts.error
+                - tts.staged
+                - tts.discarded
                 - recording.started
                 - recording.finished
                 - recording.paused
@@ -4746,6 +4892,7 @@ components:
                 - room.routing_changed
                 - leg.role_changed
                 - stt.text
+                - stt.turn
                 - agent.connected
                 - agent.disconnected
                 - agent.user_transcript
@@ -5583,6 +5730,55 @@ x-webhooks:
                                     category:
                                         type: string
                                         description: 'Failure category: permanent_auth, permanent_input, rate_limited, service_unavailable, retryable, canceled or unknown for a synthesis failure, playback for a failure while streaming the audio. New values may be added; treat an unrecognised value as unknown'
+    tts.staged:
+        post:
+            summary: Preflight TTS finished synthesizing and is ready to commit
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    tts_id:
+                                        type: string
+                                        description: TTS playback identifier, to commit or discard
+                                    bytes:
+                                        type: integer
+                                        description: Size of the buffered audio
+                                    duration_ms:
+                                        type: integer
+                                        description: How long the buffered audio will play for. 0 when the duration is not derivable from the audio format
+    tts.discarded:
+        post:
+            summary: Staged TTS was dropped without being played
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    tts_id:
+                                        type: string
+                                        description: TTS playback identifier
+                                    reason:
+                                        type: string
+                                        description: 'Why the staged utterance was dropped: ''app'' (explicitly discarded), ''expired'' (TTS_PREFLIGHT_TTL elapsed) or ''leg_gone'' (the leg ended while it was staged)'
     recording.started:
         post:
             summary: Recording began
@@ -5961,6 +6157,58 @@ x-webhooks:
                                     is_final:
                                         type: boolean
                                         description: Whether this is a final or partial transcript
+                                    speech_final:
+                                        type: boolean
+                                        description: Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it
+    stt.turn:
+        post:
+            summary: Speech-to-text turn boundary
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                        description: Room identifier
+                                    app_id:
+                                        type: string
+                                    event:
+                                        type: string
+                                        description: 'Turn boundary: start_of_turn, update, eager_end_of_turn, turn_resumed or end_of_turn (Deepgram Flux), or utterance_end (Deepgram, when utterance_end_ms is set). New values may be added'
+                                    turn_index:
+                                        type: integer
+                                        description: Index of the turn within the session, incrementing after each end_of_turn
+                                    text:
+                                        type: string
+                                        description: Transcript of the turn so far. Empty on utterance_end
+                                    end_of_turn_confidence:
+                                        type: number
+                                        description: How confident the model is that the turn has ended
+                                    audio_window_start_ms:
+                                        type: integer
+                                        description: Start of the audio window this transcript covers
+                                    audio_window_end_ms:
+                                        type: integer
+                                        description: End of the audio window this transcript covers
+                                    last_word_end_ms:
+                                        type: integer
+                                        description: When the last word ended (utterance_end only)
+                                    words:
+                                        type: array
+                                        items:
+                                            $ref: '#/components/schemas/STTWord'
+                                        description: Per-word transcript with timings and confidence, when the provider supplies it
+                                    languages:
+                                        type: array
+                                        items:
+                                            type: string
+                                        description: Languages detected in the turn
     agent.connected:
         post:
             summary: Agent connected to provider

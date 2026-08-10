@@ -346,7 +346,7 @@ func TestAzure_FullFlowWithMockServer(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		transcriber.recvLoop(ctx, conn, lw, cb, false)
+		transcriber.recvLoop(ctx, conn, lw, cb, Options{})
 	}()
 
 	wg.Wait()
