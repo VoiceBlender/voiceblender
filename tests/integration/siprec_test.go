@@ -1106,3 +1106,85 @@ func getLegView(t *testing.T, inst *testInstance, legID string) legTypeView {
 	}
 	return view
 }
+
+// TestSIPREC_SessionSurvivesACK asserts that a recording session stays
+// established once it has been answered and ACKed.
+//
+// Regression test for a failure seen against a real Kamailio + rtpengine SRC:
+// the SRS answered, and then immediately tore the session down. Both ends left
+// matching evidence.
+//
+// On the SRS:
+//
+//	SIPREC: answer failed  error="respond SDP: transaction terminated"
+//	siprec.session_ended
+//	WARN ACK missed  caller=TransactionLayer  tx=...__INVITE
+//
+// and on the SRC, the same 200 OK logged three times — sipgo retransmitting it
+// because nothing ever confirmed the dialog.
+//
+// "ACK missed" comes from sipgo's ServerTx.ackSend(), which logs only in the
+// branch where an ACK arrives for an ALREADY-TERMINATED server transaction. So
+// the ACK is sent and received; the transaction is simply gone by then. That
+// makes this a lifecycle bug on the SRS side, not a signalling or transport
+// problem on the SRC side.
+//
+// The existing SIPREC tests all assert on the answer and then hang up, so none
+// of them notice a session that dies a moment later. This one holds the dialog
+// open and checks it is still there.
+func TestSIPREC_SessionSurvivesACK(t *testing.T) {
+	src := newTestInstance(t, "src")
+	srs := siprecInstance(t, "srs", nil)
+
+	call, err := dialSIPREC(t, src, srs, twoPartyMetadata(t))
+	if err != nil {
+		t.Fatalf("SIPREC INVITE failed: %v", err)
+	}
+	defer call.Dialog.Bye(context.Background())
+
+	if call.RemoteSDP == nil {
+		t.Fatal("no answer SDP — the SRS never answered the recording session")
+	}
+
+	evt := srs.collector.waitForMatch(t, events.SIPRECSessionStarted, nil, 5*time.Second)
+	legIDer, _ := evt.Data.(interface{ GetLegID() string })
+	if legIDer == nil || legIDer.GetLegID() == "" {
+		t.Fatal("siprec.session_started carries no leg ID")
+	}
+	legID := legIDer.GetLegID()
+
+	// Hold the dialog. In the observed failure the teardown followed the answer
+	// within a couple of hundred milliseconds, so a second is ample; the point
+	// is to outlive the ACK rather than to wait out a timer.
+	time.Sleep(2 * time.Second)
+
+	if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
+		t.Fatal("recording session ended on its own after being answered: " +
+			"the SRS tore down the dialog instead of keeping it up " +
+			"(check for 'ACK missed' / 'transaction terminated' in the SRS log)")
+	}
+
+	// The session must still be addressable, not merely un-ended.
+	view := getSIPRECSession(t, srs, legID)
+	if len(view.Streams) != 2 {
+		t.Fatalf("streams = %d, want 2 still attached after the ACK", len(view.Streams))
+	}
+
+	// And the leg itself must still be connected — a session view can outlive
+	// the SIP dialog that justifies it.
+	resp := httpGet(t, srs.baseURL()+"/v1/legs")
+	var legs []legView
+	decodeJSON(t, resp, &legs)
+	var found bool
+	for _, l := range legs {
+		if l.ID == legID {
+			found = true
+			if l.State != "connected" {
+				t.Errorf("recording leg state = %q, want connected", l.State)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("recording leg %s is gone from /v1/legs after the ACK", legID)
+	}
+}
