@@ -26,7 +26,7 @@ paper's open harness rather than a VoiceBlender-specific one.
 | Memory | ~65 MB base + **0.17 MB/session** (270 MB at 1,200 sessions) |
 | Failures | 2 in 7,875 calls, both at one step, not load-correlated |
 | VSI events dropped | 0 at every step, despite ~5,000 turn events/second at N=1,200 |
-| With preflight | p50 **1,237 ms** (§6.1) |
+| With preflight | p50 **1,258 ms**, also ≥ 1,200 sessions, 0 failures in 7,875 calls |
 
 Of the 1,478 ms turn latency, roughly 1,450 ms is injected mock-vendor delay
 plus the model's turn decision; **the media path contributes ~27 ms**. The
@@ -228,7 +228,7 @@ The AWS run (§9) replaces all of this estimation with measurement.
 | Configuration | N | Calls | p50 | p95 |
 |---|---|---|---|---|
 | **`flux`** | 25 | 75 | **1478 ms** | 1630 ms |
-| **`flux` + preflight** | 2 | 2 | **1237 ms** | 1391 ms |
+| **`flux` + preflight** | 25 | 75 | **1258 ms** | 1430 ms |
 | `stt` (comparison) | 25 | 200 | 2077 ms | 2230 ms |
 
 The per-turn budget decomposes cleanly against the injected latencies:
@@ -241,7 +241,7 @@ The per-turn budget decomposes cleanly against the injected latencies:
 | TTS first audio | 150 | 0 (pre-staged) | 150 |
 | VoiceBlender media path + driver floor | ~27 | ~27 | ~27 |
 | **Total** | **~1427** | **~1077** | **~2077** |
-| **Measured** | **1478** | **1237** | **2077** |
+| **Measured** | **1478** | **1258** | **2077** |
 
 Nothing unaccounted for sits in the media path.
 
@@ -250,11 +250,11 @@ For reference, the published jambonz median on its Flux configuration was
 turn detection is held constant the two platforms answer at the same speed, and
 preflight takes VoiceBlender below that.
 
-Preflight is not free: it generated **28 replies for 16 turns** (1.75× the LLM
-calls), of which 14 were committed and 12 discarded on withdrawn guesses, with
-0 regenerated. Against mocked vendors that costs only CPU; against real ones it
-is 1.75× the token spend, which belongs in any cost model built on these
-figures.
+Preflight is not free. Over its full ladder it generated **117,515 replies for
+68,720 turns — 1.71×** — of which 55,125 were committed and 54,589 discarded on
+withdrawn guesses. Against mocked vendors that costs only CPU; against real ones
+it is 1.71× the token spend, which belongs in any cost model built on these
+figures. Its other cost is memory, not CPU (§6.3).
 
 ### 6.2 Capacity ladder
 
@@ -288,6 +288,24 @@ roughly four times a second per active turn, so N=1,200 puts on the order of
 per *whole call* on the silence-timer rung. `voiceblender_vsi_events_dropped_total`
 was **0 at every step**, with `VSI_EVENT_BUFFER_SIZE=65536`.
 
+#### With preflight
+
+The same ladder with speculative generation enabled. Unloaded baseline p95 =
+1,430 ms, so the ceiling is **1,788 ms**.
+
+| N | Completed | Failed | Fail % | p50 ms | p95 ms | p95 vs baseline | Verdict |
+|---|---|---|---|---|---|---|---|
+| 25 | 75 | 0 | 0.00 | 1258 | 1430 | — | pass |
+| 200 | 600 | 0 | 0.00 | 1258 | 1411 | −1.4% | pass |
+| 400 | 1200 | 0 | 0.00 | 1258 | 1410 | −1.4% | pass |
+| 800 | 2400 | 0 | 0.00 | 1260 | 1410 | −1.4% | pass |
+| 1200 | 3600 | 0 | 0.00 | 1277 | 1410 | −1.4% | pass |
+
+**Zero failures across all 7,875 calls**, and the ~220 ms advantage over plain
+Flux holds at every step rather than being a low-load artifact. p50 drifts by
+19 ms across a 48× range. Rig utilisation ends at 13.0%, inside the validity bar
+(§6.4), so ≥ 1,200 stands here too.
+
 ### 6.3 Cost per session
 
 Per-process CPU as cores, sampled every 2 s over each step's steady state
@@ -300,6 +318,32 @@ Per-process CPU as cores, sampled every 2 s over each step's steady state
 | 400 | 1.896 | **0.0047** | 141 | 0.036 | 0.328 | 0.809 | 20.7 |
 | 800 | 3.515 | **0.0044** | 202 | 0.061 | 0.640 | 1.495 | 31.2 |
 | 1200 | 5.366 | **0.0045** | 270 | 0.096 | 0.973 | 2.135 | 41.3 |
+
+With preflight:
+
+| N | VB cores | **VB cores/session** | VB PSS MB | Controller cores | Mock cores | Driver cores | Box busy % |
+|---|---|---|---|---|---|---|---|
+| 25 | 0.108 | **0.0043** | 76 | 0.000 | 0.024 | 0.064 | 8.3 |
+| 200 | 0.825 | **0.0041** | 157 | 0.032 | 0.165 | 0.378 | 12.7 |
+| 400 | 1.758 | **0.0044** | 249 | 0.067 | 0.350 | 0.839 | 23.3 |
+| 800 | 3.127 | **0.0039** | 417 | 0.127 | 0.684 | 1.538 | 32.0 |
+| 1200 | 4.562 | **0.0038** | 595 | 0.183 | 1.007 | 2.116 | 40.1 |
+
+**Preflight's cost is memory, not CPU.** PSS reaches 595 MB at N=1,200 against
+Flux's 270 MB — **0.44 MB per session against 0.17** — because staged audio is
+buffered per leg until it is committed or discarded. Anyone sizing a host for
+this configuration should budget on that figure, not the plain-Flux one.
+
+CPU came out slightly *lower* than plain Flux (0.0038 against 0.0045 at
+N=1,200), which is the opposite of what 1.71× the generation implies. The likely
+cause is that a discarded speculation cancels its synthesis context, so roughly
+half of that extra work is aborted before completing, while a committed
+utterance plays from a buffer rather than streaming from the provider. That is
+an explanation consistent with the data, not a measured mechanism, and it is not
+load-bearing for anything else in this document.
+
+The controller tier roughly doubles, as 1.71× the LLM calls implies (0.183
+against 0.096 cores at N=1,200), and is still negligible.
 
 **One session costs 0.0044–0.0047 CPU cores, with no trend across a 48× range
 of concurrency.** Cost scales with load; it does not compound. This is flatter
@@ -392,8 +436,10 @@ moved.
 ### 6.5 Work actually performed
 
 Flat latency is not the pipeline quietly skipping work. Across the Flux ladder:
-7,875 calls carrying **69,345 turns**, with `tts_unknown_text_total` **0** and
-`voiceblender_vsi_events_dropped_total` **0** at every step.
+7,875 calls carrying **69,345 turns**; across the preflight ladder, 7,875 calls
+carrying **68,720 turns** from **117,515 stagings** (55,125 committed, 54,589
+discarded). `tts_unknown_text_total` was **0** and
+`voiceblender_vsi_events_dropped_total` **0** at every step of both.
 
 `tts_unknown_text_total` is the strongest single check in the run: the mock
 serves a filler clip and increments that counter for any text it cannot resolve
@@ -408,11 +454,21 @@ hesitation.
 Turns run to ~8.8 per call rather than 8. Flux detects the caller's final
 utterance more reliably than a silence timer does, so it produces a reply the
 caller has already hung up on; that reply's `leg_tts` then fails with 404. The
-controller counted 6,361 such errors across 7,875 calls (~0.8/call), consistent
-with one per call at hangup — but the flux rung's controller log was truncated
-when the stack restarted for the next rung, so that attribution is inferred from
-the rate rather than read from the log. `up.sh` now appends rather than
-truncates, so the next run can confirm it directly.
+preflight rung's log was preserved and confirms it directly: of 19,448 controller
+errors, **13,595 are `404 leg not found`** and 74 are `409` on an already-settled
+staging.
+
+The remaining ~5,779 are a **defect in the benchmark controller, not in
+VoiceBlender**, and they match the 5,780 recorded regenerations almost exactly.
+When a preflight command fails because the leg is gone, VoiceBlender replies
+with an `error` frame rather than a `leg_tts_preflight.result`; the controller
+only resolves its pending-result callbacks on the latter, so the speculation
+future is never settled and `commitTurn` waits its full 10-second timeout before
+regenerating. It parks roughly 1,200 goroutines for 10 s at the top of the
+ladder. It does not distort the measurements — it happens only after the caller
+has hung up, and the driver recorded zero failures on this rung — but it should
+be fixed by resolving pending callbacks on `error` frames carrying a
+`request_id`.
 
 ## 7. Limitations
 
@@ -493,3 +549,5 @@ convention is manifests rather than raw data.
    ~0.005 cores/session it lies far above what one desktop can generate load
    for; a dedicated rig host is the prerequisite for looking.
 3. **Incremental LLM → TTS.** The last large reducible latency term (§7, item 2).
+4. **Fix the controller's error-frame handling** (§6.5) so a failed preflight
+   settles its waiter immediately instead of timing out after 10 s.
