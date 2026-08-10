@@ -295,6 +295,15 @@ func TestPreflight_LegTeardownDiscards(t *testing.T) {
 	if d == nil || d.Reason != discardLegGone {
 		t.Fatalf("discarded event = %+v, want reason %q", d, discardLegGone)
 	}
+	// The synthesis goroutine sees the same cancellation; it must not report it
+	// as a provider failure on top of the discard.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && g.synthCanceled() == nil {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if sink.seen(events.TTSError) {
+		t.Error("tts.error fired for an utterance dropped by leg teardown")
+	}
 }
 
 func TestPreflight_SynthesisErrorReportsAndClears(t *testing.T) {
