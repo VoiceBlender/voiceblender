@@ -97,15 +97,15 @@ func TestSTTRecvLoopsLogCloseCode(t *testing.T) {
 	}{
 		{"deepgram", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
 			tr := NewDeepgram(log, "")
-			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), func(string, bool) {})
+			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 		{"elevenlabs", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
 			tr := NewElevenLabs(log)
-			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), false, func(string, bool) {})
+			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 		{"azure", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
 			tr := NewAzure("test", log)
-			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), func(string, bool) {}, false)
+			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), func(string, bool) {}, Options{})
 		}},
 	}
 

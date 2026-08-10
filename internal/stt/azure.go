@@ -100,7 +100,7 @@ func (t *AzureTranscriber) Start(ctx context.Context, reader io.Reader, apiKey s
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		t.recvLoop(ctx, conn, lw, cb, opts.Partial)
+		t.recvLoop(ctx, conn, lw, cb, opts)
 	}()
 
 	wg.Wait()
@@ -179,7 +179,7 @@ type azSpeechPhrase struct {
 	DisplayText       string `json:"DisplayText"`
 }
 
-func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback, partial bool) {
+func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsutilx.LockedWriter, cb TranscriptCallback, opts Options) {
 	rd := &wsutil.Reader{
 		Source: conn,
 		State:  ws.StateClientSide,
@@ -250,7 +250,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsut
 
 		switch path {
 		case "speech.hypothesis":
-			if !partial {
+			if !opts.Partial {
 				continue
 			}
 			var h azSpeechHypothesis
@@ -260,7 +260,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsut
 			}
 			if h.Text != "" {
 				t.log.Debug("azure stt interim transcript", "text", h.Text)
-				cb(h.Text, false)
+				emitTranscript(opts, cb, TranscriptEvent{Text: h.Text})
 			}
 		case "speech.phrase":
 			var p azSpeechPhrase
@@ -270,7 +270,7 @@ func (t *AzureTranscriber) recvLoop(ctx context.Context, conn net.Conn, lw *wsut
 			}
 			if p.RecognitionStatus == "Success" && p.DisplayText != "" {
 				t.log.Debug("azure stt final transcript", "text", p.DisplayText)
-				cb(p.DisplayText, true)
+				emitTranscript(opts, cb, TranscriptEvent{Text: p.DisplayText, IsFinal: true})
 			}
 		default:
 			t.log.Debug("azure stt ignored path", "path", path)

@@ -130,7 +130,7 @@ func runAzureRecvLoop(t *testing.T, frame string, partial bool) []capturedRecord
 	if err := transcriber.sendConfig(lw, "testreqid"); err != nil {
 		t.Fatalf("sendConfig: %v", err)
 	}
-	transcriber.recvLoop(ctx, conn, lw, cb, partial)
+	transcriber.recvLoop(ctx, conn, lw, cb, Options{Partial: partial})
 
 	gotMu.Lock()
 	defer gotMu.Unlock()

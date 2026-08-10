@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"sync"
 
@@ -17,9 +18,11 @@ import (
 // used to start them so that new legs joining the room get STT automatically.
 type roomSTTState struct {
 	transcribers map[string]stt.Provider // legID -> Provider
-	opts         stt.Options
-	apiKey       string
-	provider     string // "elevenlabs" (default) or "deepgram"
+	// opts is a template shared by every leg in the room and must be stored
+	// with nil callbacks; attachSTTSinks binds them to a per-leg copy.
+	opts     stt.Options
+	apiKey   string
+	provider string // "elevenlabs" (default), "deepgram", "deepgram_flux" or "azure"
 }
 
 var (
@@ -34,6 +37,128 @@ var (
 	}{m: make(map[string]*roomSTTState)}
 )
 
+// newSTTProvider builds a transcriber for the named provider.
+func (s *Server) newSTTProvider(provider string) stt.Provider {
+	switch provider {
+	case "deepgram":
+		return stt.NewDeepgram(s.Log, s.Config.DeepgramSTTURL)
+	case "deepgram_flux":
+		return stt.NewDeepgramFlux(s.Log, s.Config.DeepgramFluxURL)
+	case "azure":
+		return stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
+	default:
+		return stt.NewElevenLabs(s.Log)
+	}
+}
+
+// sttAPIKey resolves the API key for the request, falling back to config, and
+// returns the provider name to quote in errors.
+func (s *Server) sttAPIKey(req STTRequest) (apiKey, providerName string) {
+	providerName = req.Provider
+	if providerName == "" {
+		providerName = "elevenlabs"
+	}
+	if req.APIKey != "" {
+		return req.APIKey, providerName
+	}
+	switch req.Provider {
+	case "deepgram", "deepgram_flux":
+		return s.Config.DeepgramAPIKey, providerName
+	case "azure":
+		return s.Config.AzureSpeechKey, providerName
+	default:
+		return s.Config.ElevenLabsAPIKey, providerName
+	}
+}
+
+// sttOptions maps the request onto provider options. Fields that do not apply
+// to the chosen provider are ignored rather than rejected, so switching
+// providers never turns a previously valid request into an error.
+func sttOptions(req STTRequest) (stt.Options, error) {
+	if v := req.EagerEOTThreshold; v != nil && (*v < 0.3 || *v > 0.9) {
+		return stt.Options{}, newAPIError(http.StatusBadRequest, "eager_eot_threshold must be between 0.3 and 0.9")
+	}
+	if v := req.EOTThreshold; v != nil && (*v < 0 || *v > 1) {
+		return stt.Options{}, newAPIError(http.StatusBadRequest, "eot_threshold must be between 0 and 1")
+	}
+	if v := req.Endpointing; v != nil && *v < 0 {
+		return stt.Options{}, newAPIError(http.StatusBadRequest, "endpointing must not be negative")
+	}
+	if v := req.UtteranceEndMs; v != nil && *v < 0 {
+		return stt.Options{}, newAPIError(http.StatusBadRequest, "utterance_end_ms must not be negative")
+	}
+	if v := req.EOTTimeoutMs; v != nil && *v < 0 {
+		return stt.Options{}, newAPIError(http.StatusBadRequest, "eot_timeout_ms must not be negative")
+	}
+	return stt.Options{
+		Language:          req.Language,
+		Partial:           req.Partial,
+		Model:             req.Model,
+		Endpointing:       req.Endpointing,
+		UtteranceEndMs:    req.UtteranceEndMs,
+		EagerEOTThreshold: req.EagerEOTThreshold,
+		EOTThreshold:      req.EOTThreshold,
+		EOTTimeoutMs:      req.EOTTimeoutMs,
+		LanguageHints:     req.LanguageHints,
+		Keyterms:          req.Keyterms,
+	}, nil
+}
+
+// attachSTTSinks returns a copy of opts with the bus callbacks bound to one
+// leg. It returns a copy rather than mutating, because a room shares a single
+// Options template across its legs and binding in place would route every
+// leg's transcripts to whichever leg started last.
+func (s *Server) attachSTTSinks(opts stt.Options, scope events.LegRoomScope) stt.Options {
+	bus := s.Bus
+	legID := scope.LegID
+	opts.OnTranscript = func(ev stt.TranscriptEvent) {
+		s.Log.Info("stt callback fired", "leg_id", legID, "is_final", ev.IsFinal, "text_len", len(ev.Text))
+		s.Log.Debug("stt callback text", "leg_id", legID, "is_final", ev.IsFinal, "text", ev.Text)
+		bus.Publish(events.STTText, &events.STTTextData{
+			LegRoomScope: scope,
+			Text:         ev.Text,
+			IsFinal:      ev.IsFinal,
+			SpeechFinal:  ev.SpeechFinal,
+		})
+	}
+	opts.OnTurn = func(ev stt.TurnEvent) {
+		s.Log.Debug("stt turn event", "leg_id", legID, "event", ev.Event, "turn_index", ev.TurnIndex)
+		bus.Publish(events.STTTurn, &events.STTTurnData{
+			LegRoomScope:        scope,
+			Event:               ev.Event,
+			TurnIndex:           ev.TurnIndex,
+			Text:                ev.Transcript,
+			EndOfTurnConfidence: ev.EndOfTurnConfidence,
+			AudioWindowStartMs:  secondsToMs(ev.AudioWindowStart),
+			AudioWindowEndMs:    secondsToMs(ev.AudioWindowEnd),
+			LastWordEndMs:       secondsToMs(ev.LastWordEnd),
+			Words:               sttWords(ev.Words),
+			Languages:           ev.Languages,
+		})
+	}
+	return opts
+}
+
+func secondsToMs(sec float64) int {
+	return int(math.Round(sec * 1000))
+}
+
+func sttWords(in []stt.TurnWord) []events.STTWord {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]events.STTWord, len(in))
+	for i, w := range in {
+		out[i] = events.STTWord{
+			Word:       w.Word,
+			Confidence: w.Confidence,
+			StartMs:    secondsToMs(w.Start),
+			EndMs:      secondsToMs(w.End),
+		}
+	}
+	return out
+}
+
 // STTStartLegResult is the success payload for starting STT on a leg.
 type STTStartLegResult struct {
 	Status string `json:"status"`
@@ -41,23 +166,13 @@ type STTStartLegResult struct {
 }
 
 func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult, error) {
-	apiKey := req.APIKey
+	apiKey, providerName := s.sttAPIKey(req)
 	if apiKey == "" {
-		switch req.Provider {
-		case "deepgram":
-			apiKey = s.Config.DeepgramAPIKey
-		case "azure":
-			apiKey = s.Config.AzureSpeechKey
-		default:
-			apiKey = s.Config.ElevenLabsAPIKey
-		}
-	}
-	if apiKey == "" {
-		providerName := req.Provider
-		if providerName == "" {
-			providerName = "elevenlabs"
-		}
 		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
+	}
+	opts, err := sttOptions(req)
+	if err != nil {
+		return nil, err
 	}
 
 	id := legID
@@ -74,15 +189,7 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 		legTranscribers.Unlock()
 		return nil, newAPIError(http.StatusConflict, "STT already running on this leg")
 	}
-	var transcriber stt.Provider
-	switch req.Provider {
-	case "deepgram":
-		transcriber = stt.NewDeepgram(s.Log, s.Config.DeepgramSTTURL)
-	case "azure":
-		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
-	default:
-		transcriber = stt.NewElevenLabs(s.Log)
-	}
+	transcriber := s.newSTTProvider(req.Provider)
 	legTranscribers.m[id] = transcriber
 	legTranscribers.Unlock()
 
@@ -111,24 +218,12 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 		reader = mixer.NewResampleReader(ar, l.SampleRate(), mixer.DefaultSampleRate)
 	}
 
-	bus := s.Bus
-	legAppID := l.AppID()
-	cb := func(text string, isFinal bool) {
-		s.Log.Info("stt callback fired", "leg_id", id, "is_final", isFinal, "text_len", len(text))
-		s.Log.Debug("stt callback text", "leg_id", id, "is_final", isFinal, "text", text)
-		bus.Publish(events.STTText, &events.STTTextData{
-			LegRoomScope: events.LegRoomScope{LegID: id, AppID: legAppID},
-			Text:         text,
-			IsFinal:      isFinal,
-		})
-	}
-
-	opts := stt.Options{Language: req.Language, Partial: req.Partial}
+	opts = s.attachSTTSinks(opts, events.LegRoomScope{LegID: id, AppID: l.AppID()})
 	inRoom := l.RoomID() != ""
-	s.Log.Info("stt starting transcriber", "leg_id", id, "in_room", inRoom, "sample_rate", l.SampleRate(), "language", opts.Language, "partial", opts.Partial)
+	s.Log.Info("stt starting transcriber", "leg_id", id, "in_room", inRoom, "sample_rate", l.SampleRate(), "language", opts.Language, "partial", opts.Partial, "provider", providerName)
 
 	go func() {
-		err := transcriber.Start(l.Context(), reader, apiKey, opts, cb)
+		err := transcriber.Start(l.Context(), reader, apiKey, opts, nil)
 		s.Log.Info("stt transcriber exited", "leg_id", id, "error", err)
 		if roomID := l.RoomID(); roomID != "" {
 			if rm, ok := s.RoomMgr.Get(roomID); ok {
@@ -235,23 +330,13 @@ type STTStartRoomResult struct {
 }
 
 func (s *Server) doStartSTTRoom(roomID string, req STTRequest) (*STTStartRoomResult, error) {
-	apiKey := req.APIKey
+	apiKey, providerName := s.sttAPIKey(req)
 	if apiKey == "" {
-		switch req.Provider {
-		case "deepgram":
-			apiKey = s.Config.DeepgramAPIKey
-		case "azure":
-			apiKey = s.Config.AzureSpeechKey
-		default:
-			apiKey = s.Config.ElevenLabsAPIKey
-		}
-	}
-	if apiKey == "" {
-		providerName := req.Provider
-		if providerName == "" {
-			providerName = "elevenlabs"
-		}
 		return nil, newAPIError(http.StatusServiceUnavailable, "no %s API key provided", providerName)
+	}
+	opts, err := sttOptions(req)
+	if err != nil {
+		return nil, err
 	}
 
 	id := roomID
@@ -269,7 +354,6 @@ func (s *Server) doStartSTTRoom(roomID string, req STTRequest) (*STTStartRoomRes
 		roomTranscribers.Unlock()
 		return nil, newAPIError(http.StatusConflict, "STT already running on this room")
 	}
-	opts := stt.Options{Language: req.Language, Partial: req.Partial}
 	state := &roomSTTState{
 		transcribers: make(map[string]stt.Provider),
 		opts:         opts,
@@ -307,34 +391,16 @@ func (s *Server) startRoomLegSTT(roomID, legID string, l leg.Leg, mix *mixer.Mix
 	mix.SetParticipantTap(legID, pw)
 	sttReader := io.Reader(mixer.NewResampleReader(pr, mix.SampleRate(), mixer.DefaultSampleRate))
 
-	var transcriber stt.Provider
-	switch state.provider {
-	case "deepgram":
-		transcriber = stt.NewDeepgram(s.Log, s.Config.DeepgramSTTURL)
-	case "azure":
-		transcriber = stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
-	default:
-		transcriber = stt.NewElevenLabs(s.Log)
-	}
+	transcriber := s.newSTTProvider(state.provider)
 	roomTranscribers.Lock()
 	state.transcribers[legID] = transcriber
 	roomTranscribers.Unlock()
 
-	bus := s.Bus
-	opts := state.opts
 	apiKey := state.apiKey
-	sttAppID := l.AppID()
-
-	cb := func(text string, isFinal bool) {
-		bus.Publish(events.STTText, &events.STTTextData{
-			LegRoomScope: events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: sttAppID},
-			Text:         text,
-			IsFinal:      isFinal,
-		})
-	}
+	opts := s.attachSTTSinks(state.opts, events.LegRoomScope{LegID: legID, RoomID: roomID, AppID: l.AppID()})
 
 	go func() {
-		_ = transcriber.Start(l.Context(), sttReader, apiKey, opts, cb)
+		_ = transcriber.Start(l.Context(), sttReader, apiKey, opts, nil)
 		// Cleanup on exit.
 		if rm, ok := s.RoomMgr.Get(roomID); ok {
 			rm.Mixer().ClearParticipantTap(legID)

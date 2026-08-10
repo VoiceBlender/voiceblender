@@ -260,12 +260,16 @@ func TestLoad_MoQOverrides(t *testing.T) {
 
 func TestLoad_DeepgramEndpointOverrides(t *testing.T) {
 	t.Setenv("DEEPGRAM_STT_URL", "ws://mock:8080/v1/listen")
+	t.Setenv("DEEPGRAM_FLUX_URL", "ws://mock:8080/v2/listen")
 	t.Setenv("DEEPGRAM_TTS_URL", "http://mock:8080/v1/speak")
 
 	cfg := Load()
 
 	if cfg.DeepgramSTTURL != "ws://mock:8080/v1/listen" {
 		t.Errorf("DeepgramSTTURL = %q, want ws://mock:8080/v1/listen", cfg.DeepgramSTTURL)
+	}
+	if cfg.DeepgramFluxURL != "ws://mock:8080/v2/listen" {
+		t.Errorf("DeepgramFluxURL = %q, want ws://mock:8080/v2/listen", cfg.DeepgramFluxURL)
 	}
 	if cfg.DeepgramTTSURL != "http://mock:8080/v1/speak" {
 		t.Errorf("DeepgramTTSURL = %q, want http://mock:8080/v1/speak", cfg.DeepgramTTSURL)
@@ -276,12 +280,16 @@ func TestLoad_DeepgramEndpointOverrides(t *testing.T) {
 // config layer must not invent one.
 func TestLoad_DeepgramEndpointsEmptyByDefault(t *testing.T) {
 	t.Setenv("DEEPGRAM_STT_URL", "")
+	t.Setenv("DEEPGRAM_FLUX_URL", "")
 	t.Setenv("DEEPGRAM_TTS_URL", "")
 
 	cfg := Load()
 
 	if cfg.DeepgramSTTURL != "" {
 		t.Errorf("DeepgramSTTURL = %q, want empty", cfg.DeepgramSTTURL)
+	}
+	if cfg.DeepgramFluxURL != "" {
+		t.Errorf("DeepgramFluxURL = %q, want empty", cfg.DeepgramFluxURL)
 	}
 	if cfg.DeepgramTTSURL != "" {
 		t.Errorf("DeepgramTTSURL = %q, want empty", cfg.DeepgramTTSURL)

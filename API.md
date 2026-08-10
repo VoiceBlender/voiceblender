@@ -1181,6 +1181,136 @@ Events `tts.started` and `tts.finished` are emitted.
 
 ---
 
+### Preflight TTS (speculative synthesis)
+
+`POST /v1/legs/{id}/tts` starts playing as soon as the provider returns audio,
+so the synthesis round-trip sits on the critical path between "the caller
+finished speaking" and "the agent starts speaking". Preflight moves that cost
+off the critical path: the utterance is synthesized and **buffered in memory
+without playing**, and a later commit starts playback immediately.
+
+It exists for the turn-taking loop of a voice agent, and pairs with the
+`eager_end_of_turn` signal from [conversational turn
+detection](#conversational-turn-detection):
+
+```
+stt.turn event=eager_end_of_turn   ->  generate a draft reply, POST .../tts/preflight
+stt.turn event=turn_resumed        ->  DELETE .../tts/{ttsID}          (caller kept talking)
+stt.turn event=end_of_turn         ->  POST .../tts/{ttsID}/commit     (play the draft now)
+```
+
+Preflight is **leg-scoped**. A room mix has several speakers and no single turn
+to speculate on, so `POST /v1/rooms/{id}/tts` has no preflight equivalent — use
+it directly for room announcements.
+
+#### POST /v1/legs/{id}/tts/preflight
+
+Same request body as `POST /v1/legs/{id}/tts`, including `provider`, `voice`,
+`model_id`, `language`, `prompt`, `volume` and `api_key`.
+
+**Response:** `200 OK`
+
+```json
+{ "tts_id": "tts-a1b2c3d4", "status": "staged" }
+```
+
+The response returns before synthesis completes. A `tts.staged` event reports
+when the audio is buffered and committing it will be instant:
+
+```json
+{ "type": "tts.staged", "leg_id": "550e8400-...", "tts_id": "tts-a1b2c3d4",
+  "bytes": 32000, "duration_ms": 1000 }
+```
+
+A synthesis failure is reported on `tts.error` with the usual `category`, and
+the staged id is dropped.
+
+**Errors:**
+- `400` — Invalid JSON, missing text/voice, volume out of range
+- `404` — Leg not found
+- `409` — Leg has no audio writer, or `TTS_PREFLIGHT_MAX_PER_LEG` staged
+  utterances already exist on this leg. The cap **refuses rather than evicts**:
+  dropping the oldest could silently destroy an utterance you were about to
+  commit.
+- `503` — No API key provided for the selected provider
+
+#### POST /v1/legs/{id}/tts/{ttsID}/commit
+
+Play a staged utterance. No request body.
+
+**Response:** `200 OK`
+
+```json
+{ "tts_id": "tts-a1b2c3d4", "status": "committed" }
+```
+
+Commit **never blocks and never answers "not ready yet"** — committing before
+`tts.staged` has arrived is legal, and playback begins the moment the audio
+lands. This makes commit a drop-in for `POST /v1/legs/{id}/tts`, which likewise
+returns before any audio exists and reports failure asynchronously. From here
+the normal `tts.started` / `tts.finished` / `tts.error` lifecycle applies.
+
+Once committed, stop playback with `DELETE /v1/legs/{id}/play/{playbackID}`
+using the same `tts_id` — a committed utterance is an ordinary playback.
+
+**Errors:**
+- `404` — No staged TTS with that id (never staged, already discarded, or expired)
+- `409` — Already committed
+
+#### DELETE /v1/legs/{id}/tts/{ttsID}
+
+Drop a staged utterance without playing it, aborting synthesis if it is still in
+flight so you stop paying for audio nobody will hear.
+
+**Response:** `200 OK`
+
+```json
+{ "status": "discarded" }
+```
+
+A `tts.discarded` event follows with `reason`:
+
+| `reason` | Meaning |
+|----------|---------|
+| `app` | Explicitly discarded through this endpoint |
+| `expired` | `TTS_PREFLIGHT_TTL` elapsed while staged |
+| `leg_gone` | The leg ended while the utterance was staged |
+
+**Errors:**
+- `404` — No staged TTS with that id
+- `409` — Already committed. Use `DELETE /v1/legs/{id}/play/{playbackID}` with
+  the same `tts_id` to stop it instead.
+
+#### Worked example
+
+```bash
+LEG_ID=550e8400-...
+
+# 1. Start Flux STT with eager end-of-turn enabled.
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/stt \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"deepgram_flux","eager_eot_threshold":0.4}'
+
+# 2. On stt.turn event=eager_end_of_turn, stage the draft reply.
+TTS_ID=$(curl -sX POST http://localhost:8080/v1/legs/$LEG_ID/tts/preflight \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Sure, I can reset that for you.","voice":"Rachel"}' | jq -r .tts_id)
+
+# 3a. On stt.turn event=turn_resumed — the caller kept talking, throw it away.
+curl -X DELETE http://localhost:8080/v1/legs/$LEG_ID/tts/$TTS_ID
+
+# 3b. On stt.turn event=end_of_turn — speak now, with no synthesis wait.
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/tts/$TTS_ID/commit
+```
+
+**Configuration:** `TTS_PREFLIGHT_TTL` (default `30s`),
+`TTS_PREFLIGHT_MAX_PER_LEG` (default `3`), `TTS_PREFLIGHT_MAX_BYTES` (default
+4 MiB). The TTL is a leak backstop, not a policy knob — a speculative reply is
+normally committed or discarded within a second. Audio over the byte cap is
+rejected with `tts.error` and `category: "permanent_input"`.
+
+---
+
 ### POST /v1/legs/{id}/record
 
 Start recording a leg to a WAV file.
@@ -1369,12 +1499,24 @@ Start real-time speech-to-text transcription on a leg.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, or `"azure"` |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default) or `"flux-general-multi"`. |
+| `keyterms` | string[] | no | Terms to boost recognition of (Deepgram and Deepgram Flux) |
+| `endpointing` | integer | no | **Deepgram only.** Milliseconds of silence before a segment is finalized. `0` disables endpointing. |
+| `utterance_end_ms` | integer | no | **Deepgram only.** Milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. |
+| `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
+| `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
+| `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
+| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes for the `"flux-general-multi"` model. |
+
+Fields that do not apply to the selected provider are ignored, so switching
+providers never turns a previously valid request into an error.
 
 **Providers:**
 - `elevenlabs` — ElevenLabs real-time STT via WebSocket (default). Uses Scribe v2 model.
-- `deepgram` — Deepgram real-time STT via WebSocket. Uses Nova-3 model. Audio is sent as raw binary PCM frames.
+- `deepgram` — Deepgram real-time STT (`/v1/listen`) via WebSocket. Uses Nova-3 model. Audio is sent as raw binary PCM frames.
+- `deepgram_flux` — Deepgram Flux (`/v2/listen`), a conversational model that reports **turn boundaries** rather than plain segments. Emits `stt.turn` events (see [Conversational turn detection](#conversational-turn-detection)) alongside one `stt.text` final per turn. Shares `DEEPGRAM_API_KEY` with `deepgram`. Does not support `POST /v1/legs/{id}/stt/finalize` (`501`) — Flux reports turn ends itself.
 - `azure` — Azure Cognitive Speech Services real-time STT via WebSocket. Requires a subscription key (`AZURE_SPEECH_KEY`) and region (`AZURE_SPEECH_REGION`). Language defaults to `"en-US"`.
 
 **Response:** `200 OK`
@@ -1424,7 +1566,9 @@ No request body.
 
 **Provider support:** `deepgram` only. VoiceBlender's ElevenLabs integration
 commits on its own voice-activity detection and its Azure integration has no
-mid-stream flush, so both answer `501`.
+mid-stream flush, so both answer `501`. `deepgram_flux` also answers `501`:
+`/v2/listen` has no flush message, and Flux already reports turn ends on
+`stt.turn`.
 
 **Notes:**
 - The flushed transcript arrives on the usual `stt.text` event with
@@ -1439,6 +1583,100 @@ mid-stream flush, so both answer `501`.
 - `404` — No STT in progress on this leg
 - `409` — The STT session is not connected, or the flush could not be written
 - `501` — The active STT provider does not support finalize
+
+---
+
+### Conversational turn detection
+
+`stt.text` answers "what was said". It does not answer "has the caller finished
+speaking?" — `is_final` means a *segment* will not change again, which is not
+the same thing. The `stt.turn` event carries that second signal.
+
+Two providers report it, at different levels of detail.
+
+#### Deepgram Flux (`provider: "deepgram_flux"`)
+
+Flux models the conversation as a turn state machine and reports every
+transition:
+
+```
+                 start_of_turn            eager_end_of_turn
+      (initial) ---------------> (ongoing) ----------------> (awaiting end)
+          ^                          ^                          |
+          |                          |    turn_resumed          |
+          |                          +--------------------------+
+          |                                                     |
+          +-------------------- end_of_turn --------------------+
+```
+
+| `event` | Meaning |
+|---------|---------|
+| `start_of_turn` | Speech detected; always carries a non-empty transcript. A good barge-in trigger. |
+| `update` | Transcript progress, roughly every 250 ms. Only emitted when `partial: true`. |
+| `eager_end_of_turn` | The caller has *probably* finished. Revocable. Only emitted when `eager_eot_threshold` is set. |
+| `turn_resumed` | The caller kept talking after an `eager_end_of_turn` — discard anything drafted from it. |
+| `end_of_turn` | The turn is closed. Its transcript always matches the immediately preceding `eager_end_of_turn`. |
+
+```json
+{
+  "type": "stt.turn",
+  "leg_id": "550e8400-...",
+  "event": "eager_end_of_turn",
+  "turn_index": 2,
+  "text": "how do I reset my password",
+  "end_of_turn_confidence": 0.82,
+  "audio_window_start_ms": 0,
+  "audio_window_end_ms": 1500,
+  "words": [{ "word": "how", "confidence": 0.99, "start_ms": 100, "end_ms": 400 }]
+}
+```
+
+**`eager_eot_threshold` is opt-in.** Without it Flux emits no
+`eager_end_of_turn` and no `turn_resumed`, so there is nothing to speculate on
+and [preflight TTS](#preflight-tts-speculative-synthesis) has no head start to
+work with. Valid values are 0.3–0.9: lower fires earlier and more often (faster
+replies, more wasted drafts), higher fires later and less often.
+
+**Compatibility with `stt.text`.** Flux keeps emitting `stt.text`, so an
+existing app can switch to `provider: "deepgram_flux"` without changing how it
+consumes transcripts. The mapping is:
+
+| Flux event | `stt.turn` | `stt.text` |
+|------------|-----------|------------|
+| `start_of_turn` | always | interim, only if `partial: true` |
+| `update` | only if `partial: true` | interim, only if `partial: true` |
+| `eager_end_of_turn` | always | interim, only if `partial: true` |
+| `turn_resumed` | always | *(none)* |
+| `end_of_turn` | always | **`is_final: true`, `speech_final: true`** |
+
+An `eager_end_of_turn` **never** produces `is_final: true`, because
+`turn_resumed` can revoke it — an app that accumulates on `is_final` would
+otherwise corrupt its transcript. Net effect: exactly one final `stt.text` per
+turn, instead of one per segment.
+
+#### Deepgram (`provider: "deepgram"`)
+
+The `/v1/listen` model has no turn state machine, but reports two narrower
+signals:
+
+- **`speech_final`** on `stt.text` — the speaker stopped, as distinct from
+  `is_final`'s "this segment is settled". Tune it with `endpointing`.
+- **`utterance_end`** on `stt.turn`, when `utterance_end_ms` is set. It carries
+  no transcript, only `last_word_end_ms`. Use it as the reliable
+  speaker-stopped signal for callers who never pause long enough for
+  `speech_final` to fire.
+
+```json
+{ "type": "stt.turn", "leg_id": "550e8400-...", "event": "utterance_end", "last_word_end_ms": 2395 }
+```
+
+Deepgram requires interim results to emit `UtteranceEnd`, so setting
+`utterance_end_ms` turns them on at the provider. VoiceBlender still suppresses
+them locally unless you also set `partial: true` — adding `utterance_end_ms`
+never starts sending you partial transcripts you did not ask for.
+
+Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
+events, and `speech_final` on their `stt.text` events is always `false`.
 
 ---
 
@@ -2619,8 +2857,13 @@ Start real-time speech-to-text on all participants in a room.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, or `"azure"` |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
+
+The provider tuning fields documented for [`POST /v1/legs/{id}/stt`](#post-v1legsidstt)
+(`model`, `keyterms`, `endpointing`, `utterance_end_ms`, `eager_eot_threshold`,
+`eot_threshold`, `eot_timeout_ms`, `language_hints`) apply here too and are
+used for every participant in the room.
 
 **Response:** `200 OK`
 
@@ -2628,7 +2871,9 @@ Start real-time speech-to-text on all participants in a room.
 { "status": "stt_started", "room_id": "room-123", "leg_ids": ["leg-1", "leg-2"] }
 ```
 
-Transcripts are delivered via `stt.text` webhook events.
+Transcripts are delivered via `stt.text` webhook events, each carrying the
+`leg_id` of the participant who spoke. Providers that report turn boundaries
+also emit per-participant [`stt.turn`](#conversational-turn-detection) events.
 
 **Errors:**
 - `404` — Room not found
@@ -3000,6 +3245,9 @@ The commands below mirror the corresponding REST endpoints and use **resource-fi
 | `room_stt_start` | `{"id":"...","provider":"elevenlabs"}` | Start STT on every participant of a room (auto-extends to legs that join later) |
 | `room_stt_stop` | `{"id":"..."}` | Stop room STT |
 | `leg_tts` | `{"id":"...","text":"Hello","voice":"Joanna","provider":"aws"}` | Synthesize and play TTS on a leg; returns `{tts_id, status}` |
+| `leg_tts_preflight` | `{"id":"...","text":"Hello","voice":"Rachel"}` | Synthesize and hold for a later commit; returns `{tts_id, status:"staged"}` |
+| `leg_tts_commit` | `{"id":"...","tts_id":"tts-a1b2c3d4"}` | Play a staged utterance; returns `{tts_id, status:"committed"}` |
+| `leg_tts_discard` | `{"id":"...","tts_id":"tts-a1b2c3d4"}` | Drop a staged utterance without playing it |
 | `room_tts` | `{"id":"...","text":"...","voice":"..."}` | Synthesize and play TTS into a room mix |
 | `leg_agent_elevenlabs` | `{"id":"...","agent_id":"..."}` | Attach an ElevenLabs Conversational AI agent to a leg |
 | `leg_agent_vapi` | `{"id":"...","assistant_id":"..."}` | Attach a VAPI agent to a leg |
@@ -3662,6 +3910,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `tts.started` | TTS synthesis began playing | `leg_id` or `room_id`, `tts_id` |
 | `tts.finished` | TTS synthesis finished playing | `leg_id` or `room_id`, `tts_id`, `reason`, `played_ms` |
 | `tts.error` | TTS synthesis or playback failed | `leg_id` or `room_id`, `tts_id`, `error`, `category` |
+| `tts.staged` | Preflight TTS finished synthesizing and is ready to commit | `leg_id`, `tts_id`, `bytes`, `duration_ms` |
+| `tts.discarded` | Staged TTS was dropped without being played | `leg_id`, `tts_id`, `reason` (`app`, `expired`, `leg_gone`) |
 > **Note:** `playback.finished` and `tts.finished` carry `reason` and `played_ms` so you can tell whether a prompt was heard in full or was cut short, and by how much.
 >
 > `reason` is `completed` when the audio played through to its end, and `stopped` when it did **not** reach the end — **for any reason**. That includes an app-initiated stop, a barge-in, and a leg hanging up: all three cancel the same playback, and they cannot be told apart from `reason` alone. To distinguish a hangup from a deliberate stop, look for a co-emitted `leg.disconnected` event. Tone playback never ends on its own, so it always reports `stopped`.
@@ -3672,7 +3922,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
-| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final` |
+| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final` |
+| `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |
 | `agent.user_transcript` | User speech transcribed by agent | `leg_id` or `room_id`, `text` |

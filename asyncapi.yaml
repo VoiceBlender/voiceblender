@@ -286,6 +286,18 @@ channels:
                 $ref: '#/components/messages/leg_tts'
             leg_tts.result:
                 $ref: '#/components/messages/leg_ttsResult'
+            leg_tts_preflight:
+                $ref: '#/components/messages/leg_tts_preflight'
+            leg_tts_preflight.result:
+                $ref: '#/components/messages/leg_tts_preflightResult'
+            leg_tts_commit:
+                $ref: '#/components/messages/leg_tts_commit'
+            leg_tts_commit.result:
+                $ref: '#/components/messages/leg_tts_commitResult'
+            leg_tts_discard:
+                $ref: '#/components/messages/leg_tts_discard'
+            leg_tts_discard.result:
+                $ref: '#/components/messages/leg_tts_discardResult'
             room_tts:
                 $ref: '#/components/messages/room_tts'
             room_tts.result:
@@ -466,6 +478,10 @@ channels:
                 $ref: '#/components/messages/evt_tts_finished'
             tts.error:
                 $ref: '#/components/messages/evt_tts_error'
+            tts.staged:
+                $ref: '#/components/messages/evt_tts_staged'
+            tts.discarded:
+                $ref: '#/components/messages/evt_tts_discarded'
             recording.started:
                 $ref: '#/components/messages/evt_recording_started'
             recording.finished:
@@ -500,6 +516,8 @@ channels:
                 $ref: '#/components/messages/evt_leg_role_changed'
             stt.text:
                 $ref: '#/components/messages/evt_stt_text'
+            stt.turn:
+                $ref: '#/components/messages/evt_stt_turn'
             agent.connected:
                 $ref: '#/components/messages/evt_agent_connected'
             agent.disconnected:
@@ -1424,6 +1442,47 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/leg_tts.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_leg_tts_preflight:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Synthesize speech and hold it for a later commit
+        description: 'Stages a speculative reply: the audio is synthesized and buffered but not played, so that committing it starts playback with no synthesis delay. Use with the eager_end_of_turn stt.turn event to begin generating a reply before the caller has finished speaking, then commit on end_of_turn or discard on turn_resumed. A tts.staged event reports when the audio is ready. Staged utterances are dropped after TTS_PREFLIGHT_TTL or when the leg ends.'
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_tts_preflight'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_tts_preflight.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_tts_commit:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Play a staged TTS utterance
+        description: Starts playback of an utterance staged by leg_tts_preflight. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on tts.error, exactly as for leg_tts. Once committed, stop it with leg_play_stop using the same tts_id.
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_tts_commit'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_tts_commit.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_leg_tts_discard:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Drop a staged TTS utterance without playing it
+        messages:
+            - $ref: '#/channels/vsi/messages/leg_tts_discard'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/leg_tts_discard.result'
+                - $ref: '#/channels/vsi/messages/error'
     recv_room_tts:
         action: receive
         channel:
@@ -2026,6 +2085,20 @@ operations:
         summary: TTS synthesis or playback failed
         messages:
             - $ref: '#/channels/vsi/messages/tts.error'
+    send_tts_staged:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Preflight TTS finished synthesizing and is ready to commit
+        messages:
+            - $ref: '#/channels/vsi/messages/tts.staged'
+    send_tts_discarded:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Staged TTS was dropped without being played
+        messages:
+            - $ref: '#/channels/vsi/messages/tts.discarded'
     send_recording_started:
         action: send
         channel:
@@ -2145,6 +2218,13 @@ operations:
         summary: Speech-to-text transcript
         messages:
             - $ref: '#/channels/vsi/messages/stt.text'
+    send_stt_turn:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Speech-to-text turn boundary
+        messages:
+            - $ref: '#/channels/vsi/messages/stt.turn'
     send_agent_connected:
         action: send
         channel:
@@ -4323,6 +4403,96 @@ components:
                         $ref: '#/components/schemas/TTSStartResult'
                 required:
                     - type
+        leg_tts_preflight:
+            name: leg_tts_preflight
+            title: Synthesize speech and hold it for a later commit
+            summary: Synthesize speech and hold it for a later commit
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_preflight
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/ttsStartPayload'
+                required:
+                    - type
+        leg_tts_preflightResult:
+            name: leg_tts_preflightResult
+            title: Synthesize speech and hold it for a later commit — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_preflight.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TTSStartResult'
+                required:
+                    - type
+        leg_tts_commit:
+            name: leg_tts_commit
+            title: Play a staged TTS utterance
+            summary: Play a staged TTS utterance
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_commit
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/ttsTargetPayload'
+                required:
+                    - type
+        leg_tts_commitResult:
+            name: leg_tts_commitResult
+            title: Play a staged TTS utterance — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_commit.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TTSStartResult'
+                required:
+                    - type
+        leg_tts_discard:
+            name: leg_tts_discard
+            title: Drop a staged TTS utterance without playing it
+            summary: Drop a staged TTS utterance without playing it
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_discard
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/ttsTargetPayload'
+                required:
+                    - type
+        leg_tts_discardResult:
+            name: leg_tts_discardResult
+            title: Drop a staged TTS utterance without playing it — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: leg_tts_discard.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/TTSDiscardResult'
+                required:
+                    - type
         room_tts:
             name: room_tts
             title: Synthesize speech and play it into a room mix
@@ -5403,6 +5573,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/tts.error/post/requestBody/content/application~1json/schema
+        evt_tts_staged:
+            name: evt_tts_staged
+            title: Preflight TTS finished synthesizing and is ready to commit
+            summary: Preflight TTS finished synthesizing and is ready to commit
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.staged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/tts.staged/post/requestBody/content/application~1json/schema
+        evt_tts_discarded:
+            name: evt_tts_discarded
+            title: Staged TTS was dropped without being played
+            summary: Staged TTS was dropped without being played
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.discarded. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/tts.discarded/post/requestBody/content/application~1json/schema
         evt_recording_started:
             name: evt_recording_started
             title: Recording began
@@ -5522,6 +5706,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/stt.text. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/stt.text/post/requestBody/content/application~1json/schema
+        evt_stt_turn:
+            name: evt_stt_turn
+            title: Speech-to-text turn boundary
+            summary: Speech-to-text turn boundary
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/stt.turn. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/stt.turn/post/requestBody/content/application~1json/schema
         evt_agent_connected:
             name: evt_agent_connected
             title: Agent connected to provider
@@ -6140,6 +6331,13 @@ components:
                 - room_id
                 - leg_ids
         STTStopResult:
+            type: object
+            properties:
+                status:
+                    type: string
+            required:
+                - status
+        TTSDiscardResult:
             type: object
             properties:
                 status:
@@ -6789,6 +6987,26 @@ components:
                     type: string
                 api_key:
                     type: string
+                model:
+                    type: string
+                keyterms:
+                    type: array
+                    items:
+                        type: string
+                endpointing:
+                    type: integer
+                utterance_end_ms:
+                    type: integer
+                eager_eot_threshold:
+                    type: number
+                eot_threshold:
+                    type: number
+                eot_timeout_ms:
+                    type: integer
+                language_hints:
+                    type: array
+                    items:
+                        type: string
             required:
                 - id
                 - language
@@ -6832,6 +7050,16 @@ components:
                 - voice
                 - model_id
                 - volume
+        ttsTargetPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                tts_id:
+                    type: string
+            required:
+                - id
+                - tts_id
         vsiStatusResponse:
             type: object
             properties:

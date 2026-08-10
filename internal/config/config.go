@@ -36,11 +36,13 @@ type Config struct {
 	ElevenLabsAPIKey  string
 	VAPIAPIKey        string
 	DeepgramAPIKey    string
-	// DeepgramSTTURL and DeepgramTTSURL override the Deepgram service
-	// endpoints. Set them to point the Deepgram protocol dialect at a
+	// DeepgramSTTURL, DeepgramFluxURL and DeepgramTTSURL override the Deepgram
+	// service endpoints. Set them to point the Deepgram protocol dialect at a
 	// compatible non-Deepgram host (a local emulator, a proxy, a load-test
-	// mock); empty keeps the public endpoints.
+	// mock); empty keeps the public endpoints. Flux is a separate variable
+	// because /v2/listen is a different protocol, not a path on the v1 host.
 	DeepgramSTTURL      string
+	DeepgramFluxURL     string
 	DeepgramTTSURL      string
 	AzureSpeechKey      string
 	AzureSpeechRegion   string
@@ -62,10 +64,16 @@ type Config struct {
 	TTSCacheEnabled           bool
 	TTSCacheDir               string
 	TTSCacheIncludeAPIKey     bool
-	RTPPortMin                int
-	RTPPortMax                int
-	SIPJitterBufferMs         int
-	SIPJitterBufferMaxMs      int
+	// TTSPreflightTTL bounds how long a staged utterance is held before it is
+	// discarded. A leak backstop, not a policy knob: a speculative reply is
+	// normally committed or discarded within a second.
+	TTSPreflightTTL       time.Duration
+	TTSPreflightMaxPerLeg int
+	TTSPreflightMaxBytes  int
+	RTPPortMin            int
+	RTPPortMax            int
+	SIPJitterBufferMs     int
+	SIPJitterBufferMaxMs  int
 	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
 	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
 	// separately from multi-stream because it changes the SDP single-stream
@@ -178,6 +186,7 @@ func Load() Config {
 		VAPIAPIKey:                os.Getenv("VAPI_API_KEY"),
 		DeepgramAPIKey:            os.Getenv("DEEPGRAM_API_KEY"),
 		DeepgramSTTURL:            os.Getenv("DEEPGRAM_STT_URL"),
+		DeepgramFluxURL:           os.Getenv("DEEPGRAM_FLUX_URL"),
 		DeepgramTTSURL:            os.Getenv("DEEPGRAM_TTS_URL"),
 		AzureSpeechKey:            os.Getenv("AZURE_SPEECH_KEY"),
 		AzureSpeechRegion:         envOr("AZURE_SPEECH_REGION", "eastus"),
@@ -193,6 +202,9 @@ func Load() Config {
 		TTSCacheEnabled:           os.Getenv("TTS_CACHE_ENABLED") == "true",
 		TTSCacheDir:               envOr("TTS_CACHE_DIR", "/tmp/tts_cache"),
 		TTSCacheIncludeAPIKey:     os.Getenv("TTS_CACHE_INCLUDE_API_KEY") == "true",
+		TTSPreflightTTL:           envDuration("TTS_PREFLIGHT_TTL", 30*time.Second),
+		TTSPreflightMaxPerLeg:     envInt("TTS_PREFLIGHT_MAX_PER_LEG", 3),
+		TTSPreflightMaxBytes:      envInt("TTS_PREFLIGHT_MAX_BYTES", 4*1024*1024),
 		RTPPortMin:                envInt("RTP_PORT_MIN", 10000),
 		RTPPortMax:                envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:         envInt("SIP_JITTER_BUFFER_MS", 0),

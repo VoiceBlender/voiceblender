@@ -65,3 +65,53 @@ func TestDeepgramSTT_EmptyBaseURLKeepsPublicEndpoint(t *testing.T) {
 		t.Errorf("baseURL = %q, want %q", got, DefaultDeepgramWSURL)
 	}
 }
+
+// Flux gets its own override because /v2/listen is a different protocol, and a
+// mock or self-hosted deployment may serve it from a different host entirely.
+func TestDeepgramFlux_DialsOverriddenBaseURL(t *testing.T) {
+	gotURL := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotURL <- r.URL.String():
+		default:
+		}
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(io.Discard, conn)
+	}))
+	defer srv.Close()
+
+	base := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v2/listen"
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tr := NewDeepgramFlux(slog.Default(), base)
+	go tr.Start(ctx, pr, "token", Options{}, func(string, bool) {})
+
+	select {
+	case u := <-gotURL:
+		if !strings.HasPrefix(u, "/v2/listen?") {
+			t.Errorf("dialed path = %q, want /v2/listen with a query string", u)
+		}
+		for _, want := range []string{"encoding=linear16", "sample_rate=16000", "model=flux-general-en"} {
+			if !strings.Contains(u, want) {
+				t.Errorf("dialed URL %q missing %q", u, want)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("flux transcriber never dialled the overridden endpoint")
+	}
+}
+
+func TestDeepgramFlux_EmptyBaseURLKeepsPublicEndpoint(t *testing.T) {
+	if got := NewDeepgramFlux(slog.Default(), "").baseURL; got != DefaultDeepgramFluxURL {
+		t.Errorf("baseURL = %q, want %q", got, DefaultDeepgramFluxURL)
+	}
+}
