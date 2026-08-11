@@ -1108,30 +1108,14 @@ func getLegView(t *testing.T, inst *testInstance, legID string) legTypeView {
 }
 
 // TestSIPREC_SessionSurvivesACK asserts that a recording session stays
-// established once it has been answered and ACKed.
+// established after it has been answered and ACKed.
 //
-// Regression test for a failure seen against a real Kamailio + rtpengine SRC:
-// the SRS answered, and then immediately tore the session down. Both ends left
-// matching evidence.
+// Every other SIPREC test asserts on the answer and then hangs up, so none of
+// them notice a session that dies a moment later.
 //
-// On the SRS:
-//
-//	SIPREC: answer failed  error="respond SDP: transaction terminated"
-//	siprec.session_ended
-//	WARN ACK missed  caller=TransactionLayer  tx=...__INVITE
-//
-// and on the SRC, the same 200 OK logged three times — sipgo retransmitting it
-// because nothing ever confirmed the dialog.
-//
-// "ACK missed" comes from sipgo's ServerTx.ackSend(), which logs only in the
-// branch where an ACK arrives for an ALREADY-TERMINATED server transaction. So
-// the ACK is sent and received; the transaction is simply gone by then. That
-// makes this a lifecycle bug on the SRS side, not a signalling or transport
-// problem on the SRC side.
-//
-// The existing SIPREC tests all assert on the answer and then hang up, so none
-// of them notice a session that dies a moment later. This one holds the dialog
-// open and checks it is still there.
+// This catches an immediate teardown. A client whose ACK never confirms the
+// dialog instead trips the 64*T1 retransmit timeout, which this does not wait
+// for.
 func TestSIPREC_SessionSurvivesACK(t *testing.T) {
 	src := newTestInstance(t, "src")
 	srs := siprecInstance(t, "srs", nil)
@@ -1153,15 +1137,12 @@ func TestSIPREC_SessionSurvivesACK(t *testing.T) {
 	}
 	legID := legIDer.GetLegID()
 
-	// Hold the dialog. In the observed failure the teardown followed the answer
-	// within a couple of hundred milliseconds, so a second is ample; the point
-	// is to outlive the ACK rather than to wait out a timer.
+	// Long enough to outlive the ACK, short enough to keep the suite fast.
 	time.Sleep(2 * time.Second)
 
 	if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
 		t.Fatal("recording session ended on its own after being answered: " +
-			"the SRS tore down the dialog instead of keeping it up " +
-			"(check for 'ACK missed' / 'transaction terminated' in the SRS log)")
+			"the dialog was torn down instead of kept up")
 	}
 
 	// The session must still be addressable, not merely un-ended.
