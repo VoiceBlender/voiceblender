@@ -1137,12 +1137,21 @@ func TestSIPREC_SessionSurvivesACK(t *testing.T) {
 	}
 	legID := legIDer.GetLegID()
 
-	// Long enough to outlive the ACK, short enough to keep the suite fast.
-	time.Sleep(2 * time.Second)
-
+	// Hold the dialog open and watch it. A green run has to observe the whole
+	// window -- absence of a teardown is only provable by waiting -- but
+	// polling makes a real teardown fail at once and report when it happened.
+	const observe = 2 * time.Second
+	answered := time.Now()
+	for deadline := answered.Add(observe); time.Now().Before(deadline); {
+		if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
+			t.Fatalf("recording session ended on its own %v after being answered: "+
+				"the dialog was torn down instead of kept up", time.Since(answered).Round(time.Millisecond))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
-		t.Fatal("recording session ended on its own after being answered: " +
-			"the dialog was torn down instead of kept up")
+		t.Fatalf("recording session ended on its own within %v of being answered: "+
+			"the dialog was torn down instead of kept up", observe)
 	}
 
 	// The session must still be addressable, not merely un-ended.
