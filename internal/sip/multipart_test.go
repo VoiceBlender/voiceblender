@@ -147,6 +147,31 @@ func TestParseMessageBody_MetadataOnlyHasNoSDP(t *testing.T) {
 	}
 }
 
+// Metadata sent without SDP does not have to be multipart: RFC 7866 §9.1 makes
+// the container optional when the message carries only one of the two, so with
+// one part to send an SRC sends it bare. Reading that as an SDP offer answers a
+// correct request 400 Bad SDP.
+func TestParseMessageBody_BareMetadataIsNotSDP(t *testing.T) {
+	for _, ct := range []string{"application/rs-metadata+xml", "application/rs-metadata"} {
+		t.Run(ct, func(t *testing.T) {
+			mb, err := ParseMessageBody(ct, []byte(testMetadataBody))
+			if err != nil {
+				t.Fatalf("ParseMessageBody = %v, want nil", err)
+			}
+			if _, ok := mb.SDP(); ok {
+				t.Error("SDP() = (_, true), want false — the body declares itself metadata")
+			}
+			md, ok := mb.RSMetadata()
+			if !ok {
+				t.Fatal("RSMetadata() = (_, false), want true")
+			}
+			if string(md) != testMetadataBody {
+				t.Errorf("RSMetadata() = %q, want the body verbatim", md)
+			}
+		})
+	}
+}
+
 func TestParseMessageBody_Errors(t *testing.T) {
 	if _, err := ParseMessageBody("multipart/mixed", []byte("whatever")); err == nil {
 		t.Fatal("ParseMessageBody with no boundary = nil error, want an error")

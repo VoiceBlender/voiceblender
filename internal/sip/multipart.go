@@ -13,9 +13,14 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// SIP body content types we recognize. SIPREC (RFC 7866) carries the metadata
-// document as application/rs-metadata+xml; deployed SBCs also emit the
-// pre-RFC application/rs-metadata, so both are accepted.
+// SIP body content types we recognize.
+//
+// Both SIPREC metadata types are accepted because the two RFCs contradicted
+// each other: RFC 7865 specified application/rs-metadata+xml, RFC 7866
+// specified application/rs-metadata, and neither registered the type.
+// RFC 9806 resolves that erratum (Err7987) in favour of +xml and registers it,
+// but it also records the interoperability consequence -- an SRC written to
+// RFC 7866 sends the unsuffixed name, which was normative for nine years.
 const (
 	ContentTypeSDP              = "application/sdp"
 	ContentTypeRSMetadata       = "application/rs-metadata+xml"
@@ -141,12 +146,23 @@ func (b *MessageBody) Part(contentType string) ([]byte, bool) {
 
 // SDP returns the session description. A single-part body is returned whatever
 // its declared type, preserving the behaviour of peers that omit or misdeclare
-// Content-Type on a plain SDP offer.
+// Content-Type on a plain SDP offer — except when it declares itself a type we
+// know is not SDP.
+//
+// RFC 7866 §9.1 lets an SRC send metadata with no SDP in an INVITE, an UPDATE,
+// or a 200 to an offerless INVITE, and is explicit that "when a SIP message
+// contains only an SDP offer or metadata, the multipart/mixed container is
+// optional". So a bare rs-metadata body is a correct request, and taking it for
+// an offer answers it 400 Bad SDP.
 func (b *MessageBody) SDP() ([]byte, bool) {
 	if b == nil || len(b.Parts) == 0 {
 		return nil, false
 	}
 	if !b.Multipart {
+		switch b.Parts[0].ContentType {
+		case ContentTypeRSMetadata, ContentTypeRSMetadataLegacy:
+			return nil, false
+		}
 		return b.Parts[0].Data, len(b.Parts[0].Data) > 0
 	}
 	data, ok := b.Part(ContentTypeSDP)
