@@ -1106,3 +1106,79 @@ func getLegView(t *testing.T, inst *testInstance, legID string) legTypeView {
 	}
 	return view
 }
+
+// TestSIPREC_SessionSurvivesACK asserts that a recording session stays
+// established after it has been answered and ACKed.
+//
+// Every other SIPREC test asserts on the answer and then hangs up, so none of
+// them notice a session that dies a moment later.
+//
+// This catches an immediate teardown. A client whose ACK never confirms the
+// dialog instead trips the 64*T1 retransmit timeout, which this does not wait
+// for.
+func TestSIPREC_SessionSurvivesACK(t *testing.T) {
+	src := newTestInstance(t, "src")
+	srs := siprecInstance(t, "srs", nil)
+
+	call, err := dialSIPREC(t, src, srs, twoPartyMetadata(t))
+	if err != nil {
+		t.Fatalf("SIPREC INVITE failed: %v", err)
+	}
+	defer call.Dialog.Bye(context.Background())
+
+	if call.RemoteSDP == nil {
+		t.Fatal("no answer SDP — the SRS never answered the recording session")
+	}
+
+	evt := srs.collector.waitForMatch(t, events.SIPRECSessionStarted, nil, 5*time.Second)
+	legIDer, _ := evt.Data.(interface{ GetLegID() string })
+	if legIDer == nil || legIDer.GetLegID() == "" {
+		t.Fatal("siprec.session_started carries no leg ID")
+	}
+	legID := legIDer.GetLegID()
+
+	// Hold the dialog open and watch it. A green run has to observe the whole
+	// window -- absence of a teardown is only provable by waiting -- but
+	// polling makes a real teardown fail at once and report when it happened.
+	const observe = 2 * time.Second
+	answered := time.Now()
+	for deadline := answered.Add(observe); time.Now().Before(deadline); {
+		if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
+			t.Fatalf("recording session ended on its own %v after being answered: "+
+				"the dialog was torn down instead of kept up", time.Since(answered).Round(time.Millisecond))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if srs.collector.hasEvent(events.SIPRECSessionEnded, nil) {
+		t.Fatalf("recording session ended on its own within %v of being answered: "+
+			"the dialog was torn down instead of kept up", observe)
+	}
+
+	// The session must still be addressable, not merely un-ended.
+	view := getSIPRECSession(t, srs, legID)
+	if len(view.Streams) != 2 {
+		t.Fatalf("streams = %d, want 2 still attached after the ACK", len(view.Streams))
+	}
+
+	// And the leg itself must still be connected — a session view can outlive
+	// the SIP dialog that justifies it.
+	resp := httpGet(t, srs.baseURL()+"/v1/legs")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("GET /v1/legs = %d, want 200", resp.StatusCode)
+	}
+	var legs []legView
+	decodeJSON(t, resp, &legs)
+	var found bool
+	for _, l := range legs {
+		if l.ID == legID {
+			found = true
+			if l.State != "connected" {
+				t.Errorf("recording leg state = %q, want connected", l.State)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("recording leg %s is gone from /v1/legs after the ACK", legID)
+	}
+}
