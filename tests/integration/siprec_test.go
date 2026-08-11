@@ -1154,6 +1154,10 @@ func TestSIPREC_SessionSurvivesACK(t *testing.T) {
 	// And the leg itself must still be connected — a session view can outlive
 	// the SIP dialog that justifies it.
 	resp := httpGet(t, srs.baseURL()+"/v1/legs")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("GET /v1/legs = %d, want 200", resp.StatusCode)
+	}
 	var legs []legView
 	decodeJSON(t, resp, &legs)
 	var found bool
