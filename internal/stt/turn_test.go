@@ -1,6 +1,7 @@
 package stt
 
 import (
+	"bufio"
 	"context"
 	"log/slog"
 	"net"
@@ -36,13 +37,28 @@ func sttScriptServer(t *testing.T, frames []string) net.Conn {
 	t.Cleanup(srv.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	conn, _, _, err := ws.Dialer{}.Dial(context.Background(), wsURL)
+	conn, br, _, err := ws.Dialer{}.Dial(context.Background(), wsURL)
 	if err != nil {
 		t.Fatalf("dial test websocket: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	// The server writes its script immediately after the 101, so those bytes
+	// often land in the dialer's read buffer alongside the handshake response.
+	// Dropping br would lose them.
+	if br != nil && br.Buffered() > 0 {
+		return &bufferedConn{Conn: conn, r: br}
+	}
 	return conn
 }
+
+// bufferedConn drains a bufio.Reader that already holds bytes from the socket
+// before falling through to the socket itself.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
 // collector accumulates whatever a provider emits, so a test can assert on the
 // whole sequence rather than one callback at a time.
