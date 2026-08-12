@@ -138,7 +138,12 @@ type Mixer struct {
 	tickPanicLastLog atomic.Int64
 
 	comfortNoise *comfortnoise.Generator
+
+	liveQueueDepth int
 }
+
+// DefaultLiveQueueDepth is the historical AddParticipant channel depth.
+const DefaultLiveQueueDepth = 3
 
 // SetOnParticipantPanic registers a callback invoked once per participant whose
 // readLoop or writeLoop panicked, after the mixer has removed it. loop is
@@ -167,6 +172,7 @@ func New(log *slog.Logger, sampleRate int) *Mixer {
 		samplesPerFrame: spf,
 		frameSizeBytes:  spf * 2,
 		comfortNoise:    comfortnoise.NewGenerator(),
+		liveQueueDepth:  DefaultLiveQueueDepth,
 	}
 }
 
@@ -177,6 +183,29 @@ func (m *Mixer) FrameSizeBytes() int  { return m.frameSizeBytes }
 // SetComfortNoise enables or disables comfort noise injection during silence.
 func (m *Mixer) SetComfortNoise(enabled bool) {
 	m.comfortNoise.SetEnabled(enabled)
+}
+
+// SetLiveQueueDepth sets AddParticipant incoming/outgoing channel depth.
+// Values < 1 fall back to DefaultLiveQueueDepth; values > 256 are clamped.
+func (m *Mixer) SetLiveQueueDepth(n int) {
+	if n < 1 {
+		n = DefaultLiveQueueDepth
+	}
+	if n > 256 {
+		n = 256
+	}
+	m.mu.Lock()
+	m.liveQueueDepth = n
+	m.mu.Unlock()
+}
+
+func (m *Mixer) liveQueue() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.liveQueueDepth < 1 {
+		return DefaultLiveQueueDepth
+	}
+	return m.liveQueueDepth
 }
 
 func (m *Mixer) SetTap(w io.Writer) {
@@ -377,13 +406,14 @@ func (m *Mixer) ClearParticipantOutTap(id string) {
 // replacement registered under the same ID — see removeParticipantIf — keep
 // the returned pointer; the rest may ignore it.
 func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *Participant {
+	q := m.liveQueue()
 	gw := &guardedWriter{w: writer}
 	p := &Participant{
 		ID:       id,
 		Reader:   reader,
 		Writer:   gw,
-		incoming: make(chan []byte, 3),
-		outgoing: make(chan []byte, 3),
+		incoming: make(chan []byte, q),
+		outgoing: make(chan []byte, q),
 		inject:   make(chan []byte, 3),
 		done:     make(chan struct{}),
 		guard:    gw,
@@ -746,7 +776,8 @@ func (m *Mixer) mixTick() {
 		return
 	}
 
-	// Collect latest frames from each participant (non-blocking)
+	// Collect latest frames from each participant (non-blocking).
+	// Missing frames = silence for this tick.
 	frames := make([][]int16, len(parts))
 	muted := make([]bool, len(parts))
 	for i, p := range parts {

@@ -71,6 +71,13 @@ func main() {
 	// Leg and room managers
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)
+	roomMgr.SetComfortNoiseEnabled(cfg.ComfortNoiseEnabled)
+	roomMgr.SetLiveQueueDepth(cfg.MixerLiveQueueDepth)
+	log.Info("mixer audio",
+		"sole_clock", cfg.MixerSoleClock,
+		"live_queue_depth", cfg.MixerLiveQueueDepth,
+		"comfort_noise", cfg.ComfortNoiseEnabled,
+	)
 
 	// Parse SIP port
 	sipPort, err := strconv.Atoi(cfg.SIPPort)

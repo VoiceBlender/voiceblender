@@ -24,6 +24,12 @@ type Manager struct {
 	bus     *events.Bus
 	log     *slog.Logger
 
+	// comfortNoiseEnabled is applied to every new room's mixer. Default true
+	// matches comfortnoise.NewGenerator. Override via SetComfortNoiseEnabled
+	// (wired from COMFORT_NOISE_ENABLED) before Create.
+	comfortNoiseEnabled bool
+	liveQueueDepth      int
+
 	// hookMu guards onLegPanicTeardown alone — never take it and m.mu together,
 	// and never call the hook under either.
 	hookMu             sync.Mutex
@@ -57,12 +63,42 @@ func (m *Manager) legPanicTeardownHook() func(l leg.Leg, roomID, reason string) 
 
 func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager {
 	return &Manager{
-		rooms:   make(map[string]*Room),
-		bridges: make(map[string]*Bridge),
-		legMgr:  legMgr,
-		bus:     bus,
-		log:     log,
+		rooms:               make(map[string]*Room),
+		bridges:             make(map[string]*Bridge),
+		legMgr:              legMgr,
+		bus:                 bus,
+		log:                 log,
+		comfortNoiseEnabled: true,
+		liveQueueDepth:      mixer.DefaultLiveQueueDepth,
 	}
+}
+
+// SetComfortNoiseEnabled toggles mixer comfort-noise injection for rooms
+// created after this call. Safe to set once at process start before Create.
+func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.comfortNoiseEnabled = enabled
+}
+
+// SetLiveQueueDepth sets AddParticipant channel depth for rooms created
+// after this call. Values < 1 are ignored.
+func (m *Manager) SetLiveQueueDepth(n int) {
+	if n < 1 {
+		return
+	}
+	m.mu.Lock()
+	m.liveQueueDepth = n
+	m.mu.Unlock()
+}
+
+func (m *Manager) applyRoomDefaults(r *Room) {
+	m.mu.RLock()
+	enabled := m.comfortNoiseEnabled
+	depth := m.liveQueueDepth
+	m.mu.RUnlock()
+	r.mix.SetComfortNoise(enabled)
+	r.mix.SetLiveQueueDepth(depth)
 }
 
 func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
@@ -74,6 +110,7 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 	// so the room is never reachable without its panic hook. A candidate that
 	// loses the exists-check below costs only an allocation.
 	r := NewRoom(id, appID, sampleRate, m.log)
+	m.applyRoomDefaults(r)
 	m.wireMixerPanicHook(r)
 
 	m.mu.Lock()
@@ -526,6 +563,7 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	created := false
 	if !ok {
 		candidate := NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
+		m.applyRoomDefaults(candidate)
 		m.wireMixerPanicHook(candidate)
 
 		m.mu.Lock()

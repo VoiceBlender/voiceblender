@@ -71,14 +71,18 @@ type Config struct {
 	// the recv loop starts dropping frames. Defaults to 1000ms.
 	IngressBufferMs int
 	// JitterBufferMs is the WS ingress playout lead in milliseconds
-	// (0 = disabled passthrough). When set, AudioReader warms to this
-	// depth before releasing real PCM and silence-fills brief underruns
-	// instead of blocking — absorbing clock-phase jitter vs the mixer.
+	// (0 = disabled passthrough). When set with SoleMixerClock false,
+	// AudioReader warms to this depth then silence-fills brief underruns.
+	// With SoleMixerClock true, warm-up blocks until the lead is buffered
+	// and later underruns block for real PCM.
 	JitterBufferMs int
 	// JitterBufferMaxMs caps WS ingress queue depth when the jitter
 	// buffer is enabled. 0 means "use IngressBufferMs". The effective
 	// capacity is max(IngressBufferMs, JitterBufferMaxMs, JitterBufferMs).
 	JitterBufferMaxMs int
+	// SoleMixerClock disables streambuf Sleep pacing and silence invent.
+	// Default false. Set true when the room mixer should be the only clock.
+	SoleMixerClock bool
 	// TextBufferDepth caps how many inbound text messages may be buffered
 	// before the recv loop starts dropping. Defaults to 50.
 	TextBufferDepth int

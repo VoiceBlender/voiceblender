@@ -263,6 +263,7 @@ func (s *Server) applyWSJitterBuffer(cfg *wsmedia.Config) {
 	}
 	cfg.JitterBufferMs = s.Config.WSJitterBufferMs
 	cfg.JitterBufferMaxMs = s.Config.WSJitterBufferMaxMs
+	cfg.SoleMixerClock = s.Config.MixerSoleClock
 }
 
 // wsCfgFromQuery builds a wsmedia.Config from a request's query parameters.

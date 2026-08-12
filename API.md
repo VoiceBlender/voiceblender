@@ -160,6 +160,9 @@ Configured server-wide:
 
 - `WS_JITTER_BUFFER_MS` — target playout lead in ms. `0` = disabled passthrough (default). `40`–`60` is typical for externally paced agent audio.
 - `WS_JITTER_BUFFER_MAX_MS` — queue cap in ms when enabled (default `300`).
+- `MIXER_SOLE_CLOCK` — when `true`, WS/agent ingress blocks instead of Sleep-pacing or inventing silence (default `false`). Pair with a deeper `MIXER_LIVE_QUEUE_DEPTH` (e.g. `50`).
+- `MIXER_LIVE_QUEUE_DEPTH` — `AddParticipant` incoming/outgoing channel depth (default `3`).
+- `COMFORT_NOISE_ENABLED` — inject low-level comfort noise (~−75 dBFS) into silent mixer frames (default `true`).
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 

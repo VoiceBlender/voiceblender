@@ -199,6 +199,15 @@ info:
         - name: WS_JITTER_BUFFER_MAX_MS
           default: "300"
           description: Maximum depth of the WS ingress buffer in ms when the jitter buffer is enabled.
+        - name: MIXER_SOLE_CLOCK
+          default: "false"
+          description: When true, WS/agent ingress blocks for real PCM instead of Sleep-pacing or inventing silence. Pair with a deeper MIXER_LIVE_QUEUE_DEPTH.
+        - name: MIXER_LIVE_QUEUE_DEPTH
+          default: "3"
+          description: AddParticipant incoming/outgoing channel depth.
+        - name: COMFORT_NOISE_ENABLED
+          default: "true"
+          description: Inject low-level comfort noise (~-75 dBFS) into silent mixer frames.
         - name: SIP_SDP_STRICT_MLINE_ANSWER
           default: "false"
           description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.

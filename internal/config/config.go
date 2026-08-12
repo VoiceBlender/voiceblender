@@ -68,6 +68,15 @@ type Config struct {
 	SIPJitterBufferMaxMs  int
 	WSJitterBufferMs      int
 	WSJitterBufferMaxMs   int
+	// MixerSoleClock: when true, WS/agent ingress blocks instead of
+	// Sleep-pacing or inventing silence (mixer is the only 20 ms clock).
+	// Default false keeps historical behaviour.
+	MixerSoleClock bool
+	// MixerLiveQueueDepth sizes AddParticipant incoming/outgoing (default 3).
+	MixerLiveQueueDepth int
+	// ComfortNoiseEnabled injects low-level comfort noise into silent mixer
+	// frames (~−75 dBFS). Default true.
+	ComfortNoiseEnabled bool
 	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
 	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
 	// separately from multi-stream because it changes the SDP single-stream
@@ -202,6 +211,9 @@ func Load() Config {
 		SIPJitterBufferMaxMs:      envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
 		WSJitterBufferMs:          envInt("WS_JITTER_BUFFER_MS", 0),
 		WSJitterBufferMaxMs:       envInt("WS_JITTER_BUFFER_MAX_MS", 300),
+		MixerSoleClock:            envBool("MIXER_SOLE_CLOCK", false),
+		MixerLiveQueueDepth:       clampLiveQueueDepth(envInt("MIXER_LIVE_QUEUE_DEPTH", 3)),
+		ComfortNoiseEnabled:       envBool("COMFORT_NOISE_ENABLED", true),
 		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
@@ -304,6 +316,18 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// clampLiveQueueDepth keeps AddParticipant channel depth in a usable band.
+// Below 1 would panic make(chan); above 256 is memory waste with no audio gain.
+func clampLiveQueueDepth(n int) int {
+	if n < 1 {
+		return 3
+	}
+	if n > 256 {
+		return 256
+	}
+	return n
 }
 
 // vsiBufferSize clamps the VSI per-client event buffer to a sane range.
