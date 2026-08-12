@@ -156,6 +156,11 @@ Configured server-wide:
 - `SIP_JITTER_BUFFER_MS` — target delay in ms, applied to every SIP leg. `0` = disabled passthrough (default).
 - `SIP_JITTER_BUFFER_MAX_MS` — queue cap in ms (default `300`). Frames beyond this are dropped oldest-first to catch up after a stall.
 
+**WebSocket playout buffer:** WebSocket legs and room-WS participants can take a fixed ingress lead so brief producer/mixer clock skew does not silence-fill the live mix. Configured server-wide:
+
+- `WS_JITTER_BUFFER_MS` — target playout lead in ms. `0` = disabled passthrough (default). `40`–`60` is typical for externally paced agent audio.
+- `WS_JITTER_BUFFER_MAX_MS` — queue cap in ms when enabled (default `300`).
+
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
 **Response:** `201 Created` — Leg object (initially in `ringing` state)

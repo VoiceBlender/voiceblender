@@ -70,6 +70,15 @@ type Config struct {
 	// IngressBufferMs caps how much inbound audio may be buffered before
 	// the recv loop starts dropping frames. Defaults to 1000ms.
 	IngressBufferMs int
+	// JitterBufferMs is the WS ingress playout lead in milliseconds
+	// (0 = disabled passthrough). When set, AudioReader warms to this
+	// depth before releasing real PCM and silence-fills brief underruns
+	// instead of blocking — absorbing clock-phase jitter vs the mixer.
+	JitterBufferMs int
+	// JitterBufferMaxMs caps WS ingress queue depth when the jitter
+	// buffer is enabled. 0 means "use IngressBufferMs". The effective
+	// capacity is max(IngressBufferMs, JitterBufferMaxMs, JitterBufferMs).
+	JitterBufferMaxMs int
 	// TextBufferDepth caps how many inbound text messages may be buffered
 	// before the recv loop starts dropping. Defaults to 50.
 	TextBufferDepth int
@@ -127,6 +136,17 @@ func (c *Config) Validate() error {
 	if c.IngressBufferMs == 0 {
 		c.IngressBufferMs = DefaultIngressBufferMs
 	}
+	if c.JitterBufferMs < 0 {
+		c.JitterBufferMs = 0
+	}
+	if c.JitterBufferMs > 0 {
+		if c.JitterBufferMaxMs <= 0 {
+			c.JitterBufferMaxMs = 300
+		}
+		if c.JitterBufferMaxMs < c.JitterBufferMs {
+			c.JitterBufferMaxMs = c.JitterBufferMs
+		}
+	}
 	if c.TextBufferDepth == 0 {
 		c.TextBufferDepth = DefaultTextBufferDepth
 	}
@@ -146,7 +166,27 @@ func (c *Config) FrameBytesPCM() int { return c.FrameSamples() * 2 }
 
 // IngressBufferBytes is the byte capacity of the audio ingress streamBuffer.
 func (c *Config) IngressBufferBytes() int {
-	frames := c.IngressBufferMs / c.FrameMs
+	ms := c.IngressBufferMs
+	if c.JitterBufferMaxMs > ms {
+		ms = c.JitterBufferMaxMs
+	}
+	if c.JitterBufferMs > ms {
+		ms = c.JitterBufferMs
+	}
+	frames := ms / c.FrameMs
+	if frames < 1 {
+		frames = 1
+	}
+	return frames * c.FrameBytesPCM()
+}
+
+// JitterPlayoutBytes is the warm-up / target lead for the WS ingress
+// playout buffer (0 when jitter buffering is disabled).
+func (c *Config) JitterPlayoutBytes() int {
+	if c.JitterBufferMs <= 0 || c.FrameMs <= 0 {
+		return 0
+	}
+	frames := c.JitterBufferMs / c.FrameMs
 	if frames < 1 {
 		frames = 1
 	}
