@@ -2383,7 +2383,7 @@ components:
                     data:
                         type: array
                         items:
-                            $ref: openapi.yaml#/components/schemas/LegView
+                            $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         get_leg:
@@ -2413,7 +2413,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/LegView
+                        $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         create_leg:
@@ -2443,7 +2443,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/LegView
+                        $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         answer_leg:
@@ -2986,7 +2986,7 @@ components:
                     data:
                         type: array
                         items:
-                            $ref: openapi.yaml#/components/schemas/RoomView
+                            $ref: openapi.yaml#/components/schemas/Room
                 required:
                     - type
         get_room:
@@ -3016,7 +3016,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/RoomView
+                        $ref: openapi.yaml#/components/schemas/Room
                 required:
                     - type
         create_room:
@@ -3032,7 +3032,7 @@ components:
                         type: string
                         description: Echoed back on the matching .result/error frame; clients use it to correlate.
                     payload:
-                        $ref: openapi.yaml#/components/schemas/CreateRoomRequest
+                        $ref: openapi.yaml#/components/schemas/RoomCreateRequest
                 required:
                     - type
         create_roomResult:
@@ -3046,7 +3046,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/RoomView
+                        $ref: openapi.yaml#/components/schemas/Room
                 required:
                     - type
         delete_room:
@@ -3408,7 +3408,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/LegView
+                        $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         leg_stream_list:
@@ -3650,7 +3650,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/LegView
+                        $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         room_siprec_start:
@@ -3680,7 +3680,7 @@ components:
                     request_id:
                         type: string
                     data:
-                        $ref: openapi.yaml#/components/schemas/LegView
+                        $ref: openapi.yaml#/components/schemas/Leg
                 required:
                     - type
         siprec_get:

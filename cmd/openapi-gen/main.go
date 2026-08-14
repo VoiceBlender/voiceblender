@@ -881,6 +881,14 @@ func main() {
 	// Paths.
 	doc.set("paths", pathsNode)
 
+	// Webhooks are built before the components block: a webhook payload that
+	// carries a named struct (OfferedCodec, SIPRECStream, STTWord,
+	// ParticipantInfo, …) emits a $ref and registers that type in
+	// schemaRegistry, and buildSchemas snapshots the registry. Building them
+	// the other way round leaves those refs pointing at schemas that were
+	// registered too late to be emitted. The document key order is unchanged.
+	webhooks := buildWebhooks()
+
 	// Components.
 	components := newMap()
 	components.set("parameters", buildParameters())
@@ -889,7 +897,7 @@ func main() {
 	doc.set("components", components)
 
 	// Webhooks.
-	doc.set("x-webhooks", buildWebhooks())
+	doc.set("x-webhooks", webhooks)
 
 	// Write output.
 	out, err := yaml.Marshal(&doc.node)

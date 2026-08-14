@@ -4362,6 +4362,19 @@ components:
                 - room_id
                 - direction
                 - sample_rate
+        ChannelInfo:
+            type: object
+            properties:
+                channel:
+                    type: integer
+                start_ms:
+                    type: integer
+                end_ms:
+                    type: integer
+            required:
+                - channel
+                - start_ms
+                - end_ms
         CreateLegStream:
             type: object
             properties:
@@ -4537,6 +4550,33 @@ components:
                 room_admin:
                     type: boolean
                     description: Grant admin actions on the room (e.g., server-side MuteTrack of remote participants). Default false.
+        OfferedCodec:
+            type: object
+            properties:
+                name:
+                    type: string
+                payload_type:
+                    type: integer
+                clock_rate:
+                    type: integer
+                priority:
+                    type: integer
+            required:
+                - name
+                - payload_type
+                - clock_rate
+                - priority
+        ParticipantInfo:
+            type: object
+            properties:
+                id:
+                    type: string
+                aor:
+                    type: string
+                name:
+                    type: string
+            required:
+                - id
         RegistrationView:
             type: object
             properties:
@@ -4666,6 +4706,19 @@ components:
                 - leg_id
                 - participants
                 - streams
+        SIPRECStream:
+            type: object
+            properties:
+                label:
+                    type: string
+                leg_stream_id:
+                    type: string
+                participant_id:
+                    type: string
+                participant_aor:
+                    type: string
+                participant_name:
+                    type: string
         SIPRECStreamView:
             type: object
             properties:
@@ -4758,6 +4811,22 @@ components:
                 - registrar_uri
                 - aor
                 - requested_expires_seconds
+        STTWord:
+            type: object
+            properties:
+                word:
+                    type: string
+                confidence:
+                    type: number
+                start_ms:
+                    type: integer
+                end_ms:
+                    type: integer
+            required:
+                - word
+                - confidence
+                - start_ms
+                - end_ms
         TrunkView:
             type: object
             properties:
