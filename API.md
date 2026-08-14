@@ -4344,6 +4344,7 @@ in the API schema and returns `501 Not Implemented` when requested.
 | Create trunk → first REGISTER succeeds | `POST /v1/sip/trunks` | `sip.outbound_registration_active` |
 | Periodic refresh succeeds | timer fires at `granted_expires * SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `sip.outbound_registration_active` (re-emitted for liveness) |
 | Transport error or non-2xx response | REGISTER attempt fails (after digest retry) | `sip.outbound_registration_failed` |
+| Credentials permanently rejected | `SIP_OUTBOUND_REGISTRATION_AUTH_FAILURE_LIMIT` consecutive credential rejections; trunk goes `terminated`, stops retrying and stops matching `POST /v1/legs` | `sip.outbound_registration_failed`, then `sip.outbound_registration_expired` (`reason: credentials_rejected`) |
 | Upstream binding lapsed while still failing | granted lifetime expires and refresh has not recovered | `sip.outbound_registration_expired` (`reason: refresh_failed`) — emitted once per outage; resets on the next successful REGISTER |
 | `DELETE /v1/sip/trunks/{id}` | operator removes the trunk | `sip.outbound_registration_expired` (`reason: unregistered`) |
 | Server shutdown | every trunk is unregistered in parallel | `sip.outbound_registration_expired` (`reason: unregistered` or `shutdown`) |
@@ -4465,7 +4466,7 @@ curl -X DELETE http://vb.local:8080/v1/sip/trunks/7f5d39c6-2987-4643-9822-5c7ced
 |---|---|
 | `sip.outbound_registration_active` | REGISTER (initial or refresh) returned 2xx. Carries `trunk_id`, `aor`, `registrar`, `contact`, `granted_expires_seconds`, `expires_at`, `call_id`. |
 | `sip.outbound_registration_failed` | REGISTER attempt failed (transport error, non-2xx after digest retry). Carries `trunk_id`, `aor`, `registrar`, `status_code`, `reason`. The trunk stays in the manager and retries with exponential backoff. |
-| `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), or refresh failed past granted lifetime. `reason` is one of `unregistered`, `shutdown`, `refresh_failed`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER. |
+| `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), refresh failed past granted lifetime, or credentials permanently rejected. `reason` is one of `unregistered`, `shutdown`, `refresh_failed`, `credentials_rejected`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER; `credentials_rejected` is terminal — the trunk stops retrying and its `status` becomes `terminated`. |
 
 ### VSI commands
 
@@ -4482,6 +4483,7 @@ Payloads and result shapes mirror the REST endpoints above.
 | `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on requested expiry |
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of granted expiry at which the trunk refreshes |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the failure-retry exponential backoff |
+| `SIP_OUTBOUND_REGISTRATION_AUTH_FAILURE_LIMIT` | `3` | Consecutive credential rejections (`401`/`403`/`407` to a credentialed REGISTER, or a challenge-less `401`/`407`) that terminate the trunk. `0` retries forever |
 
 ---
 

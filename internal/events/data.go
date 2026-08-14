@@ -628,8 +628,11 @@ type SIPOutboundRegistrationFailedData struct {
 }
 
 // SIPOutboundRegistrationExpiredData fires when a trunk is removed (DELETE
-// or shutdown) or when refresh failed past the previously granted lifetime.
-// Reason is one of: "unregistered", "refresh_failed", "shutdown".
+// or shutdown), when refresh failed past the previously granted lifetime, or
+// when the registrar rejected the trunk's credentials often enough to be
+// treated as permanent.
+// Reason is one of: "unregistered", "refresh_failed", "shutdown",
+// "credentials_rejected".
 type SIPOutboundRegistrationExpiredData struct {
 	SIPRegistrationScope
 	TrunkID   string `json:"trunk_id"`

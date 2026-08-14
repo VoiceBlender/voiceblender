@@ -131,3 +131,50 @@ func TestTrunkManager_RefreshIndexAfterPeerSocketChange(t *testing.T) {
 		t.Errorf("stale socket should no longer resolve; got %v", got)
 	}
 }
+
+func TestTrunkManager_Deindex(t *testing.T) {
+	m := NewTrunkManager()
+	ft := &fakeTrunk{id: "t1", typ: TrunkTypeSIPRegister, aor: "sip:alice@vb.test", host: "10.0.0.1", port: 5060}
+	other := &fakeTrunk{id: "t2", typ: TrunkTypeSIPRegister, aor: "sip:bob@vb.test", host: "10.0.0.2", port: 5060}
+	m.Add(ft)
+	m.Add(other)
+
+	if got := m.LookupByFromAOR("sip:alice@vb.test"); got != Trunk(ft) {
+		t.Fatalf("pre-Deindex LookupByFromAOR = %v, want t1", got)
+	}
+	if got := m.LookupByAORUser("alice"); got != Trunk(ft) {
+		t.Fatalf("pre-Deindex LookupByAORUser = %v, want t1", got)
+	}
+	if got := m.LookupByPeerSocket("10.0.0.1", 5060); got != Trunk(ft) {
+		t.Fatalf("pre-Deindex LookupByPeerSocket = %v, want t1", got)
+	}
+
+	m.Deindex("t1")
+
+	if got := m.LookupByFromAOR("sip:alice@vb.test"); got != nil {
+		t.Errorf("LookupByFromAOR after Deindex = %v, want nil", got)
+	}
+	if got := m.LookupByAORUser("alice"); got != nil {
+		t.Errorf("LookupByAORUser after Deindex = %v, want nil", got)
+	}
+	if got := m.LookupByPeerSocket("10.0.0.1", 5060); got != nil {
+		t.Errorf("LookupByPeerSocket after Deindex = %v, want nil", got)
+	}
+	// Retained by id so an operator can still inspect and delete it.
+	if got := m.Get("t1"); got != Trunk(ft) {
+		t.Errorf("Get(t1) after Deindex = %v, want t1", got)
+	}
+	// Neighbouring trunks are untouched.
+	if got := m.LookupByFromAOR("sip:bob@vb.test"); got != Trunk(other) {
+		t.Errorf("t2 AOR lookup after Deindex(t1) = %v, want t2", got)
+	}
+	if got := m.LookupByPeerSocket("10.0.0.2", 5060); got != Trunk(other) {
+		t.Errorf("t2 socket lookup after Deindex(t1) = %v, want t2", got)
+	}
+
+	// Unknown ids are a no-op, not a panic.
+	m.Deindex("nope")
+	if got := m.Get("t1"); got != Trunk(ft) {
+		t.Errorf("Deindex(unknown) disturbed t1: %v", got)
+	}
+}

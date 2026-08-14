@@ -27,6 +27,11 @@ const (
 	TrunkStatusFailed        TrunkStatus = "failed"
 	TrunkStatusUnregistering TrunkStatus = "unregistering"
 	TrunkStatusExpired       TrunkStatus = "expired"
+	// TrunkStatusTerminated: the registrar rejected our credentials often
+	// enough to call it permanent. The refresh loop has stopped and the
+	// trunk no longer matches new calls, but it is deliberately retained
+	// under its id so an operator can still read last_error and delete it.
+	TrunkStatusTerminated TrunkStatus = "terminated"
 )
 
 // Trunk is the abstract resource managed by the TrunkManager. Each concrete

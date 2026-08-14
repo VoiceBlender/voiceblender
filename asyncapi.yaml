@@ -2306,7 +2306,7 @@ operations:
         action: send
         channel:
             $ref: '#/channels/vsi'
-        summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+        summary: Outbound SIP trunk removed (DELETE, shutdown, refresh failed past granted lifetime, or credentials permanently rejected)
         messages:
             - $ref: '#/channels/vsi/messages/sip.outbound_registration_expired'
     send_connected:
@@ -5792,8 +5792,8 @@ components:
                 $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_failed/post/requestBody/content/application~1json/schema
         evt_sip_outbound_registration_expired:
             name: evt_sip_outbound_registration_expired
-            title: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
-            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            title: Outbound SIP trunk removed (DELETE, shutdown, refresh failed past granted lifetime, or credentials permanently rejected)
+            summary: Outbound SIP trunk removed (DELETE, shutdown, refresh failed past granted lifetime, or credentials permanently rejected)
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema

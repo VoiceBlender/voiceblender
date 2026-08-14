@@ -2,6 +2,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,6 +25,13 @@ type OutboundRegistrationConfig struct {
 	MaxExpiresSeconds     int
 	RefreshRatio          float64
 	FailureBackoffMax     time.Duration
+	// AuthFailureLimit is how many consecutive credential rejections (with
+	// no successful REGISTER in between) end the refresh loop for good. Zero
+	// or negative disables termination entirely — the trunk then retries
+	// forever, which is the historical behaviour. Deliberately NOT given a
+	// value by withDefaults: 0 is meaningful here, so the default lives in
+	// internal/config where it can actually be overridden.
+	AuthFailureLimit int
 }
 
 func (c OutboundRegistrationConfig) withDefaults() OutboundRegistrationConfig {
@@ -43,6 +51,35 @@ func (c OutboundRegistrationConfig) withDefaults() OutboundRegistrationConfig {
 		c.FailureBackoffMax = 5 * time.Minute
 	}
 	return c
+}
+
+// errPermanentRegisterFailure marks a REGISTER rejection the refresh loop
+// must not retry. Wrapped into the error returned by registerOnce so run can
+// tell "come back later" apart from "stop asking".
+var errPermanentRegisterFailure = errors.New("permanent REGISTER failure")
+
+// registerRejectionIsPermanent reports whether a REGISTER response status is
+// a credential rejection rather than a transient upstream problem. 401, 403
+// and 407 all mean "these credentials are not welcome"; everything else,
+// explicitly including 404 (registrars 404 a just-provisioned AOR) and every
+// 5xx, is transient and stays on the retry path.
+//
+// It is only meaningful on a response that is past the challenge/response
+// exchange. The FIRST 401/407 of an attempt is the normal digest challenge
+// (handled in registerOnce), and classifying that as a rejection would take
+// every authenticated trunk down. Callers must establish that credentials
+// were actually presented — or, at site (a) below, that the response carried
+// no challenge to answer — before consulting this.
+//
+// The code set matches ai-runtime's classifySIPStartError
+// (connector/sip_ingress.go), which maps the same three statuses to a
+// non-recoverable disposition.
+func registerRejectionIsPermanent(statusCode int) bool {
+	switch statusCode {
+	case 401, 403, 407:
+		return true
+	}
+	return false
 }
 
 // OutboundRegistrationParams is the per-trunk creation payload (the values
@@ -92,6 +129,10 @@ type OutboundRegistration struct {
 	// (reason: refresh_failed) event so it fires once per outage instead of
 	// on every retry. Reset to false on every successful REGISTER.
 	expiredEmitted bool
+	// authFailures counts consecutive credential rejections since the last
+	// successful REGISTER. Reaching cfg.AuthFailureLimit terminates the
+	// trunk; any success resets it to zero.
+	authFailures int
 
 	cancelLoop context.CancelFunc
 	loopDone   chan struct{}
@@ -282,6 +323,13 @@ func (r *OutboundRegistration) run(ctx context.Context) {
 	backoff := time.Second
 	for {
 		err := r.registerOnce(ctx, r.requestedExpires)
+		if errors.Is(err, errPermanentRegisterFailure) {
+			// Retrying cannot help: the registrar has refused these
+			// credentials repeatedly. markTerminated has already published
+			// and deindexed; the deferred close(loopDone) ends the loop.
+			r.log.Warn("REGISTER permanently rejected; trunk terminated", "error", err)
+			return
+		}
 		var wait time.Duration
 		if err != nil {
 			r.log.Warn("REGISTER failed", "error", err)
@@ -322,6 +370,14 @@ func (r *OutboundRegistration) registerOnce(ctx context.Context, expires int) er
 		return err
 	}
 
+	// didDigest records that this attempt actually presented credentials.
+	// Only then can a 401/403/407 be read as "these credentials are not
+	// welcome" — an unauthenticated REGISTER can draw a 403 for reasons that
+	// have nothing to do with the password (VoiceBlender's own registrar
+	// answers 403 when no client decides an inbound REGISTER within the
+	// consult window, which clears on the next attempt).
+	didDigest := false
+
 	if res.StatusCode == sip.StatusUnauthorized || res.StatusCode == sip.StatusProxyAuthRequired {
 		// Build the auth header from the challenge, then send a fresh REGISTER.
 		authHeaderName := "Authorization"
@@ -331,6 +387,13 @@ func (r *OutboundRegistration) registerOnce(ctx context.Context, expires int) er
 			challengeHdr = res.GetHeader("Proxy-Authenticate")
 		}
 		if challengeHdr == nil {
+			// A 401/407 carrying nothing to authenticate against is not a
+			// challenge, it is a refusal — there is no credential we could
+			// compute that would change the answer.
+			if r.noteAuthRejection() {
+				r.markTerminated(int(res.StatusCode), "missing challenge header")
+				return fmt.Errorf("REGISTER %d but no challenge header: %w", res.StatusCode, errPermanentRegisterFailure)
+			}
 			r.markFailed(int(res.StatusCode), "missing challenge header")
 			return fmt.Errorf("REGISTER %d but no challenge header", res.StatusCode)
 		}
@@ -339,14 +402,22 @@ func (r *OutboundRegistration) registerOnce(ctx context.Context, expires int) er
 			r.markFailed(int(res.StatusCode), "digest: "+err.Error())
 			return err
 		}
+		didDigest = true
 		res, err = r.sendRegister(ctx, expires, authHeaderName, credValue)
 		if err != nil {
-			r.markFailed(res.StatusCode, "digest retry: "+err.Error())
+			// sendRegister returns a nil response alongside its error, so
+			// there is no status code to report here — the registrar never
+			// answered the retry.
+			r.markFailed(0, "digest retry: "+err.Error())
 			return err
 		}
 	}
 
 	if !res.IsSuccess() {
+		if didDigest && registerRejectionIsPermanent(int(res.StatusCode)) && r.noteAuthRejection() {
+			r.markTerminated(int(res.StatusCode), res.Reason)
+			return fmt.Errorf("REGISTER rejected: %d %s: %w", res.StatusCode, res.Reason, errPermanentRegisterFailure)
+		}
 		r.markFailed(int(res.StatusCode), res.Reason)
 		return fmt.Errorf("REGISTER rejected: %d %s", res.StatusCode, res.Reason)
 	}
@@ -364,6 +435,7 @@ func (r *OutboundRegistration) registerOnce(ctx context.Context, expires int) er
 	r.lastRegistered = time.Now()
 	r.grantedExpires = granted
 	r.expiredEmitted = false
+	r.authFailures = 0
 	if srcHost != "" {
 		r.peerHost = srcHost
 		if srcPort > 0 {
@@ -437,6 +509,59 @@ func (r *OutboundRegistration) markFailed(statusCode int, reason string) {
 	}
 }
 
+// noteAuthRejection records one credential rejection and reports whether the
+// trunk has now had enough of them in a row to be considered permanently
+// rejected. A limit of zero or less never returns true, which is how the
+// feature is switched off.
+func (r *OutboundRegistration) noteAuthRejection() bool {
+	r.mu.Lock()
+	r.authFailures++
+	n := r.authFailures
+	r.mu.Unlock()
+	limit := r.cfg.AuthFailureLimit
+	return limit > 0 && n >= limit
+}
+
+// markTerminated transitions to TrunkStatusTerminated, announces the death
+// (failed, then expired with reason credentials_rejected) and strips the
+// trunk from the routing indexes so it stops matching new calls. The trunk
+// stays in the manager under its id so GET /v1/sip/trunks/{id} still explains
+// what happened.
+//
+// The mutex is released before publishing and before Deindex on purpose:
+// TrunkManager.Remove holds the manager lock while calling PeerSocket, which
+// takes r.mu — so manager-lock → trunk-lock is the established order and
+// holding r.mu across a manager call would invert it.
+func (r *OutboundRegistration) markTerminated(statusCode int, reason string) {
+	r.mu.Lock()
+	r.status = TrunkStatusTerminated
+	r.lastError = reason
+	r.mu.Unlock()
+
+	if r.bus != nil {
+		r.bus.Publish(events.SIPOutboundRegistrationFailed, &events.SIPOutboundRegistrationFailedData{
+			SIPRegistrationScope: events.SIPRegistrationScope{AppID: r.appID},
+			TrunkID:              r.id,
+			AOR:                  CanonicalizeAOR(r.aor),
+			Registrar:            r.registrarURI.String(),
+			StatusCode:           statusCode,
+			Reason:               reason,
+		})
+		r.bus.Publish(events.SIPOutboundRegistrationExpired, &events.SIPOutboundRegistrationExpiredData{
+			SIPRegistrationScope: events.SIPRegistrationScope{AppID: r.appID},
+			TrunkID:              r.id,
+			AOR:                  CanonicalizeAOR(r.aor),
+			Registrar:            r.registrarURI.String(),
+			Reason:               "credentials_rejected",
+		})
+	}
+	if r.engine != nil {
+		if tm := r.engine.Trunks(); tm != nil {
+			tm.Deindex(r.id)
+		}
+	}
+}
+
 // Stop cancels the refresh loop and sends a final REGISTER with Expires: 0.
 // Best-effort; honours ctx.
 func (r *OutboundRegistration) Stop(ctx context.Context) error {
@@ -446,6 +571,9 @@ func (r *OutboundRegistration) Stop(ctx context.Context) error {
 		r.cancelLoop = nil
 	}
 	loopDone := r.loopDone
+	// Capture this BEFORE the overwrite below — once status is
+	// unregistering the terminal state is no longer readable.
+	wasTerminated := r.status == TrunkStatusTerminated
 	r.status = TrunkStatusUnregistering
 	r.mu.Unlock()
 
@@ -456,10 +584,15 @@ func (r *OutboundRegistration) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Best-effort unregister; ignore error but log.
-	err := r.unregister(ctx)
-	if err != nil {
-		r.log.Warn("unregister failed", "error", err)
+	// Best-effort unregister; ignore error but log. Skipped for a terminated
+	// trunk: the registrar rejected these credentials, so there is no binding
+	// of ours left to remove and the REGISTER would only be refused again.
+	var err error
+	if !wasTerminated {
+		err = r.unregister(ctx)
+		if err != nil {
+			r.log.Warn("unregister failed", "error", err)
+		}
 	}
 
 	r.mu.Lock()
