@@ -83,14 +83,16 @@ func (s *seq) add(val interface{}) *seq {
 // openapi.yaml#/components/schemas/<Name> so we don't reimplement all the
 // enrichment metadata that openapi-gen carries.
 
-// sharedSchemas is the set of Go type names that already have a curated
-// JSON Schema in openapi.yaml. asyncapi-gen emits a $ref instead of a fresh
-// inline schema for these.
-var sharedSchemas = map[string]bool{
-	"LegView":           true,
-	"RoomView":          true,
-	"CreateLegRequest":  true,
-	"CreateRoomRequest": true,
+// sharedSchemas maps a Go type name that already has a curated JSON Schema in
+// openapi.yaml to the name that schema is published under there. asyncapi-gen
+// emits a $ref to that name instead of a fresh inline schema. The values must
+// match openapi-gen's schemaDisplayName — a ref to a schema name openapi.yaml
+// does not publish resolves to nothing in downstream code generators.
+var sharedSchemas = map[string]string{
+	"LegView":           "Leg",
+	"RoomView":          "Room",
+	"CreateLegRequest":  "CreateLegRequest",
+	"CreateRoomRequest": "RoomCreateRequest",
 }
 
 // localSchemas accumulates inline VSI-only payload shapes (idPayload,
@@ -145,8 +147,8 @@ func goTypeToSchema(t reflect.Type) *omap {
 
 func structRefOrInline(t reflect.Type) *omap {
 	name := t.Name()
-	if sharedSchemas[name] {
-		return sharedRef(name)
+	if shared, ok := sharedSchemas[name]; ok {
+		return sharedRef(shared)
 	}
 	if _, seen := localSchemas[name]; !seen {
 		localSchemas[name] = nil // mark as in-progress to break recursion
