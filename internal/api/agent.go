@@ -17,8 +17,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// streamBuffer accepts variable-sized writes. pace > 0 Sleeps between reads
-// (historical); pace == 0 blocks and relies on MIXER_LIVE_QUEUE_DEPTH.
+// streamBuffer accepts variable-sized writes. pace > 0 sleeps between reads;
+// pace == 0 blocks (pair with MIXER_SOLE_CLOCK + live queue depth).
 type streamBuffer struct {
 	mu       sync.Mutex
 	cond     *sync.Cond

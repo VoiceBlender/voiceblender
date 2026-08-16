@@ -143,12 +143,18 @@ func (c *Config) Validate() error {
 	if c.JitterBufferMs < 0 {
 		c.JitterBufferMs = 0
 	}
-	if c.JitterBufferMs > 0 {
+	if c.JitterBufferMs == 0 {
+		c.JitterBufferMaxMs = 0
+	} else {
 		if c.JitterBufferMaxMs <= 0 {
 			c.JitterBufferMaxMs = 300
 		}
 		if c.JitterBufferMaxMs < c.JitterBufferMs {
 			c.JitterBufferMaxMs = c.JitterBufferMs
+		}
+		// Keep ingress capacity > playout so warm-up is reachable.
+		if c.IngressBufferMs <= c.JitterBufferMs && c.JitterBufferMaxMs <= c.JitterBufferMs {
+			c.JitterBufferMaxMs = c.JitterBufferMs + c.FrameMs
 		}
 	}
 	if c.TextBufferDepth == 0 {

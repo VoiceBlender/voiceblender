@@ -322,3 +322,102 @@ func TestValidSampleRate(t *testing.T) {
 		}
 	}
 }
+
+func TestAddPlaybackSourceUsesLiveQueueDepth(t *testing.T) {
+	m := New(slog.Default(), DefaultSampleRate)
+	m.SetLiveQueueDepth(50)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	m.AddPlaybackSource("pb", pr)
+
+	m.mu.Lock()
+	p := m.participants["pb"]
+	depth := cap(p.incoming)
+	m.mu.Unlock()
+	m.RemoveParticipant("pb")
+
+	if depth != 50 {
+		t.Fatalf("incoming cap=%d, want 50", depth)
+	}
+}
+
+func TestSoleClockPlaybackBlocksWhenFull(t *testing.T) {
+	m := New(slog.Default(), DefaultSampleRate)
+	m.SetSoleClock(true)
+	m.SetLiveQueueDepth(2)
+	fsz := m.FrameSizeBytes()
+
+	pr, pw := io.Pipe()
+	m.AddPlaybackSource("pb", pr)
+
+	frame := make([]byte, fsz)
+	progress := make(chan int, 8)
+	go func() {
+		for i := 0; i < 6; i++ {
+			if _, err := pw.Write(frame); err != nil {
+				return
+			}
+			progress <- i
+		}
+	}()
+
+	// Pipe Write returns when Read returns, before incoming send. Depth 2
+	// accepts 2 sends; the 3rd Read completes then blocks on send — so 3
+	// Writes finish, then the 4th Write blocks on the pipe.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-progress:
+		case <-time.After(time.Second):
+			t.Fatalf("frame %d did not enqueue", i)
+		}
+	}
+	select {
+	case <-progress:
+		t.Fatal("4th write should block under sole clock")
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	m.mu.Lock()
+	p := m.participants["pb"]
+	<-p.incoming
+	m.mu.Unlock()
+
+	select {
+	case <-progress:
+	case <-time.After(time.Second):
+		t.Fatal("expected unblock after drain")
+	}
+
+	pw.Close()
+	m.RemoveParticipant("pb")
+}
+
+func TestDropOldestWithoutSoleClock(t *testing.T) {
+	m := New(slog.Default(), DefaultSampleRate)
+	m.SetSoleClock(false)
+	m.SetLiveQueueDepth(2)
+	fsz := m.FrameSizeBytes()
+
+	pr, pw := io.Pipe()
+	m.AddPlaybackSource("pb", pr)
+
+	frame := make([]byte, fsz)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 8; i++ {
+			if _, err := pw.Write(frame); err != nil {
+				return
+			}
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("drop-oldest should accept burst without blocking")
+	}
+
+	pw.Close()
+	m.RemoveParticipant("pb")
+}

@@ -29,6 +29,7 @@ type Manager struct {
 	// (wired from COMFORT_NOISE_ENABLED) before Create.
 	comfortNoiseEnabled bool
 	liveQueueDepth      int
+	soleClock           bool
 
 	// hookMu guards onLegPanicTeardown alone — never take it and m.mu together,
 	// and never call the hook under either.
@@ -81,8 +82,7 @@ func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
 	m.comfortNoiseEnabled = enabled
 }
 
-// SetLiveQueueDepth sets AddParticipant channel depth for rooms created
-// after this call. Values < 1 are ignored.
+// SetLiveQueueDepth sets channel depth for rooms created after this call.
 func (m *Manager) SetLiveQueueDepth(n int) {
 	if n < 1 {
 		return
@@ -92,13 +92,22 @@ func (m *Manager) SetLiveQueueDepth(n int) {
 	m.mu.Unlock()
 }
 
+// SetSoleClock sets mixer sole-clock for rooms created after this call.
+func (m *Manager) SetSoleClock(enabled bool) {
+	m.mu.Lock()
+	m.soleClock = enabled
+	m.mu.Unlock()
+}
+
 func (m *Manager) applyRoomDefaults(r *Room) {
 	m.mu.RLock()
 	enabled := m.comfortNoiseEnabled
 	depth := m.liveQueueDepth
+	sole := m.soleClock
 	m.mu.RUnlock()
 	r.mix.SetComfortNoise(enabled)
 	r.mix.SetLiveQueueDepth(depth)
+	r.mix.SetSoleClock(sole)
 }
 
 func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {

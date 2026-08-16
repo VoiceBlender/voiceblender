@@ -36,8 +36,12 @@ func newStreamBufferPlayout(capBytes int, frameMs int, playoutBytes int, soleMix
 	if playoutBytes < 0 {
 		playoutBytes = 0
 	}
-	if playoutBytes > capBytes {
-		playoutBytes = capBytes
+	// playoutBytes == cap makes warm-up unreachable (Write drops at > cap).
+	if playoutBytes > 0 && playoutBytes >= capBytes {
+		playoutBytes = capBytes - 1
+		if playoutBytes < 0 {
+			playoutBytes = 0
+		}
 	}
 	sb := &streamBuffer{
 		cap:            capBytes,
@@ -104,9 +108,11 @@ func (sb *streamBuffer) readSoleClock(p []byte) (int, error) {
 	if len(sb.buf) == 0 && sb.closed {
 		return 0, io.EOF
 	}
+	// Short read on close with a partial frame (historical behavior).
 	if sb.closed && len(sb.buf) < len(p) {
+		n := copy(p, sb.buf)
 		sb.buf = sb.buf[:0]
-		return 0, io.EOF
+		return n, nil
 	}
 
 	n := copy(p, sb.buf)
@@ -134,8 +140,10 @@ func (sb *streamBuffer) readPaced(p []byte) (int, error) {
 		if len(sb.buf) == 0 {
 			return 0, io.EOF
 		}
+		n := copy(p, sb.buf)
 		sb.buf = sb.buf[:0]
-		return 0, io.EOF
+		sb.lastRead = time.Now()
+		return n, nil
 	}
 	if sb.warming && len(sb.buf) >= sb.playoutBytes {
 		sb.warming = false

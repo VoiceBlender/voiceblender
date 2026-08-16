@@ -73,6 +73,7 @@ func main() {
 	roomMgr := room.NewManager(legMgr, bus, log)
 	roomMgr.SetComfortNoiseEnabled(cfg.ComfortNoiseEnabled)
 	roomMgr.SetLiveQueueDepth(cfg.MixerLiveQueueDepth)
+	roomMgr.SetSoleClock(cfg.MixerSoleClock)
 	log.Info("mixer audio",
 		"sole_clock", cfg.MixerSoleClock,
 		"live_queue_depth", cfg.MixerLiveQueueDepth,

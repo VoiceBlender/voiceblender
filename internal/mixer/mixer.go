@@ -140,6 +140,8 @@ type Mixer struct {
 	comfortNoise *comfortnoise.Generator
 
 	liveQueueDepth int
+	// soleClock: WriteOnly readLoops block when incoming is full (vs drop-oldest).
+	soleClock atomic.Bool
 }
 
 // DefaultLiveQueueDepth is the historical AddParticipant channel depth.
@@ -185,7 +187,7 @@ func (m *Mixer) SetComfortNoise(enabled bool) {
 	m.comfortNoise.SetEnabled(enabled)
 }
 
-// SetLiveQueueDepth sets AddParticipant incoming/outgoing channel depth.
+// SetLiveQueueDepth sets AddParticipant/AddPlaybackSource channel depth.
 // Values < 1 fall back to DefaultLiveQueueDepth; values > 256 are clamped.
 func (m *Mixer) SetLiveQueueDepth(n int) {
 	if n < 1 {
@@ -197,6 +199,15 @@ func (m *Mixer) SetLiveQueueDepth(n int) {
 	m.mu.Lock()
 	m.liveQueueDepth = n
 	m.mu.Unlock()
+}
+
+// SetSoleClock enables backpressure for WriteOnly (playback/agent) readLoops.
+func (m *Mixer) SetSoleClock(enabled bool) {
+	m.soleClock.Store(enabled)
+}
+
+func (m *Mixer) SoleClock() bool {
+	return m.soleClock.Load()
 }
 
 func (m *Mixer) liveQueue() int {
@@ -442,16 +453,16 @@ func (p *Participant) MarkOwnerClosesEgress() {
 	p.ownerClosesEgress.Store(true)
 }
 
-// AddPlaybackSource adds a read-only source into the mix (e.g. audio file).
-// It is mixed into everyone's output but receives no mixed-minus-self back.
-// Playback is room-wide audio and bypasses the routing matrix.
+// AddPlaybackSource adds a read-only source into the mix (file, agent speak).
+// Channel depth follows SetLiveQueueDepth.
 func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
+	q := m.liveQueue()
 	p := &Participant{
 		ID:            id,
 		Reader:        reader,
 		WriteOnly:     true,
 		BypassRouting: true,
-		incoming:      make(chan []byte, 50),
+		incoming:      make(chan []byte, q),
 		done:          make(chan struct{}),
 	}
 
@@ -663,8 +674,8 @@ func (m *Mixer) recoverTick() {
 	)
 }
 
-// readLoop continuously reads PCM frames from a participant's Reader
-// and buffers them for the mix loop. Blocks on IO (RTP receive).
+// readLoop buffers Reader frames for the mix loop.
+// WriteOnly+SoleClock blocks on full incoming; otherwise drop-oldest.
 func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
@@ -684,7 +695,17 @@ func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 		frame := make([]byte, n)
 		copy(frame, buf[:n])
 
-		// Buffer the frame. If full, drop oldest to prevent lag.
+		if p.WriteOnly && m.soleClock.Load() {
+			select {
+			case p.incoming <- frame:
+			case <-p.done:
+				return
+			case <-stopCh:
+				return
+			}
+			continue
+		}
+
 		select {
 		case p.incoming <- frame:
 		case <-p.done:
