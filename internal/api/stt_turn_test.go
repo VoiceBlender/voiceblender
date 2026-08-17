@@ -20,6 +20,7 @@ func TestNewSTTProvider(t *testing.T) {
 		{"deepgram", (*stt.DeepgramTranscriber)(nil)},
 		{"deepgram_flux", (*stt.FluxTranscriber)(nil)},
 		{"azure", (*stt.AzureTranscriber)(nil)},
+		{"speechmatics", (*stt.SpeechmaticsTranscriber)(nil)},
 	}
 	for _, tc := range cases {
 		got := s.newSTTProvider(tc.provider)
@@ -39,6 +40,8 @@ func typeName(v interface{}) string {
 		return "flux"
 	case *stt.AzureTranscriber:
 		return "azure"
+	case *stt.SpeechmaticsTranscriber:
+		return "speechmatics"
 	}
 	return "unknown"
 }
@@ -48,9 +51,10 @@ func typeName(v interface{}) string {
 func TestSTTAPIKey_FluxSharesTheDeepgramKey(t *testing.T) {
 	s := newTestServer(t)
 	s.Config = config.Config{
-		DeepgramAPIKey:   "dg",
-		ElevenLabsAPIKey: "el",
-		AzureSpeechKey:   "az",
+		DeepgramAPIKey:     "dg",
+		ElevenLabsAPIKey:   "el",
+		AzureSpeechKey:     "az",
+		SpeechmaticsAPIKey: "sm",
 	}
 
 	cases := []struct {
@@ -62,6 +66,7 @@ func TestSTTAPIKey_FluxSharesTheDeepgramKey(t *testing.T) {
 		{"deepgram", "dg", "deepgram"},
 		{"deepgram_flux", "dg", "deepgram_flux"},
 		{"azure", "az", "azure"},
+		{"speechmatics", "sm", "speechmatics"},
 	}
 	for _, tc := range cases {
 		key, name := s.sttAPIKey(STTRequest{Provider: tc.provider})

@@ -434,6 +434,8 @@ func configVars() *seq {
 		{Name: "DEEPGRAM_API_KEY", Default: "", Description: "API key for Deepgram STT and TTS"},
 		{Name: "AZURE_SPEECH_KEY", Default: "", Description: "Subscription key for Azure Cognitive Speech Services (TTS and STT)"},
 		{Name: "AZURE_SPEECH_REGION", Default: "eastus", Description: "Azure region for Speech Services (e.g. eastus, westeurope)"},
+		{Name: "SPEECHMATICS_API_KEY", Default: "", Description: "API key for Speechmatics STT"},
+		{Name: "SPEECHMATICS_URL", Default: "wss://eu2.rt.speechmatics.com/v2", Description: "Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container"},
 		{Name: "S3_BUCKET", Default: "", Description: "S3 bucket name for recording uploads"},
 		{Name: "S3_REGION", Default: "us-east-1", Description: "AWS region for S3"},
 		{Name: "S3_ENDPOINT", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},

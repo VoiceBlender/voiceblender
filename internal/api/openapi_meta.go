@@ -845,7 +845,8 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/stt/finalize", OperationID: "finalizeSTTLeg",
 			Summary: "Flush the STT buffer on a leg without stopping STT",
 			Description: "Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. " +
-				"Only the `deepgram` provider supports this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. " +
+				"Only the `deepgram` and `speechmatics` providers support this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. " +
+				"On `speechmatics` the flush also emits an stt.turn end_of_turn event, because it is a forced end of utterance. " +
 				"The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.",
 			Tags: []string{"Legs"},
 			Responses: map[int]ResponseMeta{
