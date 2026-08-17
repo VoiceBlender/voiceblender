@@ -89,6 +89,16 @@ func main() {
 		}
 	}
 
+	// Fail fast on a malformed default outbound proxy rather than silently
+	// dropping it on every call.
+	if cfg.SIPOutboundProxy != "" {
+		if _, perr := sipmod.ParseProxyURI(cfg.SIPOutboundProxy); perr != nil {
+			log.Error("invalid SIP_OUTBOUND_PROXY", "error", perr)
+			os.Exit(1)
+		}
+		log.Info("default SIP outbound proxy configured", "proxy", cfg.SIPOutboundProxy)
+	}
+
 	// RTP port allocator (nil when range not configured)
 	portAlloc, err := sipmod.NewPortAllocator(cfg.RTPPortMin, cfg.RTPPortMax)
 	if err != nil {

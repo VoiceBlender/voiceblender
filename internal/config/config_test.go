@@ -20,11 +20,16 @@ func TestLoad_Defaults(t *testing.T) {
 		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
 		"SIP_INBOUND_REGISTER_DEFAULT",
 		"SIP_SDP_STRICT_MLINE_ANSWER",
+		"SIP_OUTBOUND_PROXY",
 	} {
 		t.Setenv(key, "")
 	}
 
 	cfg := Load()
+
+	if cfg.SIPOutboundProxy != "" {
+		t.Errorf("SIPOutboundProxy = %q, want empty by default", cfg.SIPOutboundProxy)
+	}
 
 	if cfg.InstanceID == "" {
 		t.Fatal("expected auto-generated InstanceID")
@@ -185,9 +190,13 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("AZURE_SPEECH_KEY", "az-key-123")
 	t.Setenv("AZURE_SPEECH_REGION", "westeurope")
 	t.Setenv("DEFAULT_SAMPLE_RATE", "48000")
+	t.Setenv("SIP_OUTBOUND_PROXY", "sip:edge.example.com:5060;transport=tcp")
 
 	cfg := Load()
 
+	if cfg.SIPOutboundProxy != "sip:edge.example.com:5060;transport=tcp" {
+		t.Errorf("SIPOutboundProxy = %q, want the configured proxy", cfg.SIPOutboundProxy)
+	}
 	if cfg.InstanceID != "test-123" {
 		t.Errorf("InstanceID = %q, want test-123", cfg.InstanceID)
 	}

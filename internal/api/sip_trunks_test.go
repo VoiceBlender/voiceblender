@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 )
 
 func TestCreateTrunk_UnknownType(t *testing.T) {
@@ -83,6 +85,50 @@ func TestCreateTrunk_InvalidJSON(t *testing.T) {
 	w := doRequest(s, http.MethodPost, "/v1/sip/trunks", `not json`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestCreateTrunk_OutboundProxyInvalid(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"type":"sip_register","sip_register":{"registrar_uri":"sip:pbx.example","aor":"sip:alice@pbx.example","password":"x","outbound_proxy":"not-a-uri"}}`
+	w := doRequest(s, http.MethodPost, "/v1/sip/trunks", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "sip_register.outbound_proxy is invalid") {
+		t.Errorf("body = %s, want an outbound_proxy error", w.Body.String())
+	}
+}
+
+func TestCreateTrunk_OutboundProxyWrongScheme(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"type":"sip_register","sip_register":{"registrar_uri":"sip:pbx.example","aor":"sip:alice@pbx.example","password":"x","outbound_proxy":"http://edge.example"}}`
+	w := doRequest(s, http.MethodPost, "/v1/sip/trunks", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestSIPRegisterTrunkView_OmitsProxyWhenUnset pins that an unconfigured trunk
+// serialises exactly as it always has.
+func TestSIPRegisterTrunkView_OmitsProxyWhenUnset(t *testing.T) {
+	out, err := json.Marshal(sipmod.SIPRegisterTrunkView{RegistrarURI: "sip:pbx.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "outbound_proxy") {
+		t.Errorf("view = %s, want no outbound_proxy key when unset", string(out))
+	}
+
+	out, err = json.Marshal(sipmod.SIPRegisterTrunkView{
+		RegistrarURI:  "sip:pbx.example",
+		OutboundProxy: "sip:edge.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"outbound_proxy":"sip:edge.example"`) {
+		t.Errorf("view = %s, want the configured proxy", string(out))
 	}
 }
 

@@ -1176,6 +1176,11 @@ type InviteOptions struct {
 	// param is appended if not already present.
 	RouteURI *sip.Uri
 
+	// ProxyURI, when set, is an explicitly configured outbound proxy
+	// (leg > trunk > SIP_OUTBOUND_PROXY). It outranks RouteURI, which is only
+	// the implicit route through a matched trunk's registrar.
+	ProxyURI *sip.Uri
+
 	// RTT (T.140 / RFC 4103) parameters. RTTEnabled offers m=text alongside
 	// audio in the INVITE. RTTRedundancy controls the RFC 2198 RED depth
 	// (0 = plain T.140, no RED).
@@ -1378,18 +1383,24 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		req.AppendHeader(h)
 	}
 
-	// Optional loose-route header — used to route the INVITE through a
-	// trunk's upstream proxy/registrar even when the Request-URI's host
-	// would route elsewhere (RFC 3261 §16.12.1).
-	if opts.RouteURI != nil {
-		routeURI := *opts.RouteURI
-		if routeURI.UriParams == nil {
-			routeURI.UriParams = sip.NewParams()
+	// Optional loose-route header — used to route the INVITE through a proxy
+	// or a trunk's upstream registrar even when the Request-URI's host would
+	// route elsewhere (RFC 3261 §16.12.1).
+	//
+	// Next-hop precedence: a recipient that resolved to a locally-registered
+	// contact is not an outbound call, so a configured proxy does not apply to
+	// it; otherwise an explicit proxy outranks a trunk's registrar route.
+	route := opts.RouteURI
+	if opts.ProxyURI != nil && len(opts.ForkTargets) == 0 {
+		route = opts.ProxyURI
+		// Only the proxy branch sets the transport: a Route's ";transport="
+		// param is already honoured by sipgo, but a "sips:" proxy is not.
+		if tp := TransportForURI(*route); tp != "" && !strings.EqualFold(tp, "udp") {
+			req.SetTransport(strings.ToUpper(tp))
 		}
-		if _, ok := routeURI.UriParams.Get("lr"); !ok {
-			routeURI.UriParams.Add("lr", "")
-		}
-		req.AppendHeader(sip.NewHeader("Route", "<"+routeURI.String()+">"))
+	}
+	if route != nil {
+		req.AppendHeader(looseRouteHeader(*route))
 	}
 
 	// Single-contact AOR resolution produced one ForkTarget: pin the transport
@@ -1400,18 +1411,17 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// Route headers — so without a Route the CANCEL would re-resolve the AOR
 	// host (possibly ourselves). We therefore add a loose Route to the contact
 	// socket, which both directs the INVITE and survives onto the CANCEL. A
-	// trunk Route (opts.RouteURI) already provides this, so skip it then.
+	// route header already provides this, so skip it then.
 	if len(opts.ForkTargets) == 1 {
 		t := opts.ForkTargets[0]
 		if t.Transport != "" {
 			req.SetTransport(strings.ToUpper(t.Transport))
 		}
 		if t.Socket != "" {
-			if opts.RouteURI == nil {
+			if route == nil {
 				host, port := splitHostPort(t.Socket)
-				contactRoute := sip.Uri{Scheme: "sip", Host: host, Port: port, UriParams: sip.NewParams()}
-				contactRoute.UriParams.Add("lr", "")
-				req.AppendHeader(sip.NewHeader("Route", "<"+contactRoute.String()+">"))
+				contactRoute := sip.Uri{Scheme: "sip", Host: host, Port: port}
+				req.AppendHeader(looseRouteHeader(contactRoute))
 			}
 			req.SetDestination(t.Socket)
 		}

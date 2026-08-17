@@ -6255,6 +6255,8 @@ components:
             properties:
                 registrar_uri:
                     type: string
+                outbound_proxy:
+                    type: string
                 aor:
                     type: string
                 username:
@@ -6273,6 +6275,8 @@ components:
             type: object
             properties:
                 registrar_uri:
+                    type: string
+                outbound_proxy:
                     type: string
                 aor:
                     type: string

@@ -61,6 +61,9 @@ info:
         - name: SIP_USE_SOURCE_SOCKET
           default: "false"
           description: When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT).
+        - name: SIP_OUTBOUND_PROXY
+          default: ""
+          description: 'Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only.'
         - name: SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS
           default: "3600"
           description: Expiry used when an inbound REGISTER carries no Expires value.
@@ -288,7 +291,7 @@ paths:
         post:
             operationId: createLeg
             summary: Originate an outbound leg
-            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers).'
+            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact.'
             tags:
                 - Legs
             requestBody:
@@ -3230,7 +3233,7 @@ paths:
         post:
             operationId: createSIPTrunk
             summary: Create an outbound SIP trunk (REGISTER or static peering)
-            description: 'Creates a typed SIP trunk. For `type: "sip_register"`, VoiceBlender begins REGISTERing to the supplied registrar URI with digest auth, refreshes before expiry, and routes inbound INVITEs that arrive on that peer''s socket plus outbound INVITEs whose `from` matches the AOR through the trunk. For `type: "ip_ip"`, returns 501 (reserved, not yet implemented).'
+            description: 'Creates a typed SIP trunk. For `type: "sip_register"`, VoiceBlender begins REGISTERing to the supplied registrar URI with digest auth, refreshes before expiry, and routes inbound INVITEs that arrive on that peer''s socket plus outbound INVITEs whose `from` matches the AOR through the trunk. Set `sip_register.outbound_proxy` to send both the REGISTER and those INVITEs via a next-hop proxy instead of straight at the registrar; the Request-URI and digest authentication still target `registrar_uri`. It defaults to `SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot reports the hop actually in effect. For `type: "ip_ip"`, returns 501 (reserved, not yet implemented).'
             tags:
                 - SIP Trunks
             requestBody:
@@ -3724,6 +3727,9 @@ components:
                 from:
                     type: string
                     description: Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.
+                outbound_proxy:
+                    type: string
+                    description: Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.
                 privacy:
                     type: string
                     description: SIP Privacy header value (e.g. "id", "none")
@@ -4809,6 +4815,9 @@ components:
                 registrar_uri:
                     type: string
                     description: Upstream registrar SIP URI (e.g. "sip:pbx.example.com:5060" or "sips:pbx.example.com:5061;transport=tls").
+                outbound_proxy:
+                    type: string
+                    description: Next-hop SIP proxy for this trunk's REGISTER and for outbound INVITEs placed from its AOR, attached as a loose `Route` header (the Request-URI is left unchanged, and digest auth still targets `registrar_uri`). E.g. "sip:edge.example.com:5060;transport=tcp". Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `registrar_uri`.
                 aor:
                     type: string
                     description: Address-of-record this trunk REGISTERs (e.g. "sip:alice@pbx.example.com"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR.
@@ -4832,6 +4841,8 @@ components:
             type: object
             properties:
                 registrar_uri:
+                    type: string
+                outbound_proxy:
                     type: string
                 aor:
                     type: string

@@ -110,6 +110,7 @@ Originate an outbound SIP call.
 | `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
+| `outbound_proxy` | string | no | SIP legs only. Next hop for this INVITE, attached as a loose `Route` header with the Request-URI left unchanged (e.g. `"sip:edge.acme.net:5060;transport=tcp"`). Outranks the matched trunk's `outbound_proxy` and `SIP_OUTBOUND_PROXY`; ignored when `to` resolves to an AOR registered here. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
@@ -4399,6 +4400,7 @@ Field reference (`sip_register` block):
 | Field | Required | Description |
 |---|---|---|
 | `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS. |
+| `outbound_proxy` | no | Next-hop proxy for this trunk's REGISTER and for outbound INVITEs from its AOR. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). Defaults to `SIP_OUTBOUND_PROXY`. |
 | `aor` | yes | Address-of-record. Becomes the `From` URI and the implicit-match key for outbound calls. |
 | `username` | no | Digest username. Defaults to the AOR user-part. |
 | `password` | yes | Digest password. **Never returned in any response.** |
@@ -4407,6 +4409,105 @@ Field reference (`sip_register` block):
 
 Errors: `400` for invalid JSON, missing fields, or invalid URIs. `501` when
 `type == "ip_ip"` (not yet implemented). `400` for unknown types.
+
+### Routing through an outbound proxy
+
+By default every request goes straight to the host in its Request-URI — the
+registrar for a REGISTER, the dialed URI for an INVITE. When signalling must
+egress through an SBC or edge proxy instead, name it and VoiceBlender attaches a
+loose `Route` header (RFC 3261 §16.12.1) while leaving the Request-URI alone.
+
+```bash
+curl -X POST http://vb.local:8080/v1/sip/trunks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "sip_register",
+    "sip_register": {
+      "registrar_uri":  "sip:pbx.example.com:5060",
+      "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
+      "aor":            "sip:alice@pbx.example.com",
+      "password":       "supersecret"
+    }
+  }'
+```
+
+The REGISTER then goes on the wire as:
+
+```
+REGISTER sip:pbx.example.com:5060 SIP/2.0
+Route: <sip:edge.acme.net:5060;transport=tcp;lr>
+From: <sip:alice@pbx.example.com>;tag=...
+To: <sip:alice@pbx.example.com>
+```
+
+Note what does **not** change: the Request-URI still names the registrar, and
+digest authentication still computes its `uri` against the registrar (RFC 3261
+§22.4). Only the next hop moves. The same `Route` is attached to every INVITE
+placed `from` that trunk's AOR.
+
+A `407 Proxy Authentication Required` from the proxy is answered with the
+trunk's credentials in a `Proxy-Authorization` header, exactly as a `401` from
+the registrar is answered with `Authorization`.
+
+#### TLS proxies
+
+Both spellings work and are equivalent — `sips:edge.acme.net:5061` and
+`sip:edge.acme.net:5061;transport=tls`. The port defaults to `5061` for `sips:`
+and `5060` otherwise. The outbound dial verifies the proxy's certificate against
+the system roots with SNI taken from the URI host, so the proxy needs a
+publicly-trusted cert for the name you dial.
+
+The proxy's transport is independent of the registrar's: a `sips:` proxy in
+front of a `sip:` registrar is a normal configuration, and the Request-URI still
+reads `REGISTER sip:pbx.example.com:5060`.
+
+> **Set `SIP_TLS_PORT` when using a TLS proxy.** Outbound TLS works without it,
+> but the `Contact` in the REGISTER can then only advertise the plaintext UDP
+> socket — so the upstream sends calls *back* to you unencrypted, and the trunk
+> still reports `active` with nothing obviously wrong. `POST /v1/sip/trunks`
+> logs a warning when it sees this combination. With `SIP_TLS_PORT` set, the
+> Contact goes out as `sips:alice@vb.example:5061;transport=tls`.
+
+#### Precedence
+
+A single call can name its own proxy, which needs no trunk at all:
+
+```bash
+curl -X POST http://vb.local:8080/v1/legs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "sip",
+    "to": "sip:bob@example.com",
+    "outbound_proxy": "sip:edge-eu.acme.net:5060"
+  }'
+```
+
+Resolution order, most specific first:
+
+| # | Source | Applies to |
+|---|---|---|
+| 1 | `to` resolves to an AOR registered here | Delivered to the bound contact; any proxy is ignored (and logged). Local delivery is not an egress. |
+| 2 | `outbound_proxy` on `POST /v1/legs` | That one INVITE. |
+| 3 | `sip_register.outbound_proxy` on the matched trunk | That trunk's REGISTER and its INVITEs. |
+| 4 | `SIP_OUTBOUND_PROXY` | Everything not covered above. |
+| 5 | The matched trunk's `registrar_uri` | Trunk-matched INVITEs, unchanged from earlier releases. |
+| 6 | The Request-URI host | Everything else. |
+
+`SIP_OUTBOUND_PROXY` deliberately does **not** displace rule 5: setting it
+cannot silently redirect calls on trunks that already work. A trunk that wants a
+proxy names one, and a trunk created while the env var is set adopts it at
+creation time — so `GET /v1/sip/trunks/{id}` always reports the hop in effect
+rather than leaving you to infer it from the environment.
+
+Not applied to SIPREC SRC legs or WhatsApp legs, which address their own
+endpoints. A malformed `outbound_proxy` is a `400`; a malformed
+`SIP_OUTBOUND_PROXY` fails startup.
+
+> **Inbound tagging caveat.** Inbound INVITEs are matched back to a trunk by the
+> peer socket they arrive on, which is the proxy once one is configured. Several
+> trunks behind the same proxy therefore cannot be told apart, and `trunk_id` on
+> `leg.ringing` may name any one of them. The tag is informational and gates
+> nothing.
 
 ### GET /v1/sip/trunks
 
@@ -4428,6 +4529,7 @@ curl http://vb.local:8080/v1/sip/trunks
       "created_at": "2026-06-24T12:00:00Z",
       "sip_register": {
         "registrar_uri": "sip:pbx.example.com:5060",
+        "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
         "aor": "sip:alice@pbx.example.com",
         "username": "alice",
         "contact_uri": "sip:alice@vb.example:5060",
@@ -4442,6 +4544,10 @@ curl http://vb.local:8080/v1/sip/trunks
   ]
 }
 ```
+
+`outbound_proxy` is omitted entirely when the trunk routes at its registrar.
+When present it is the hop actually in effect, whether it came from the trunk's
+own `outbound_proxy` or from `SIP_OUTBOUND_PROXY`.
 
 ### GET /v1/sip/trunks/{id}
 
@@ -4482,6 +4588,7 @@ Payloads and result shapes mirror the REST endpoints above.
 | `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on requested expiry |
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of granted expiry at which the trunk refreshes |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the failure-retry exponential backoff |
+| `SIP_OUTBOUND_PROXY` | _(empty)_ | Default next hop for outbound REGISTERs and INVITEs. Overridden per-trunk by `outbound_proxy` and per-call by `outbound_proxy` on `POST /v1/legs`. A malformed value fails startup. |
 
 ---
 
