@@ -513,6 +513,26 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "POST", Path: "/legs/{id}/deaf", OperationID: "deafLeg",
+			Summary: "Deafen a leg",
+			Description: "A deaf leg stops receiving the room mix. Its own audio is still " +
+				"contributed to the mix and still reaches taps (recording/STT) unless it is also muted.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Leg deafened"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/deaf", OperationID: "undeafLeg",
+			Summary: "Undeafen a leg",
+			Tags:    []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Leg undeafened"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
 			Method: "POST", Path: "/legs/{id}/hold", OperationID: "holdLeg",
 			Summary: "Put a SIP call on hold (asynchronous)",
 			Description: "Queues a re-INVITE with `sendonly` SDP direction. The HTTP call returns 202 as soon as the " +

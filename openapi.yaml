@@ -271,10 +271,18 @@ servers:
 tags:
     - name: Legs
       description: Voice call legs (SIP or WebRTC)
-    - name: Rooms
-      description: Multi-party audio conference rooms
     - name: WebRTC
       description: WebRTC peer connection establishment
+    - name: Rooms
+      description: Multi-party audio conference rooms
+    - name: Bridges
+      description: Audio bridges between room mixers
+    - name: SIP Registrations
+      description: Inbound SIP AOR registrations and parked REGISTER attempts
+    - name: SIP Trunks
+      description: Outbound SIP trunks (REGISTER or static peering)
+    - name: Events
+      description: Real-time event stream and command channel (VSI)
     - name: Observability
       description: Metrics and health endpoints
 paths:
@@ -592,6 +600,46 @@ paths:
             responses:
                 '200':
                     description: Leg unmuted
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/deaf:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: deafLeg
+            summary: Deafen a leg
+            description: A deaf leg stops receiving the room mix. Its own audio is still contributed to the mix and still reaches taps (recording/STT) unless it is also muted.
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Leg deafened
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatusResponse'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: undeafLeg
+            summary: Undeafen a leg
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Leg undeafened
                     content:
                         application/json:
                             schema:

@@ -254,6 +254,85 @@ func TestKnownDisconnectReasonsTest(t *testing.T) {
 	}
 }
 
+// TestSpecTagsAreDeclared guards the generated spec against tag drift. An
+// operation tagged with a group the root `tags:` list never declares is legal
+// OpenAPI, so no validator objects — but documentation generators walk the
+// declared list, and silently drop every endpoint outside it.
+func TestSpecTagsAreDeclared(t *testing.T) {
+	doc := loadSpec(t)
+
+	declared := map[string]bool{}
+	if tags := mappingValue(doc, "tags"); tags != nil {
+		for _, tag := range tags.Content {
+			name := mappingValue(tag, "name")
+			if name == nil {
+				t.Error("root tags entry has no name")
+				continue
+			}
+			if declared[name.Value] {
+				t.Errorf("root tags declares %q twice", name.Value)
+			}
+			declared[name.Value] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("openapi.yaml declares no root tags; run go generate ./internal/api/")
+	}
+
+	used := map[string]bool{}
+	paths := mappingValue(doc, "paths")
+	if paths == nil {
+		t.Fatal("openapi.yaml has no paths block")
+	}
+	for i := 0; i+1 < len(paths.Content); i += 2 {
+		path, pathItem := paths.Content[i].Value, paths.Content[i+1]
+		for j := 0; j+1 < len(pathItem.Content); j += 2 {
+			method := pathItem.Content[j].Value
+			if !specMethods[method] {
+				continue
+			}
+			tags := mappingValue(pathItem.Content[j+1], "tags")
+			if tags == nil || len(tags.Content) == 0 {
+				t.Errorf("%s %s carries no tag, so it appears in no documentation section", strings.ToUpper(method), path)
+				continue
+			}
+			for _, tag := range tags.Content {
+				used[tag.Value] = true
+				if !declared[tag.Value] {
+					t.Errorf("%s %s is tagged %q, which the root tags list does not declare; add it to tagDescriptions() in cmd/openapi-gen/ and run go generate ./internal/api/", strings.ToUpper(method), path, tag.Value)
+				}
+			}
+		}
+	}
+
+	for name := range declared {
+		if !used[name] {
+			t.Errorf("root tags declares %q, but no operation uses it", name)
+		}
+	}
+}
+
+var specMethods = map[string]bool{
+	"get": true, "put": true, "post": true, "delete": true,
+	"options": true, "head": true, "patch": true, "trace": true,
+}
+
+func loadSpec(t *testing.T) *yaml.Node {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse openapi.yaml: %v", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		t.Fatal("openapi.yaml is empty")
+	}
+	return doc.Content[0]
+}
+
 // TestCDRReasonSpecIsOpen asserts the generated spec, not the Go list: the
 // enum must be gone, and the description must carry the known values so the
 // documentation survives opening the field.
