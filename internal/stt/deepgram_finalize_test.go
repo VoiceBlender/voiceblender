@@ -16,8 +16,8 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
-// Only Deepgram flushes mid-stream today; the interface exists so the other
-// providers are not forced to pretend they can.
+// The interface exists so the providers with no mid-stream flush are not
+// forced to pretend they have one.
 var _ Finalizer = (*DeepgramTranscriber)(nil)
 
 // dgEchoServer spins a WebSocket server that forwards every frame it receives
@@ -145,13 +145,17 @@ func TestDeepgramFinalize_AfterSessionEndsErrors(t *testing.T) {
 	}
 }
 
-// The capability stays honestly scoped: internal/stt holds exactly three
-// providers (azure.go, deepgram.go, elevenlabs.go) and only one can flush.
+// The capability stays honestly scoped: only the providers whose wire protocol
+// has a flush message may claim it.
 func TestSTTFinalizerConformance(t *testing.T) {
 	log := slog.Default()
 
 	if _, ok := Provider(NewDeepgram(log)).(Finalizer); !ok {
 		t.Error("*DeepgramTranscriber does not implement Finalizer")
+	}
+	if _, ok := Provider(NewSpeechmatics("", log)).(Finalizer); !ok {
+		t.Error("*SpeechmaticsTranscriber does not implement Finalizer; " +
+			"ForceEndOfUtterance is a mid-stream flush and must be exposed")
 	}
 	if _, ok := Provider(NewAzure("region", log)).(Finalizer); ok {
 		t.Error("*AzureTranscriber implements Finalizer; VoiceBlender's Azure " +

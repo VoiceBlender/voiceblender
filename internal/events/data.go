@@ -474,7 +474,8 @@ type STTTextData struct {
 
 // STTTurnData is a turn-boundary signal from a provider that models
 // conversational turns. Deepgram Flux emits the full state machine; Deepgram
-// v1 emits only "utterance_end" (and only when utterance_end_ms is set).
+// v1 emits only "utterance_end" (and only when utterance_end_ms is set);
+// Speechmatics emits only "end_of_turn".
 type STTTurnData struct {
 	LegRoomScope
 	// Event is "start_of_turn", "update", "eager_end_of_turn", "turn_resumed",
