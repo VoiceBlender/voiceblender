@@ -271,10 +271,18 @@ servers:
 tags:
     - name: Legs
       description: Voice call legs (SIP or WebRTC)
-    - name: Rooms
-      description: Multi-party audio conference rooms
     - name: WebRTC
       description: WebRTC peer connection establishment
+    - name: Rooms
+      description: Multi-party audio conference rooms
+    - name: Bridges
+      description: Audio bridges between room mixers
+    - name: SIP Registrations
+      description: Inbound SIP AOR registrations and parked REGISTER attempts
+    - name: SIP Trunks
+      description: Outbound SIP trunks (REGISTER or static peering)
+    - name: Events
+      description: Real-time event stream and command channel (VSI)
     - name: Observability
       description: Metrics and health endpoints
 paths:

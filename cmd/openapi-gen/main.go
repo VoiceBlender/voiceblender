@@ -871,12 +871,7 @@ func main() {
 	doc.set("servers", servers)
 
 	// Tags.
-	tags := newSeq().
-		add(newMap().set("name", "Legs").set("description", "Voice call legs (SIP or WebRTC)")).
-		add(newMap().set("name", "Rooms").set("description", "Multi-party audio conference rooms")).
-		add(newMap().set("name", "WebRTC").set("description", "WebRTC peer connection establishment")).
-		add(newMap().set("name", "Observability").set("description", "Metrics and health endpoints"))
-	doc.set("tags", tags)
+	doc.set("tags", buildTags(pathsNode))
 
 	// Paths.
 	doc.set("paths", pathsNode)
@@ -920,6 +915,85 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Generated %s (%d bytes)\n", outPath, len(out))
+}
+
+// tagDescriptions supplies the prose for each root-level tag. Every tag used by
+// an operation must have an entry here — buildTags fails the generation
+// otherwise, so a new route group cannot silently ship undeclared.
+func tagDescriptions() map[string]string {
+	return map[string]string{
+		"Legs":              "Voice call legs (SIP or WebRTC)",
+		"WebRTC":            "WebRTC peer connection establishment",
+		"Rooms":             "Multi-party audio conference rooms",
+		"Bridges":           "Audio bridges between room mixers",
+		"SIP Registrations": "Inbound SIP AOR registrations and parked REGISTER attempts",
+		"SIP Trunks":        "Outbound SIP trunks (REGISTER or static peering)",
+		"Events":            "Real-time event stream and command channel (VSI)",
+		"Observability":     "Metrics and health endpoints",
+	}
+}
+
+// buildTags derives the root-level tags list from the tags the operations
+// actually carry, in first-appearance order, so it can never drift from the
+// paths block the way a hand-maintained list does.
+func buildTags(paths *omap) *seq {
+	descs := tagDescriptions()
+
+	tags := newSeq()
+	seen := map[string]bool{}
+	var missing []string
+	for _, name := range collectOperationTags(paths) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		desc, ok := descs[name]
+		if !ok {
+			missing = append(missing, name)
+			continue
+		}
+		tags.add(newMap().set("name", name).set("description", desc))
+	}
+
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "tag %q used by an operation but has no entry in tagDescriptions()\n",
+			strings.Join(missing, `", "`))
+		os.Exit(1)
+	}
+
+	return tags
+}
+
+// collectOperationTags walks the built paths node and returns every tag named
+// by an operation, in document order (duplicates included).
+func collectOperationTags(paths *omap) []string {
+	var out []string
+	for i := 0; i+1 < len(paths.node.Content); i += 2 {
+		pathItem := paths.node.Content[i+1]
+		for j := 0; j+1 < len(pathItem.Content); j += 2 {
+			if !isMethodKey(pathItem.Content[j].Value) {
+				continue
+			}
+			op := pathItem.Content[j+1]
+			for k := 0; k+1 < len(op.Content); k += 2 {
+				if op.Content[k].Value != "tags" {
+					continue
+				}
+				for _, t := range op.Content[k+1].Content {
+					out = append(out, t.Value)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func isMethodKey(key string) bool {
+	switch key {
+	case "get", "put", "post", "delete", "options", "head", "patch", "trace":
+		return true
+	}
+	return false
 }
 
 func buildParameters() *omap {
