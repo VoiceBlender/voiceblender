@@ -924,8 +924,7 @@ func tagDescriptions() map[string]string {
 	return map[string]string{
 		"Legs":              "Voice call legs (SIP or WebRTC)",
 		"WebRTC":            "WebRTC peer connection establishment",
-		"Rooms":             "Multi-party audio conference rooms",
-		"Bridges":           "Audio bridges between room mixers",
+		"Rooms":             "Multi-party audio conference rooms, including audio bridges between room mixers",
 		"SIP Registrations": "Inbound SIP AOR registrations and parked REGISTER attempts",
 		"SIP Trunks":        "Outbound SIP trunks (REGISTER or static peering)",
 		"Events":            "Real-time event stream and command channel (VSI)",

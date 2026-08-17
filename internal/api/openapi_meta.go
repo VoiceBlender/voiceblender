@@ -1062,7 +1062,7 @@ func RoutesMetadata() []RouteMeta {
 				"path room), or `none` (allocated but silent). Bridging rooms into " +
 				"a cycle with feedback-enabled directions causes audio feedback — " +
 				"use one-way directions to break loops.",
-			Tags:        []string{"Bridges"},
+			Tags:        []string{"Rooms"},
 			RequestType: CreateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Bridge created", Type: BridgeView{}},
@@ -1074,7 +1074,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "GET", Path: "/rooms/{id}/bridges", OperationID: "listRoomBridges",
 			Summary: "List bridges involving this room",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of bridges (direction relative to the path room)", Type: []BridgeView{}},
 				404: {Description: "Room not found"},
@@ -1083,7 +1083,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "GET", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "getRoomBridge",
 			Summary: "Get a bridge involving this room",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge details (direction relative to the path room)", Type: BridgeView{}},
 				404: {Description: "Bridge not found for this room"},
@@ -1093,7 +1093,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "PATCH", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "updateRoomBridge",
 			Summary:     "Change a bridge's audio flow direction",
 			Description: "Live-updates the direction (relative to the room in the path) without interrupting audio.",
-			Tags:        []string{"Bridges"},
+			Tags:        []string{"Rooms"},
 			RequestType: UpdateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge updated", Type: BridgeView{}},
@@ -1104,7 +1104,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "DELETE", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "deleteRoomBridge",
 			Summary: "Tear down a bridge",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge deleted"},
 				404: {Description: "Bridge not found for this room"},
