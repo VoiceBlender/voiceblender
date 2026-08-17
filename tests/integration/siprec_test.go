@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/VoiceBlender/voiceblender/internal/siprec"
 	"github.com/emiago/sipgo/sip"
+	"github.com/go-audio/wav"
 	"github.com/pion/rtp"
 )
 
@@ -544,6 +546,14 @@ func TestSIPREC_ReInviteAddsParticipant(t *testing.T) {
 // SRS has real audio to record on each channel.
 func sendSIPRECAudio(t *testing.T, call *sipmod.OutboundCall, packets int) {
 	t.Helper()
+	sendSIPRECAudioFrom(t, call, 0, packets)
+}
+
+// sendSIPRECAudioFrom is sendSIPRECAudio starting at RTP packet index start, so
+// a caller can resume a stream after a gap without rewinding its sequence
+// numbers and timestamps.
+func sendSIPRECAudioFrom(t *testing.T, call *sipmod.OutboundCall, start, packets int) {
+	t.Helper()
 
 	sessions := []*sipmod.RTPSession{call.RTPSess}
 	sessions = append(sessions, call.ExtraRTPSess...)
@@ -564,7 +574,7 @@ func sendSIPRECAudio(t *testing.T, call *sipmod.OutboundCall, packets int) {
 		payload[i] = byte(0x30 + i%16)
 	}
 
-	for n := 0; n < packets; n++ {
+	for n := start; n < start+packets; n++ {
 		for i, sess := range sessions {
 			pkt := &rtp.Packet{
 				Header: rtp.Header{
@@ -649,6 +659,120 @@ func TestSIPREC_RecordsOneChannelPerParticipant(t *testing.T) {
 			t.Errorf("channels has no entry for %q; got keys %v", want, mapKeys(payload.Channels))
 		}
 	}
+}
+
+// TestSIPREC_SilentStreamKeepsRealTime pins the recording timeline against a
+// stream that stops arriving mid-session — a held call, or RTP that never shows
+// up. The capture has to silence-fill that stretch: audio that arrives after it
+// belongs at its real offset, not slid forward over the gap.
+func TestSIPREC_SilentStreamKeepsRealTime(t *testing.T) {
+	const (
+		burstPackets = 15                     // ~300 ms of RTP on each side of the gap
+		gap          = 600 * time.Millisecond // no RTP at all: the stream is on hold
+	)
+
+	src := newTestInstance(t, "src")
+	srs := siprecInstance(t, "srs", nil)
+
+	call, err := dialSIPREC(t, src, srs, twoPartyMetadata(t))
+	if err != nil {
+		t.Fatalf("SIPREC INVITE failed: %v", err)
+	}
+	defer call.Dialog.Bye(context.Background())
+
+	evt := srs.collector.waitForMatch(t, events.SIPRECSessionStarted, nil, 5*time.Second)
+	legID := evt.Data.(interface{ GetLegID() string }).GetLegID()
+
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/record", srs.baseURL(), legID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /record = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	sendSIPRECAudioFrom(t, call, 0, burstPackets)
+	time.Sleep(gap)
+	sendSIPRECAudioFrom(t, call, burstPackets, burstPackets)
+
+	stop := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s/record", srs.baseURL(), legID))
+	defer stop.Body.Close()
+	if stop.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE /record = %d, want 200", stop.StatusCode)
+	}
+	var stopped struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(stop.Body).Decode(&stopped); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if stopped.File == "" {
+		t.Fatal("stop returned no file; the merged recording was not produced")
+	}
+
+	rate := srs.cfg.DefaultSampleRate
+	channels := readWAVChannels(t, stopped.File, 2, rate)
+
+	// The first burst ends around 300 ms and the second starts around 900 ms;
+	// these windows sit well inside the gap and well inside the second burst, so
+	// ordinary send jitter cannot move audio across either boundary.
+	silentFrom, silentTo := msSamples(450, rate), msSamples(800, rate)
+	audibleFrom := msSamples(1000, rate)
+
+	for ch, samples := range channels {
+		if len(samples) <= audibleFrom {
+			t.Fatalf("channel %d is %d samples (%d ms), too short to cover the gap — the silent stretch was dropped from the timeline",
+				ch, len(samples), len(samples)*1000/rate)
+		}
+		for i := silentFrom; i < silentTo && i < len(samples); i++ {
+			if samples[i] != 0 {
+				t.Fatalf("channel %d sample %d (%d ms) = %d, want silence — audio slid into the gap",
+					ch, i, i*1000/rate, samples[i])
+			}
+		}
+		audible := false
+		for i := audibleFrom; i < len(samples); i++ {
+			if samples[i] != 0 {
+				audible = true
+				break
+			}
+		}
+		if !audible {
+			t.Errorf("channel %d is silent from %d ms on — audio sent after the gap did not land at its real offset",
+				ch, audibleFrom*1000/rate)
+		}
+	}
+}
+
+// msSamples converts milliseconds to a sample offset at rate.
+func msSamples(ms, rate int) int { return ms * rate / 1000 }
+
+// readWAVChannels de-interleaves a WAV file into one slice per channel.
+func readWAVChannels(t *testing.T, path string, wantChannels, wantSampleRate int) [][]int {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open WAV file %s: %v", path, err)
+	}
+	defer f.Close()
+
+	dec := wav.NewDecoder(f)
+	buf, err := dec.FullPCMBuffer()
+	if err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	if buf.Format.NumChannels != wantChannels {
+		t.Fatalf("%s has %d channels, want %d", path, buf.Format.NumChannels, wantChannels)
+	}
+	if buf.Format.SampleRate != wantSampleRate {
+		t.Fatalf("%s is %d Hz, want %d", path, buf.Format.SampleRate, wantSampleRate)
+	}
+
+	out := make([][]int, wantChannels)
+	for i, s := range buf.Data {
+		ch := i % wantChannels
+		out[ch] = append(out[ch], s)
+	}
+	return out
 }
 
 func mapKeys(m map[string]map[string]any) []string {
