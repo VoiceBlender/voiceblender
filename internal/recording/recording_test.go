@@ -357,6 +357,12 @@ func TestRecorder_PauseResume_StateTransitions(t *testing.T) {
 // TestRecorder_Pause_WritesSilence verifies that audio written while the
 // recorder is paused appears as silence in the output WAV, while the file's
 // total duration still covers the whole session (timeline preserved).
+//
+// It runs on the blocking fallback — the reader is wrapped so the loop cannot
+// drain it without blocking — because it feeds half a second at a time: a
+// clocked capture would pace that back out over half a second of ticks and drop
+// what overran the accumulator. See TestRecordMono_Pause_WritesSilence for the
+// same guard on the clocked path.
 func TestRecorder_Pause_WritesSilence(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
@@ -376,7 +382,7 @@ func TestRecorder_Pause_WritesSilence(t *testing.T) {
 
 	pr, pw := newSyncPipe()
 
-	fpath, err := r.Start(context.Background(), pr, dir)
+	fpath, err := r.Start(context.Background(), blockingOnly{pr}, dir)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -467,6 +473,10 @@ func generatePCM(sampleRate, seconds int) []byte {
 	buf := make([]byte, numSamples*2)
 	return buf
 }
+
+// blockingOnly hides a reader's TryRead, so a capture over it takes the
+// blocking fallback.
+type blockingOnly struct{ io.Reader }
 
 // blockingReader blocks forever on Read until the context is cancelled.
 type blockingReader struct{}

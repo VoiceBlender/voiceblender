@@ -1331,6 +1331,9 @@ participant, or plain packet loss — appears as silence on that channel for
 exactly as long as it lasted, and never shortens the recording or shifts the
 other channel.
 
+Leg types with a single audio stream record mono, on the same clock and with the
+same guarantee.
+
 **Request:**
 
 ```json
@@ -3475,6 +3478,11 @@ rate. A party whose capture produced nothing is listed in `omitted_legs` rather
 than failing the merge. `/record/pause` and `/record/resume` apply to every
 channel at once, so they stay time-aligned. Set `SIPREC_AUTO_RECORD=true` to
 start this automatically when a session arrives.
+
+Each capture runs on the recorder's own 20 ms clock, so a stream that stops
+sending RTP — a party on hold, or loss — is silence-filled for exactly that
+long. The audio that follows keeps its real offset instead of sliding forward
+over the gap.
 
 **Or place streams yourself** with `SIPREC_ROOM_MODE=none` (the default):
 
