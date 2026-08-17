@@ -26,6 +26,7 @@ type CreateLegRequest struct {
 	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID — a bare user-part ("+15551234567") or a full SIP URI ("sip:alice@pbx.example.com")
+	OutboundProxy   string            `json:"outbound_proxy,omitempty"`   // next-hop SIP proxy for this INVITE; overrides the matched trunk's and the global default
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
@@ -106,6 +107,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
+	"outbound_proxy":   {Description: `Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
 	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
@@ -842,6 +844,7 @@ var createTrunkRequestFields = map[string]FieldEnrichment{
 // password is required on creation but never returned in any response.
 type SIPRegisterTrunkSpec struct {
 	RegistrarURI   string `json:"registrar_uri"`
+	OutboundProxy  string `json:"outbound_proxy,omitempty"`
 	AOR            string `json:"aor"`
 	Username       string `json:"username,omitempty"`
 	Password       string `json:"password"`
@@ -851,6 +854,7 @@ type SIPRegisterTrunkSpec struct {
 
 var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
 	"registrar_uri":   {Description: "Upstream registrar SIP URI (e.g. \"sip:pbx.example.com:5060\" or \"sips:pbx.example.com:5061;transport=tls\")."},
+	"outbound_proxy":  {Description: "Next-hop SIP proxy for this trunk's REGISTER and for outbound INVITEs placed from its AOR, attached as a loose `Route` header (the Request-URI is left unchanged, and digest auth still targets `registrar_uri`). E.g. \"sip:edge.example.com:5060;transport=tcp\". Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `registrar_uri`."},
 	"aor":             {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR."},
 	"username":        {Description: "Digest auth username. Defaults to the AOR user-part when empty."},
 	"password":        {Description: "Digest auth password. Required. Never returned in any response."},

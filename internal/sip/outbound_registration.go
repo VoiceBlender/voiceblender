@@ -56,6 +56,9 @@ type OutboundRegistrationParams struct {
 	Password                string
 	ContactUser             string
 	RequestedExpiresSeconds int
+	// OutboundProxy, when set, is the next hop for this trunk's REGISTER and
+	// for outbound INVITEs placed from its AOR. nil routes at the registrar.
+	OutboundProxy *sip.Uri
 }
 
 // OutboundRegistration is the sip_register Trunk implementation. One
@@ -66,13 +69,14 @@ type OutboundRegistration struct {
 	bus    *events.Bus
 	log    *slog.Logger
 
-	id           string
-	appID        string
-	registrarURI sip.Uri
-	aor          sip.Uri
-	username     string
-	password     string
-	contactUser  string
+	id            string
+	appID         string
+	registrarURI  sip.Uri
+	outboundProxy *sip.Uri
+	aor           sip.Uri
+	username      string
+	password      string
+	contactUser   string
 
 	requestedExpires int
 
@@ -133,6 +137,7 @@ func NewOutboundRegistration(engine *Engine, bus *events.Bus, log *slog.Logger, 
 		id:               p.ID,
 		appID:            p.AppID,
 		registrarURI:     p.RegistrarURI,
+		outboundProxy:    p.OutboundProxy,
 		aor:              p.AOR,
 		username:         username,
 		password:         p.Password,
@@ -156,26 +161,32 @@ func engineHostOrFallback(e *Engine) string {
 	return "voiceblender"
 }
 
-// computePeerSocket derives host/port/transport from the registrar URI; used
-// for initial PeerSocket indexing before the first REGISTER reveals the
-// real upstream source.
+// computePeerSocket derives host/port/transport from the trunk's next hop —
+// the outbound proxy when configured, else the registrar URI. Used for initial
+// PeerSocket indexing before the first REGISTER reveals the real upstream
+// source. With a proxy in front the 2xx comes back from the proxy, so this
+// seed agrees with the post-response value.
 func (r *OutboundRegistration) computePeerSocket() {
-	r.peerHost = r.registrarURI.Host
-	r.peerPort = r.registrarURI.Port
+	next := r.nextHopURI()
+	r.peerHost = next.Host
+	r.peerPort = next.Port
 	if r.peerPort == 0 {
-		if strings.EqualFold(r.registrarURI.Scheme, "sips") {
-			r.peerPort = 5061
-		} else {
-			r.peerPort = 5060
-		}
+		r.peerPort = defaultPortForURI(next)
 	}
-	if t, ok := r.registrarURI.UriParams.Get("transport"); ok {
-		r.peerTransport = strings.ToLower(t)
-	} else if strings.EqualFold(r.registrarURI.Scheme, "sips") {
-		r.peerTransport = "tls"
+	if t := TransportForURI(next); t != "" {
+		r.peerTransport = t
 	} else {
 		r.peerTransport = "udp"
 	}
+}
+
+// nextHopURI is where this trunk's REGISTER is actually sent: the outbound
+// proxy when configured, else the registrar itself.
+func (r *OutboundRegistration) nextHopURI() sip.Uri {
+	if r.outboundProxy != nil {
+		return *r.outboundProxy
+	}
+	return r.registrarURI
 }
 
 // --- Trunk interface ---
@@ -194,6 +205,11 @@ func (r *OutboundRegistration) PeerSocket() (host string, port int, transport st
 // RegistrarURI exposes the configured upstream registrar URI; used by the
 // outbound INVITE path to attach a Route header.
 func (r *OutboundRegistration) RegistrarURI() sip.Uri { return r.registrarURI }
+
+// OutboundProxy returns the trunk's configured next hop, or nil to route
+// straight at the registrar. Assigned once in the constructor, so no lock —
+// the same reason RegistrarURI reads lock-free.
+func (r *OutboundRegistration) OutboundProxy() *sip.Uri { return r.outboundProxy }
 
 // FromHost returns the AOR realm host — the domain the upstream registrar
 // authenticated us under. Used as the host part of the From and
@@ -233,6 +249,7 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 		CreatedAt: r.createdAt.UTC().Format(time.RFC3339),
 		SIPRegister: &SIPRegisterTrunkView{
 			RegistrarURI:            r.registrarURI.String(),
+			OutboundProxy:           proxyString(r.outboundProxy),
 			AOR:                     CanonicalizeAOR(r.aor),
 			Username:                r.username,
 			ContactURI:              contactURI.String(),
@@ -544,6 +561,8 @@ func (r *OutboundRegistration) buildDigestResponse(challengeValue string) (strin
 	// Fix lower-case algorithm (RFC permits any case but icholy/digest
 	// expects upper).
 	chal.Algorithm = strings.ToUpper(chal.Algorithm)
+	// The digest `uri` must equal the Request-URI (RFC 3261 §22.4), which stays
+	// the registrar even when an outbound proxy carries the request.
 	regURI := r.registrarURI
 	regURI.User = ""
 	cred, err := digest.Digest(chal, digest.Options{
@@ -573,6 +592,13 @@ func (r *OutboundRegistration) buildRegister(expiresSeconds int) (*sip.Request, 
 	transport := r.peerTransport
 	if transport != "" && !strings.EqualFold(transport, "udp") {
 		req.SetTransport(strings.ToUpper(transport))
+	}
+
+	// Loose-route the REGISTER through the proxy while the Request-URI stays
+	// the registrar — which is what the registrar matches on, and what the
+	// digest `uri` must equal.
+	if r.outboundProxy != nil {
+		req.AppendHeader(looseRouteHeader(*r.outboundProxy))
 	}
 
 	from := &sip.FromHeader{Address: r.aor}

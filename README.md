@@ -127,6 +127,7 @@ All configuration is via environment variables:
 | `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the requested outbound REGISTER expiry. |
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of the **granted** expiry at which the trunk refreshes (e.g. `0.5` of a 600 s grant → refresh every 300 s). Must be `(0, 1)`; out-of-range values fall back to `0.5`. |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the exponential backoff between failed outbound REGISTER attempts. Failures emit `sip.outbound_registration_failed`; the trunk stays in the manager and keeps retrying. |
+| `SIP_OUTBOUND_PROXY` | _(empty = route at the registrar / dialed URI)_ | Default next hop for outbound REGISTERs and INVITEs, attached as a loose `Route: <sip:proxy;lr>` header with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on `POST /v1/sip/trunks` and per-call by `outbound_proxy` on `POST /v1/legs`; a `to` that resolves to an AOR registered here outranks all three. Digest auth still targets the registrar, not the proxy. Not applied to SIPREC SRC or WhatsApp legs. A malformed value fails startup. **Caveat:** inbound legs are tagged with `trunk_id` by the peer socket they arrive on, so when several trunks share one proxy that tag becomes ambiguous — it is informational, never an authorization gate. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
 | `AMRWB_MODE` | `2` | AMR-WB (G.722.2) encoder speech-mode **ceiling** `0..8`: `0`=6.60, `1`=8.85, `2`=12.65, `3`=14.25, `4`=15.85, `5`=18.25, `6`=19.85, `7`=23.05, `8`=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set` (so e.g. `8` yields HD 23.85 only when the peer allows it, falling back automatically). Default `2` (12.65) matches the GSMA IR.92 / VoLTE common rate. Out-of-range values clamp to `0..8`. |
 | `AMRWB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
@@ -336,7 +337,8 @@ DELETE /v1/sip/trunks/{id}                 # Unregister + remove (202 Accepted, 
 
 Outbound calls placed with `POST /v1/legs` whose `from` matches a registered
 trunk's AOR (or AOR user-part) automatically attach the trunk's digest
-credentials and traverse the trunk's upstream proxy via a Route header.
+credentials and traverse the trunk's upstream via a Route header — the trunk's
+`outbound_proxy` when one is configured, otherwise its `registrar_uri`.
 Such calls also send `From` and `P-Asserted-Identity` in the trunk's AOR realm
 rather than `SIP_DOMAIN`, so the call claims the identity the registrar
 actually authenticated. An AOR port, if configured, is not carried into the
@@ -354,8 +356,37 @@ From — `sip:alice@pbx.example.com:5070` yields a From host of
 > trunk AOR and no trunk AOR user-part, which also drops the trunk's
 > credentials and Route.
 
-Inbound INVITEs arriving from a registered trunk's registrar are tagged with
-`trunk_id` on the `leg.ringing` event.
+#### Routing through an outbound proxy
+
+By default a trunk talks straight to its `registrar_uri`. Set
+`sip_register.outbound_proxy` to put an SBC or edge proxy in front:
+
+```json
+{
+  "type": "sip_register",
+  "sip_register": {
+    "registrar_uri": "sip:pbx.example.com:5060",
+    "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
+    "aor": "sip:alice@pbx.example.com",
+    "password": "s3cret"
+  }
+}
+```
+
+Both the REGISTER and every INVITE placed from that AOR then carry
+`Route: <sip:edge.acme.net:5060;transport=tcp;lr>`. The Request-URI still names
+the registrar, and digest authentication still computes against it — only the
+next hop changes. The field defaults to `SIP_OUTBOUND_PROXY` and is resolved
+when the trunk is created, so `GET /v1/sip/trunks/{id}` reports the hop actually
+in effect.
+
+A single call can override this with `outbound_proxy` on `POST /v1/legs`, which
+also works with no trunk involved at all.
+
+Inbound INVITEs arriving from a registered trunk's peer socket are tagged with
+`trunk_id` on the `leg.ringing` event. That socket is the proxy when one is
+configured, so several trunks sharing a proxy cannot be told apart this way; the
+tag is informational and never gates anything.
 
 A leg associated with a trunk — in either direction — transfers out over that
 same trunk. With `SIP_REFER_AUTO_DIAL=true`, an inbound REFER on such a leg

@@ -131,3 +131,36 @@ func TestTrunkManager_RefreshIndexAfterPeerSocketChange(t *testing.T) {
 		t.Errorf("stale socket should no longer resolve; got %v", got)
 	}
 }
+
+// TestTrunkManager_SharedPeerSocketIsAmbiguous documents a known limitation
+// rather than a desired behaviour: bySocket holds one trunk per socket, so two
+// trunks sharing a next hop — which is what a single SIP_OUTBOUND_PROXY across
+// several trunks produces — collapse to one entry. Inbound INVITEs from that
+// socket are then tagged with an arbitrary one of them.
+//
+// trunk_id on inbound legs is informational, never a gate, so this degrades
+// attribution and nothing else. Discriminating correctly needs AOR-based
+// matching on the request's To/Request-URI, which is not what this index does.
+func TestTrunkManager_SharedPeerSocketIsAmbiguous(t *testing.T) {
+	m := NewTrunkManager()
+	a := &fakeTrunk{id: "t1", typ: TrunkTypeSIPRegister, aor: "sip:alice@vb.test", host: "10.0.0.9", port: 5060}
+	b := &fakeTrunk{id: "t2", typ: TrunkTypeSIPRegister, aor: "sip:bob@vb.test", host: "10.0.0.9", port: 5060}
+	m.Add(a)
+	m.Add(b)
+
+	got := m.LookupByPeerSocket("10.0.0.9", 5060)
+	if got == nil {
+		t.Fatal("LookupByPeerSocket returned nil for a socket two trunks share")
+	}
+	if got != a && got != b {
+		t.Fatalf("LookupByPeerSocket returned an unknown trunk %v", got)
+	}
+	// Both remain reachable by their own identity, which is what callers that
+	// need a definite answer must use.
+	if m.Get("t1") != a || m.Get("t2") != b {
+		t.Error("a shared peer socket must not affect lookups by id")
+	}
+	if m.LookupByFromAOR("sip:alice@vb.test") != a {
+		t.Error("a shared peer socket must not affect lookups by AOR")
+	}
+}

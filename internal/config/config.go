@@ -104,9 +104,13 @@ type Config struct {
 	SIPOutboundRegistrationMaxExpiresSeconds     int
 	SIPOutboundRegistrationRefreshRatio          float64
 	SIPOutboundRegistrationFailureBackoffMaxMs   int
-	VSIEventBufferSize                           int
-	DefaultSampleRate                            int
-	SpeechDetectionEnabled                       bool
+	// SIPOutboundProxy is the default next hop for outbound REGISTERs and
+	// INVITEs, overridden per-trunk and per-leg by `outbound_proxy`. Validated
+	// at startup; stored raw because this package does not import sipgo.
+	SIPOutboundProxy       string
+	VSIEventBufferSize     int
+	DefaultSampleRate      int
+	SpeechDetectionEnabled bool
 
 	// Codecs is the engine's supported codec list, ordered by preference. Used
 	// for both outbound offer construction and inbound offer/answer matching —
@@ -219,9 +223,10 @@ func Load() Config {
 		SIPOutboundRegistrationMaxExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
 		SIPOutboundRegistrationRefreshRatio:          envFloat("SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO", 0.5),
 		SIPOutboundRegistrationFailureBackoffMaxMs:   envInt("SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS", 300000),
-		VSIEventBufferSize:                           vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
-		DefaultSampleRate:                            defaultRate,
-		SpeechDetectionEnabled:                       os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
+		SIPOutboundProxy:       os.Getenv("SIP_OUTBOUND_PROXY"),
+		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
+		DefaultSampleRate:      defaultRate,
+		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
 		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),
 

@@ -62,6 +62,24 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.aor is invalid: %s", err.Error())
 	}
 
+	// Resolve the global default now rather than per-REGISTER, so the trunk
+	// snapshot reports the next hop actually in effect.
+	var outboundProxy *sip.Uri
+	if raw := spec.OutboundProxy; raw != "" {
+		u, err := sipmod.ParseProxyURI(raw)
+		if err != nil {
+			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.outbound_proxy is invalid: %s", err.Error())
+		}
+		outboundProxy = &u
+	} else if s.Config.SIPOutboundProxy != "" {
+		u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
+		if err != nil {
+			s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; trunk will route at its registrar", "error", err)
+		} else {
+			outboundProxy = &u
+		}
+	}
+
 	id := uuid.NewString()
 	cfg := sipmod.OutboundRegistrationConfig{
 		DefaultExpiresSeconds: s.Config.SIPOutboundRegistrationDefaultExpiresSeconds,
@@ -79,6 +97,7 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		Password:                spec.Password,
 		ContactUser:             spec.ContactUser,
 		RequestedExpiresSeconds: spec.ExpiresSeconds,
+		OutboundProxy:           outboundProxy,
 	})
 	s.SIPEngine.Trunks().Add(trunk)
 	// The trunk lifecycle outlives the request that created it — using a

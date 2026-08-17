@@ -322,7 +322,11 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Originate a new outbound leg. The `type` field selects the transport: " +
 				"`sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; " +
 				"`websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or " +
-				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers).",
+				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). " +
+				"For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose " +
+				"`Route` header, leaving the Request-URI unchanged. It outranks the matched trunk's " +
+				"`outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR " +
+				"registered to this server outranks all three and is delivered to the bound contact.",
 			Tags:        []string{"Legs"},
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
@@ -1600,6 +1604,11 @@ func RoutesMetadata() []RouteMeta {
 				"begins REGISTERing to the supplied registrar URI with digest auth, refreshes before " +
 				"expiry, and routes inbound INVITEs that arrive on that peer's socket plus outbound " +
 				"INVITEs whose `from` matches the AOR through the trunk. " +
+				"Set `sip_register.outbound_proxy` to send both the REGISTER and those INVITEs " +
+				"via a next-hop proxy instead of straight at the registrar; the Request-URI and " +
+				"digest authentication still target `registrar_uri`. It defaults to " +
+				"`SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot " +
+				"reports the hop actually in effect. " +
 				"For `type: \"ip_ip\"`, returns 501 (reserved, not yet implemented).",
 			Tags:        []string{"SIP Trunks"},
 			RequestType: CreateTrunkRequest{},
