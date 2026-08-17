@@ -4449,6 +4449,25 @@ A `407 Proxy Authentication Required` from the proxy is answered with the
 trunk's credentials in a `Proxy-Authorization` header, exactly as a `401` from
 the registrar is answered with `Authorization`.
 
+#### TLS proxies
+
+Both spellings work and are equivalent — `sips:edge.acme.net:5061` and
+`sip:edge.acme.net:5061;transport=tls`. The port defaults to `5061` for `sips:`
+and `5060` otherwise. The outbound dial verifies the proxy's certificate against
+the system roots with SNI taken from the URI host, so the proxy needs a
+publicly-trusted cert for the name you dial.
+
+The proxy's transport is independent of the registrar's: a `sips:` proxy in
+front of a `sip:` registrar is a normal configuration, and the Request-URI still
+reads `REGISTER sip:pbx.example.com:5060`.
+
+> **Set `SIP_TLS_PORT` when using a TLS proxy.** Outbound TLS works without it,
+> but the `Contact` in the REGISTER can then only advertise the plaintext UDP
+> socket — so the upstream sends calls *back* to you unencrypted, and the trunk
+> still reports `active` with nothing obviously wrong. `POST /v1/sip/trunks`
+> logs a warning when it sees this combination. With `SIP_TLS_PORT` set, the
+> Contact goes out as `sips:alice@vb.example:5061;transport=tls`.
+
 #### Precedence
 
 A single call can name its own proxy, which needs no trunk at all:

@@ -79,6 +79,15 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 			outboundProxy = &u
 		}
 	}
+	// A TLS proxy without a TLS listener still registers, but the Contact can
+	// only advertise the UDP socket — so the upstream sends calls back in the
+	// clear. Nothing downstream surfaces that, hence the warning here.
+	if outboundProxy != nil && sipmod.TransportForURI(*outboundProxy) == "tls" &&
+		s.SIPEngine != nil && s.SIPEngine.TLSPort() == 0 {
+		s.Log.Warn("outbound proxy uses TLS but SIP_TLS_PORT is not configured; "+
+			"REGISTER Contact will advertise the plaintext UDP socket",
+			"proxy", outboundProxy.String())
+	}
 
 	id := uuid.NewString()
 	cfg := sipmod.OutboundRegistrationConfig{

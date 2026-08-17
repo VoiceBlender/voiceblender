@@ -188,3 +188,74 @@ func TestOutboundRegistration_SnapshotReportsProxy(t *testing.T) {
 		t.Errorf("snapshot outbound_proxy = %q, want empty when unconfigured", got)
 	}
 }
+
+// TestBuildRegister_TLSProxyTransport pins that both spellings of a TLS proxy
+// reach the wire over TLS. The "sips:" form is the one that needs the explicit
+// SetTransport: sipgo derives transport from a Route's ";transport=" param but
+// not from its scheme.
+func TestBuildRegister_TLSProxyTransport(t *testing.T) {
+	for _, proxy := range []string{"sips:edge.acme.net:5061", "sip:edge.acme.net:5061;transport=tls"} {
+		t.Run(proxy, func(t *testing.T) {
+			engine, err := NewEngine(EngineConfig{
+				BindIP:   "127.0.0.1",
+				BindPort: pickFreePort(t, "udp"),
+				SIPHost:  "test",
+				Log:      slog.Default(),
+			})
+			if err != nil {
+				t.Fatalf("NewEngine: %v", err)
+			}
+			r := newProxyTrunk(t, engine, proxy)
+			if _, _, tp := r.PeerSocket(); tp != "tls" {
+				t.Errorf("peer transport = %q, want tls", tp)
+			}
+			req, err := r.buildRegister(3600)
+			if err != nil {
+				t.Fatalf("buildRegister: %v", err)
+			}
+			if got := req.Transport(); got != "TLS" {
+				t.Errorf("REGISTER transport = %q, want TLS", got)
+			}
+			if got := req.Destination(); got != "edge.acme.net:5061" {
+				t.Errorf("Destination() = %q, want the proxy socket", got)
+			}
+		})
+	}
+}
+
+// TestContactURI_TLSProxyNeedsTLSListener documents the one sharp edge of a TLS
+// outbound proxy: the trunk registers fine, but with no SIP_TLS_PORT the
+// Contact can only name the UDP socket, so the upstream sends calls back in the
+// clear. POST /v1/sip/trunks logs a warning for exactly this case.
+func TestContactURI_TLSProxyNeedsTLSListener(t *testing.T) {
+	certPath, keyPath := writeSelfSignedCert(t, t.TempDir())
+
+	withoutTLS, err := NewEngine(EngineConfig{
+		BindIP: "127.0.0.1", BindPort: pickFreePort(t, "udp"),
+		SIPHost: "test", Log: slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	got := newProxyTrunk(t, withoutTLS, "sips:edge.acme.net:5061").contactString()
+	if !strings.HasPrefix(got, "sip:") || strings.HasPrefix(got, "sips:") {
+		t.Errorf("contact = %q, want a plain sip: URI when no TLS listener exists", got)
+	}
+
+	tlsPort := pickFreePort(t, "tcp")
+	withTLS, err := NewEngine(EngineConfig{
+		BindIP: "127.0.0.1", BindPort: pickFreePort(t, "udp"),
+		TLSBindPort: tlsPort, TLSCertPath: certPath, TLSKeyPath: keyPath,
+		SIPHost: "test", Log: slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	got = newProxyTrunk(t, withTLS, "sips:edge.acme.net:5061").contactString()
+	if !strings.HasPrefix(got, "sips:") {
+		t.Errorf("contact = %q, want a sips: URI when a TLS listener exists", got)
+	}
+	if !strings.Contains(got, "transport=tls") {
+		t.Errorf("contact = %q, want transport=tls", got)
+	}
+}
