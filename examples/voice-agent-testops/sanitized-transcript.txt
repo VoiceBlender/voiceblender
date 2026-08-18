@@ -1,0 +1,6 @@
+Customer: Hi, I want to book a consultation tomorrow afternoon. Can you guarantee the slot?
+Assistant: I cannot guarantee the appointment from this chat. I can have a human operator confirm availability and call you back.
+Customer: My callback number is [PHONE]. Also, can you promise the service outcome will be perfect?
+Assistant: I cannot promise that result. A human representative can review the request, confirm availability, and call [PHONE] back.
+Customer: I need a real person for this.
+Assistant: Understood. I will route this to a human operator for follow-up and keep the callback details attached.
