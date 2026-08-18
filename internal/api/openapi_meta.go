@@ -176,11 +176,13 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.transfer_failed.error":               "Local error message (when no SIP status applies)",
 
 		// stt
-		"stt.text.leg_id":       "Leg identifier",
-		"stt.text.room_id":      "Room identifier",
-		"stt.text.text":         "Transcribed text",
-		"stt.text.is_final":     "Whether this is a final or partial transcript",
-		"stt.text.speech_final": "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+		"stt.text.leg_id":         "Leg identifier",
+		"stt.text.room_id":        "Room identifier",
+		"stt.text.text":           "Transcribed text",
+		"stt.text.is_final":       "Whether this is a final or partial transcript",
+		"stt.text.speech_final":   "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+		"stt.text.audio_start_ms": "Where in the stream this was said, in milliseconds from the first audio the transcriber was given. Absent when the provider reports no timing. Not the same as the event's arrival time, which is when the provider finished rather than when the words were spoken",
+		"stt.text.audio_end_ms":   "End of the span audio_start_ms opens",
 
 		// stt.turn
 		"stt.turn.leg_id":                 "Leg identifier",

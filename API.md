@@ -1505,14 +1505,14 @@ Start real-time speech-to-text transcription on a leg.
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
 | `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
-| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default) or `"flux-general-multi"`. |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. |
 | `keyterms` | string[] | no | Terms to boost recognition of (Deepgram and Deepgram Flux) |
 | `endpointing` | integer | no | **Deepgram only.** Milliseconds of silence before a segment is finalized. `0` disables endpointing. |
 | `utterance_end_ms` | integer | no | **Deepgram only.** Milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. |
 | `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
 | `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
 | `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
-| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes for the `"flux-general-multi"` model. |
+| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes. Selects `"flux-general-multi"` when `model` is not given, since that is the only model Deepgram accepts them on. Ignored when `model` names a different one. |
 
 Fields that do not apply to the selected provider are ignored, so switching
 providers never turns a previously valid request into an error.
@@ -1681,6 +1681,26 @@ never starts sending you partial transcripts you did not ask for.
 
 Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
 events, and `speech_final` on their `stt.text` events is always `false`.
+
+#### Where in the audio it was said
+
+`stt.text` carries `audio_start_ms` and `audio_end_ms`: the span the transcript
+covers, in milliseconds from the first audio the transcriber was given. Both are
+absent when the provider reports no timing (ElevenLabs, Azure).
+
+Use these rather than the event's arrival time to line a transcript up against a
+recording. A provider with a turn detector reports a turn when the turn *ends*,
+so arrival time places a sentence after the words rather than on them, and the
+further out the longer the speaker went on.
+
+```json
+{ "type": "stt.text", "leg_id": "550e8400-...", "text": "hello there",
+  "is_final": true, "speech_final": true, "audio_start_ms": 7200, "audio_end_ms": 8100 }
+```
+
+For Deepgram Flux the span is the first and last word's own timings where the
+turn has words, and its audio window otherwise — the window opens before the
+speaker does, so seeking to it lands on silence.
 
 ---
 
@@ -3931,7 +3951,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
-| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final` |
+| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final`, `audio_start_ms`, `audio_end_ms` |
 | `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |

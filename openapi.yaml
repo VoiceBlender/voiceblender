@@ -6286,6 +6286,12 @@ x-webhooks:
                                     speech_final:
                                         type: boolean
                                         description: Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it
+                                    audio_start_ms:
+                                        type: integer
+                                        description: Where in the stream this was said, in milliseconds from the first audio the transcriber was given. Absent when the provider reports no timing. Not the same as the event's arrival time, which is when the provider finished rather than when the words were spoken
+                                    audio_end_ms:
+                                        type: integer
+                                        description: End of the span audio_start_ms opens
     stt.turn:
         post:
             summary: Speech-to-text turn boundary

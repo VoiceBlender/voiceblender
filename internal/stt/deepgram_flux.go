@@ -24,6 +24,9 @@ const (
 	// recommends for Flux's turn detector.
 	fluxFrameBytes   = 2560
 	fluxDefaultModel = "flux-general-en"
+	// The only model Deepgram accepts language hints on; it rejects the dial
+	// outright on any other, which costs the whole call's transcript.
+	fluxMultiModel = "flux-general-multi"
 )
 
 var fluxCloseFrame = []byte(`{"type":"CloseStream"}`)
@@ -45,8 +48,16 @@ func NewDeepgramFlux(log *slog.Logger) *FluxTranscriber {
 
 func buildFluxURL(opts Options) string {
 	model := opts.Model
-	if model == "" {
+	hints := opts.LanguageHints
+	switch {
+	case model == "" && len(hints) > 0:
+		model = fluxMultiModel
+	case model == "":
 		model = fluxDefaultModel
+	case model != fluxMultiModel && len(hints) > 0:
+		// Contradictory: the explicit model wins, since keeping the hints would
+		// be rejected and yield no transcription at all.
+		hints = nil
 	}
 
 	var b strings.Builder
@@ -65,7 +76,7 @@ func buildFluxURL(opts Options) string {
 	if opts.EOTTimeoutMs != nil {
 		fmt.Fprintf(&b, "&eot_timeout_ms=%d", *opts.EOTTimeoutMs)
 	}
-	for _, h := range opts.LanguageHints {
+	for _, h := range hints {
 		b.WriteString("&language_hint=")
 		b.WriteString(url.QueryEscape(h))
 	}
@@ -332,9 +343,14 @@ func (t *FluxTranscriber) dispatchTurn(msg fluxMessage, opts Options, cb Transcr
 		return
 	}
 
+	start, end := fluxSpan(msg)
+
 	switch event {
 	case TurnEndOfTurn:
-		emitTranscript(opts, cb, TranscriptEvent{Text: msg.Transcript, IsFinal: true, SpeechFinal: true})
+		emitTranscript(opts, cb, TranscriptEvent{
+			Text: msg.Transcript, IsFinal: true, SpeechFinal: true,
+			AudioStart: start, AudioEnd: end,
+		})
 	case TurnResumed:
 		// The turn is still open and its text is about to change; nothing
 		// stable to report on the transcript channel.
@@ -342,9 +358,21 @@ func (t *FluxTranscriber) dispatchTurn(msg fluxMessage, opts Options, cb Transcr
 		// EagerEndOfTurn included: it is revoked by TurnResumed, so it must
 		// never reach a caller that accumulates on is_final.
 		if opts.Partial {
-			emitTranscript(opts, cb, TranscriptEvent{Text: msg.Transcript})
+			emitTranscript(opts, cb, TranscriptEvent{
+				Text: msg.Transcript, AudioStart: start, AudioEnd: end,
+			})
 		}
 	}
+}
+
+// fluxSpan is when the words in a turn were said. The words' own timings where
+// there are any: audio_window_start is where the model started listening, which
+// is before the speaker started talking. The window is the fallback.
+func fluxSpan(msg fluxMessage) (start, end float64) {
+	if len(msg.Words) > 0 {
+		return msg.Words[0].Start, msg.Words[len(msg.Words)-1].End
+	}
+	return msg.AudioWindowStart, msg.AudioWindowEnd
 }
 
 func fluxWords(in []fluxWord) []TurnWord {
