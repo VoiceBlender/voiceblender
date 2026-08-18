@@ -1505,14 +1505,14 @@ Start real-time speech-to-text transcription on a leg.
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
 | `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
-| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default) or `"flux-general-multi"`. |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. |
 | `keyterms` | string[] | no | Terms to boost recognition of (Deepgram and Deepgram Flux) |
 | `endpointing` | integer | no | **Deepgram only.** Milliseconds of silence before a segment is finalized. `0` disables endpointing. |
 | `utterance_end_ms` | integer | no | **Deepgram only.** Milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. |
 | `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
 | `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
 | `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
-| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes for the `"flux-general-multi"` model. |
+| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes. Selects `"flux-general-multi"` when `model` is not given, since that is the only model Deepgram accepts them on. Ignored when `model` names a different one. |
 
 Fields that do not apply to the selected provider are ignored, so switching
 providers never turns a previously valid request into an error.
@@ -1529,7 +1529,12 @@ providers never turns a previously valid request into an error.
 { "status": "stt_started", "leg_id": "550e8400-..." }
 ```
 
-Transcripts are delivered via `stt.text` webhook events.
+Transcripts are delivered via `stt.text` webhook events (and over `/v1/vsi`).
+
+A leg whose m-line 0 is another party's audio rather than the call — a SIPREC
+recording session — is refused with `409`: transcribe its room instead, which
+starts one transcriber per stream. Reading such a leg's audio directly would take
+frames away from the mixer that is already carrying them.
 
 **Errors:**
 - `404` — Leg not found
@@ -1681,6 +1686,26 @@ never starts sending you partial transcripts you did not ask for.
 
 Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
 events, and `speech_final` on their `stt.text` events is always `false`.
+
+#### Where in the audio it was said
+
+`stt.text` carries `audio_start_ms` and `audio_end_ms`: the span the transcript
+covers, in milliseconds from the first audio the transcriber was given. Both are
+absent when the provider reports no timing (ElevenLabs, Azure).
+
+Use these rather than the event's arrival time to line a transcript up against a
+recording. A provider with a turn detector reports a turn when the turn *ends*,
+so arrival time places a sentence after the words rather than on them, and the
+further out the longer the speaker went on.
+
+```json
+{ "type": "stt.text", "leg_id": "550e8400-...", "text": "hello there",
+  "is_final": true, "speech_final": true, "audio_start_ms": 7200, "audio_end_ms": 8100 }
+```
+
+For Deepgram Flux the span is the first and last word's own timings where the
+turn has words, and its audio window otherwise — the window opens before the
+speaker does, so seeking to it lands on silence.
 
 ---
 
@@ -2689,7 +2714,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
 | `filename` | string | no | Optional output basename for the room-mix WAV. Same rules as `POST /v1/legs/{id}/record` (`filename`): single path segment, `.wav` appended when missing, dots preserved, `409` on collision. When omitted, a timestamped name is generated. Does not rename the optional multi-channel merge file. |
-| `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
+| `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Covers leg participants and attached streams alike. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
@@ -2736,10 +2761,24 @@ This gives you one file ready for post-production — each speaker on a clean is
 
 The per-participant audio capture uses a dedicated mixer tap that is independent of STT/agent taps, so multi-channel recording and STT can run simultaneously without conflict.
 
+A room holds two kinds of audio source and both are recorded: ordinary **leg**
+participants, and a leg's individual **streams** attached with
+[`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom).
+A SIPREC recording session is the second kind and only the second kind — its m=
+sections are other parties' audio, so the room holds one stream participant per
+recorded party and no leg participant at all. `channels` is keyed by the mixer
+participant ID, which for a stream is `"<legID>#<streamID>"`; resolve it to a
+person through [`GET /v1/legs/{id}/siprec`](#get-v1legsidsiprec).
+
+Recording a room is therefore how a controller records *some* of a session's
+parties: which streams are in the room decides who is captured, and a stream in
+no room is never read. Recording the whole session with
+[`POST /v1/legs/{id}/record`](#post-v1legsidrecord) captures every party instead.
+
 **Errors:**
 - `400` — Invalid storage type, S3 not configured, invalid S3 credentials, or invalid `filename`
 - `404` — Room not found
-- `409` — Room has no participants, or `filename` already exists / in use
+- `409` — Room has no audio sources (no leg participants and no attached streams), or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---
@@ -2845,7 +2884,22 @@ Emits a `recording.resumed` event.
 
 ### POST /v1/rooms/{id}/stt
 
-Start real-time speech-to-text on all participants in a room.
+Start real-time speech-to-text on every audio source in a room — one transcriber
+each, so every speaker is transcribed separately.
+
+A room holds two kinds of source and both are covered: ordinary **leg**
+participants, and a leg's individual **streams** attached with
+[`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom).
+A SIPREC recording session is the second kind and only the second kind: its m=
+sections are other parties' audio, so the room holds one stream participant per
+recorded party and no leg participant at all. This is the endpoint to use for a
+recording session — `POST /v1/legs/{id}/stt` answers `409` on such a leg, because
+its m-line 0 is one party's audio rather than "the call".
+
+Each transcript carries `stream_id` (see `stt.text` / `stt.turn`), empty for a leg
+participant and set for a stream. Resolve it to a participant through
+[`GET /v1/legs/{id}/siprec`](#get-v1legsidsiprec), whose `streams[].leg_stream_id`
+carries the same value alongside `participant_aor`.
 
 **Request:**
 
@@ -2874,6 +2928,10 @@ used for every participant in the room.
 ```json
 { "status": "stt_started", "room_id": "room-123", "leg_ids": ["leg-1", "leg-2"] }
 ```
+
+`leg_ids` lists one entry per transcriber. A stream source appears as its mixer
+participant ID, `"<legID>#<streamID>"` — e.g. a recording session yields
+`["<legID>#0", "<legID>#1"]`.
 
 Transcripts are delivered via `stt.text` webhook events, each carrying the
 `leg_id` of the participant who spoke. Providers that report turn boundaries
@@ -3433,6 +3491,48 @@ curl localhost:8080/v1/legs/$LEG_ID/siprec
 
 The VSI equivalent is the `siprec_get` command with `{"id": "<leg id>"}`.
 
+#### `warnings`
+
+The metadata is checked against the SDP it arrived with, and anything that can
+be disproved is reported in `warnings` (absent when there is nothing to report):
+
+```json
+"warnings": [
+  "participant_mismatch (label 0): offer says alice sends on it, metadata assigns it to bob (pb)"
+]
+```
+
+This exists because the binding between the two — `a=label` in the SDP,
+`<label>` in the metadata — is the only thing that says which recorded stream
+carries which party, and a recording client that gets it backwards sends a
+document that is schema-valid, internally consistent and completely wrong. The
+session establishes, both streams arrive, and every word is attributed to the
+other participant. No status code reveals it.
+
+The kinds are `participant_mismatch` (the section's `a=ssrc cname` names a
+different party than the metadata binds to that label — only the user part is
+compared, since the cname is written by whatever anchored the media),
+`ambiguous_sender` (two participants claim to send on one section, so it belongs
+to neither), `duplicate_label`, `unknown_label` (the metadata labels a stream the
+offer does not carry) and `unclaimed_label` (the metadata declares a stream no
+participant sends on).
+
+A section the metadata says nothing about is **not** reported. It is not a
+contradiction, and it is what a departure leaves behind: a party's association is
+closed with a `disassociate-time` and its stream drops out of the session while
+the `m=` section stays in the offer. Reporting it would flag every call somebody
+hangs up early on.
+
+An empty or absent `warnings` is **not** an assertion that the mapping is
+correct — only that nothing could be disproved. An offer that carries no
+`a=label` values, or no `a=ssrc cname`, gives nothing to check the metadata
+against, and produces no warnings however wrong it is.
+
+The session is answered and recorded either way: which party is on which label
+is the recording client's statement to make, an SRS cannot always disprove it,
+and dropping a recording is worse than keeping one that is flagged. Warnings are
+also logged at `warn`.
+
 ### Using the recorded audio
 
 Because the streams are ordinary leg streams, everything that already works on a
@@ -3931,8 +4031,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
-| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final` |
-| `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
+| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `stream_id` (which of the leg's streams; empty when the leg's audio is the call), `text`, `is_final`, `speech_final`, `audio_start_ms`, `audio_end_ms` |
+| `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `stream_id`, `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |
 | `agent.user_transcript` | User speech transcribed by agent | `leg_id` or `room_id`, `text` |

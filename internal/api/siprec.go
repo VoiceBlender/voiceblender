@@ -20,6 +20,9 @@ import (
 // join happens here.
 type siprecSession struct {
 	state *siprec.State
+	// sections is the offer's labelled m= sections, kept so a metadata update
+	// can be re-checked against the SDP the session was established with.
+	sections []siprec.MediaSection
 	// roomID is the room this session's streams were auto-attached to, and
 	// ownsRoom records whether we created it and must delete it on teardown.
 	roomID   string
@@ -109,11 +112,13 @@ func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SI
 		return
 	}
 
-	sess := &siprecSession{state: siprec.NewState()}
+	sess := &siprecSession{state: siprec.NewState(), sections: mediaSections(call.RemoteSDP)}
 	sess.state.Apply(rec)
 	sess.state.SetRaw(md)
 
 	l := leg.NewSIPRECInboundLeg(call, s.SIPEngine, s.Log)
+	// After the leg exists, so a warning carries the leg it came from.
+	s.verifySIPRECMetadata(sess, l.ID())
 	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
 		l.SetAppID(appID)
 	}
@@ -179,6 +184,40 @@ func (s *Server) rejectSIPREC(call *sipmod.InboundCall, signals sipmod.SIPRECSig
 func (s *Server) respondSIPREC(call *sipmod.InboundCall, code int, reason string) {
 	if err := s.SIPEngine.DialogRespond(call.Dialog, code, reason, nil, s.SIPEngine.ServerHeader()); err != nil {
 		s.Log.Error("SIPREC: respond failed", "code", code, "error", err)
+	}
+}
+
+// mediaSections reduces an offer to the labelled sections a metadata document
+// can be checked against.
+func mediaSections(sdp *sipmod.SDPMedia) []siprec.MediaSection {
+	if sdp == nil {
+		return nil
+	}
+	out := make([]siprec.MediaSection, 0, len(sdp.Audio))
+	for i := range sdp.Audio {
+		// An unlabelled section binds to no <stream> element.
+		if sdp.Audio[i].Label == "" {
+			continue
+		}
+		out = append(out, siprec.MediaSection{
+			Label: sdp.Audio[i].Label,
+			CNAME: sdp.Audio[i].CNAME,
+		})
+	}
+	return out
+}
+
+// verifySIPRECMetadata records what the offer disproves about the document. The
+// session is never rejected over it: which party is on which label is the
+// recording client's statement to make, and it cannot always be disproved.
+func (s *Server) verifySIPRECMetadata(sess *siprecSession, legID string) {
+	// The merged session, not the document just applied: a partial update would
+	// report every stream it does not mention as unclaimed.
+	issues := siprec.Verify(sess.state.Merged(), sess.sections)
+	sess.state.SetWarnings(issues)
+	for _, issue := range issues {
+		s.Log.Warn("SIPREC metadata disagrees with the offer",
+			"leg_id", legID, "kind", string(issue.Kind), "label", issue.Label, "detail", issue.Detail)
 	}
 }
 
@@ -295,6 +334,18 @@ func (s *Server) applySIPRECMetadata(sl *leg.SIPLeg, body *sipmod.MessageBody) {
 	before := sess.state.Snapshot()
 	delta := sess.state.Apply(rec)
 	sess.state.SetRaw(md)
+
+	// A re-INVITE may re-offer the media too; checking against the original
+	// offer's sections would report the new labels as unknown.
+	if sdp, ok := body.SDP(); ok {
+		if parsed, err := sipmod.ParseSDP(sdp); err == nil {
+			sess.sections = mediaSections(parsed)
+		} else {
+			s.Log.Warn("SIPREC: re-offer SDP did not parse; keeping the previous sections",
+				"leg_id", sl.ID(), "error", err)
+		}
+	}
+	s.verifySIPRECMetadata(sess, sl.ID())
 
 	snap := sess.state.Snapshot()
 	scope := events.LegScope{LegID: sl.ID(), AppID: sl.AppID()}
@@ -442,6 +493,7 @@ func (s *Server) doGetSIPRECSession(legID string) (*SIPRECSessionView, error) {
 		Participants: make([]SIPRECParticipantView, 0, len(snap.Participants)),
 		Streams:      make([]SIPRECStreamView, 0, len(snap.Streams)),
 		Metadata:     snap.Metadata,
+		Warnings:     snap.Warnings,
 	}
 	for _, p := range snap.Participants {
 		view.Participants = append(view.Participants, SIPRECParticipantView{
