@@ -231,15 +231,9 @@ func (r *OutboundRegistration) Credentials() (string, string) {
 func (r *OutboundRegistration) Snapshot() TrunkView {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	contactURI := sip.Uri{
-		Scheme: schemeForTransport(r.peerTransport),
-		User:   r.contactUser,
-		Host:   r.engine.publicHost,
-		Port:   r.engine.bindPort,
-	}
-	if strings.EqualFold(r.peerTransport, "tls") && r.engine.tlsPort != 0 {
-		contactURI.Port = r.engine.tlsPort
-	}
+	// Reuse the builder the wire uses: a second copy of this logic drifted
+	// once already, reporting sips: while the REGISTER carried sip:.
+	contactURI := r.contactURI()
 	view := TrunkView{
 		ID:        r.id,
 		Type:      TrunkTypeSIPRegister,
@@ -267,13 +261,6 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 		view.SIPRegister.NextRefreshAt = r.nextRefresh.UTC().Format(time.RFC3339)
 	}
 	return view
-}
-
-func schemeForTransport(transport string) string {
-	if strings.EqualFold(transport, "tls") {
-		return "sips"
-	}
-	return "sip"
 }
 
 // Start launches the background register-and-refresh loop. Calling Start
