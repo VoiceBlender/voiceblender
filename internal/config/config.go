@@ -21,6 +21,8 @@ type Config struct {
 	SIPTLSPort          string // "" = TLS disabled
 	SIPTLSCert          string // path to CA-signed cert (fullchain.pem)
 	SIPTLSKey           string // path to private key (privkey.pem)
+	SIPTLSCAFile        string // extra PEM roots trusted when dialing remote peers over TLS
+	SIPTLSInsecure      bool   // accept any certificate a remote peer presents
 	SIPDebug            bool   // dump full SIP message content for every request and response
 	SIPDomain           string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
 	SIPHost             string
@@ -166,6 +168,8 @@ func Load() Config {
 		SIPTLSPort:                os.Getenv("SIP_TLS_PORT"),
 		SIPTLSCert:                os.Getenv("SIP_TLS_CERT"),
 		SIPTLSKey:                 os.Getenv("SIP_TLS_KEY"),
+		SIPTLSCAFile:              os.Getenv("SIP_TLS_CA_FILE"),
+		SIPTLSInsecure:            envBool("SIP_TLS_INSECURE_SKIP_VERIFY", false),
 		SIPDebug:                  os.Getenv("SIP_DEBUG") == "true",
 		SIPDomain:                 os.Getenv("SIP_DOMAIN"),
 		SIPHost:                   envOr("SIP_HOST", "voiceblender"),

@@ -90,6 +90,8 @@ type SIPRegisterTrunkView struct {
 	// when DNS / load-balancing fronts the registrar) on each 2xx response.
 	// Used as the key for tagging inbound INVITEs back to this trunk.
 	SourceAddress string `json:"source_address,omitempty"`
+	// TLSInsecureSkipVerify echoes the per-trunk certificate exemption.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 // IPIPTrunkView is the placeholder shape for the unimplemented ip_ip type.

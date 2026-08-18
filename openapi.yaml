@@ -43,6 +43,12 @@ info:
         - name: SIP_TLS_KEY
           default: ""
           description: Path to PEM-encoded TLS private key (e.g. privkey.pem).
+        - name: SIP_TLS_CA_FILE
+          default: ""
+          description: Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate.
+        - name: SIP_TLS_INSECURE_SKIP_VERIFY
+          default: "false"
+          description: When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk sip_register.tls_insecure_skip_verify, which scopes the exemption to one peer. Does not affect the inbound TLS listener.
         - name: SIP_DEBUG
           default: "false"
           description: When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting.
@@ -3720,7 +3726,7 @@ components:
                         - livekit_room
                 to:
                     type: string
-                    description: Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"). For whatsapp legs, an E.164 phone number (with or without '+').
+                    description: Destination. For sip legs, a SIP URI (e.g. "sip:alice@example.com"); a "sips:" URI or a ";transport=tls" param sends the INVITE over TLS, and ";transport=tcp" over TCP. For whatsapp legs, an E.164 phone number (with or without '+').
                 uri:
                     type: string
                     description: Deprecated alias for `to` (sip legs only). Prefer `to`.
@@ -4180,7 +4186,7 @@ components:
             properties:
                 srs_uri:
                     type: string
-                    description: SIP URI of the session recording server, e.g. "sip:srs@recorder.example.com:5060". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP.
+                    description: 'SIP URI of the session recording server, e.g. "sip:srs@recorder.example.com:5060;transport=tcp". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP. The transport comes from the URI: ";transport=tcp", or "sips:" / ";transport=tls" for TLS.'
                 leg_ids:
                     type: array
                     items:
@@ -4814,7 +4820,7 @@ components:
             properties:
                 registrar_uri:
                     type: string
-                    description: Upstream registrar SIP URI (e.g. "sip:pbx.example.com:5060" or "sips:pbx.example.com:5061;transport=tls").
+                    description: 'Upstream registrar SIP URI (e.g. "sip:pbx.example.com:5060" or "sips:pbx.example.com:5061"). Transport is taken from the URI: a "sips:" scheme or a ";transport=tls" parameter selects TLS, ";transport=tcp" selects TCP, otherwise UDP. Note that "transport" is a URI parameter (";"), not a URI header ("?") — RFC 3261 section 19.1.'
                 outbound_proxy:
                     type: string
                     description: Next-hop SIP proxy for this trunk's REGISTER and for outbound INVITEs placed from its AOR, attached as a loose `Route` header (the Request-URI is left unchanged, and digest auth still targets `registrar_uri`). E.g. "sip:edge.example.com:5060;transport=tcp". Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `registrar_uri`.
@@ -4833,6 +4839,9 @@ components:
                 expires_seconds:
                     type: integer
                     description: 'Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600).'
+                tls_insecure_skip_verify:
+                    type: boolean
+                    description: 'Accept this trunk''s next-hop certificate without verifying it, for a `sips:` / `;transport=tls` registrar or outbound proxy whose certificate is self-signed, privately signed, or carries no SAN (`x509: certificate relies on legacy Common Name field`). Scoped to that peer''s hostname — every other TLS peer is still verified in full, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored (with a logged warning) when the next hop is not TLS, or when it is named by IP literal: such a dial sends no SNI and cannot be told apart from any other, so use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there. Prefer `SIP_TLS_CA_FILE` when the peer''s CA can simply be trusted.'
             required:
                 - registrar_uri
                 - aor
@@ -4864,6 +4873,8 @@ components:
                     type: integer
                 source_address:
                     type: string
+                tls_insecure_skip_verify:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor

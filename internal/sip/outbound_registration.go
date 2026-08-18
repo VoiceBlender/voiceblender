@@ -59,6 +59,10 @@ type OutboundRegistrationParams struct {
 	// OutboundProxy, when set, is the next hop for this trunk's REGISTER and
 	// for outbound INVITEs placed from its AOR. nil routes at the registrar.
 	OutboundProxy *sip.Uri
+	// TLSInsecureSkipVerify accepts this trunk's next hop certificate without
+	// verification. Scoped to that peer's hostname; every other TLS peer is
+	// still verified.
+	TLSInsecureSkipVerify bool
 }
 
 // OutboundRegistration is the sip_register Trunk implementation. One
@@ -79,6 +83,13 @@ type OutboundRegistration struct {
 	contactUser   string
 
 	requestedExpires int
+
+	tlsInsecureSkipVerify bool
+	// trustedTLSHost is the hostname exempted from certificate verification
+	// for this trunk — the next hop as configured, not the mutable peerHost,
+	// which the first 2xx replaces with the response source address.
+	trustedTLSHost string
+	untrustOnce    sync.Once
 
 	mu             sync.RWMutex
 	status         TrunkStatus
@@ -146,9 +157,44 @@ func NewOutboundRegistration(engine *Engine, bus *events.Bus, log *slog.Logger, 
 		status:           TrunkStatusRegistering,
 		createdAt:        time.Now(),
 		callID:           sip.GenerateTagN(16) + "@" + engineHostOrFallback(engine),
+
+		tlsInsecureSkipVerify: p.TLSInsecureSkipVerify,
 	}
 	r.computePeerSocket()
+	r.applyTLSTrust()
 	return r
+}
+
+// applyTLSTrust registers this trunk's next hop as a peer whose certificate is
+// accepted unverified. Only meaningful for a TLS next hop named by hostname:
+// an IP literal sends no SNI, so the dial cannot be told apart from any other.
+func (r *OutboundRegistration) applyTLSTrust() {
+	if !r.tlsInsecureSkipVerify || r.engine == nil {
+		return
+	}
+	if !strings.EqualFold(r.peerTransport, "tls") {
+		r.log.Warn("tls_insecure_skip_verify ignored: trunk next hop is not TLS", "transport", r.peerTransport)
+		return
+	}
+	host := r.nextHopURI().Host
+	if net.ParseIP(host) != nil {
+		r.log.Warn("tls_insecure_skip_verify ignored: an IP-literal next hop cannot be exempted per trunk; "+
+			"use SIP_TLS_CA_FILE or SIP_TLS_INSECURE_SKIP_VERIFY", "host", host)
+		return
+	}
+	r.trustedTLSHost = host
+	r.engine.AddInsecureTLSPeer(host)
+	r.log.Warn("certificate verification disabled for trunk peer", "host", host)
+}
+
+// clearTLSTrust revokes the exemption. Called once the trunk is done with the
+// peer for good — after the final unregister, which still needs the exemption
+// to reach a registrar that has one.
+func (r *OutboundRegistration) clearTLSTrust() {
+	if r.trustedTLSHost == "" {
+		return
+	}
+	r.untrustOnce.Do(func() { r.engine.RemoveInsecureTLSPeer(r.trustedTLSHost) })
 }
 
 func engineHostOrFallback(e *Engine) string {
@@ -252,6 +298,7 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 			CallID:                  r.callID,
 			CSeq:                    r.cseq,
 			SourceAddress:           socketKey(r.peerHost, r.peerPort),
+			TLSInsecureSkipVerify:   r.tlsInsecureSkipVerify,
 		},
 	}
 	if !r.lastRegistered.IsZero() {
@@ -465,6 +512,7 @@ func (r *OutboundRegistration) Stop(ctx context.Context) error {
 	if err != nil {
 		r.log.Warn("unregister failed", "error", err)
 	}
+	r.clearTLSTrust()
 
 	r.mu.Lock()
 	r.status = TrunkStatusExpired
