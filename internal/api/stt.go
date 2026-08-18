@@ -119,6 +119,8 @@ func (s *Server) attachSTTSinks(opts stt.Options, scope events.LegRoomScope) stt
 			Text:         ev.Text,
 			IsFinal:      ev.IsFinal,
 			SpeechFinal:  ev.SpeechFinal,
+			AudioStartMs: secondsToMs(ev.AudioStart),
+			AudioEndMs:   secondsToMs(ev.AudioEnd),
 		})
 	}
 	opts.OnTurn = func(ev stt.TurnEvent) {

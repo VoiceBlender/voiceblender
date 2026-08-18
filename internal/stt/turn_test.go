@@ -3,6 +3,7 @@ package stt
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
@@ -244,4 +245,23 @@ func TestDeepgramDispatch_SpeechFinalAndUtteranceEnd(t *testing.T) {
 			t.Errorf("transcript = %+v, want the final 'hello there'", c.transcripts[0])
 		}
 	})
+}
+
+// Deepgram v1 reports start and duration rather than a span. Pinning the wire
+// names is the point: a typo in a JSON tag is a silent zero, which would seek
+// every line of a transcript to the beginning of the call.
+func TestDeepgramResultCarriesWhereItWasSaid(t *testing.T) {
+	var r dgResult
+	raw := `{"type":"Results","start":7.2,"duration":0.9,"is_final":true,"speech_final":true,` +
+		`"channel":{"alternatives":[{"transcript":"hello there"}]}}`
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Start != 7.2 || r.Duration != 0.9 {
+		t.Fatalf("start/duration = %v/%v", r.Start, r.Duration)
+	}
+	// The event carries a span; Deepgram does not send an end.
+	if end := r.Start + r.Duration; end != 8.1 {
+		t.Errorf("end = %v, want 8.1", end)
+	}
 }

@@ -343,9 +343,14 @@ func (t *FluxTranscriber) dispatchTurn(msg fluxMessage, opts Options, cb Transcr
 		return
 	}
 
+	start, end := fluxSpan(msg)
+
 	switch event {
 	case TurnEndOfTurn:
-		emitTranscript(opts, cb, TranscriptEvent{Text: msg.Transcript, IsFinal: true, SpeechFinal: true})
+		emitTranscript(opts, cb, TranscriptEvent{
+			Text: msg.Transcript, IsFinal: true, SpeechFinal: true,
+			AudioStart: start, AudioEnd: end,
+		})
 	case TurnResumed:
 		// The turn is still open and its text is about to change; nothing
 		// stable to report on the transcript channel.
@@ -353,9 +358,21 @@ func (t *FluxTranscriber) dispatchTurn(msg fluxMessage, opts Options, cb Transcr
 		// EagerEndOfTurn included: it is revoked by TurnResumed, so it must
 		// never reach a caller that accumulates on is_final.
 		if opts.Partial {
-			emitTranscript(opts, cb, TranscriptEvent{Text: msg.Transcript})
+			emitTranscript(opts, cb, TranscriptEvent{
+				Text: msg.Transcript, AudioStart: start, AudioEnd: end,
+			})
 		}
 	}
+}
+
+// fluxSpan is when the words in a turn were said. The words' own timings where
+// there are any: audio_window_start is where the model started listening, which
+// is before the speaker started talking. The window is the fallback.
+func fluxSpan(msg fluxMessage) (start, end float64) {
+	if len(msg.Words) > 0 {
+		return msg.Words[0].Start, msg.Words[len(msg.Words)-1].End
+	}
+	return msg.AudioWindowStart, msg.AudioWindowEnd
 }
 
 func fluxWords(in []fluxWord) []TurnWord {

@@ -1682,6 +1682,26 @@ never starts sending you partial transcripts you did not ask for.
 Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
 events, and `speech_final` on their `stt.text` events is always `false`.
 
+#### Where in the audio it was said
+
+`stt.text` carries `audio_start_ms` and `audio_end_ms`: the span the transcript
+covers, in milliseconds from the first audio the transcriber was given. Both are
+absent when the provider reports no timing (ElevenLabs, Azure).
+
+Use these rather than the event's arrival time to line a transcript up against a
+recording. A provider with a turn detector reports a turn when the turn *ends*,
+so arrival time places a sentence after the words rather than on them, and the
+further out the longer the speaker went on.
+
+```json
+{ "type": "stt.text", "leg_id": "550e8400-...", "text": "hello there",
+  "is_final": true, "speech_final": true, "audio_start_ms": 7200, "audio_end_ms": 8100 }
+```
+
+For Deepgram Flux the span is the first and last word's own timings where the
+turn has words, and its audio window otherwise — the window opens before the
+speaker does, so seeking to it lands on silence.
+
 ---
 
 ### POST /v1/legs/{id}/agent/elevenlabs
@@ -3931,7 +3951,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
-| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final` |
+| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final`, `audio_start_ms`, `audio_end_ms` |
 | `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |

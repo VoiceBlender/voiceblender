@@ -470,6 +470,12 @@ type STTTextData struct {
 	// "this segment will not change again". Always false for providers that
 	// do not report it (ElevenLabs, Azure).
 	SpeechFinal bool `json:"speech_final"`
+	// AudioStartMs and AudioEndMs are where in the stream this was said, in
+	// milliseconds from the first audio the transcriber was given, absent when
+	// the provider reports no timing. Not the arrival time: a turn detector
+	// reports a turn when it ends, so arrival lands after the words.
+	AudioStartMs int `json:"audio_start_ms,omitempty"`
+	AudioEndMs   int `json:"audio_end_ms,omitempty"`
 }
 
 // STTTurnData is a turn-boundary signal from a provider that models
