@@ -4461,9 +4461,29 @@ the registrar is answered with `Authorization`.
 
 Both spellings work and are equivalent — `sips:edge.acme.net:5061` and
 `sip:edge.acme.net:5061;transport=tls`. The port defaults to `5061` for `sips:`
-and `5060` otherwise. The outbound dial verifies the proxy's certificate against
-the system roots with SNI taken from the URI host, so the proxy needs a
-publicly-trusted cert for the name you dial.
+and `5060` otherwise.
+
+**Certificates.** VoiceBlender does not present a client certificate, so
+`SIP_TLS_CERT` / `SIP_TLS_KEY` are *not* required to dial a TLS proxy — they are
+required only when `SIP_TLS_PORT` is set, and the server refuses to start if the
+port is set without them. What is mandatory is the other direction: the
+**proxy's** certificate must chain to a root the host trusts, verified with SNI
+taken from the URI host. There is no `InsecureSkipVerify` escape hatch, and
+configuring `SIP_TLS_CERT` does *not* make an otherwise-untrusted proxy cert
+acceptable — the two are unrelated.
+
+An SBC using a private CA or a self-signed cert therefore fails the handshake
+with `x509: certificate signed by unknown authority`, and the trunk goes to
+`failed` with that text in `last_error`. Fix it by trusting the CA at the host
+level rather than in VoiceBlender — either install it in the OS trust store
+(`update-ca-certificates`) or point Go at it directly:
+
+```bash
+SSL_CERT_FILE=/etc/voiceblender/internal-ca.pem
+```
+
+In a container, `COPY internal-ca.pem /usr/local/share/ca-certificates/` and run
+`update-ca-certificates` in the image build.
 
 The proxy's transport is independent of the registrar's: a `sips:` proxy in
 front of a `sip:` registrar is a normal configuration, and the Request-URI still

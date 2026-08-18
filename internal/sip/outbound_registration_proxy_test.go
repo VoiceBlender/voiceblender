@@ -259,3 +259,49 @@ func TestContactURI_TLSProxyNeedsTLSListener(t *testing.T) {
 		t.Errorf("contact = %q, want transport=tls", got)
 	}
 }
+
+// TestSnapshot_ContactMatchesWire pins that the reported contact_uri is the
+// header the REGISTER actually carries. These were two hand-maintained copies
+// of the same logic and drifted: with a TLS proxy but no SIP_TLS_PORT, the
+// snapshot claimed "sips:" while the wire sent "sip:", so an operator reading
+// the API saw an encrypted return path that did not exist.
+func TestSnapshot_ContactMatchesWire(t *testing.T) {
+	certPath, keyPath := writeSelfSignedCert(t, t.TempDir())
+
+	for _, tc := range []struct {
+		name       string
+		tls        bool
+		proxy      string
+		wantScheme string
+	}{
+		{name: "tls proxy without listener", proxy: "sip:edge.acme.net:5184;transport=tls", wantScheme: "sip:"},
+		{name: "tls proxy with listener", tls: true, proxy: "sip:edge.acme.net:5184;transport=tls", wantScheme: "sips:"},
+		{name: "plain proxy", proxy: "sip:edge.acme.net:5080", wantScheme: "sip:"},
+		{name: "no proxy", proxy: "", wantScheme: "sip:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := EngineConfig{
+				BindIP: "127.0.0.1", BindPort: pickFreePort(t, "udp"),
+				SIPHost: "test", Log: slog.Default(),
+			}
+			if tc.tls {
+				cfg.TLSBindPort = pickFreePort(t, "tcp")
+				cfg.TLSCertPath, cfg.TLSKeyPath = certPath, keyPath
+			}
+			engine, err := NewEngine(cfg)
+			if err != nil {
+				t.Fatalf("NewEngine: %v", err)
+			}
+			r := newProxyTrunk(t, engine, tc.proxy)
+
+			snapshot := r.Snapshot().SIPRegister.ContactURI
+			wire := r.contactString()
+			if snapshot != wire {
+				t.Errorf("snapshot contact_uri = %q but the wire sends %q", snapshot, wire)
+			}
+			if !strings.HasPrefix(wire, tc.wantScheme) {
+				t.Errorf("contact = %q, want the %q scheme", wire, tc.wantScheme)
+			}
+		})
+	}
+}
