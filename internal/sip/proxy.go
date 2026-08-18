@@ -48,6 +48,17 @@ func TransportForURI(u sip.Uri) string {
 	return ""
 }
 
+// nextHopTransport returns the transport an outbound request should use: the
+// Route's when one is present — that, not the Request-URI, is the hop being
+// contacted (RFC 3261 §16.12.1) — else the Request-URI's. "" leaves the choice
+// to sipgo.
+func nextHopTransport(route *sip.Uri, recipient sip.Uri) string {
+	if route != nil {
+		return TransportForURI(*route)
+	}
+	return TransportForURI(recipient)
+}
+
 // defaultPortForURI returns the port a SIP URI implies when it carries none.
 func defaultPortForURI(u sip.Uri) int {
 	if strings.EqualFold(u.Scheme, "sips") {

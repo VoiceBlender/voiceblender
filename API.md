@@ -107,7 +107,7 @@ Originate an outbound SIP call.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
-| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
+| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`); the transport comes from the URI — `sips:` or `;transport=tls` dials over TLS, `;transport=tcp` over TCP, otherwise UDP. An `outbound_proxy`, when present, is the hop actually contacted and its transport wins. For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
 | `outbound_proxy` | string | no | SIP legs only. Next hop for this INVITE, attached as a loose `Route` header with the Request-URI left unchanged (e.g. `"sip:edge.acme.net:5060;transport=tcp"`). Outranks the matched trunk's `outbound_proxy` and `SIP_OUTBOUND_PROXY`; ignored when `to` resolves to an AOR registered here. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). |
@@ -3550,7 +3550,7 @@ curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
 
 | Field | Meaning |
 |---|---|
-| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. |
+| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. `sips:` / `;transport=tls` selects TLS. |
 | `leg_ids` | Which participants to record. Omit to record everything in the room. |
 | `session_id` | Communication session ID in the metadata. Defaults to the room ID. |
 | `auth_username` / `auth_password` | Digest credentials, when the recording server challenges. |
@@ -4407,13 +4407,14 @@ Field reference (`sip_register` block):
 
 | Field | Required | Description |
 |---|---|---|
-| `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS. |
+| `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS — and applies to calls placed over the trunk, not only to the REGISTER. Note that `transport` is a URI *parameter* (`;transport=tls`), not a URI *header*: `?transport=tls` is not a transport selector (RFC 3261 §19.1) and leaves the trunk on UDP. |
 | `outbound_proxy` | no | Next-hop proxy for this trunk's REGISTER and for outbound INVITEs from its AOR. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). Defaults to `SIP_OUTBOUND_PROXY`. |
 | `aor` | yes | Address-of-record. Becomes the `From` URI and the implicit-match key for outbound calls. |
 | `username` | no | Digest username. Defaults to the AOR user-part. |
 | `password` | yes | Digest password. **Never returned in any response.** |
 | `contact_user` | no | Override the `Contact` user-part. Defaults to the AOR user-part. |
 | `expires_seconds` | no | Requested expiry. Clamped to `[SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]`. |
+| `tls_insecure_skip_verify` | no | Accept this trunk's TLS next hop certificate without verifying it — self-signed, privately signed, or SAN-less (`x509: certificate relies on legacy Common Name field`). Scoped to that peer; every other TLS peer is still verified, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored with a logged warning when the next hop is not TLS or is named by IP literal. See [TLS proxies](#tls-proxies). |
 
 Errors: `400` for invalid JSON, missing fields, or invalid URIs. `501` when
 `type == "ip_ip"` (not yet implemented). `400` for unknown types.
@@ -4466,23 +4467,66 @@ and `5060` otherwise.
 **Certificates.** VoiceBlender does not present a client certificate, so
 `SIP_TLS_CERT` / `SIP_TLS_KEY` are *not* required to dial a TLS proxy — they are
 required only when `SIP_TLS_PORT` is set, and the server refuses to start if the
-port is set without them. What is mandatory is the other direction: the
-**proxy's** certificate must chain to a root the host trusts, verified with SNI
-taken from the URI host. There is no `InsecureSkipVerify` escape hatch, and
-configuring `SIP_TLS_CERT` does *not* make an otherwise-untrusted proxy cert
-acceptable — the two are unrelated.
+port is set without them. What is mandatory is the other direction: by default
+the **proxy's** certificate must chain to a root the host trusts and must carry
+a SAN matching the URI host (also used as SNI). Configuring `SIP_TLS_CERT` does
+*not* make an otherwise-untrusted proxy cert acceptable — the two are unrelated.
 
 An SBC using a private CA or a self-signed cert therefore fails the handshake
-with `x509: certificate signed by unknown authority`, and the trunk goes to
-`failed` with that text in `last_error`. Fix it by trusting the CA at the host
-level rather than in VoiceBlender — either install it in the OS trust store
-(`update-ca-certificates`) or point Go at it directly:
+with `x509: certificate signed by unknown authority`, and one whose name lives
+only in the certificate's Common Name fails with `x509: certificate relies on
+legacy Common Name field, use SANs instead`. Either way the trunk goes to
+`failed` with that text in `last_error`.
+
+Three settings relax this, from narrowest to widest:
 
 ```bash
-SSL_CERT_FILE=/etc/voiceblender/internal-ca.pem
+# 1. Per trunk — accept this one peer's certificate, verify everyone else's.
+curl -X POST http://localhost:8080/v1/sip/trunks -d '{
+  "type": "sip_register",
+  "sip_register": {
+    "registrar_uri": "sips:sip.carrier.example:5061",
+    "aor": "sip:3005113@sip.carrier.example",
+    "password": "s3cret",
+    "tls_insecure_skip_verify": true
+  }
+}'
+
+# 2. Server-wide — trust an extra CA (or pin a peer's self-signed cert) on top
+#    of the system trust store. The name in the certificate is still checked.
+SIP_TLS_CA_FILE=/etc/voiceblender/internal-ca.pem
+
+# 3. Server-wide — accept whatever any peer presents. Last resort.
+SIP_TLS_INSECURE_SKIP_VERIFY=true
 ```
 
-In a container, `COPY internal-ca.pem /usr/local/share/ca-certificates/` and run
+`tls_insecure_skip_verify` is the one to reach for when a single carrier's
+certificate is the problem, including the legacy Common Name case, which
+`SIP_TLS_CA_FILE` cannot fix on its own — trusting the certificate as a root
+does not give it the SAN it lacks. The exemption is echoed back in
+`GET /v1/sip/trunks/{id}` and logged as a warning when the trunk is created.
+
+Its scope is the peer's **hostname** — the trunk's next hop, so the outbound
+proxy when one is configured, otherwise the registrar — because the SNI a
+handshake carries is the only per-connection identity available. Consequences
+worth knowing:
+
+- A next hop named by **IP literal** cannot be exempted this way: such a dial
+  sends no SNI. The flag is ignored with a logged warning; use
+  `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` for that peer. For the
+  same reason an IP-dialed peer's certificate is chain-verified but not
+  name-verified.
+- Two trunks pointing at the same hostname share the exemption, and connections
+  are pooled per remote socket — a second trunk to a peer an exempted trunk has
+  already connected to rides that connection unverified.
+- The exemption lives as long as the trunk: `DELETE /v1/sip/trunks/{id}`
+  revokes it after the final unregister.
+
+All of these affect **outbound** dials only — REGISTERs, INVITEs, and TLS
+proxies alike — and never loosen the inbound TLS listener, which keeps
+presenting `SIP_TLS_CERT` unchanged. A private CA can equally be trusted at the
+host level instead, with `SSL_CERT_FILE=/etc/voiceblender/internal-ca.pem`, or
+in a container by `COPY internal-ca.pem /usr/local/share/ca-certificates/` plus
 `update-ca-certificates` in the image build.
 
 The proxy's transport is independent of the registrar's: a `sips:` proxy in

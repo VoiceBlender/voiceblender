@@ -6267,6 +6267,8 @@ components:
                     type: string
                 expires_seconds:
                     type: integer
+                tls_insecure_skip_verify:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor
@@ -6298,6 +6300,8 @@ components:
                     type: integer
                 source_address:
                     type: string
+                tls_insecure_skip_verify:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor

@@ -129,6 +129,10 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		TCPEnabled:        cfg.SIPTCPEnabled,
 		Registrar:         registrar,
 		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
+		ClientTLS: sipmod.ClientTLSConfig{
+			CAFile:             cfg.SIPTLSCAFile,
+			InsecureSkipVerify: cfg.SIPTLSInsecure,
+		},
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)

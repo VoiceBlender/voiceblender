@@ -41,8 +41,11 @@ type EngineConfig struct {
 	TLSBindPort int    // 0 = TLS disabled
 	TLSCertPath string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
 	TLSKeyPath  string // private key (privkey.pem) — required when TLSBindPort > 0
-	SIPDebug    bool   // dump full SIP request/response bodies on the debug channel
-	SIPHost     string
+	// ClientTLS controls how the certificates of remote peers are trusted on
+	// outbound TLS dials (registrars, proxies, SBCs).
+	ClientTLS ClientTLSConfig
+	SIPDebug  bool // dump full SIP request/response bodies on the debug channel
+	SIPHost   string
 	// UseSourceSocket forces SIP responses and in-dialog requests to be
 	// routed back to the request's source socket (req.Source()) instead of
 	// the peer's Contact URI / Via sent-by. Required when peers are behind
@@ -119,6 +122,7 @@ type Engine struct {
 	destPinned        atomic.Uint64 // count of res.Destination overrides applied
 	registrar         *Registrar
 	trunks            *TrunkManager
+	peerTrust         *peerTrust // peers exempted from certificate verification
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -384,10 +388,16 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)),
 		)
 	}
-	if cfg.TLSBindPort != 0 {
-		// Needed for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's
-		// own cert is still supplied separately via ListenAndServeTLS.
-		uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	// Used for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's own
+	// cert is still supplied separately via ListenAndServeTLS.
+	trust := newPeerTrust()
+	dialTLSConf, err := buildClientTLSConfig(cfg.ClientTLS, trust)
+	if err != nil {
+		return nil, err
+	}
+	uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(dialTLSConf))
+	if cfg.Log != nil && cfg.ClientTLS.InsecureSkipVerify {
+		cfg.Log.Warn("outbound SIP TLS peer certificate verification disabled")
 	}
 	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
@@ -474,6 +484,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		useSourceSocket:   cfg.UseSourceSocket,
 		registrar:         cfg.Registrar,
 		trunks:            NewTrunkManager(),
+		peerTrust:         trust,
 		pendingAuth:       newPendingAuthStore(cfg.NonceTTL),
 	}
 
@@ -1393,11 +1404,12 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	route := opts.RouteURI
 	if opts.ProxyURI != nil && len(opts.ForkTargets) == 0 {
 		route = opts.ProxyURI
-		// Only the proxy branch sets the transport: a Route's ";transport="
-		// param is already honoured by sipgo, but a "sips:" proxy is not.
-		if tp := TransportForURI(*route); tp != "" && !strings.EqualFold(tp, "udp") {
-			req.SetTransport(strings.ToUpper(tp))
-		}
+	}
+	// sipgo honours a ";transport=" param on the next hop but leaves a "sips:"
+	// one on UDP, so set the transport ourselves rather than rely on its
+	// fallback order. Fork targets override this below.
+	if tp := nextHopTransport(route, recipient); tp != "" && !strings.EqualFold(tp, "udp") {
+		req.SetTransport(strings.ToUpper(tp))
 	}
 	if route != nil {
 		req.AppendHeader(looseRouteHeader(*route))

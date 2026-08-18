@@ -107,6 +107,7 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		ContactUser:             spec.ContactUser,
 		RequestedExpiresSeconds: spec.ExpiresSeconds,
 		OutboundProxy:           outboundProxy,
+		TLSInsecureSkipVerify:   spec.TLSInsecureSkipVerify,
 	})
 	s.SIPEngine.Trunks().Add(trunk)
 	// The trunk lifecycle outlives the request that created it — using a

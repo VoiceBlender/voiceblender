@@ -92,6 +92,43 @@ func TestTransportForURI(t *testing.T) {
 	}
 }
 
+func TestNextHopTransport(t *testing.T) {
+	mustParse := func(raw string) sip.Uri {
+		t.Helper()
+		var u sip.Uri
+		if err := sip.ParseUri(raw, &u); err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		return u
+	}
+	ptr := func(raw string) *sip.Uri {
+		u := mustParse(raw)
+		return &u
+	}
+	tests := []struct {
+		name      string
+		route     *sip.Uri
+		recipient string
+		want      string
+	}{
+		{name: "plain recipient leaves it to sipgo", recipient: "sip:bob@callee.example", want: ""},
+		{name: "sips recipient", recipient: "sips:bob@callee.example", want: "tls"},
+		{name: "recipient transport param", recipient: "sip:bob@callee.example;transport=tcp", want: "tcp"},
+		// The Route is the hop actually contacted, so it decides — in both
+		// directions, including when it downgrades a sips: Request-URI.
+		{name: "sips route outranks plain recipient", route: ptr("sips:p.example"), recipient: "sip:bob@callee.example", want: "tls"},
+		{name: "plain route outranks sips recipient", route: ptr("sip:p.example"), recipient: "sips:bob@callee.example", want: ""},
+		{name: "route param beats route scheme", route: ptr("sips:p.example;transport=tcp"), recipient: "sips:bob@callee.example", want: "tcp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextHopTransport(tt.route, mustParse(tt.recipient)); got != tt.want {
+				t.Errorf("nextHopTransport = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLooseRouteHeader_AddsLR(t *testing.T) {
 	u, _ := ParseProxyURI("sip:p.example:5060")
 	h := looseRouteHeader(u)
@@ -170,6 +207,26 @@ func TestRouteTransportDerivation(t *testing.T) {
 	}
 	if got := newReqWithRoute("sips:p.example").Transport(); got == "TLS" {
 		t.Error("sips: Route resolved to TLS on its own; the SetTransport call in Invite would be redundant")
+	}
+}
+
+// TestRecipientTransportDerivation is the routeless half of the same story: a
+// "sips:" Request-URI does not reach TLS either, because sipgo only upgrades a
+// transport that already resolved to TCP — the default is UDP.
+func TestRecipientTransportDerivation(t *testing.T) {
+	newReq := func(raw string) *sip.Request {
+		var u sip.Uri
+		if err := sip.ParseUri(raw, &u); err != nil {
+			t.Fatalf("parse %q: %v", raw, err)
+		}
+		return sip.NewRequest(sip.INVITE, u)
+	}
+
+	if got := newReq("sip:bob@callee.example;transport=tcp").Transport(); got != "TCP" {
+		t.Errorf("transport param recipient: Transport() = %q, want TCP", got)
+	}
+	if got := newReq("sips:bob@callee.example").Transport(); got == "TLS" {
+		t.Error("sips: recipient resolved to TLS on its own; Invite would not need to set the transport")
 	}
 }
 

@@ -399,3 +399,23 @@ func TestEnvOr_Override(t *testing.T) {
 		t.Errorf("envOr = %q, want override", got)
 	}
 }
+
+func TestLoad_SIPTLSTrust(t *testing.T) {
+	for _, key := range []string{"SIP_TLS_CA_FILE", "SIP_TLS_INSECURE_SKIP_VERIFY"} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.SIPTLSCAFile != "" || cfg.SIPTLSInsecure {
+		t.Errorf("defaults must verify peers fully, got %+v", cfg)
+	}
+
+	t.Setenv("SIP_TLS_CA_FILE", "/etc/voiceblender/ca.pem")
+	t.Setenv("SIP_TLS_INSECURE_SKIP_VERIFY", "true")
+	cfg = Load()
+	if cfg.SIPTLSCAFile != "/etc/voiceblender/ca.pem" {
+		t.Errorf("SIPTLSCAFile = %q", cfg.SIPTLSCAFile)
+	}
+	if !cfg.SIPTLSInsecure {
+		t.Error("SIPTLSInsecure = false, want true")
+	}
+}
