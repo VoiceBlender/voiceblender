@@ -115,9 +115,17 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		AllowMultipleContacts: cfg.SIPRegistrationAllowMultipleContacts,
 	})
 
+	// A private RTP port range per instance. Without it every RTP session binds
+	// :0 from the same OS ephemeral pool the SIP port above was probed from, and
+	// a session that lands on a probed-but-not-yet-bound SIP port sends its audio
+	// into a SIP transport. See rtp_ports_test.go.
+	portAlloc := newTestPortAllocator(t)
+	cfg.RTPPortMin, cfg.RTPPortMax = portAlloc.Range()
+
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:            "127.0.0.1",
 		ListenIP:          "127.0.0.1",
+		PortAllocator:     portAlloc,
 		ExternalIP:        cfg.SIPExternalIP,
 		BindPort:          sipPort,
 		SIPHost:           name,
