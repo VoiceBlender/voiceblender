@@ -24,6 +24,9 @@ const (
 	// recommends for Flux's turn detector.
 	fluxFrameBytes   = 2560
 	fluxDefaultModel = "flux-general-en"
+	// The only model Deepgram accepts language hints on; it rejects the dial
+	// outright on any other, which costs the whole call's transcript.
+	fluxMultiModel = "flux-general-multi"
 )
 
 var fluxCloseFrame = []byte(`{"type":"CloseStream"}`)
@@ -45,8 +48,16 @@ func NewDeepgramFlux(log *slog.Logger) *FluxTranscriber {
 
 func buildFluxURL(opts Options) string {
 	model := opts.Model
-	if model == "" {
+	hints := opts.LanguageHints
+	switch {
+	case model == "" && len(hints) > 0:
+		model = fluxMultiModel
+	case model == "":
 		model = fluxDefaultModel
+	case model != fluxMultiModel && len(hints) > 0:
+		// Contradictory: the explicit model wins, since keeping the hints would
+		// be rejected and yield no transcription at all.
+		hints = nil
 	}
 
 	var b strings.Builder
@@ -65,7 +76,7 @@ func buildFluxURL(opts Options) string {
 	if opts.EOTTimeoutMs != nil {
 		fmt.Fprintf(&b, "&eot_timeout_ms=%d", *opts.EOTTimeoutMs)
 	}
-	for _, h := range opts.LanguageHints {
+	for _, h := range hints {
 		b.WriteString("&language_hint=")
 		b.WriteString(url.QueryEscape(h))
 	}

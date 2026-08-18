@@ -1505,14 +1505,14 @@ Start real-time speech-to-text transcription on a leg.
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
 | `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
-| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default) or `"flux-general-multi"`. |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. |
 | `keyterms` | string[] | no | Terms to boost recognition of (Deepgram and Deepgram Flux) |
 | `endpointing` | integer | no | **Deepgram only.** Milliseconds of silence before a segment is finalized. `0` disables endpointing. |
 | `utterance_end_ms` | integer | no | **Deepgram only.** Milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. |
 | `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
 | `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
 | `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
-| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes for the `"flux-general-multi"` model. |
+| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes. Selects `"flux-general-multi"` when `model` is not given, since that is the only model Deepgram accepts them on. Ignored when `model` names a different one. |
 
 Fields that do not apply to the selected provider are ignored, so switching
 providers never turns a previously valid request into an error.

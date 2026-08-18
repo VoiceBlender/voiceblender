@@ -48,6 +48,20 @@ func TestBuildFluxURL(t *testing.T) {
 			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-multi&language_hint=en&language_hint=es",
 		},
 		{
+			// Hints on the default model are rejected at the dial, which costs
+			// the whole call's transcript rather than just the hint.
+			name: "hints_imply_the_multilingual_model",
+			opts: Options{LanguageHints: []string{"en", "de"}},
+			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-multi&language_hint=en&language_hint=de",
+		},
+		{
+			// Contradictory: the explicit model wins, since one language beats a
+			// refused dial.
+			name: "an_explicit_english_model_drops_the_hints",
+			opts: Options{Model: "flux-general-en", LanguageHints: []string{"en", "de"}},
+			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-en",
+		},
+		{
 			name: "keyterms_are_escaped",
 			opts: Options{Keyterms: []string{"co pilot"}},
 			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-en&keyterm=co+pilot",
