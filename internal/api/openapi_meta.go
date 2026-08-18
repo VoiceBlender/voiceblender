@@ -181,11 +181,13 @@ func WebhookFieldDescriptions() map[string]string {
 		"stt.text.text":           "Transcribed text",
 		"stt.text.is_final":       "Whether this is a final or partial transcript",
 		"stt.text.speech_final":   "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+		"stt.text.stream_id":      "Which of the leg's audio streams this came from. Empty when the leg's audio is the call itself; set for a recording session, where each stream is a different party. Resolve it through GET /v1/legs/{id}/siprec",
 		"stt.text.audio_start_ms": "Where in the stream this was said, in milliseconds from the first audio the transcriber was given. Absent when the provider reports no timing. Not the same as the event's arrival time, which is when the provider finished rather than when the words were spoken",
 		"stt.text.audio_end_ms":   "End of the span audio_start_ms opens",
 
 		// stt.turn
 		"stt.turn.leg_id":                 "Leg identifier",
+		"stt.turn.stream_id":              "Which of the leg's audio streams this turn belongs to. Empty when the leg's audio is the call itself. See stt.text.stream_id",
 		"stt.turn.room_id":                "Room identifier",
 		"stt.turn.event":                  "Turn boundary: start_of_turn, update, eager_end_of_turn, turn_resumed or end_of_turn (Deepgram Flux), or utterance_end (Deepgram, when utterance_end_ms is set). New values may be added",
 		"stt.turn.turn_index":             "Index of the turn within the session, incrementing after each end_of_turn",
@@ -854,7 +856,7 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Leg not found"},
-				409: {Description: "Leg not connected, STT already running, or no audio reader"},
+				409: {Description: "Leg not connected, STT already running, no audio reader, or the leg's audio is per-stream (transcribe its room instead)"},
 				503: {Description: "No ElevenLabs API key provided"},
 			},
 		},
@@ -1378,7 +1380,7 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "Recording started"},
 				400: {Description: "Invalid storage type, S3 not configured, or invalid S3 credentials"},
 				404: {Description: "Room not found"},
-				409: {Description: "Room has no participants"},
+				409: {Description: "Room has no audio sources (no leg participants and no attached streams)"},
 				500: {Description: "Failed to create recording file"},
 			},
 		},
@@ -1424,7 +1426,7 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Room not found"},
-				409: {Description: "STT already running or room has no participants"},
+				409: {Description: "STT already running, or the room has no audio sources (no leg participants and no attached streams)"},
 				503: {Description: "No ElevenLabs API key provided"},
 			},
 		},

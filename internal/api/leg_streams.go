@@ -320,6 +320,7 @@ func (s *Server) attachStreamRoom(sl *leg.SIPLeg, streamID, roomID, role string)
 	if _, ok := rm.AddLegStream(sl, streamID, role); !ok {
 		return newAPIError(http.StatusConflict, "stream carries no audio in either direction")
 	}
+	s.onStreamJoinedRoomRecording(roomID, room.StreamParticipantID(sl.ID(), streamID))
 	s.Bus.Publish(events.LegStreamRoomChanged, &events.LegStreamData{
 		LegScope: events.LegScope{LegID: sl.ID(), AppID: sl.AppID()},
 		StreamID: streamID,
@@ -340,11 +341,15 @@ func (s *Server) detachStreamRoom(sl *leg.SIPLeg, streamID string) {
 	if !ok {
 		return
 	}
-	rm.RemoveLegStream(room.StreamParticipantID(sl.ID(), streamID))
+	participantID := room.StreamParticipantID(sl.ID(), streamID)
+	s.onStreamLeavingRoomRecording(roomID, participantID)
+	rm.RemoveLegStream(participantID)
 	s.Bus.Publish(events.LegStreamRoomChanged, &events.LegStreamData{
 		LegScope: events.LegScope{LegID: sl.ID(), AppID: sl.AppID()},
 		StreamID: streamID,
 	})
+	// A room whose last stream just left has nothing more to record.
+	s.stopRoomRecordingIfEmpty(roomID)
 }
 
 // ---------------------------------------------------------------------------

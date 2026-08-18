@@ -1395,7 +1395,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: Leg not connected, STT already running, or no audio reader
+                    description: Leg not connected, STT already running, no audio reader, or the leg's audio is per-stream (transcribe its room instead)
                     content:
                         application/json:
                             schema:
@@ -2713,7 +2713,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: Room has no participants
+                    description: Room has no audio sources (no leg participants and no attached streams)
                     content:
                         application/json:
                             schema:
@@ -2813,7 +2813,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '409':
-                    description: STT already running or room has no participants
+                    description: STT already running, or the room has no audio sources (no leg participants and no attached streams)
                     content:
                         application/json:
                             schema:
@@ -6277,6 +6277,9 @@ x-webhooks:
                                         description: Room identifier
                                     app_id:
                                         type: string
+                                    stream_id:
+                                        type: string
+                                        description: Which of the leg's audio streams this came from. Empty when the leg's audio is the call itself; set for a recording session, where each stream is a different party. Resolve it through GET /v1/legs/{id}/siprec
                                     text:
                                         type: string
                                         description: Transcribed text
@@ -6310,6 +6313,9 @@ x-webhooks:
                                         description: Room identifier
                                     app_id:
                                         type: string
+                                    stream_id:
+                                        type: string
+                                        description: Which of the leg's audio streams this turn belongs to. Empty when the leg's audio is the call itself. See stt.text.stream_id
                                     event:
                                         type: string
                                         description: 'Turn boundary: start_of_turn, update, eager_end_of_turn, turn_resumed or end_of_turn (Deepgram Flux), or utterance_end (Deepgram, when utterance_end_ms is set). New values may be added'

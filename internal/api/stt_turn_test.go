@@ -173,7 +173,7 @@ func TestAttachSTTSinks_PublishesTextAndTurn(t *testing.T) {
 	var sink sttEventSink
 	sink.subscribe(s)
 
-	opts := s.attachSTTSinks(stt.Options{}, events.LegRoomScope{LegID: "leg-1", RoomID: "room-1", AppID: "app-1"})
+	opts := s.attachSTTSinks(stt.Options{}, events.LegRoomScope{LegID: "leg-1", RoomID: "room-1", AppID: "app-1"}, "")
 	opts.OnTranscript(stt.TranscriptEvent{Text: "done", IsFinal: true, SpeechFinal: true})
 	opts.OnTurn(stt.TurnEvent{
 		Event:            stt.TurnEndOfTurn,
@@ -214,8 +214,8 @@ func TestAttachSTTSinks_LegsDoNotCrossWire(t *testing.T) {
 	sink.subscribe(s)
 
 	shared := stt.Options{Partial: true}
-	first := s.attachSTTSinks(shared, events.LegRoomScope{LegID: "leg-a", RoomID: "room-1"})
-	second := s.attachSTTSinks(shared, events.LegRoomScope{LegID: "leg-b", RoomID: "room-1"})
+	first := s.attachSTTSinks(shared, events.LegRoomScope{LegID: "leg-a", RoomID: "room-1"}, "")
+	second := s.attachSTTSinks(shared, events.LegRoomScope{LegID: "leg-b", RoomID: "room-1"}, "")
 
 	if shared.OnTurn != nil || shared.OnTranscript != nil {
 		t.Fatal("attachSTTSinks mutated the shared template; every leg in the room would share one sink")
