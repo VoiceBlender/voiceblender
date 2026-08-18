@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,12 @@ type Participant struct {
 	// shared egress the leg may already have carried onto a fresh participant,
 	// so closing it here would silence the live successor.
 	ownerClosesEgress atomic.Bool
+
+	// A participant that has gone quiet and one whose source has stopped are
+	// both silence downstream; only these tell them apart.
+	framesRead atomic.Uint64
+	starved    atomic.Uint64
+	shortReads atomic.Uint64
 
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
@@ -633,8 +640,42 @@ func (m *Mixer) recoverTick() {
 	)
 }
 
-// readLoop continuously reads PCM frames from a participant's Reader
-// and buffers them for the mix loop. Blocks on IO (RTP receive).
+// fillFrame reads until buf holds a complete mix frame, or the source fails.
+// A source may hand us any packet size, so a short read is normal and is read
+// again rather than queued as if it were a whole frame. A partial frame at end
+// of stream is discarded with the error.
+func (m *Mixer) fillFrame(p *Participant, buf []byte, stopCh <-chan struct{}) error {
+	filled := 0
+	for filled < len(buf) {
+		n, err := p.Reader.Read(buf[filled:])
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			// io.Reader discourages (0, nil) but does not forbid it, and this
+			// loop would otherwise spin on it forever without looking at stopCh.
+			select {
+			case <-stopCh:
+				return errStopped
+			case <-p.done:
+				return errStopped
+			default:
+				runtime.Gosched()
+			}
+			continue
+		}
+		if filled+n < len(buf) {
+			p.shortReads.Add(1)
+		}
+		filled += n
+	}
+	return nil
+}
+
+// errStopped ends a read loop because the participant is going away, not
+// because its source failed.
+var errStopped = errors.New("participant stopped")
+
 func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
@@ -647,12 +688,27 @@ func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 		default:
 		}
 
-		n, err := p.Reader.Read(buf)
-		if err != nil {
+		// A whole frame per queue entry: the mix loop consumes exactly one per
+		// tick, so a source packetised finer than Ptime would otherwise have the
+		// surplus dropped below and the remainder mixed short.
+		if err := m.fillFrame(p, buf, stopCh); err != nil {
+			// The participant now contributes silence for the rest of the call,
+			// which recording and transcription cannot distinguish from a quiet
+			// party.
+			select {
+			case <-p.done:
+			default:
+				if errors.Is(err, errStopped) {
+					return
+				}
+				m.log.Warn("mixer: participant read loop stopped, it now contributes silence",
+					"participant_id", p.ID, "error", err, "frames_read", p.framesRead.Load())
+			}
 			return
 		}
-		frame := make([]byte, n)
-		copy(frame, buf[:n])
+		p.framesRead.Add(1)
+		frame := make([]byte, len(buf))
+		copy(frame, buf)
 
 		// Buffer the frame. If full, drop oldest to prevent lag.
 		select {
@@ -756,6 +812,7 @@ func (m *Mixer) mixTick() {
 		case raw = <-p.incoming:
 		default:
 			raw = make([]byte, m.frameSizeBytes) // silence
+			p.starved.Add(1)
 		}
 		// Write raw PCM to per-participant tap (for STT) before conversion.
 		// Tap still receives audio even when muted (recording/STT of own audio).
@@ -907,4 +964,17 @@ func clamp16(s int32) int16 {
 		return math.MinInt16
 	}
 	return int16(s)
+}
+
+// ParticipantFeed reports how many frames a participant's source has produced
+// and how many mix intervals ran with nothing queued for it. A stopped source
+// shows framesRead flat while starved climbs; a quiet party shows neither.
+func (m *Mixer) ParticipantFeed(id string) (framesRead, starved, shortReads uint64, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.participants[id]
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return p.framesRead.Load(), p.starved.Load(), p.shortReads.Load(), true
 }
