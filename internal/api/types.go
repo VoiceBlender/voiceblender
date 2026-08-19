@@ -457,6 +457,11 @@ type SIPRECSessionView struct {
 	Participants []SIPRECParticipantView `json:"participants"`
 	Streams      []SIPRECStreamView      `json:"streams"`
 	Metadata     string                  `json:"metadata,omitempty"`
+
+	// Warnings holds what the SDP disproves about the metadata; an entry means
+	// the participant shown against a stream may be wrong. Empty is not
+	// "verified" — an offer with no labels or no a=ssrc cname proves nothing.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 var siprecSessionViewFields = map[string]FieldEnrichment{
@@ -467,6 +472,7 @@ var siprecSessionViewFields = map[string]FieldEnrichment{
 	"participants": {Description: "Every party currently recorded by this session."},
 	"streams":      {Description: "Every negotiated media stream, joined to the participant it carries."},
 	"metadata":     {Description: "The raw rs-metadata XML document as most recently received."},
+	"warnings":     {Description: "What could be disproved about the metadata by the SDP it arrived with. Non-empty means the participant attributed to a stream may be wrong; the session is still recorded. Empty means nothing was disproved, which is not an assertion that the mapping is correct \u2014 an offer with no labels or no a=ssrc cname gives nothing to check against."},
 }
 
 // AddLegStreamRequest is the request body for POST /v1/legs/{id}/streams.

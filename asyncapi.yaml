@@ -6221,6 +6221,10 @@ components:
                         $ref: '#/components/schemas/SIPRECStreamView'
                 metadata:
                     type: string
+                warnings:
+                    type: array
+                    items:
+                        type: string
             required:
                 - leg_id
                 - participants
