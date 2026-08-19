@@ -1307,3 +1307,99 @@ func TestSIPREC_SessionSurvivesACK(t *testing.T) {
 		t.Errorf("recording leg %s is gone from /v1/legs after the ACK", legID)
 	}
 }
+
+// A recording session's room holds one stream participant per recorded party
+// and no leg participant at all. Which streams are in the room is therefore how
+// a controller records one party but not the other.
+func TestSIPREC_RoomRecordingCapturesStreamParticipants(t *testing.T) {
+	src := newTestInstance(t, "src")
+	srs := siprecInstance(t, "srs", nil) // SIPREC_ROOM_MODE=none: we place the streams
+
+	call, err := dialSIPREC(t, src, srs, twoPartyMetadata(t))
+	if err != nil {
+		t.Fatalf("SIPREC INVITE failed: %v", err)
+	}
+	defer call.Dialog.Bye(context.Background())
+
+	evt := srs.collector.waitForMatch(t, events.SIPRECSessionStarted, nil, 5*time.Second)
+	legID := evt.Data.(interface{ GetLegID() string }).GetLegID()
+
+	resp := httpPost(t, srs.baseURL()+"/v1/rooms", map[string]any{"id": "analysis"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/rooms = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Only the first recorded party is placed in the room. The second is left in
+	// no room at all, which is what stops its audio being read.
+	view := getSIPRECSession(t, srs, legID)
+	if len(view.Streams) != 2 {
+		t.Fatalf("expected 2 recorded streams, got %d", len(view.Streams))
+	}
+	placed := view.Streams[0]
+	attach := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/streams/%s/room", srs.baseURL(), legID, placed.LegStreamID),
+		map[string]any{"room_id": "analysis", "role": placed.ParticipantAOR})
+	if attach.StatusCode != http.StatusOK {
+		t.Fatalf("attaching a recorded stream to a room = %d, want 200", attach.StatusCode)
+	}
+	attach.Body.Close()
+
+	start := httpPost(t, srs.baseURL()+"/v1/rooms/analysis/record", map[string]any{"multi_channel": true})
+	defer start.Body.Close()
+	if start.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(start.Body)
+		t.Fatalf("POST /v1/rooms/analysis/record = %d, want 200: %s", start.StatusCode, body)
+	}
+
+	sendSIPRECAudio(t, call, 25) // ~500 ms on both streams; only one is in the room
+
+	stop := httpDelete(t, srs.baseURL()+"/v1/rooms/analysis/record")
+	defer stop.Body.Close()
+	if stop.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE /v1/rooms/analysis/record = %d, want 200", stop.StatusCode)
+	}
+	var stopped struct {
+		File             string                    `json:"file"`
+		MultiChannelFile string                    `json:"multi_channel_file"`
+		Channels         map[string]map[string]any `json:"channels"`
+		OmittedLegs      []string                  `json:"omitted_legs"`
+	}
+	if err := json.NewDecoder(stop.Body).Decode(&stopped); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if stopped.File == "" {
+		t.Fatal("the room mix produced no file")
+	}
+	if len(stopped.OmittedLegs) != 0 {
+		t.Errorf("omitted_legs = %v, want none", stopped.OmittedLegs)
+	}
+	assertWAVAudio(t, stopped.File, 1, srs.cfg.DefaultSampleRate, 1000)
+
+	// One channel, for the one party that was placed: the party left out of the
+	// room must not appear in the recording.
+	if stopped.MultiChannelFile == "" {
+		t.Fatal("multi_channel was requested but no multi-channel file was produced")
+	}
+	assertWAVAudio(t, stopped.MultiChannelFile, 1, srs.cfg.DefaultSampleRate, 1000)
+	want := legID + "#" + placed.LegStreamID
+	if _, ok := stopped.Channels[want]; !ok {
+		t.Errorf("channels has no entry for the placed stream %q; got %v", want, mapKeys(stopped.Channels))
+	}
+	if len(stopped.Channels) != 1 {
+		t.Errorf("channels = %v, want only the placed stream", mapKeys(stopped.Channels))
+	}
+}
+
+// A room with neither kind of source still has nothing to record.
+func TestSIPREC_RoomRecordingStillRefusesAnEmptyRoom(t *testing.T) {
+	srs := siprecInstance(t, "srs", nil)
+
+	resp := httpPost(t, srs.baseURL()+"/v1/rooms", map[string]any{"id": "empty"})
+	resp.Body.Close()
+
+	start := httpPost(t, srs.baseURL()+"/v1/rooms/empty/record", map[string]any{"multi_channel": true})
+	defer start.Body.Close()
+	if start.StatusCode != http.StatusConflict {
+		t.Fatalf("POST /record on an empty room = %d, want 409", start.StatusCode)
+	}
+}

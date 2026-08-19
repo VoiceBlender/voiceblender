@@ -48,6 +48,20 @@ func TestBuildFluxURL(t *testing.T) {
 			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-multi&language_hint=en&language_hint=es",
 		},
 		{
+			// Hints on the default model are rejected at the dial, which costs
+			// the whole call's transcript rather than just the hint.
+			name: "hints_imply_the_multilingual_model",
+			opts: Options{LanguageHints: []string{"en", "de"}},
+			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-multi&language_hint=en&language_hint=de",
+		},
+		{
+			// Contradictory: the explicit model wins, since one language beats a
+			// refused dial.
+			name: "an_explicit_english_model_drops_the_hints",
+			opts: Options{Model: "flux-general-en", LanguageHints: []string{"en", "de"}},
+			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-en",
+		},
+		{
 			name: "keyterms_are_escaped",
 			opts: Options{Keyterms: []string{"co pilot"}},
 			want: "wss://api.deepgram.com/v2/listen?encoding=linear16&sample_rate=16000&model=flux-general-en&keyterm=co+pilot",
@@ -294,4 +308,51 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// A transcript says where in the audio it was said, which arrival time cannot:
+// Flux reports a turn when the turn ends, so arrival lands after the words.
+func TestFluxTranscriptCarriesWhenItWasSaid(t *testing.T) {
+	tr := NewDeepgramFlux(slog.Default())
+
+	var c collector
+	tr.dispatchTurn(fluxMessage{
+		Type: "TurnInfo", Event: "EndOfTurn", Transcript: "hello there",
+		AudioWindowStart: 0, AudioWindowEnd: 12.5,
+		Words: []fluxWord{
+			{Word: "hello", Start: 7.2, End: 7.6},
+			{Word: "there", Start: 7.6, End: 8.1},
+		},
+	}, c.sinks(Options{}), nil)
+
+	if len(c.transcripts) != 1 {
+		t.Fatalf("one transcript: %+v", c.transcripts)
+	}
+	// The words' timings, not the window: the window opens before the speaker
+	// does, so seeking to it lands on silence.
+	if got := c.transcripts[0]; got.AudioStart != 7.2 || got.AudioEnd != 8.1 {
+		t.Errorf("span = %v..%v, want the first word's start and the last word's end", got.AudioStart, got.AudioEnd)
+	}
+
+	// A wordless turn still happened somewhere: the window, not zero, which
+	// would seek every such line to the start of the call.
+	var wordless collector
+	tr.dispatchTurn(fluxMessage{
+		Type: "TurnInfo", Event: "EndOfTurn", Transcript: "mm",
+		AudioWindowStart: 3, AudioWindowEnd: 4,
+	}, wordless.sinks(Options{}), nil)
+	if got := wordless.transcripts[0]; got.AudioStart != 3 || got.AudioEnd != 4 {
+		t.Errorf("span = %v..%v, want the window", got.AudioStart, got.AudioEnd)
+	}
+
+	// A partial carries the same span, so a live caption places it as the final
+	// does.
+	var partials collector
+	tr.dispatchTurn(fluxMessage{
+		Type: "TurnInfo", Event: "Update", Transcript: "hel",
+		Words: []fluxWord{{Word: "hel", Start: 7.2, End: 7.4}},
+	}, partials.sinks(Options{Partial: true}), nil)
+	if len(partials.transcripts) != 1 || partials.transcripts[0].AudioStart != 7.2 {
+		t.Errorf("a partial is placed too: %+v", partials.transcripts)
+	}
 }
