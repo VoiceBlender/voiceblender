@@ -202,6 +202,12 @@ info:
         - name: SIP_JITTER_BUFFER_MAX_MS
           default: "300"
           description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
+        - name: WS_JITTER_BUFFER_MS
+          default: "0"
+          description: WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Use 40-60 when an external agent paces PCM against the mixer clock.
+        - name: COMFORT_NOISE_ENABLED
+          default: "true"
+          description: Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames.
         - name: SIP_SDP_STRICT_MLINE_ANSWER
           default: "false"
           description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.

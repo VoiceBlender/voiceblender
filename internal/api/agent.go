@@ -669,7 +669,9 @@ func (s *Server) doStartRoomAgent(roomID, provider, apiKey string, opts agent.Op
 	sourceID := "agent-" + uuid.New().String()[:8]
 	sb := newStreamBuffer()
 	listenPR, listenPW := createPipe()
-	rm.Mixer().AddParticipant(sourceID, sb, listenPW)
+	// Duplex (the agent listens too), so not a playback source — but the speak
+	// buffer is ours to pace, so let the mixer clock it like one.
+	rm.Mixer().AddParticipant(sourceID, sb, listenPW).MarkMixerClocked()
 
 	// Agents negotiate 16 kHz I/O; resample to bridge a non-16 kHz room.
 	// NewResampleReader/Writer are passthroughs when rates match.

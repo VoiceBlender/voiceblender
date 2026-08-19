@@ -22,12 +22,26 @@ type streamBuffer struct {
 	closed   bool
 	lastRead time.Time
 	pace     time.Duration
+
+	// playoutBytes is the lead Read withholds before handing out audio; 0
+	// disables jitter buffering entirely. warming is true whenever the lead
+	// still has to be (re)accumulated.
+	playoutBytes int
+	warming      bool
+	underruns    int64
 }
 
-func newStreamBuffer(capBytes int, frameMs int) *streamBuffer {
+func newStreamBuffer(capBytes int, frameMs int, playoutBytes int) *streamBuffer {
+	if playoutBytes < 0 || playoutBytes >= capBytes {
+		// A lead the buffer cannot hold would never warm up. Config.Validate
+		// keeps capacity above the lead; this only guards direct callers.
+		playoutBytes = 0
+	}
 	sb := &streamBuffer{
-		cap:  capBytes,
-		pace: time.Duration(frameMs) * time.Millisecond,
+		cap:          capBytes,
+		pace:         time.Duration(frameMs) * time.Millisecond,
+		playoutBytes: playoutBytes,
+		warming:      playoutBytes > 0,
 	}
 	sb.cond = sync.NewCond(&sb.mu)
 	return sb
@@ -55,6 +69,12 @@ func (sb *streamBuffer) Write(p []byte) (int, error) {
 // Read blocks until len(p) bytes are buffered or the buffer is closed.
 // Reads are paced: the second and later reads sleep up to pace - delta so
 // the mixer's readLoop sees at most one frame per pace interval.
+//
+// With a playout lead configured, Read also withholds audio until the lead is
+// buffered, and re-arms that wait after every underrun — a lead spent once and
+// never rebuilt stops absorbing jitter. It blocks rather than returning an
+// invented silent frame, so the gap still shows up in the mixer's per
+// participant starvation counters instead of looking like a quiet talker.
 func (sb *streamBuffer) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -67,6 +87,18 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 	}
 
 	sb.mu.Lock()
+	if sb.playoutBytes > 0 && !sb.closed {
+		if !sb.warming && len(sb.buf) < len(p) {
+			sb.warming = true
+			sb.underruns++
+		}
+		for sb.warming && len(sb.buf) < sb.playoutBytes && !sb.closed {
+			sb.cond.Wait()
+		}
+		if !sb.closed {
+			sb.warming = false
+		}
+	}
 	for len(sb.buf) < len(p) && !sb.closed {
 		sb.cond.Wait()
 	}
@@ -96,4 +128,12 @@ func (sb *streamBuffer) Dropped() int64 {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	return sb.dropped
+}
+
+// Underruns returns how many times the playout lead ran dry and had to be
+// rebuilt. Always 0 when jitter buffering is disabled.
+func (sb *streamBuffer) Underruns() int64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.underruns
 }

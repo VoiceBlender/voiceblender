@@ -159,6 +159,14 @@ Configured server-wide:
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
+**WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a separate, simpler mechanism. There is no reordering to do — a WebSocket delivers in order — so the buffer is only a playout lead: inbound PCM is withheld until the lead is buffered, and a producer that runs a few milliseconds late against the mixer's 20 ms tick spends the lead instead of leaving a gap in the mix. The lead is rebuilt after every underrun. Like the SIP buffer it costs latency equal to its depth and is off by default; `40`–`60` ms is typical for an external agent pacing PCM of its own accord. It needs no separate cap — the WebSocket ingress buffer is already bounded at 1000 ms.
+
+Configured server-wide:
+
+- `WS_JITTER_BUFFER_MS` — playout lead in ms, applied to every WebSocket leg and room WebSocket participant. `0` = disabled passthrough (default).
+
+**Comfort noise:** `COMFORT_NOISE_ENABLED` (default `true`) injects low-level noise (~−75 dBFS) into otherwise silent mixer frames, so a quiet room does not sound like a dead line. Set it to `false` when downstream processing needs digital silence to stay digital.
+
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.

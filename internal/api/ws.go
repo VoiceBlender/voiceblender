@@ -49,6 +49,7 @@ func (s *Server) wsRoom(w http.ResponseWriter, r *http.Request) {
 		SampleFormat: wsmedia.SampleS16LE,
 		Log:          s.Log,
 	}
+	s.applyWSJitterBuffer(&cfg)
 	if err := cfg.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

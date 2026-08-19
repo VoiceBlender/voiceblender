@@ -71,6 +71,11 @@ func main() {
 	// Leg and room managers
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)
+	roomMgr.SetComfortNoiseEnabled(cfg.ComfortNoiseEnabled)
+	log.Info("mixer audio",
+		"comfort_noise", cfg.ComfortNoiseEnabled,
+		"ws_jitter_buffer_ms", cfg.WSJitterBufferMs,
+	)
 
 	// Parse SIP port
 	sipPort, err := strconv.Atoi(cfg.SIPPort)
