@@ -108,6 +108,8 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
+| `WS_JITTER_BUFFER_MS` | `0` | WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20 ms hole in the mix. Size it to the transport's worst-case stall, not to the drift — `40`–`80` suits a healthy link, and every millisecond is added one-way latency. |
+| `COMFORT_NOISE_ENABLED` | `true` | Inject low-level comfort noise (~−75 dBFS) into otherwise silent mixer frames. |
 | `SIP_SDP_STRICT_MLINE_ANSWER` | `false` | Emit a port-0 placeholder for every offered `m=` section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP **single-stream** calls emit whenever a peer offers a section we don't handle, such as video. |
 | `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |

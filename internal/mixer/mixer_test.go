@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -320,5 +322,117 @@ func TestValidSampleRate(t *testing.T) {
 		if ValidSampleRate(r) {
 			t.Errorf("ValidSampleRate(%d) = true, want false", r)
 		}
+	}
+}
+
+// burstReader hands out frames as fast as it is asked for them, so a reader
+// loop that does not push back runs away from the mix tick.
+type burstReader struct {
+	frameSize int
+	max       int64
+	produced  atomic.Int64
+}
+
+func (b *burstReader) Read(p []byte) (int, error) {
+	if b.produced.Load() >= b.max {
+		return 0, io.EOF
+	}
+	b.produced.Add(1)
+	n := len(p)
+	if n > b.frameSize {
+		n = b.frameSize
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 0
+	}
+	return n, nil
+}
+
+// runBurstSource feeds src into the mixer for roughly ticks mix ticks and
+// reports how many frames the producer got to emit.
+func runBurstSource(t *testing.T, ticks int, attach func(m *Mixer, r io.Reader)) int64 {
+	t.Helper()
+	m := New(slog.Default(), DefaultSampleRate)
+	m.Start()
+	defer m.Stop()
+
+	br := &burstReader{frameSize: m.frameSizeBytes, max: 100000}
+	attach(m, br)
+	time.Sleep(time.Duration(ticks*Ptime) * time.Millisecond)
+	return br.produced.Load()
+}
+
+func TestMixer_MixerClockedSourceThrottlesProducer(t *testing.T) {
+	const ticks = 10
+	produced := runBurstSource(t, ticks, func(m *Mixer, r io.Reader) {
+		m.AddPlaybackSource("burst", r)
+	})
+
+	// One frame per tick plus whatever the queue holds, with slack for
+	// scheduling. A free-running producer overshoots this by orders of
+	// magnitude.
+	maxExpected := int64(ticks + playbackQueueDepth + 3*ticks)
+	if produced > maxExpected {
+		t.Fatalf("producer emitted %d frames in %d ticks, want <= %d — not throttled",
+			produced, ticks, maxExpected)
+	}
+	if produced < 2 {
+		t.Fatalf("producer emitted %d frames, expected the mixer to keep draining", produced)
+	}
+}
+
+func TestMixer_LiveParticipantDropsInsteadOfThrottling(t *testing.T) {
+	const ticks = 10
+	produced := runBurstSource(t, ticks, func(m *Mixer, r io.Reader) {
+		m.AddParticipant("burst", r, &captureWriter{})
+	})
+
+	// A live source cannot be slowed down, so the read loop drops rather than
+	// blocks and the producer runs far ahead of the tick.
+	if produced <= int64(ticks+liveQueueDepth) {
+		t.Fatalf("producer emitted only %d frames in %d ticks — live ingress should not block",
+			produced, ticks)
+	}
+}
+
+func TestMixer_MarkMixerClockedThrottlesDuplexSource(t *testing.T) {
+	const ticks = 10
+	produced := runBurstSource(t, ticks, func(m *Mixer, r io.Reader) {
+		m.AddParticipant("burst", r, &captureWriter{}).MarkMixerClocked()
+	})
+
+	maxExpected := int64(ticks + liveQueueDepth + 3*ticks)
+	if produced > maxExpected {
+		t.Fatalf("producer emitted %d frames in %d ticks, want <= %d — MarkMixerClocked did not apply",
+			produced, ticks, maxExpected)
+	}
+}
+
+func TestMixer_MixerClockedSourceUnblocksOnRemove(t *testing.T) {
+	m := New(slog.Default(), DefaultSampleRate)
+	// Deliberately not started: nothing drains, so the read loop parks on a
+	// full queue and only removal can free it.
+	br := &burstReader{frameSize: m.frameSizeBytes, max: 100000}
+
+	before := runtime.NumGoroutine()
+	m.AddPlaybackSource("stuck", br)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for br.produced.Load() < int64(playbackQueueDepth) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := br.produced.Load(); got < int64(playbackQueueDepth) {
+		t.Fatalf("producer emitted %d frames, expected it to fill the %d-deep queue", got, playbackQueueDepth)
+	}
+
+	m.RemoveParticipant("stuck")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime.NumGoroutine() > before {
+		t.Fatalf("read loop still running after removal (goroutines %d > %d)",
+			runtime.NumGoroutine(), before)
 	}
 }

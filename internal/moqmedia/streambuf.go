@@ -17,7 +17,7 @@ type streamBuffer struct {
 	cap      int
 	dropped  int64
 	closed   bool
-	lastRead time.Time
+	nextRead time.Time
 	pace     time.Duration
 }
 
@@ -49,12 +49,7 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if !sb.lastRead.IsZero() {
-		wait := sb.pace - time.Since(sb.lastRead)
-		if wait > 0 {
-			time.Sleep(wait)
-		}
-	}
+	sb.awaitSlot()
 
 	sb.mu.Lock()
 	for len(sb.buf) < len(p) && !sb.closed {
@@ -69,8 +64,30 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 	sb.buf = sb.buf[:remaining]
 	sb.mu.Unlock()
 
-	sb.lastRead = time.Now()
 	return n, nil
+}
+
+// awaitSlot sleeps until this read's slot on a fixed schedule. The schedule is
+// absolute on purpose: pacing from the end of the previous read charges every
+// interval for that read's own cost plus the sleep's overshoot, and a few
+// hundred microseconds per frame accumulates into a whole frame missed roughly
+// once a second — which the mixer fills with a 20ms hole. Single-reader only.
+func (sb *streamBuffer) awaitSlot() {
+	if sb.pace <= 0 {
+		return
+	}
+	now := time.Now()
+	switch {
+	case sb.nextRead.IsZero():
+		sb.nextRead = now
+	case now.Before(sb.nextRead):
+		time.Sleep(sb.nextRead.Sub(now))
+	case now.Sub(sb.nextRead) > sb.pace:
+		// More than a frame late: the consumer stalled, so resync instead of
+		// firing a catch-up burst that the mixer would only drop.
+		sb.nextRead = now
+	}
+	sb.nextRead = sb.nextRead.Add(sb.pace)
 }
 
 func (sb *streamBuffer) Close() {

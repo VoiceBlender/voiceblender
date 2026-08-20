@@ -159,6 +159,18 @@ Configured server-wide:
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
+**WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a separate, simpler mechanism. There is no reordering to do — a WebSocket delivers in order — so the buffer is only a playout lead: inbound PCM is withheld until the lead is buffered, and a producer that runs a few milliseconds late against the mixer's 20 ms tick spends the lead instead of leaving a gap in the mix. The lead is rebuilt after every underrun. Like the SIP buffer it costs latency equal to its depth and is off by default; `40`–`60` ms is typical for an external agent pacing PCM of its own accord. It needs no separate cap — the WebSocket ingress buffer is already bounded at 1000 ms.
+
+Configured server-wide:
+
+- `WS_JITTER_BUFFER_MS` — playout lead in ms, applied to every WebSocket leg and room WebSocket participant. `0` = disabled passthrough (default). `40`–`80` suits a healthy link.
+
+When the lead is enabled the buffer also compensates for clock drift. The producer's clock and the mixer's 20 ms tick never run at exactly the same rate, so over time one frame has to be given back or taken away — a producer only 2–3% slow leaves a 20 ms hole in the mix roughly every second, which is audible as a click. The buffer makes that correction during a pause instead: whenever its level drifts off target and the audio at the head is below the speech floor, it duplicates or drops one frame of silence, which nothing can hear. Speech is never dropped. If the buffer does run dry mid-word it emits a short faded repeat rather than digital silence, bounded to 40 ms, after which it waits for real audio so a genuinely dead producer still shows up as a gap.
+
+**Sizing the lead.** Drift and jitter are separate problems and only one of them needs buffer. Drift is corrected during pauses, so it is absorbed at any lead down to a single frame — it does not need to be *stored*. Jitter does: a transport that goes quiet for N ms needs a lead of at least N ms, because there is nothing else to play. So size `WS_JITTER_BUFFER_MS` to the worst-case stall you expect from the transport and nothing more; the lead is added one-way latency on every call, which matters far more for a voice agent than for a recording.
+
+**Comfort noise:** `COMFORT_NOISE_ENABLED` (default `true`) injects low-level noise (~−75 dBFS) into otherwise silent mixer frames, so a quiet room does not sound like a dead line. Set it to `false` when downstream processing needs digital silence to stay digital.
+
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
