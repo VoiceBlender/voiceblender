@@ -162,8 +162,7 @@ func TestRecorder_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Use a reader that blocks forever.
-	reader := &blockingReader{}
+	reader := &blockingReader{ctx: ctx}
 
 	_, err := r.Start(ctx, reader, dir)
 	if err != nil {
@@ -322,12 +321,18 @@ func TestRecorder_PauseResume_StateTransitions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	_, err := r.Start(context.Background(), &blockingReader{}, dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, err := r.Start(ctx, &blockingReader{ctx: ctx}, dir)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() {
 		r.Stop()
+		// Stop cancels only the recorder's derived context; the reader holds
+		// the parent, so Wait would block without this.
+		cancel()
 		r.Wait()
 	}()
 
@@ -478,12 +483,14 @@ func generatePCM(sampleRate, seconds int) []byte {
 // blocking fallback.
 type blockingOnly struct{ io.Reader }
 
-// blockingReader blocks forever on Read until the context is cancelled.
-type blockingReader struct{}
+// blockingReader yields nothing until its context is cancelled, then reports
+// EOF. A fake that ignored the context would park the capture loop inside
+// Read, where it can no longer observe cancellation.
+type blockingReader struct{ ctx context.Context }
 
 func (r *blockingReader) Read(p []byte) (int, error) {
-	// Block forever (the recorder should be cancelled via context).
-	select {}
+	<-r.ctx.Done()
+	return 0, io.EOF
 }
 
 // syncPipe is a simple in-memory pipe used by tests to feed bytes into the
