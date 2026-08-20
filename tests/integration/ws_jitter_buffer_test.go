@@ -22,7 +22,7 @@ func stallingSender(t *testing.T, conn interface{ Write([]byte) (int, error) }, 
 	t.Helper()
 	const (
 		stallEvery = 35                     // frames, i.e. 700ms
-		stallFor   = 300 * time.Millisecond // 15 frames' worth
+		stallFor   = 150 * time.Millisecond // 7 frames' worth, inside a 200ms lead
 	)
 	frame := make([]byte, 640) // 20ms @ 16kHz PCM16
 	for i := 0; i < 320; i++ {
@@ -75,9 +75,9 @@ func starvedOverWindow(t *testing.T, inst *testInstance, roomID, legID string, w
 	return after - before
 }
 
-// runStallingIngress connects a WS leg whose audio stalls periodically and
-// reports how often the mixer starved on it in steady state.
-func runStallingIngress(t *testing.T, name, roomID string, jitterMs int) uint64 {
+// runIngress connects a WS leg driven by send and reports how often the mixer
+// starved on it in steady state.
+func runIngress(t *testing.T, name, roomID string, jitterMs int, send func(*testing.T, interface{ Write([]byte) (int, error) }, <-chan struct{})) uint64 {
 	t.Helper()
 	inst := newTestInstanceWithOpts(t, name, func(c *config.Config) {
 		c.WSJitterBufferMs = jitterMs
@@ -101,7 +101,7 @@ func runStallingIngress(t *testing.T, name, roomID string, jitterMs int) uint64 
 
 	stop := make(chan struct{})
 	defer close(stop)
-	go stallingSender(t, conn, stop)
+	go send(t, conn, stop)
 
 	// Let the playout lead warm up and the stream settle before measuring.
 	time.Sleep(700 * time.Millisecond)
@@ -111,16 +111,18 @@ func runStallingIngress(t *testing.T, name, roomID string, jitterMs int) uint64 
 }
 
 func TestRoomWSJitterBufferAbsorbsIngressStalls(t *testing.T) {
-	off := runStallingIngress(t, "ws-jitter-off", "jitter-room", 0)
-	on := runStallingIngress(t, "ws-jitter-on", "jitter-room", 400)
+	off := runIngress(t, "ws-jitter-off", "jitter-room", 0, stallingSender)
+	on := runIngress(t, "ws-jitter-on", "jitter-room", 200, stallingSender)
 
 	// The stall pattern has to be adversarial enough to matter, or the
 	// comparison below proves nothing.
 	if off < 5 {
 		t.Fatalf("passthrough starved only %d times — the stall pattern is not adversarial", off)
 	}
-	if on*2 > off {
-		t.Fatalf("playout lead starved %d times vs %d without it — not absorbing the jitter", on, off)
+	// A stall needs a lead at least its own size — that is what the lead is
+	// for. Allow a couple of ticks for scheduling noise on a loaded machine.
+	if on > 2 {
+		t.Fatalf("playout lead starved %d times vs %d without it — not absorbing the stalls", on, off)
 	}
 }
 
@@ -184,5 +186,56 @@ func TestRoomPlaybackMixerClockedNoStall(t *testing.T) {
 	if gotFrames < wantFrames {
 		t.Fatalf("playback delivered %d frames in %v, want at least %d — the mixer-clocked read loop stalled",
 			gotFrames, window, wantFrames)
+	}
+}
+
+// driftingSender paces frames slightly slower than the mixer's 20ms tick, the
+// way a naive `send(); sleep(20ms)` producer does. The long-run rate is short
+// by a fixed fraction, so no amount of buffering can conserve every sample —
+// something has to give a frame back. It alternates speech and pauses so the
+// buffer has somewhere cheap to take it from.
+func driftingSender(t *testing.T, conn interface{ Write([]byte) (int, error) }, stop <-chan struct{}) {
+	t.Helper()
+	const (
+		framePeriod  = 20550 * time.Microsecond // 2.75% slow, as in the reported capture
+		cycleFrames  = 70                       // 1s of speech then 0.4s of pause
+		speechFrames = 50
+	)
+	voiced := make([]byte, 640)
+	for i := 0; i < 320; i++ {
+		binary.LittleEndian.PutUint16(voiced[i*2:], uint16(int16(6000)))
+	}
+	quiet := make([]byte, 640)
+
+	next := time.Now()
+	for i := 0; ; i++ {
+		next = next.Add(framePeriod)
+		select {
+		case <-stop:
+			return
+		case <-time.After(time.Until(next)):
+		}
+		frame := voiced
+		if i%cycleFrames >= speechFrames {
+			frame = quiet
+		}
+		if err := wsutil.WriteClientBinary(conn, frame); err != nil {
+			return
+		}
+	}
+}
+
+func TestRoomWSJitterBufferAbsorbsSlowProducerDrift(t *testing.T) {
+	off := runIngress(t, "ws-drift-off", "drift-room", 0, driftingSender)
+	on := runIngress(t, "ws-drift-on", "drift-room", 60, driftingSender)
+
+	if off < 3 {
+		t.Fatalf("passthrough starved only %d times — the producer is not drifting enough to test", off)
+	}
+	// The deficit is real: 20ms of audio is genuinely missing every ~730ms.
+	// Correcting it inside a pause costs nothing and needs no meaningful lead —
+	// 60ms is here to prove the point, not because drift requires it.
+	if on > 1 {
+		t.Fatalf("drift compensation left %d gaps vs %d without it", on, off)
 	}
 }

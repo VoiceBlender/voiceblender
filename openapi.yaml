@@ -204,7 +204,7 @@ info:
           description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
         - name: WS_JITTER_BUFFER_MS
           default: "0"
-          description: WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Use 40-60 when an external agent paces PCM against the mixer clock.
+          description: 'WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport''s worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency.'
         - name: COMFORT_NOISE_ENABLED
           default: "true"
           description: Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames.

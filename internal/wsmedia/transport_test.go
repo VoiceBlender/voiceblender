@@ -424,7 +424,7 @@ func TestTransportIngressOverflowDrops(t *testing.T) {
 		cfg:     cfg,
 		codec:   codec,
 		log:     cfg.Log,
-		audioIn: newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs, cfg.JitterPlayoutBytes()),
+		audioIn: newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs, cfg.JitterPlayoutBytes(), cfg.SampleRate),
 		done:    make(chan struct{}),
 	}
 	pcm := make([]int16, cfg.FrameSamples())

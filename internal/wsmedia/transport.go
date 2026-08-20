@@ -76,9 +76,10 @@ func (t *Transport) Err() error {
 // discarded on ingress buffer overflow.
 func (t *Transport) AudioDropsBytes() int64 { return t.audioIn.Dropped() }
 
-// AudioUnderruns reports how many times the ingress playout lead ran dry.
-// Always 0 unless Config.JitterBufferMs is set.
-func (t *Transport) AudioUnderruns() int64 { return t.audioIn.Underruns() }
+// AudioDrift reports the corrections the ingress playout buffer made to keep
+// the producer's clock aligned with the mixer's. All zero unless
+// Config.JitterBufferMs is set.
+func (t *Transport) AudioDrift() DriftStats { return t.audioIn.Drift() }
 
 // TextDropsCount reports the cumulative count of inbound text messages
 // discarded because the text-channel callback wasn't draining fast enough.

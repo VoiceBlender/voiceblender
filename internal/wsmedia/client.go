@@ -52,7 +52,7 @@ func newTransport(cfg Config, conn net.Conn, side ws.State, codec AudioCodec, pe
 		codec:   codec,
 		log:     cfg.Log,
 		peerHdr: peerHdr,
-		audioIn: newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs, cfg.JitterPlayoutBytes()),
+		audioIn: newStreamBuffer(cfg.IngressBufferBytes(), cfg.FrameMs, cfg.JitterPlayoutBytes(), cfg.SampleRate),
 		ctx:     ctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
