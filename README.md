@@ -25,7 +25,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 or Google Cloud Storage upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly, Deepgram, Azure), with optional **preflight staging**: synthesize a speculative reply off the critical path, then commit it for instant playback or discard it
-- **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs, Deepgram, Deepgram Flux, Azure). Deepgram Flux adds conversational turn detection (`stt.turn`), including eager end-of-turn signals for speculative generation
+- **STT** -- real-time speech-to-text with partial transcripts (ElevenLabs, Deepgram, Deepgram Flux, Azure, Speechmatics). Deepgram Flux adds conversational turn detection (`stt.turn`), including eager end-of-turn signals for speculative generation; Speechmatics reports end-of-turn from server-side silence detection and supports mid-stream finalize
 - **AI Agent** -- attach a conversational AI agent to a leg or room (ElevenLabs, VAPI, Pipecat, Deepgram) with mid-session context injection
 - **Answering Machine Detection (AMD)** -- per-call analysis of outbound call audio to classify the answerer as human, machine, no-speech, or not-sure; optional voicemail beep detection via Goertzel frequency analysis
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; a stable per-event `event_id` (also sent as `X-Event-Id`) for receiver-side deduplication; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
@@ -87,6 +87,8 @@ All configuration is via environment variables:
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
+| `SPEECHMATICS_API_KEY` | | API key for Speechmatics STT |
+| `SPEECHMATICS_URL` | `wss://eu2.rt.speechmatics.com/v2` | Speechmatics realtime endpoint. Change it for another region (`eu`, `us`, `global`) or a self-hosted realtime container. |
 | `S3_BUCKET` | | S3 bucket for recording uploads. See [S3 bucket preflight](#s3-bucket-preflight). |
 | `S3_REGION` | `us-east-1` | AWS region |
 | `S3_ENDPOINT` | | Custom S3 endpoint (MinIO, etc.). Must include an `http://` or `https://` scheme. |
@@ -571,7 +573,7 @@ internal/
   playback/             Audio file playback
   recording/            WAV recording
   tts/                  TTS (ElevenLabs, Google Cloud, AWS Polly)
-  stt/                  STT (ElevenLabs)
+  stt/                  STT (ElevenLabs, Deepgram, Deepgram Flux, Azure, Speechmatics)
   agent/                AI agent (ElevenLabs, VAPI, Pipecat)
   storage/              S3 / GCS upload backends
   config/               Environment variable config

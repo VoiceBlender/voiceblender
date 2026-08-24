@@ -23,7 +23,7 @@ type roomSTTState struct {
 	// with nil callbacks; attachSTTSinks binds them to a per-leg copy.
 	opts     stt.Options
 	apiKey   string
-	provider string // "elevenlabs" (default), "deepgram", "deepgram_flux" or "azure"
+	provider string // "elevenlabs" (default), "deepgram", "deepgram_flux", "azure" or "speechmatics"
 }
 
 var (
@@ -47,6 +47,8 @@ func (s *Server) newSTTProvider(provider string) stt.Provider {
 		return stt.NewDeepgramFlux(s.Log)
 	case "azure":
 		return stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
+	case "speechmatics":
+		return stt.NewSpeechmatics(s.Config.SpeechmaticsURL, s.Log)
 	default:
 		return stt.NewElevenLabs(s.Log)
 	}
@@ -67,6 +69,8 @@ func (s *Server) sttAPIKey(req STTRequest) (apiKey, providerName string) {
 		return s.Config.DeepgramAPIKey, providerName
 	case "azure":
 		return s.Config.AzureSpeechKey, providerName
+	case "speechmatics":
+		return s.Config.SpeechmaticsAPIKey, providerName
 	default:
 		return s.Config.ElevenLabsAPIKey, providerName
 	}
@@ -308,8 +312,8 @@ type STTFinalizeResult struct {
 
 // doFinalizeSTTLeg flushes the provider's audio buffer and leaves the session
 // running — unlike doStopSTTLeg it must NOT drop the transcriber from the map.
-// Only Deepgram implements the capability; the other providers answer 501
-// rather than pretending the flush happened.
+// Only deepgram and speechmatics implement the capability; the other providers
+// answer 501 rather than pretending the flush happened.
 func (s *Server) doFinalizeSTTLeg(ctx context.Context, legID string) (*STTFinalizeResult, error) {
 	legTranscribers.Lock()
 	transcriber, ok := legTranscribers.m[legID]

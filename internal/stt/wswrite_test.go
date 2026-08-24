@@ -66,6 +66,12 @@ func TestSTTSendLoopsUnblockOnWedgedWrite(t *testing.T) {
 		{"azure", func(ctx context.Context, lw *wsutilx.LockedWriter) {
 			NewAzure("test", slog.Default()).sendLoop(ctx, pcmReader{}, lw, "reqid")
 		}},
+		{"deepgram_flux", func(ctx context.Context, lw *wsutilx.LockedWriter) {
+			NewDeepgramFlux(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+		}},
+		{"speechmatics", func(ctx context.Context, lw *wsutilx.LockedWriter) {
+			NewSpeechmatics("", slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+		}},
 	}
 
 	for _, tc := range cases {
@@ -106,6 +112,14 @@ func TestSTTRecvLoopsLogCloseCode(t *testing.T) {
 		{"azure", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
 			tr := NewAzure("test", log)
 			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), func(string, bool) {}, Options{})
+		}},
+		{"deepgram_flux", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
+			tr := NewDeepgramFlux(log)
+			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
+		}},
+		{"speechmatics", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
+			tr := NewSpeechmatics("", log)
+			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 	}
 

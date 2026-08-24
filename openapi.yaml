@@ -142,6 +142,12 @@ info:
         - name: AZURE_SPEECH_REGION
           default: eastus
           description: Azure region for Speech Services (e.g. eastus, westeurope)
+        - name: SPEECHMATICS_API_KEY
+          default: ""
+          description: API key for Speechmatics STT
+        - name: SPEECHMATICS_URL
+          default: wss://eu2.rt.speechmatics.com/v2
+          description: Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container
         - name: S3_BUCKET
           default: ""
           description: S3 bucket name for recording uploads
@@ -1442,7 +1448,7 @@ paths:
         post:
             operationId: finalizeSTTLeg
             summary: Flush the STT buffer on a leg without stopping STT
-            description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only the `deepgram` provider supports this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
+            description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only the `deepgram` and `speechmatics` providers support this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. On `speechmatics` the flush also emits an stt.turn end_of_turn event, because it is a forced end of utterance. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
             tags:
                 - Legs
             responses:
@@ -4137,29 +4143,30 @@ components:
                     default: false
                 provider:
                     type: string
-                    description: 'STT provider: "elevenlabs" (default), "deepgram" (/v1/listen), "deepgram_flux" (/v2/listen, conversational turn detection) or "azure"'
+                    description: 'STT provider: "elevenlabs" (default), "deepgram" (/v1/listen), "deepgram_flux" (/v2/listen, conversational turn detection), "azure" or "speechmatics"'
                     enum:
                         - elevenlabs
                         - deepgram
                         - deepgram_flux
                         - azure
+                        - speechmatics
                 api_key:
                     type: string
-                    description: API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY or AZURE_SPEECH_KEY env var depending on provider)
+                    description: API key override (falls back to ELEVENLABS_API_KEY, DEEPGRAM_API_KEY, AZURE_SPEECH_KEY or SPEECHMATICS_API_KEY env var depending on provider)
                 model:
                     type: string
-                    description: 'Provider-specific model. Deepgram: default "nova-3". Deepgram Flux: "flux-general-en" (default) or "flux-general-multi".'
+                    description: 'Provider-specific model. Deepgram: default "nova-3". Deepgram Flux: "flux-general-en" (default) or "flux-general-multi". Speechmatics: "standard" (default) or "enhanced".'
                 keyterms:
                     type: array
                     items:
                         type: string
-                    description: Terms to boost recognition of (Deepgram and Deepgram Flux).
+                    description: Terms to boost recognition of (Deepgram, Deepgram Flux, and Speechmatics — where they become additional_vocab).
                 endpointing:
                     type: integer
-                    description: 'Deepgram only: milliseconds of silence before a segment is finalized. 0 disables endpointing.'
+                    description: 'Deepgram: milliseconds of silence before a segment is finalized; 0 disables endpointing. Speechmatics: maps to max_delay, clamped to 700-4000 ms; 0 leaves the provider default.'
                 utterance_end_ms:
                     type: integer
-                    description: 'Deepgram only: milliseconds of silence after which an stt.turn event with event=utterance_end is emitted. Deepgram requires interim results for this, which are requested automatically and still suppressed unless partial is true.'
+                    description: 'Deepgram: milliseconds of silence after which an stt.turn event with event=utterance_end is emitted. Deepgram requires interim results for this, which are requested automatically and still suppressed unless partial is true. Speechmatics: milliseconds of silence that close a turn and emit an stt.turn event with event=end_of_turn — default 600, capped at 2000, and 0 disables turn detection.'
                 eager_eot_threshold:
                     type: number
                     description: 'Deepgram Flux only: end-of-turn confidence that fires an eager_end_of_turn stt.turn event, enabling speculative generation. Must be between 0.3 and 0.9. When unset, no eager_end_of_turn or turn_resumed events are emitted at all.'

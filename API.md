@@ -1515,12 +1515,12 @@ Start real-time speech-to-text transcription on a leg.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code (e.g. `"en"`, `"es"`) |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
-| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
-| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. |
-| `keyterms` | string[] | no | Terms to boost recognition of (Deepgram and Deepgram Flux) |
-| `endpointing` | integer | no | **Deepgram only.** Milliseconds of silence before a segment is finalized. `0` disables endpointing. |
-| `utterance_end_ms` | integer | no | **Deepgram only.** Milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, `"azure"`, or `"speechmatics"` |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, `AZURE_SPEECH_KEY`, or `SPEECHMATICS_API_KEY` env var depending on provider) |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. Speechmatics: `"standard"` (default) or `"enhanced"`. |
+| `keyterms` | string[] | no | Terms to boost recognition of (Deepgram, Deepgram Flux, and Speechmatics — where they become `additional_vocab`) |
+| `endpointing` | integer | no | **Deepgram:** milliseconds of silence before a segment is finalized; `0` disables endpointing. **Speechmatics:** maps to `max_delay`, clamped to 700–4000 ms; `0` leaves the provider default. |
+| `utterance_end_ms` | integer | no | **Deepgram:** milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. **Speechmatics:** milliseconds of silence that close a turn and emit an `stt.turn` event with `event: "end_of_turn"` — default `600`, capped at `2000`, and `0` disables turn detection. |
 | `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
 | `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
 | `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
@@ -1534,6 +1534,7 @@ providers never turns a previously valid request into an error.
 - `deepgram` — Deepgram real-time STT (`/v1/listen`) via WebSocket. Uses Nova-3 model. Audio is sent as raw binary PCM frames.
 - `deepgram_flux` — Deepgram Flux (`/v2/listen`), a conversational model that reports **turn boundaries** rather than plain segments. Emits `stt.turn` events (see [Conversational turn detection](#conversational-turn-detection)) alongside one `stt.text` final per turn. Shares `DEEPGRAM_API_KEY` with `deepgram`. Does not support `POST /v1/legs/{id}/stt/finalize` (`501`) — Flux reports turn ends itself.
 - `azure` — Azure Cognitive Speech Services real-time STT via WebSocket. Requires a subscription key (`AZURE_SPEECH_KEY`) and region (`AZURE_SPEECH_REGION`). Language defaults to `"en-US"`.
+- `speechmatics` — Speechmatics Realtime v2 via WebSocket. Requires `SPEECHMATICS_API_KEY`; the endpoint comes from `SPEECHMATICS_URL`, so another region or a self-hosted realtime container needs no code change. Reports **turn boundaries** on `stt.turn` (see [Conversational turn detection](#conversational-turn-detection)) and is, alongside `deepgram`, one of the two providers that support `POST /v1/legs/{id}/stt/finalize`.
 
 **Response:** `200 OK`
 
@@ -1585,17 +1586,20 @@ No request body.
 { "status": "stt_finalized" }
 ```
 
-**Provider support:** `deepgram` only. VoiceBlender's ElevenLabs integration
-commits on its own voice-activity detection and its Azure integration has no
-mid-stream flush, so both answer `501`. `deepgram_flux` also answers `501`:
-`/v2/listen` has no flush message, and Flux already reports turn ends on
-`stt.turn`.
+**Provider support:** `deepgram` and `speechmatics`. VoiceBlender's ElevenLabs
+integration commits on its own voice-activity detection and its Azure
+integration has no mid-stream flush, so both answer `501`. `deepgram_flux` also
+answers `501`: `/v2/listen` has no flush message, and Flux already reports turn
+ends on `stt.turn`.
 
 **Notes:**
 - The flushed transcript arrives on the usual `stt.text` event with
   `is_final: true`. A segment containing **no speech produces no event at
   all** — a `200` here is an acknowledgement that the flush was requested, not
   a promise that a transcript follows. Do not block waiting for one.
+- On `speechmatics` the flush is a forced end of utterance, so it also closes
+  the turn: an `stt.turn` event with `event: "end_of_turn"` follows the final,
+  and the next `turn_index` starts a fresh utterance.
 - Applies to leg-scoped STT started with `POST /v1/legs/{id}/stt`. A leg being
   transcribed as part of a room STT session is not tracked per leg and returns
   `404`. There is no room-level finalize.
@@ -1613,7 +1617,7 @@ mid-stream flush, so both answer `501`. `deepgram_flux` also answers `501`:
 speaking?" — `is_final` means a *segment* will not change again, which is not
 the same thing. The `stt.turn` event carries that second signal.
 
-Two providers report it, at different levels of detail.
+Three providers report it, at different levels of detail.
 
 #### Deepgram Flux (`provider: "deepgram_flux"`)
 
@@ -1696,6 +1700,66 @@ Deepgram requires interim results to emit `UtteranceEnd`, so setting
 them locally unless you also set `partial: true` — adding `utterance_end_ms`
 never starts sending you partial transcripts you did not ask for.
 
+#### Speechmatics (`provider: "speechmatics"`)
+
+Speechmatics detects the end of an utterance server-side from word timings: a
+countdown starts at each recognized word and restarts on the next one, so a
+turn closes only after a real pause. VoiceBlender enables it by default with a
+**600 ms** trigger and reports it as a single `stt.turn` event:
+
+| `event` | Meaning |
+|---------|---------|
+| `end_of_turn` | The caller stopped speaking. Carries the whole utterance, its audio window, and word-level timings. |
+
+```json
+{
+  "type": "stt.turn",
+  "leg_id": "550e8400-...",
+  "event": "end_of_turn",
+  "turn_index": 0,
+  "text": "How do I reset my password?",
+  "audio_window_start_ms": 0,
+  "audio_window_end_ms": 2400,
+  "words": [{ "word": "How", "confidence": 0.95, "start_ms": 100, "end_ms": 300 }]
+}
+```
+
+Tune it with `utterance_end_ms`: 500–800 ms suits most voice agents, 800–1200 ms
+suits dictation, and `0` turns turn detection off entirely. Values above
+`2000` are clamped.
+
+**Compatibility with `stt.text`.** Speechmatics finalizes a *segment* every
+`max_delay` (tuned with `endpointing`), so one turn usually spans several
+`stt.text` finals. The `end_of_turn` event carries their concatenation:
+
+| Speechmatics message | `stt.turn` | `stt.text` |
+|----------------------|-----------|------------|
+| `AddPartialTranscript` | *(none)* | interim, only if `partial: true` |
+| `AddTranscript` | *(none)* | **`is_final: true`** |
+| `EndOfUtterance` | `end_of_turn` | *(none)* |
+
+`speech_final` is always `false` on this provider. Speechmatics sends the final
+segment *before* the end-of-utterance signal, so at the moment a transcript is
+emitted it is not yet known whether the speaker has stopped — use `stt.turn`
+for that. `POST /v1/legs/{id}/stt/finalize` forces the same `end_of_turn`
+early.
+
+**Example:**
+
+```bash
+curl -X POST localhost:8080/v1/legs/$LEG_ID/stt \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "provider": "speechmatics",
+        "language": "en",
+        "partial": true,
+        "model": "enhanced",
+        "utterance_end_ms": 600,
+        "endpointing": 1000,
+        "keyterms": ["VoiceBlender", "SIPREC"]
+      }'
+```
+
 Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
 events, and `speech_final` on their `stt.text` events is always `false`.
 
@@ -1718,6 +1782,9 @@ further out the longer the speaker went on.
 For Deepgram Flux the span is the first and last word's own timings where the
 turn has words, and its audio window otherwise — the window opens before the
 speaker does, so seeking to it lands on silence.
+
+For Speechmatics the span is the segment's own window, so a turn split across
+several finals gives each final its own slice rather than the whole utterance.
 
 ---
 
@@ -2927,8 +2994,8 @@ carries the same value alongside `participant_aor`.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
-| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, `"azure"`, or `"speechmatics"` |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, `AZURE_SPEECH_KEY`, or `SPEECHMATICS_API_KEY` env var depending on provider) |
 
 The provider tuning fields documented for [`POST /v1/legs/{id}/stt`](#post-v1legsidstt)
 (`model`, `keyterms`, `endpointing`, `utterance_end_ms`, `eager_eot_threshold`,
@@ -4218,6 +4285,8 @@ All errors return:
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
 | `VAPI_API_KEY` | _(none)_ | Default VAPI API key for Agent features when `provider=vapi` (can be overridden per-request via `api_key` in the request body) |
 | `DEEPGRAM_API_KEY` | _(none)_ | Default Deepgram API key for STT, TTS, and Agent features when `provider=deepgram` (can be overridden per-request via `api_key` in the request body) |
+| `SPEECHMATICS_API_KEY` | _(none)_ | Default Speechmatics API key for STT when `provider=speechmatics` (can be overridden per-request via `api_key` in the request body) |
+| `SPEECHMATICS_URL` | `wss://eu2.rt.speechmatics.com/v2` | Speechmatics realtime WebSocket endpoint. Point it at another region (`eu`, `us`, `global`) for data residency, or at a self-hosted realtime container. |
 | `S3_BUCKET` | _(none)_ | S3 bucket name (required for `storage=s3` recordings) |
 | `S3_REGION` | `us-east-1` | AWS region for S3 |
 | `S3_ENDPOINT` | _(none)_ | Custom S3 endpoint for S3-compatible stores (MinIO, etc.) |

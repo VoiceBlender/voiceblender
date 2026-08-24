@@ -15,6 +15,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"WEBHOOK_SECRET", "RTP_PORT_MIN", "RTP_PORT_MAX",
 		"TTS_CACHE_ENABLED", "TTS_CACHE_DIR", "TTS_CACHE_INCLUDE_API_KEY",
 		"AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEFAULT_SAMPLE_RATE",
+		"SPEECHMATICS_API_KEY", "SPEECHMATICS_URL",
 		"MOQ_ENABLED", "MOQ_LISTEN_ADDR", "MOQ_TLS_CERT_FILE", "MOQ_TLS_KEY_FILE",
 		"MOQ_OPUS_BITRATE", "AMRWB_MODE", "AMRWB_OCTET_ALIGNED",
 		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
@@ -66,6 +67,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.AzureSpeechKey != "" {
 		t.Errorf("AzureSpeechKey = %q, want empty", cfg.AzureSpeechKey)
+	}
+	if cfg.SpeechmaticsURL != "wss://eu2.rt.speechmatics.com/v2" {
+		t.Errorf("SpeechmaticsURL = %q, want wss://eu2.rt.speechmatics.com/v2", cfg.SpeechmaticsURL)
+	}
+	if cfg.SpeechmaticsAPIKey != "" {
+		t.Errorf("SpeechmaticsAPIKey = %q, want empty", cfg.SpeechmaticsAPIKey)
 	}
 	if cfg.DefaultSampleRate != 16000 {
 		t.Errorf("DefaultSampleRate = %d, want 16000", cfg.DefaultSampleRate)
@@ -189,6 +196,8 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("RTP_PORT_MAX", "40000")
 	t.Setenv("AZURE_SPEECH_KEY", "az-key-123")
 	t.Setenv("AZURE_SPEECH_REGION", "westeurope")
+	t.Setenv("SPEECHMATICS_API_KEY", "sm-key-123")
+	t.Setenv("SPEECHMATICS_URL", "ws://asr.internal:9000/v2")
 	t.Setenv("DEFAULT_SAMPLE_RATE", "48000")
 	t.Setenv("SIP_OUTBOUND_PROXY", "sip:edge.example.com:5060;transport=tcp")
 
@@ -235,6 +244,14 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.AzureSpeechRegion != "westeurope" {
 		t.Errorf("AzureSpeechRegion = %q, want westeurope", cfg.AzureSpeechRegion)
+	}
+	if cfg.SpeechmaticsAPIKey != "sm-key-123" {
+		t.Errorf("SpeechmaticsAPIKey = %q, want sm-key-123", cfg.SpeechmaticsAPIKey)
+	}
+	// A self-hosted realtime container is reachable through the same knob as
+	// the SaaS regions.
+	if cfg.SpeechmaticsURL != "ws://asr.internal:9000/v2" {
+		t.Errorf("SpeechmaticsURL = %q, want ws://asr.internal:9000/v2", cfg.SpeechmaticsURL)
 	}
 	if cfg.DefaultSampleRate != 48000 {
 		t.Errorf("DefaultSampleRate = %d, want 48000", cfg.DefaultSampleRate)
