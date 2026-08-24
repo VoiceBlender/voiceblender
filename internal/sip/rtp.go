@@ -63,23 +63,32 @@ func NewRTPSessionOnPort(port int) (*RTPSession, error) {
 	}, nil
 }
 
+const rtpBindAttempts = 8
+
 // NewRTPSessionFromAllocator creates an RTP session using a port from the
 // allocator's pool. If alloc is nil, behaves like NewRTPSession (OS-assigned).
+// A port in the pool can be held by a process outside this one, so a bind
+// failure moves on to the next port instead of failing the call.
 func NewRTPSessionFromAllocator(alloc *PortAllocator) (*RTPSession, error) {
 	if alloc == nil {
 		return NewRTPSession()
 	}
-	port, err := alloc.Allocate()
-	if err != nil {
-		return nil, err
+	var bindErr error
+	for i := 0; i < rtpBindAttempts; i++ {
+		port, err := alloc.Allocate()
+		if err != nil {
+			return nil, err
+		}
+		sess, err := NewRTPSessionOnPort(port)
+		if err != nil {
+			alloc.Release(port)
+			bindErr = err
+			continue
+		}
+		sess.allocator = alloc
+		return sess, nil
 	}
-	sess, err := NewRTPSessionOnPort(port)
-	if err != nil {
-		alloc.Release(port)
-		return nil, err
-	}
-	sess.allocator = alloc
-	return sess, nil
+	return nil, bindErr
 }
 
 // getRemote returns the current remote address atomically.

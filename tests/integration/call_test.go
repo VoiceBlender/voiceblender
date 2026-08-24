@@ -70,13 +70,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		codecs = []codec.CodecType{codec.CodecPCMU}
 	}
 
-	// Find a free UDP port for SIP.
-	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("[%s] find free UDP port: %v", name, err)
-	}
-	sipPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-	udpConn.Close()
+	sipPort := reserveSIPPort(t)
 
 	log := slog.Default().With("instance", name)
 
@@ -91,6 +85,10 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		RecordingDir:                         recDir,
 		DefaultSampleRate:                    16000,
 		SIPRegistrationAllowMultipleContacts: true,
+		// Pion's ephemeral range for WebRTC/LiveKit/WhatsApp/MoQ legs. Below the
+		// OS ephemeral pool and disjoint from the SIP RTP pool. See ports_test.go.
+		RTPPortMin: pionPortMin,
+		RTPPortMax: pionPortMax,
 		// Keep the REGISTER consult window short so tests without a controller
 		// answering the sip.registration_attempt event still finish quickly via
 		// the fallback. Auth tests override this with a generous value. The
@@ -118,6 +116,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:            "127.0.0.1",
 		ListenIP:          "127.0.0.1",
+		PortAllocator:     testRTPAllocator(t),
 		ExternalIP:        cfg.SIPExternalIP,
 		BindPort:          sipPort,
 		SIPHost:           name,

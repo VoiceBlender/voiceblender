@@ -155,3 +155,44 @@ func TestClose_IdempotentReleasesOnce(t *testing.T) {
 		t.Errorf("port %d was released by double-close on sess1 — sess2 is now homeless", port)
 	}
 }
+
+// A pool port held by something outside this process must not fail the call:
+// the allocator moves on to the next one.
+func TestNewRTPSessionFromAllocator_SkipsPortHeldElsewhere(t *testing.T) {
+	alloc, err := NewPortAllocator(40300, 40500)
+	if err != nil {
+		t.Fatalf("NewPortAllocator: %v", err)
+	}
+
+	// The allocator's cursor starts at min, so this is the port it hands out first.
+	blocker, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified, Port: 40300})
+	if err != nil {
+		t.Skipf("cannot hold port 40300: %v", err)
+	}
+	defer blocker.Close()
+
+	sess, err := NewRTPSessionFromAllocator(alloc)
+	if err != nil {
+		t.Fatalf("NewRTPSessionFromAllocator: %v", err)
+	}
+	defer sess.Close()
+
+	if got := sess.LocalPort(); got == 40300 {
+		t.Fatalf("bound the held port %d", got)
+	} else if got < 40300 || got > 40500 {
+		t.Fatalf("port %d outside the pool 40300-40500", got)
+	}
+}
+
+func TestNewRTPSessionFromAllocator_ExhaustedPoolErrors(t *testing.T) {
+	alloc, err := NewPortAllocator(40600, 40800)
+	if err != nil {
+		t.Fatalf("NewPortAllocator: %v", err)
+	}
+	for port := 40600; port <= 40800; port++ {
+		alloc.used[port] = true
+	}
+	if _, err := NewRTPSessionFromAllocator(alloc); err == nil {
+		t.Fatal("expected an error from an exhausted pool")
+	}
+}

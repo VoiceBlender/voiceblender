@@ -437,6 +437,27 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestSpeechmaticsSTT_Connectivity` | The cheap liveness check: the Realtime v2 handshake is accepted, ~2 s of silence streams through, and `EndOfStream` tears the session down so `Start` returns and `Running()` goes false. **Skipped unless `SPEECHMATICS_API_KEY` is set.** |
 | `TestSpeechmatics_TurnLifecycle` | Live Realtime v2 with default turn detection: real speech (synthesized through Deepgram TTS) streams at wall-clock speed followed by a 4 s pause. Asserts an `end_of_turn` carrying the utterance text, word timings and a positive audio window, that only `end_of_turn` events are emitted, that no interim leaks with `partial:false`, that no transcript claims `speech_final`, and that the recognized text contains the spoken phrase. **Skipped unless both `SPEECHMATICS_API_KEY` and `DEEPGRAM_API_KEY` are set** (the latter only to synthesize the fixture). |
 | `TestSpeechmatics_ForceEndOfUtterance` | The `/stt/finalize` path against the live API: with a deliberately slow 2000 ms silence trigger, `Finalize` is called mid-speech and must close a turn on its own, so the run ends with at least two `end_of_turn` events where an unforced run of the same audio produces one. **Skipped unless both `SPEECHMATICS_API_KEY` and `DEEPGRAM_API_KEY` are set.** |
+| `TestHarnessPortsStayBelowTheEphemeralPool` | Every instance constructor (default, metrics, IPv6, dual-stack) takes its SIP port from the reserved band and gives its engine an RTP allocator, both below the OS ephemeral pool, with pion's range disjoint from the SIP RTP pool. A constructor that skips the wiring brings back RTP-into-a-SIP-port flake. |
+| `TestRTPSessionsBindInsideThePool` | Sessions created from an instance's allocator bind inside its pool — a nil allocator would silently fall back to `:0`. |
+| `TestSIPPortsDifferPerLiveInstance` | No two live instances are given the same SIP port — an engine's sockets outlive the test that created it. |
+| `TestReservedSIPPortsSkipBoundPorts` | A port anything is bound to is skipped rather than reserved, which is what makes reusing the band safe. |
+
+---
+
+### Port bands used by the harness
+
+Every port the harness picks sits below the OS ephemeral range (Linux
+32768-60999, macOS 49152-65535), so nothing it binds can collide with a port
+the kernel hands to an unrelated `:0` bind:
+
+| Band | Use |
+|------|-----|
+| 8192-16383 | SIP ports, one per instance, checked free before use and only reused after the whole band |
+| 16384-28671 | RTP, one pool shared by every instance in the process |
+| 28672-32767 | `RTP_PORT_MIN`/`RTP_PORT_MAX` — pion's range for WebRTC/LiveKit/WhatsApp/MoQ legs |
+
+Wiring lives in `tests/integration/ports_test.go`; new instance constructors
+must use `reserveSIPPort` and `testRTPAllocator` rather than binding `:0`.
 
 ---
 
