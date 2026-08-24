@@ -24,12 +24,8 @@ import (
 func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 	t.Helper()
 
-	udpConn, err := net.ListenPacket("udp6", "[::1]:0")
-	if err != nil {
-		t.Skipf("[%s] cannot bind UDP on [::1]: %v", name, err)
-	}
-	sipPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-	udpConn.Close()
+	requireIPv6Loopback(t, name)
+	sipPort := reserveSIPPort(t, "udp6", "tcp6")
 
 	log := slog.Default().With("instance", name)
 	recDir := t.TempDir()
@@ -42,6 +38,8 @@ func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 		HTTPAddr:          "[::1]:0",
 		RecordingDir:      recDir,
 		DefaultSampleRate: 16000,
+		RTPPortMin:        pionPortMin,
+		RTPPortMax:        pionPortMax,
 	}
 
 	bus := events.NewBus("test")
@@ -50,12 +48,13 @@ func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 	roomMgr := room.NewManager(legMgr, bus, log)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIPV6: "::1",
-		ListenIP: "::1",
-		BindPort: sipPort,
-		SIPHost:  name,
-		Codecs:   []codec.CodecType{codec.CodecPCMU},
-		Log:      log,
+		BindIPV6:      "::1",
+		ListenIP:      "::1",
+		PortAllocator: testRTPAllocator(t),
+		BindPort:      sipPort,
+		SIPHost:       name,
+		Codecs:        []codec.CodecType{codec.CodecPCMU},
+		Log:           log,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)
@@ -128,12 +127,8 @@ func newTestInstanceIPv6(t *testing.T, name string) *testInstance {
 func newTestInstanceDualStack(t *testing.T, name string) *testInstance {
 	t.Helper()
 
-	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("[%s] find free UDP port: %v", name, err)
-	}
-	sipPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-	udpConn.Close()
+	requireIPv6Loopback(t, name)
+	sipPort := reserveSIPPort(t, "udp4", "tcp4", "udp6", "tcp6")
 
 	log := slog.Default().With("instance", name)
 	recDir := t.TempDir()
@@ -148,6 +143,8 @@ func newTestInstanceDualStack(t *testing.T, name string) *testInstance {
 		HTTPAddr:          "127.0.0.1:0",
 		RecordingDir:      recDir,
 		DefaultSampleRate: 16000,
+		RTPPortMin:        pionPortMin,
+		RTPPortMax:        pionPortMax,
 	}
 
 	bus := events.NewBus("test")
@@ -156,14 +153,15 @@ func newTestInstanceDualStack(t *testing.T, name string) *testInstance {
 	roomMgr := room.NewManager(legMgr, bus, log)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:     "127.0.0.1",
-		BindIPV6:   "::1",
-		ListenIP:   "127.0.0.1",
-		ListenIPV6: "::1",
-		BindPort:   sipPort,
-		SIPHost:    name,
-		Codecs:     []codec.CodecType{codec.CodecPCMU},
-		Log:        log,
+		BindIP:        "127.0.0.1",
+		BindIPV6:      "::1",
+		ListenIP:      "127.0.0.1",
+		ListenIPV6:    "::1",
+		PortAllocator: testRTPAllocator(t),
+		BindPort:      sipPort,
+		SIPHost:       name,
+		Codecs:        []codec.CodecType{codec.CodecPCMU},
+		Log:           log,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)

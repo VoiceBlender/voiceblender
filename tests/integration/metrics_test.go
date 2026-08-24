@@ -30,13 +30,7 @@ import (
 func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 	t.Helper()
 
-	// Find a free UDP port for SIP.
-	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("[%s] find free UDP port: %v", name, err)
-	}
-	sipPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-	udpConn.Close()
+	sipPort := reserveSIPPort(t)
 
 	log := slog.Default().With("instance", name)
 
@@ -49,6 +43,8 @@ func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 		SIPHost:      name,
 		HTTPAddr:     "127.0.0.1:0",
 		RecordingDir: recDir,
+		RTPPortMin:   pionPortMin,
+		RTPPortMax:   pionPortMax,
 	}
 
 	bus := events.NewBus("test")
@@ -61,12 +57,13 @@ func newTestInstanceWithMetrics(t *testing.T, name string) *testInstance {
 	webhooks.SetMetricsObserver(metricsCollector)
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:   "127.0.0.1",
-		ListenIP: "127.0.0.1",
-		BindPort: sipPort,
-		SIPHost:  name,
-		Codecs:   []codec.CodecType{codec.CodecPCMU},
-		Log:      log,
+		BindIP:        "127.0.0.1",
+		ListenIP:      "127.0.0.1",
+		PortAllocator: testRTPAllocator(t),
+		BindPort:      sipPort,
+		SIPHost:       name,
+		Codecs:        []codec.CodecType{codec.CodecPCMU},
+		Log:           log,
 	})
 	if err != nil {
 		t.Fatalf("[%s] new engine: %v", name, err)
