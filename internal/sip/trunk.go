@@ -70,7 +70,11 @@ type TrunkView struct {
 // SIPRegisterTrunkView holds the sip_register-specific runtime fields.
 // Credentials (password) are never exposed.
 type SIPRegisterTrunkView struct {
-	RegistrarURI            string `json:"registrar_uri"`
+	RegistrarURI string `json:"registrar_uri"`
+	// OutboundProxy is the next hop this trunk actually routes through, be it
+	// set per-trunk or inherited from SIP_OUTBOUND_PROXY. Empty means requests
+	// go straight to RegistrarURI.
+	OutboundProxy           string `json:"outbound_proxy,omitempty"`
 	AOR                     string `json:"aor"`
 	Username                string `json:"username,omitempty"`
 	ContactURI              string `json:"contact_uri,omitempty"`
@@ -86,6 +90,8 @@ type SIPRegisterTrunkView struct {
 	// when DNS / load-balancing fronts the registrar) on each 2xx response.
 	// Used as the key for tagging inbound INVITEs back to this trunk.
 	SourceAddress string `json:"source_address,omitempty"`
+	// TLSInsecureSkipVerify echoes the per-trunk certificate exemption.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 // IPIPTrunkView is the placeholder shape for the unimplemented ip_ip type.

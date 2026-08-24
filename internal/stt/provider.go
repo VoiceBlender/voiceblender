@@ -68,6 +68,12 @@ type TranscriptEvent struct {
 	Text        string
 	IsFinal     bool
 	SpeechFinal bool // the speaker stopped, not just a finalized segment
+	// AudioStart and AudioEnd are where in the stream this was said, in seconds
+	// from the first audio the transcriber was given, zero when the provider
+	// reports no timing. Not the callback's arrival time: a turn detector emits
+	// a turn when it ends, so arrival lands after the words were spoken.
+	AudioStart float64
+	AudioEnd   float64
 }
 
 // TranscriptDetailCallback receives TranscriptEvent values.

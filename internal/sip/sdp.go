@@ -820,6 +820,10 @@ func parseAudioMedia(md *pionsdp.MediaDescription, index int, sessionIP, session
 			m.Lang = a.Value
 		case "rtcp-mux":
 			m.RTCPMux = true
+		case "ssrc":
+			if m.CNAME == "" {
+				m.CNAME = ssrcCNAME(a.Value)
+			}
 		}
 	}
 
@@ -996,4 +1000,21 @@ func negotiateCodec(offeredCodecs []codec.CodecType, offeredPTs map[codec.CodecT
 		}
 	}
 	return codec.CodecUnknown, 0, false
+}
+
+// ssrcCNAME returns the cname of an "a=ssrc:<id> cname:<value>" attribute value
+// (RFC 5576), or "" when the attribute carries no cname.
+func ssrcCNAME(v string) string {
+	// RFC 5576 uses a single space, but split on any whitespace rather than miss
+	// a cname over a tab.
+	fields := strings.Fields(v)
+	if len(fields) < 2 {
+		return ""
+	}
+	for _, f := range fields[1:] {
+		if cname, ok := strings.CutPrefix(f, "cname:"); ok {
+			return cname
+		}
+	}
+	return ""
 }

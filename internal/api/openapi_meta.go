@@ -176,14 +176,18 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.transfer_failed.error":               "Local error message (when no SIP status applies)",
 
 		// stt
-		"stt.text.leg_id":       "Leg identifier",
-		"stt.text.room_id":      "Room identifier",
-		"stt.text.text":         "Transcribed text",
-		"stt.text.is_final":     "Whether this is a final or partial transcript",
-		"stt.text.speech_final": "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+		"stt.text.leg_id":         "Leg identifier",
+		"stt.text.room_id":        "Room identifier",
+		"stt.text.text":           "Transcribed text",
+		"stt.text.is_final":       "Whether this is a final or partial transcript",
+		"stt.text.speech_final":   "Whether the speaker stopped talking, as opposed to is_final's 'this segment will not change again'. Deepgram only; always false for providers that do not report it",
+		"stt.text.stream_id":      "Which of the leg's audio streams this came from. Empty when the leg's audio is the call itself; set for a recording session, where each stream is a different party. Resolve it through GET /v1/legs/{id}/siprec",
+		"stt.text.audio_start_ms": "Where in the stream this was said, in milliseconds from the first audio the transcriber was given. Absent when the provider reports no timing. Not the same as the event's arrival time, which is when the provider finished rather than when the words were spoken",
+		"stt.text.audio_end_ms":   "End of the span audio_start_ms opens",
 
 		// stt.turn
 		"stt.turn.leg_id":                 "Leg identifier",
+		"stt.turn.stream_id":              "Which of the leg's audio streams this turn belongs to. Empty when the leg's audio is the call itself. See stt.text.stream_id",
 		"stt.turn.room_id":                "Room identifier",
 		"stt.turn.event":                  "Turn boundary: start_of_turn, update, eager_end_of_turn, turn_resumed or end_of_turn (Deepgram Flux), or utterance_end (Deepgram, when utterance_end_ms is set). New values may be added",
 		"stt.turn.turn_index":             "Index of the turn within the session, incrementing after each end_of_turn",
@@ -322,7 +326,11 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Originate a new outbound leg. The `type` field selects the transport: " +
 				"`sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; " +
 				"`websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or " +
-				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers).",
+				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). " +
+				"For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose " +
+				"`Route` header, leaving the Request-URI unchanged. It outranks the matched trunk's " +
+				"`outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR " +
+				"registered to this server outranks all three and is delivered to the bound contact.",
 			Tags:        []string{"Legs"},
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
@@ -509,6 +517,26 @@ func RoutesMetadata() []RouteMeta {
 			Tags:    []string{"Legs"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg unmuted"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/deaf", OperationID: "deafLeg",
+			Summary: "Deafen a leg",
+			Description: "A deaf leg stops receiving the room mix. Its own audio is still " +
+				"contributed to the mix and still reaches taps (recording/STT) unless it is also muted.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Leg deafened"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/deaf", OperationID: "undeafLeg",
+			Summary: "Undeafen a leg",
+			Tags:    []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Leg undeafened"},
 				404: {Description: "Leg not found"},
 			},
 		},
@@ -828,7 +856,7 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Leg not found"},
-				409: {Description: "Leg not connected, STT already running, or no audio reader"},
+				409: {Description: "Leg not connected, STT already running, no audio reader, or the leg's audio is per-stream (transcribe its room instead)"},
 				503: {Description: "No ElevenLabs API key provided"},
 			},
 		},
@@ -1043,7 +1071,7 @@ func RoutesMetadata() []RouteMeta {
 				"path room), or `none` (allocated but silent). Bridging rooms into " +
 				"a cycle with feedback-enabled directions causes audio feedback — " +
 				"use one-way directions to break loops.",
-			Tags:        []string{"Bridges"},
+			Tags:        []string{"Rooms"},
 			RequestType: CreateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Bridge created", Type: BridgeView{}},
@@ -1055,7 +1083,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "GET", Path: "/rooms/{id}/bridges", OperationID: "listRoomBridges",
 			Summary: "List bridges involving this room",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of bridges (direction relative to the path room)", Type: []BridgeView{}},
 				404: {Description: "Room not found"},
@@ -1064,7 +1092,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "GET", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "getRoomBridge",
 			Summary: "Get a bridge involving this room",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge details (direction relative to the path room)", Type: BridgeView{}},
 				404: {Description: "Bridge not found for this room"},
@@ -1074,7 +1102,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "PATCH", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "updateRoomBridge",
 			Summary:     "Change a bridge's audio flow direction",
 			Description: "Live-updates the direction (relative to the room in the path) without interrupting audio.",
-			Tags:        []string{"Bridges"},
+			Tags:        []string{"Rooms"},
 			RequestType: UpdateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge updated", Type: BridgeView{}},
@@ -1085,7 +1113,7 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "DELETE", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "deleteRoomBridge",
 			Summary: "Tear down a bridge",
-			Tags:    []string{"Bridges"},
+			Tags:    []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge deleted"},
 				404: {Description: "Bridge not found for this room"},
@@ -1353,7 +1381,7 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "Recording started"},
 				400: {Description: "Invalid storage type, S3 not configured, or invalid S3 credentials"},
 				404: {Description: "Room not found"},
-				409: {Description: "Room has no participants"},
+				409: {Description: "Room has no audio sources (no leg participants and no attached streams)"},
 				500: {Description: "Failed to create recording file"},
 			},
 		},
@@ -1399,7 +1427,7 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT started"},
 				404: {Description: "Room not found"},
-				409: {Description: "STT already running or room has no participants"},
+				409: {Description: "STT already running, or the room has no audio sources (no leg participants and no attached streams)"},
 				503: {Description: "No ElevenLabs API key provided"},
 			},
 		},
@@ -1581,6 +1609,11 @@ func RoutesMetadata() []RouteMeta {
 				"begins REGISTERing to the supplied registrar URI with digest auth, refreshes before " +
 				"expiry, and routes inbound INVITEs that arrive on that peer's socket plus outbound " +
 				"INVITEs whose `from` matches the AOR through the trunk. " +
+				"Set `sip_register.outbound_proxy` to send both the REGISTER and those INVITEs " +
+				"via a next-hop proxy instead of straight at the registrar; the Request-URI and " +
+				"digest authentication still target `registrar_uri`. It defaults to " +
+				"`SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot " +
+				"reports the hop actually in effect. " +
 				"For `type: \"ip_ip\"`, returns 501 (reserved, not yet implemented).",
 			Tags:        []string{"SIP Trunks"},
 			RequestType: CreateTrunkRequest{},

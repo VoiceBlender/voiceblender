@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,18 @@ const (
 	DefaultSampleRate = 16000 // Hz
 )
 
+const (
+	// liveQueueDepth bounds both directions for a live participant. Ingress
+	// overflow drops rather than blocks, because a network source cannot be
+	// slowed down; egress is kept equally shallow so a stalled writer costs a
+	// dropped frame instead of accumulating mouth-to-ear latency.
+	liveQueueDepth = 3
+	// playbackQueueDepth gives internally generated sources slack to absorb a
+	// burst. They are mixer-clocked (see MarkMixerClocked), so the depth is
+	// headroom, not a drop threshold.
+	playbackQueueDepth = 50
+)
+
 func ValidSampleRate(rate int) bool {
 	return rate == 8000 || rate == 16000 || rate == 48000
 }
@@ -67,6 +80,19 @@ type Participant struct {
 	// shared egress the leg may already have carried onto a fresh participant,
 	// so closing it here would silence the live successor.
 	ownerClosesEgress atomic.Bool
+
+	// mixerClocked marks a source the mixer itself paces: readLoop blocks on a
+	// full queue instead of dropping, so the producer runs on the mix tick and
+	// clock drift costs latency rather than audio. Only for sources that can be
+	// slowed down — never a live leg, and never a bridge endpoint, whose writer
+	// is driven from the peer room's mixTick.
+	mixerClocked atomic.Bool
+
+	// A participant that has gone quiet and one whose source has stopped are
+	// both silence downstream; only these tell them apart.
+	framesRead atomic.Uint64
+	starved    atomic.Uint64
+	shortReads atomic.Uint64
 
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
@@ -177,6 +203,11 @@ func (m *Mixer) FrameSizeBytes() int  { return m.frameSizeBytes }
 // SetComfortNoise enables or disables comfort noise injection during silence.
 func (m *Mixer) SetComfortNoise(enabled bool) {
 	m.comfortNoise.SetEnabled(enabled)
+}
+
+// ComfortNoiseEnabled reports whether comfort noise injection is on.
+func (m *Mixer) ComfortNoiseEnabled() bool {
+	return m.comfortNoise.IsEnabled()
 }
 
 func (m *Mixer) SetTap(w io.Writer) {
@@ -382,9 +413,9 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *P
 		ID:       id,
 		Reader:   reader,
 		Writer:   gw,
-		incoming: make(chan []byte, 3),
-		outgoing: make(chan []byte, 3),
-		inject:   make(chan []byte, 3),
+		incoming: make(chan []byte, liveQueueDepth),
+		outgoing: make(chan []byte, liveQueueDepth),
+		inject:   make(chan []byte, liveQueueDepth),
 		done:     make(chan struct{}),
 		guard:    gw,
 	}
@@ -412,6 +443,13 @@ func (p *Participant) MarkOwnerClosesEgress() {
 	p.ownerClosesEgress.Store(true)
 }
 
+// MarkMixerClocked makes the mixer this source's clock. See mixerClocked.
+// AddPlaybackSource does it already; call it for a duplex source that is still
+// internally generated, such as a room agent's speak buffer.
+func (p *Participant) MarkMixerClocked() {
+	p.mixerClocked.Store(true)
+}
+
 // AddPlaybackSource adds a read-only source into the mix (e.g. audio file).
 // It is mixed into everyone's output but receives no mixed-minus-self back.
 // Playback is room-wide audio and bypasses the routing matrix.
@@ -421,9 +459,10 @@ func (m *Mixer) AddPlaybackSource(id string, reader io.Reader) {
 		Reader:        reader,
 		WriteOnly:     true,
 		BypassRouting: true,
-		incoming:      make(chan []byte, 50),
+		incoming:      make(chan []byte, playbackQueueDepth),
 		done:          make(chan struct{}),
 	}
+	p.mixerClocked.Store(true)
 
 	m.mu.Lock()
 	if m.stopped {
@@ -633,8 +672,42 @@ func (m *Mixer) recoverTick() {
 	)
 }
 
-// readLoop continuously reads PCM frames from a participant's Reader
-// and buffers them for the mix loop. Blocks on IO (RTP receive).
+// fillFrame reads until buf holds a complete mix frame, or the source fails.
+// A source may hand us any packet size, so a short read is normal and is read
+// again rather than queued as if it were a whole frame. A partial frame at end
+// of stream is discarded with the error.
+func (m *Mixer) fillFrame(p *Participant, buf []byte, stopCh <-chan struct{}) error {
+	filled := 0
+	for filled < len(buf) {
+		n, err := p.Reader.Read(buf[filled:])
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			// io.Reader discourages (0, nil) but does not forbid it, and this
+			// loop would otherwise spin on it forever without looking at stopCh.
+			select {
+			case <-stopCh:
+				return errStopped
+			case <-p.done:
+				return errStopped
+			default:
+				runtime.Gosched()
+			}
+			continue
+		}
+		if filled+n < len(buf) {
+			p.shortReads.Add(1)
+		}
+		filled += n
+	}
+	return nil
+}
+
+// errStopped ends a read loop because the participant is going away, not
+// because its source failed.
+var errStopped = errors.New("participant stopped")
+
 func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 	defer m.recoverParticipant(p, "readLoop")
 	buf := make([]byte, m.frameSizeBytes)
@@ -647,12 +720,39 @@ func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 		default:
 		}
 
-		n, err := p.Reader.Read(buf)
-		if err != nil {
+		// A whole frame per queue entry: the mix loop consumes exactly one per
+		// tick, so a source packetised finer than Ptime would otherwise have the
+		// surplus dropped below and the remainder mixed short.
+		if err := m.fillFrame(p, buf, stopCh); err != nil {
+			// The participant now contributes silence for the rest of the call,
+			// which recording and transcription cannot distinguish from a quiet
+			// party.
+			select {
+			case <-p.done:
+			default:
+				if errors.Is(err, errStopped) {
+					return
+				}
+				m.log.Warn("mixer: participant read loop stopped, it now contributes silence",
+					"participant_id", p.ID, "error", err, "frames_read", p.framesRead.Load())
+			}
 			return
 		}
-		frame := make([]byte, n)
-		copy(frame, buf[:n])
+		p.framesRead.Add(1)
+		frame := make([]byte, len(buf))
+		copy(frame, buf)
+
+		// A mixer-clocked source is slowed to the mix tick rather than trimmed.
+		if p.mixerClocked.Load() {
+			select {
+			case p.incoming <- frame:
+			case <-p.done:
+				return
+			case <-stopCh:
+				return
+			}
+			continue
+		}
 
 		// Buffer the frame. If full, drop oldest to prevent lag.
 		select {
@@ -756,6 +856,7 @@ func (m *Mixer) mixTick() {
 		case raw = <-p.incoming:
 		default:
 			raw = make([]byte, m.frameSizeBytes) // silence
+			p.starved.Add(1)
 		}
 		// Write raw PCM to per-participant tap (for STT) before conversion.
 		// Tap still receives audio even when muted (recording/STT of own audio).
@@ -907,4 +1008,17 @@ func clamp16(s int32) int16 {
 		return math.MinInt16
 	}
 	return int16(s)
+}
+
+// ParticipantFeed reports how many frames a participant's source has produced
+// and how many mix intervals ran with nothing queued for it. A stopped source
+// shows framesRead flat while starved climbs; a quiet party shows neither.
+func (m *Mixer) ParticipantFeed(id string) (framesRead, starved, shortReads uint64, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.participants[id]
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return p.framesRead.Load(), p.starved.Load(), p.shortReads.Load(), true
 }

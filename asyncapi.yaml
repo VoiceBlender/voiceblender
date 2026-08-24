@@ -6221,6 +6221,10 @@ components:
                         $ref: '#/components/schemas/SIPRECStreamView'
                 metadata:
                     type: string
+                warnings:
+                    type: array
+                    items:
+                        type: string
             required:
                 - leg_id
                 - participants
@@ -6255,6 +6259,8 @@ components:
             properties:
                 registrar_uri:
                     type: string
+                outbound_proxy:
+                    type: string
                 aor:
                     type: string
                 username:
@@ -6265,6 +6271,8 @@ components:
                     type: string
                 expires_seconds:
                     type: integer
+                tls_insecure_skip_verify:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor
@@ -6273,6 +6281,8 @@ components:
             type: object
             properties:
                 registrar_uri:
+                    type: string
+                outbound_proxy:
                     type: string
                 aor:
                     type: string
@@ -6294,6 +6304,8 @@ components:
                     type: integer
                 source_address:
                     type: string
+                tls_insecure_skip_verify:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor

@@ -905,7 +905,26 @@ func splitFromIdentity(from string) (user, host string) {
 // Shared by POST /v1/legs and the REFER originate path so a transferred call
 // claims the same identity — and reaches the same upstream — as one the app
 // dialled itself.
+//
+// Also applies SIP_OUTBOUND_PROXY when nothing more specific chose a next hop.
 func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) string {
+	trunkID := s.applyTrunkIdentity(from, opts)
+	// The global default must not displace a matched trunk's registrar route:
+	// setting the env var would otherwise silently redirect calls on every
+	// already-working trunk.
+	if opts.RouteURI == nil && opts.ProxyURI == nil && s.Config.SIPOutboundProxy != "" {
+		u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
+		if err != nil {
+			s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; ignoring", "error", err)
+		} else {
+			opts.ProxyURI = &u
+		}
+	}
+	return trunkID
+}
+
+// applyTrunkIdentity is the trunk-matching half of applyFromIdentity.
+func (s *Server) applyTrunkIdentity(from string, opts *sipmod.InviteOptions) string {
 	opts.FromUser, opts.FromHost = splitFromIdentity(from)
 	if from == "" {
 		return ""
@@ -934,6 +953,11 @@ func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) stri
 	}
 	regURI := reg.RegistrarURI()
 	opts.RouteURI = &regURI
+	// The trunk already carries its own proxy or the global default, resolved
+	// at create time.
+	if p := reg.OutboundProxy(); p != nil {
+		opts.ProxyURI = p
+	}
 	// The registrar authenticated us under the AOR realm; claim that identity
 	// on the wire unless the caller named a host explicitly.
 	if opts.FromHost == "" {
@@ -953,6 +977,15 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	recipient := sip.Uri{}
 	if err := sip.ParseUri(target, &recipient); err != nil {
 		return LegView{}, newAPIError(http.StatusBadRequest, "invalid SIP URI: %v", err)
+	}
+
+	var legProxy *sip.Uri
+	if req.OutboundProxy != "" {
+		u, err := sipmod.ParseProxyURI(req.OutboundProxy)
+		if err != nil {
+			return LegView{}, newAPIError(http.StatusBadRequest, "invalid outbound_proxy: %v", err)
+		}
+		legProxy = &u
 	}
 
 	// Reject a malformed multi-stream offer up front: letting it through would
@@ -1045,6 +1078,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		inviteOpts.RTTEnabled = true
 	}
 	trunkIDForLeg := s.applyFromIdentity(req.From, &inviteOpts)
+	if legProxy != nil {
+		inviteOpts.ProxyURI = legProxy
+	}
 	l.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
 	l.SetTrunkID(trunkIDForLeg)
 
@@ -1063,6 +1099,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			}
 			inviteOpts.ForkTargets = targets
 			s.Log.Info("AOR resolved", "aor", aor, "bindings", len(bindings))
+			if inviteOpts.ProxyURI != nil {
+				s.Log.Warn("outbound_proxy ignored: recipient is an AOR registered here",
+					"leg_id", l.ID(), "aor", aor)
+			}
 		}
 	}
 	inviteOpts.OnEarlyMedia = func(remoteSDP *sipmod.SDPMedia, rtpSess *sipmod.RTPSession) {

@@ -70,6 +70,11 @@ type Config struct {
 	// IngressBufferMs caps how much inbound audio may be buffered before
 	// the recv loop starts dropping frames. Defaults to 1000ms.
 	IngressBufferMs int
+	// JitterBufferMs is the ingress playout lead: AudioReader withholds audio
+	// until this much is buffered, so a producer that runs late against the
+	// mixer tick spends the lead instead of leaving a gap. 0 (default) is
+	// passthrough. IngressBufferMs remains the capacity bound.
+	JitterBufferMs int
 	// TextBufferDepth caps how many inbound text messages may be buffered
 	// before the recv loop starts dropping. Defaults to 50.
 	TextBufferDepth int
@@ -127,6 +132,13 @@ func (c *Config) Validate() error {
 	if c.IngressBufferMs == 0 {
 		c.IngressBufferMs = DefaultIngressBufferMs
 	}
+	if c.JitterBufferMs < 0 {
+		c.JitterBufferMs = 0
+	}
+	// Capacity must exceed the lead, or the buffer can never warm up.
+	if c.JitterBufferMs > 0 && c.IngressBufferMs <= c.JitterBufferMs {
+		c.IngressBufferMs = c.JitterBufferMs + c.FrameMs
+	}
 	if c.TextBufferDepth == 0 {
 		c.TextBufferDepth = DefaultTextBufferDepth
 	}
@@ -147,6 +159,20 @@ func (c *Config) FrameBytesPCM() int { return c.FrameSamples() * 2 }
 // IngressBufferBytes is the byte capacity of the audio ingress streamBuffer.
 func (c *Config) IngressBufferBytes() int {
 	frames := c.IngressBufferMs / c.FrameMs
+	if frames < 1 {
+		frames = 1
+	}
+	return frames * c.FrameBytesPCM()
+}
+
+// JitterPlayoutBytes is the ingress playout lead in whole frames, 0 when
+// jitter buffering is disabled. A lead shorter than one frame is rounded up:
+// asking for a buffer and getting none would be worse than the rounding.
+func (c *Config) JitterPlayoutBytes() int {
+	if c.JitterBufferMs <= 0 || c.FrameMs <= 0 {
+		return 0
+	}
+	frames := c.JitterBufferMs / c.FrameMs
 	if frames < 1 {
 		frames = 1
 	}

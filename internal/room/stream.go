@@ -2,6 +2,7 @@ package room
 
 import (
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/leg"
@@ -127,6 +128,39 @@ func (r *Room) AddLegStream(l StreamedLeg, streamID, role string) (*mixer.Partic
 	r.applyRoutingLocked()
 	r.syncMixerLocked()
 	return p, true
+}
+
+// StreamParticipant describes one secondary stream mixed into a room, for
+// callers that act per audio source rather than per leg — a recording session's
+// room holds only these.
+type StreamParticipant struct {
+	// ParticipantID is the mixer's key for this stream, "legID#streamID".
+	ParticipantID string
+	LegID         string
+	StreamID      string
+	// Role is what the stream was attached as — for a recording session the AOR
+	// of the party it carries. A metadata refresh can change it, so resolve
+	// identity from the leg's recording-session view when it matters.
+	Role string
+}
+
+// StreamParticipants returns the secondary streams mixed into this room,
+// ordered by participant ID so repeated calls behave identically.
+func (r *Room) StreamParticipants() []StreamParticipant {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]StreamParticipant, 0, len(r.legStreams))
+	for pid, ls := range r.legStreams {
+		out = append(out, StreamParticipant{
+			ParticipantID: pid,
+			LegID:         ls.legID,
+			StreamID:      ls.streamID,
+			Role:          ls.role,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ParticipantID < out[j].ParticipantID })
+	return out
 }
 
 // streamEndpoints adapts a stream's direction to the mixer's participant

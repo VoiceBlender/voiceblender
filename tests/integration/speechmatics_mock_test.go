@@ -303,9 +303,11 @@ func TestSpeechmaticsMock_LegLifecycle(t *testing.T) {
 
 	texts := sttTextEvents(instA, outboundID)
 	var interim, final int
+	var finalSpans [][2]int
 	for _, d := range texts {
 		if d.IsFinal {
 			final++
+			finalSpans = append(finalSpans, [2]int{d.AudioStartMs, d.AudioEndMs})
 		} else {
 			interim++
 		}
@@ -320,6 +322,11 @@ func TestSpeechmaticsMock_LegLifecycle(t *testing.T) {
 	}
 	if final != 2 {
 		t.Errorf("got %d final transcripts, want 2 (one per AddTranscript)", final)
+	}
+	// Each final carries its own segment window, not the whole utterance.
+	wantSpans := [][2]int{{500, 1600}, {1700, 2800}}
+	if final == 2 && finalSpans != nil && (finalSpans[0] != wantSpans[0] || finalSpans[1] != wantSpans[1]) {
+		t.Errorf("final transcript spans = %v, want %v", finalSpans, wantSpans)
 	}
 
 	// Leg audio must reach the socket as binary frames, not just the control

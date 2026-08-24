@@ -464,12 +464,22 @@ type RecordingResumedData struct {
 
 type STTTextData struct {
 	LegRoomScope
-	Text    string `json:"text"`
-	IsFinal bool   `json:"is_final"`
+	// StreamID names the leg's audio stream this text came from, empty when the
+	// leg's audio is the call itself. On a recording session it is what tells
+	// the parties apart; resolve it through GET /v1/legs/{id}/siprec.
+	StreamID string `json:"stream_id,omitempty"`
+	Text     string `json:"text"`
+	IsFinal  bool   `json:"is_final"`
 	// SpeechFinal distinguishes "the speaker stopped talking" from IsFinal's
 	// "this segment will not change again". Always false for providers that
 	// do not report it (ElevenLabs, Azure).
 	SpeechFinal bool `json:"speech_final"`
+	// AudioStartMs and AudioEndMs are where in the stream this was said, in
+	// milliseconds from the first audio the transcriber was given, absent when
+	// the provider reports no timing. Not the arrival time: a turn detector
+	// reports a turn when it ends, so arrival lands after the words.
+	AudioStartMs int `json:"audio_start_ms,omitempty"`
+	AudioEndMs   int `json:"audio_end_ms,omitempty"`
 }
 
 // STTTurnData is a turn-boundary signal from a provider that models
@@ -478,6 +488,9 @@ type STTTextData struct {
 // Speechmatics emits only "end_of_turn".
 type STTTurnData struct {
 	LegRoomScope
+	// StreamID names the leg's audio stream this turn belongs to, empty when the
+	// leg's audio is the call itself. See STTTextData.StreamID.
+	StreamID string `json:"stream_id,omitempty"`
 	// Event is "start_of_turn", "update", "eager_end_of_turn", "turn_resumed",
 	// "end_of_turn" or "utterance_end".
 	Event string `json:"event"`

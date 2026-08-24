@@ -59,6 +59,9 @@ type RemoteAudioStream struct {
 	Content string
 	Lang    string
 
+	// CNAME is the a=ssrc cname: value (RFC 5576), empty when absent.
+	CNAME string
+
 	RemoteIP      string
 	RemotePort    int
 	AddressFamily string // "IP4" or "IP6"

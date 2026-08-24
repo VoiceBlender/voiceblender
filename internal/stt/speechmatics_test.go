@@ -203,10 +203,10 @@ func TestSpeechmaticsDispatch_UtteranceSequence(t *testing.T) {
 		c := runSpeechmaticsRecv(t, Options{Partial: true}, frames)
 
 		want := []TranscriptEvent{
-			{Text: "how do"},
-			{Text: "How do I", IsFinal: true},
-			{Text: "reset it?", IsFinal: true},
-			{Text: "Yes.", IsFinal: true},
+			{Text: "how do", AudioEnd: 0.7},
+			{Text: "How do I", IsFinal: true, AudioEnd: 1.0},
+			{Text: "reset it?", IsFinal: true, AudioStart: 1.0, AudioEnd: 1.8},
+			{Text: "Yes.", IsFinal: true, AudioStart: 3.0, AudioEnd: 3.4},
 		}
 		if len(c.transcripts) != len(want) {
 			t.Fatalf("got %d transcripts, want %d: %+v", len(c.transcripts), len(want), c.transcripts)

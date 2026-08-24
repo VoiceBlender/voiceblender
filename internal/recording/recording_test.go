@@ -162,8 +162,7 @@ func TestRecorder_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Use a reader that blocks forever.
-	reader := &blockingReader{}
+	reader := &blockingReader{ctx: ctx}
 
 	_, err := r.Start(ctx, reader, dir)
 	if err != nil {
@@ -322,12 +321,18 @@ func TestRecorder_PauseResume_StateTransitions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	_, err := r.Start(context.Background(), &blockingReader{}, dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, err := r.Start(ctx, &blockingReader{ctx: ctx}, dir)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() {
 		r.Stop()
+		// Stop cancels only the recorder's derived context; the reader holds
+		// the parent, so Wait would block without this.
+		cancel()
 		r.Wait()
 	}()
 
@@ -357,6 +362,12 @@ func TestRecorder_PauseResume_StateTransitions(t *testing.T) {
 // TestRecorder_Pause_WritesSilence verifies that audio written while the
 // recorder is paused appears as silence in the output WAV, while the file's
 // total duration still covers the whole session (timeline preserved).
+//
+// It runs on the blocking fallback — the reader is wrapped so the loop cannot
+// drain it without blocking — because it feeds half a second at a time: a
+// clocked capture would pace that back out over half a second of ticks and drop
+// what overran the accumulator. See TestRecordMono_Pause_WritesSilence for the
+// same guard on the clocked path.
 func TestRecorder_Pause_WritesSilence(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
@@ -376,7 +387,7 @@ func TestRecorder_Pause_WritesSilence(t *testing.T) {
 
 	pr, pw := newSyncPipe()
 
-	fpath, err := r.Start(context.Background(), pr, dir)
+	fpath, err := r.Start(context.Background(), blockingOnly{pr}, dir)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -468,12 +479,18 @@ func generatePCM(sampleRate, seconds int) []byte {
 	return buf
 }
 
-// blockingReader blocks forever on Read until the context is cancelled.
-type blockingReader struct{}
+// blockingOnly hides a reader's TryRead, so a capture over it takes the
+// blocking fallback.
+type blockingOnly struct{ io.Reader }
+
+// blockingReader yields nothing until its context is cancelled, then reports
+// EOF. A fake that ignored the context would park the capture loop inside
+// Read, where it can no longer observe cancellation.
+type blockingReader struct{ ctx context.Context }
 
 func (r *blockingReader) Read(p []byte) (int, error) {
-	// Block forever (the recorder should be cancelled via context).
-	select {}
+	<-r.ctx.Done()
+	return 0, io.EOF
 }
 
 // syncPipe is a simple in-memory pipe used by tests to feed bytes into the

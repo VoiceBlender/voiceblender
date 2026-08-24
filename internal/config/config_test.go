@@ -21,11 +21,16 @@ func TestLoad_Defaults(t *testing.T) {
 		"AMRNB_MODE", "AMRNB_OCTET_ALIGNED", "SIP_CODECS",
 		"SIP_INBOUND_REGISTER_DEFAULT",
 		"SIP_SDP_STRICT_MLINE_ANSWER",
+		"SIP_OUTBOUND_PROXY",
 	} {
 		t.Setenv(key, "")
 	}
 
 	cfg := Load()
+
+	if cfg.SIPOutboundProxy != "" {
+		t.Errorf("SIPOutboundProxy = %q, want empty by default", cfg.SIPOutboundProxy)
+	}
 
 	if cfg.InstanceID == "" {
 		t.Fatal("expected auto-generated InstanceID")
@@ -194,9 +199,13 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("SPEECHMATICS_API_KEY", "sm-key-123")
 	t.Setenv("SPEECHMATICS_URL", "ws://asr.internal:9000/v2")
 	t.Setenv("DEFAULT_SAMPLE_RATE", "48000")
+	t.Setenv("SIP_OUTBOUND_PROXY", "sip:edge.example.com:5060;transport=tcp")
 
 	cfg := Load()
 
+	if cfg.SIPOutboundProxy != "sip:edge.example.com:5060;transport=tcp" {
+		t.Errorf("SIPOutboundProxy = %q, want the configured proxy", cfg.SIPOutboundProxy)
+	}
 	if cfg.InstanceID != "test-123" {
 		t.Errorf("InstanceID = %q, want test-123", cfg.InstanceID)
 	}
@@ -405,5 +414,25 @@ func TestEnvOr_Override(t *testing.T) {
 	t.Setenv("TEST_ENV_OR", "override")
 	if got := envOr("TEST_ENV_OR", "default"); got != "override" {
 		t.Errorf("envOr = %q, want override", got)
+	}
+}
+
+func TestLoad_SIPTLSTrust(t *testing.T) {
+	for _, key := range []string{"SIP_TLS_CA_FILE", "SIP_TLS_INSECURE_SKIP_VERIFY"} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.SIPTLSCAFile != "" || cfg.SIPTLSInsecure {
+		t.Errorf("defaults must verify peers fully, got %+v", cfg)
+	}
+
+	t.Setenv("SIP_TLS_CA_FILE", "/etc/voiceblender/ca.pem")
+	t.Setenv("SIP_TLS_INSECURE_SKIP_VERIFY", "true")
+	cfg = Load()
+	if cfg.SIPTLSCAFile != "/etc/voiceblender/ca.pem" {
+		t.Errorf("SIPTLSCAFile = %q", cfg.SIPTLSCAFile)
+	}
+	if !cfg.SIPTLSInsecure {
+		t.Error("SIPTLSInsecure = false, want true")
 	}
 }

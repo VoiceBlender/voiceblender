@@ -58,6 +58,11 @@ type Snapshot struct {
 	Participants []ParticipantInfo `json:"participants"`
 	Streams      []StreamInfo      `json:"streams"`
 	Metadata     string            `json:"metadata,omitempty"`
+
+	// Warnings holds the disagreements Verify found between the metadata and the
+	// SDP it arrived with; non-empty means the participant bound to a stream may
+	// be wrong.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // State accumulates the recording session's metadata across the initial INVITE
@@ -70,15 +75,20 @@ type State struct {
 	streams      map[string]StreamInfo
 	// sender maps a stream_id to the participant_id sending on it.
 	sender map[string]string
-	raw    []byte
+	// senderConflicts records the other participants that claimed to send on a
+	// stream within one document, which sender alone cannot represent.
+	senderConflicts map[string][]string
+	raw             []byte
+	warnings        []string
 }
 
 // NewState returns an empty recording session state.
 func NewState() *State {
 	return &State{
-		participants: make(map[string]ParticipantInfo),
-		streams:      make(map[string]StreamInfo),
-		sender:       make(map[string]string),
+		participants:    make(map[string]ParticipantInfo),
+		streams:         make(map[string]StreamInfo),
+		sender:          make(map[string]string),
+		senderConflicts: make(map[string][]string),
 	}
 }
 
@@ -100,6 +110,10 @@ func (s *State) Apply(r *Recording) Delta {
 		s.participants = make(map[string]ParticipantInfo, len(r.Participants))
 		s.streams = make(map[string]StreamInfo, len(r.Streams))
 		s.sender = make(map[string]string, len(r.Streams))
+		s.senderConflicts = make(map[string][]string)
+	}
+	if s.senderConflicts == nil {
+		s.senderConflicts = make(map[string][]string)
 	}
 	s.dataMode = r.DataMode
 
@@ -140,6 +154,10 @@ func (s *State) Apply(r *Recording) Delta {
 		}
 	}
 
+	// claimed tracks the streams this document speaks for: only a document that
+	// speaks for a stream again can resolve its conflict, so a partial update
+	// silent about a stream leaves one standing.
+	claimed := make(map[string]string)
 	for _, psa := range r.ParticipantStreams {
 		for _, streamID := range psa.Send {
 			if streamID == "" {
@@ -148,8 +166,19 @@ func (s *State) Apply(r *Recording) Delta {
 			if psa.DisassociateTime != "" {
 				delete(s.sender, streamID)
 				delete(s.streams, streamID)
+				delete(s.senderConflicts, streamID)
 				continue
 			}
+			if prev, seen := claimed[streamID]; seen {
+				// The sender map holds one participant per stream, so a second
+				// claim within one document is kept separately.
+				if prev != psa.ParticipantID {
+					s.senderConflicts[streamID] = append(s.senderConflicts[streamID], psa.ParticipantID)
+				}
+				continue
+			}
+			delete(s.senderConflicts, streamID)
+			claimed[streamID] = psa.ParticipantID
 			s.sender[streamID] = psa.ParticipantID
 		}
 	}
@@ -165,6 +194,21 @@ func (s *State) Apply(r *Recording) Delta {
 			if pid == psa.ParticipantID {
 				delete(s.sender, streamID)
 				delete(s.streams, streamID)
+				delete(s.senderConflicts, streamID)
+			}
+		}
+		// A party that has left no longer contests anything.
+		for streamID, others := range s.senderConflicts {
+			kept := others[:0]
+			for _, pid := range others {
+				if pid != psa.ParticipantID {
+					kept = append(kept, pid)
+				}
+			}
+			if len(kept) == 0 {
+				delete(s.senderConflicts, streamID)
+			} else {
+				s.senderConflicts[streamID] = kept
 			}
 		}
 	}
@@ -195,6 +239,21 @@ func (s *State) SetRaw(raw []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.raw = append([]byte(nil), raw...)
+}
+
+// SetWarnings records the metadata/SDP disagreements Verify found, replacing
+// any from an earlier document.
+func (s *State) SetWarnings(issues []Issue) {
+	if s == nil {
+		return
+	}
+	w := make([]string, 0, len(issues))
+	for _, i := range issues {
+		w = append(w, i.String())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.warnings = w
 }
 
 // SessionID returns the recording session's communication session ID.
@@ -246,6 +305,7 @@ func (s *State) Snapshot() Snapshot {
 		Participants: make([]ParticipantInfo, 0, len(s.participants)),
 		Streams:      make([]StreamInfo, 0, len(s.streams)),
 		Metadata:     string(s.raw),
+		Warnings:     append([]string(nil), s.warnings...),
 	}
 	for _, p := range s.participants {
 		snap.Participants = append(snap.Participants, p)
@@ -288,6 +348,69 @@ func removedKeys[V any](before map[string]struct{}, after map[string]V) []string
 		if _, ok := after[k]; !ok {
 			out = append(out, k)
 		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Merged returns the accumulated session as one complete document, so a partial
+// update can be checked against the whole session rather than the delta it
+// arrived in. Ordering is deterministic.
+func (s *State) Merged() *Recording {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec := &Recording{DataMode: DataModeComplete}
+	if s.sessionID != "" {
+		rec.Sessions = []Session{{SessionID: s.sessionID}}
+		rec.SessionRecordingAssocs = []SessionRecordingAssoc{{SessionID: s.sessionID}}
+	}
+
+	for _, id := range sortedKeys(s.participants) {
+		p := s.participants[id]
+		rec.Participants = append(rec.Participants, Participant{
+			ParticipantID: p.ID,
+			SessionID:     s.sessionID,
+			NameIDs:       []NameID{{AOR: p.AOR}},
+		})
+	}
+
+	for _, id := range sortedKeys(s.streams) {
+		st := s.streams[id]
+		rec.Streams = append(rec.Streams, Stream{
+			StreamID:  st.ID,
+			SessionID: st.SessionID,
+			Label:     st.Label,
+		})
+	}
+
+	sends := make(map[string][]string)
+	for streamID, pid := range s.sender {
+		sends[pid] = append(sends[pid], streamID)
+	}
+	for streamID, others := range s.senderConflicts {
+		for _, pid := range others {
+			sends[pid] = append(sends[pid], streamID)
+		}
+	}
+	for _, pid := range sortedKeys(sends) {
+		streams := sends[pid]
+		sort.Strings(streams)
+		rec.ParticipantStreams = append(rec.ParticipantStreams, ParticipantStreamAssoc{
+			ParticipantID: pid,
+			Send:          streams,
+		})
+	}
+	return rec
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out

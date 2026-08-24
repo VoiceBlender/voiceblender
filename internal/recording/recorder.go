@@ -276,6 +276,12 @@ func (r *Recorder) IsPaused() bool {
 // While paused, incoming samples are replaced with silence so the written
 // WAV preserves real-time duration.
 //
+// A reader that can be drained without blocking is recorded on the same clock
+// as recordStereo, so a source that stops arriving — a held SIP leg, a SIPREC
+// stream whose sender goes quiet, lost RTP — is silence-filled instead of being
+// cut out of the timeline. Only readers that cannot be drained that way fall
+// back to the producer's own cadence, which is all a bulk source can offer.
+//
 // The file is left open on return: the caller publishes or discards it. Closing
 // the encoder is what rewrites the WAV size header, so a close failure is
 // reported as a capture error and the file is discarded rather than published
@@ -291,13 +297,100 @@ func (r *Recorder) recordMono(ctx context.Context, reader io.Reader, f *os.File,
 		}
 	}()
 
-	buf := make([]byte, 640)
 	intBuf := &audio.IntBuffer{
 		Format: &audio.Format{
 			SampleRate:  sampleRate,
 			NumChannels: 1,
 		},
 	}
+
+	if in, ok := reader.(tryReader); ok {
+		// A rate too low to fill a slot has no clock to keep; record it as it
+		// arrives rather than refusing it.
+		if slotBytes := slotBytesFor(sampleRate); slotBytes > 0 {
+			return r.captureMonoClocked(ctx, in, enc, intBuf, slotBytes)
+		}
+	}
+	return r.captureMonoBlocking(ctx, reader, enc, intBuf)
+}
+
+// captureMonoClocked emits one slot per tick, popping a frame from the
+// accumulator or writing silence where none was ready, so the file stays in
+// real time no matter what the producer does. It mirrors recordStereo; see
+// there for why the loop owns its clock.
+func (r *Recorder) captureMonoClocked(ctx context.Context, in tryReader, enc *wav.Encoder, intBuf *audio.IntBuffer, slotBytes int) (wrote bool, err error) {
+	tick, stopTick := r.slotTicker()
+	defer stopTick()
+
+	drainBuf := make([]byte, slotBytes)
+	silence := make([]byte, slotBytes)
+	acc := newSlotBuffer(slotBytes, maxSlotBacklog)
+
+	emit := func() error {
+		slot, ok := acc.pop()
+		if !ok {
+			slot = silence
+		}
+		samples := bytesToInt(slot)
+		if r.paused.Load() {
+			zeroInts(samples)
+		}
+		intBuf.Data = samples
+		if werr := enc.Write(intBuf); werr != nil {
+			return werr
+		}
+		wrote = true
+		return nil
+	}
+
+	// Ticks before the producer has spoken are not recorded: leading silence
+	// would offset the whole timeline, and a capture that never sees a frame must
+	// stay empty so the caller discards it instead of publishing silence.
+	started := false
+
+	// flush writes out whatever whole slots are still buffered, so teardown does
+	// not lose the tail.
+	flush := func() error {
+		for started && acc.size() >= slotBytes {
+			if werr := emit(); werr != nil {
+				return werr
+			}
+		}
+		return nil
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			drainInto(in, acc, drainBuf)
+			return wrote, flush()
+		case <-tick:
+		}
+
+		closed := drainInto(in, acc, drainBuf)
+		if !started {
+			if acc.size() < slotBytes {
+				if closed {
+					return wrote, nil
+				}
+				continue
+			}
+			started = true
+		}
+		if werr := emit(); werr != nil {
+			return wrote, werr
+		}
+		if closed {
+			return wrote, flush()
+		}
+	}
+}
+
+// captureMonoBlocking records a reader at whatever cadence it delivers. A
+// source that cannot be drained without blocking gives the loop no way to tell
+// silence from a stall, so gaps in it are not preserved.
+func (r *Recorder) captureMonoBlocking(ctx context.Context, reader io.Reader, enc *wav.Encoder, intBuf *audio.IntBuffer) (wrote bool, err error) {
+	buf := make([]byte, 640)
 
 	for {
 		select {
@@ -342,6 +435,13 @@ const slotInterval = 20 * time.Millisecond
 // late for the rest of the call.
 const maxSlotBacklog = 16
 
+// slotBytesFor is one slot's worth of 16-bit mono PCM at sampleRate. Derived
+// from slotInterval so a slot and the tick that consumes it cannot drift apart.
+// It is 0 for a rate too low to fill one.
+func slotBytesFor(sampleRate int) int {
+	return sampleRate * int(slotInterval/time.Millisecond) / 1000 * 2
+}
+
 // slotTicker returns the recording clock and a stop function.
 func (r *Recorder) slotTicker() (<-chan time.Time, func()) {
 	if r.newTicker != nil {
@@ -367,9 +467,7 @@ func (r *Recorder) slotTicker() (<-chan time.Time, func()) {
 // left open on return and the caller publishes or discards it, on the same terms
 // as recordMono.
 func (r *Recorder) recordStereo(ctx context.Context, left, right io.Reader, f *os.File, sampleRate int) (wrote bool, err error) {
-	// Derived from slotInterval so the slot and the tick that consumes it cannot
-	// drift apart.
-	slotBytes := sampleRate * int(slotInterval/time.Millisecond) / 1000 * 2
+	slotBytes := slotBytesFor(sampleRate)
 	if slotBytes <= 0 {
 		return false, fmt.Errorf("stereo recording: sample rate %d is too low", sampleRate)
 	}

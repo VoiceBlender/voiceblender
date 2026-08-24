@@ -26,6 +26,7 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.Log = s.Log
+	s.applyWSJitterBuffer(&cfg)
 	if err := cfg.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -128,7 +129,7 @@ func (s *Server) doCreateWebSocketOutboundLeg(req CreateLegRequest) (LegView, er
 	if req.URL == "" {
 		return LegView{}, newAPIError(http.StatusBadRequest, "url is required for type=websocket")
 	}
-	cfg, err := wsCfgFromCreateReq(req, s.Log)
+	cfg, err := s.wsCfgFromCreateReq(req, s.Log)
 	if err != nil {
 		return LegView{}, newAPIError(http.StatusBadRequest, "%s", err.Error())
 	}
@@ -253,6 +254,16 @@ func (s *Server) wireWSLegEventForwarding(l *leg.WebSocketLeg) {
 	})
 }
 
+// applyWSJitterBuffer stamps the server-wide WS ingress playout lead onto cfg.
+// Operator-tuned only, with no per-request override, matching how
+// SIP_JITTER_BUFFER_MS applies to every SIP leg.
+func (s *Server) applyWSJitterBuffer(cfg *wsmedia.Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.JitterBufferMs = s.Config.WSJitterBufferMs
+}
+
 // wsCfgFromQuery builds a wsmedia.Config from a request's query parameters.
 // Defaults are applied by Config.Validate (which the caller must invoke).
 func wsCfgFromQuery(r *http.Request) (wsmedia.Config, error) {
@@ -277,13 +288,14 @@ func wsCfgFromQuery(r *http.Request) (wsmedia.Config, error) {
 // wsCfgFromCreateReq mirrors wsCfgFromQuery but pulls fields out of a
 // JSON POST body. Validation runs with log already set so the resulting
 // config is fully populated (FrameMs, FrameBytesPCM, etc.).
-func wsCfgFromCreateReq(req CreateLegRequest, log *slog.Logger) (wsmedia.Config, error) {
+func (s *Server) wsCfgFromCreateReq(req CreateLegRequest, log *slog.Logger) (wsmedia.Config, error) {
 	cfg := wsmedia.Config{
 		SampleRate:   req.SampleRate,
 		WireFormat:   wsmedia.WireFormat(req.WireFormat),
 		SampleFormat: wsmedia.SampleFormat(req.SampleFormat),
 		Log:          log,
 	}
+	s.applyWSJitterBuffer(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}

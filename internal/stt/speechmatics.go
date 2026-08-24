@@ -443,7 +443,7 @@ func (t *SpeechmaticsTranscriber) recvLoop(ctx context.Context, conn net.Conn, l
 				continue
 			}
 			t.log.Debug("speechmatics stt partial transcript", "text", text)
-			emitTranscript(opts, cb, TranscriptEvent{Text: text})
+			emitTranscript(opts, cb, TranscriptEvent{Text: text, AudioStart: msg.Metadata.StartTime, AudioEnd: msg.Metadata.EndTime})
 		case "AddTranscript":
 			utt.add(msg)
 			text := strings.TrimSpace(msg.Metadata.Transcript)
@@ -453,7 +453,7 @@ func (t *SpeechmaticsTranscriber) recvLoop(ctx context.Context, conn net.Conn, l
 			t.log.Debug("speechmatics stt final transcript", "text", text)
 			// SpeechFinal stays false: EndOfUtterance is what says the speaker
 			// stopped, and it only arrives after this segment.
-			emitTranscript(opts, cb, TranscriptEvent{Text: text, IsFinal: true})
+			emitTranscript(opts, cb, TranscriptEvent{Text: text, IsFinal: true, AudioStart: msg.Metadata.StartTime, AudioEnd: msg.Metadata.EndTime})
 		case "EndOfUtterance":
 			t.log.Info("speechmatics stt end of utterance", "turn_index", turnIndex, "forced", msg.Forced, "text_len", len(utt.text()))
 			emitTurn(opts, TurnEvent{

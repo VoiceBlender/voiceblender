@@ -41,8 +41,11 @@ type EngineConfig struct {
 	TLSBindPort int    // 0 = TLS disabled
 	TLSCertPath string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
 	TLSKeyPath  string // private key (privkey.pem) — required when TLSBindPort > 0
-	SIPDebug    bool   // dump full SIP request/response bodies on the debug channel
-	SIPHost     string
+	// ClientTLS controls how the certificates of remote peers are trusted on
+	// outbound TLS dials (registrars, proxies, SBCs).
+	ClientTLS ClientTLSConfig
+	SIPDebug  bool // dump full SIP request/response bodies on the debug channel
+	SIPHost   string
 	// UseSourceSocket forces SIP responses and in-dialog requests to be
 	// routed back to the request's source socket (req.Source()) instead of
 	// the peer's Contact URI / Via sent-by. Required when peers are behind
@@ -119,6 +122,7 @@ type Engine struct {
 	destPinned        atomic.Uint64 // count of res.Destination overrides applied
 	registrar         *Registrar
 	trunks            *TrunkManager
+	peerTrust         *peerTrust // peers exempted from certificate verification
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -384,10 +388,16 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)),
 		)
 	}
-	if cfg.TLSBindPort != 0 {
-		// Needed for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's
-		// own cert is still supplied separately via ListenAndServeTLS.
-		uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}))
+	// Used for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's own
+	// cert is still supplied separately via ListenAndServeTLS.
+	trust := newPeerTrust()
+	dialTLSConf, err := buildClientTLSConfig(cfg.ClientTLS, trust)
+	if err != nil {
+		return nil, err
+	}
+	uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(dialTLSConf))
+	if cfg.Log != nil && cfg.ClientTLS.InsecureSkipVerify {
+		cfg.Log.Warn("outbound SIP TLS peer certificate verification disabled")
 	}
 	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
@@ -474,6 +484,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		useSourceSocket:   cfg.UseSourceSocket,
 		registrar:         cfg.Registrar,
 		trunks:            NewTrunkManager(),
+		peerTrust:         trust,
 		pendingAuth:       newPendingAuthStore(cfg.NonceTTL),
 	}
 
@@ -1176,6 +1187,11 @@ type InviteOptions struct {
 	// param is appended if not already present.
 	RouteURI *sip.Uri
 
+	// ProxyURI, when set, is an explicitly configured outbound proxy
+	// (leg > trunk > SIP_OUTBOUND_PROXY). It outranks RouteURI, which is only
+	// the implicit route through a matched trunk's registrar.
+	ProxyURI *sip.Uri
+
 	// RTT (T.140 / RFC 4103) parameters. RTTEnabled offers m=text alongside
 	// audio in the INVITE. RTTRedundancy controls the RFC 2198 RED depth
 	// (0 = plain T.140, no RED).
@@ -1378,18 +1394,25 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		req.AppendHeader(h)
 	}
 
-	// Optional loose-route header — used to route the INVITE through a
-	// trunk's upstream proxy/registrar even when the Request-URI's host
-	// would route elsewhere (RFC 3261 §16.12.1).
-	if opts.RouteURI != nil {
-		routeURI := *opts.RouteURI
-		if routeURI.UriParams == nil {
-			routeURI.UriParams = sip.NewParams()
-		}
-		if _, ok := routeURI.UriParams.Get("lr"); !ok {
-			routeURI.UriParams.Add("lr", "")
-		}
-		req.AppendHeader(sip.NewHeader("Route", "<"+routeURI.String()+">"))
+	// Optional loose-route header — used to route the INVITE through a proxy
+	// or a trunk's upstream registrar even when the Request-URI's host would
+	// route elsewhere (RFC 3261 §16.12.1).
+	//
+	// Next-hop precedence: a recipient that resolved to a locally-registered
+	// contact is not an outbound call, so a configured proxy does not apply to
+	// it; otherwise an explicit proxy outranks a trunk's registrar route.
+	route := opts.RouteURI
+	if opts.ProxyURI != nil && len(opts.ForkTargets) == 0 {
+		route = opts.ProxyURI
+	}
+	// sipgo honours a ";transport=" param on the next hop but leaves a "sips:"
+	// one on UDP, so set the transport ourselves rather than rely on its
+	// fallback order. Fork targets override this below.
+	if tp := nextHopTransport(route, recipient); tp != "" && !strings.EqualFold(tp, "udp") {
+		req.SetTransport(strings.ToUpper(tp))
+	}
+	if route != nil {
+		req.AppendHeader(looseRouteHeader(*route))
 	}
 
 	// Single-contact AOR resolution produced one ForkTarget: pin the transport
@@ -1400,18 +1423,17 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// Route headers — so without a Route the CANCEL would re-resolve the AOR
 	// host (possibly ourselves). We therefore add a loose Route to the contact
 	// socket, which both directs the INVITE and survives onto the CANCEL. A
-	// trunk Route (opts.RouteURI) already provides this, so skip it then.
+	// route header already provides this, so skip it then.
 	if len(opts.ForkTargets) == 1 {
 		t := opts.ForkTargets[0]
 		if t.Transport != "" {
 			req.SetTransport(strings.ToUpper(t.Transport))
 		}
 		if t.Socket != "" {
-			if opts.RouteURI == nil {
+			if route == nil {
 				host, port := splitHostPort(t.Socket)
-				contactRoute := sip.Uri{Scheme: "sip", Host: host, Port: port, UriParams: sip.NewParams()}
-				contactRoute.UriParams.Add("lr", "")
-				req.AppendHeader(sip.NewHeader("Route", "<"+contactRoute.String()+">"))
+				contactRoute := sip.Uri{Scheme: "sip", Host: host, Port: port}
+				req.AppendHeader(looseRouteHeader(contactRoute))
 			}
 			req.SetDestination(t.Socket)
 		}

@@ -107,9 +107,10 @@ Originate an outbound SIP call.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
-| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`). For `whatsapp` legs, an E.164 phone number (with or without `+`). |
+| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`); the transport comes from the URI — `sips:` or `;transport=tls` dials over TLS, `;transport=tcp` over TCP, otherwise UDP. An `outbound_proxy`, when present, is the hop actually contacted and its transport wins. For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
+| `outbound_proxy` | string | no | SIP legs only. Next hop for this INVITE, attached as a loose `Route` header with the Request-URI left unchanged (e.g. `"sip:edge.acme.net:5060;transport=tcp"`). Outranks the matched trunk's `outbound_proxy` and `SIP_OUTBOUND_PROXY`; ignored when `to` resolves to an AOR registered here. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
@@ -157,6 +158,18 @@ Configured server-wide:
 - `SIP_JITTER_BUFFER_MAX_MS` — queue cap in ms (default `300`). Frames beyond this are dropped oldest-first to catch up after a stall.
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
+
+**WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a separate, simpler mechanism. There is no reordering to do — a WebSocket delivers in order — so the buffer is only a playout lead: inbound PCM is withheld until the lead is buffered, and a producer that runs a few milliseconds late against the mixer's 20 ms tick spends the lead instead of leaving a gap in the mix. The lead is rebuilt after every underrun. Like the SIP buffer it costs latency equal to its depth and is off by default; `40`–`60` ms is typical for an external agent pacing PCM of its own accord. It needs no separate cap — the WebSocket ingress buffer is already bounded at 1000 ms.
+
+Configured server-wide:
+
+- `WS_JITTER_BUFFER_MS` — playout lead in ms, applied to every WebSocket leg and room WebSocket participant. `0` = disabled passthrough (default). `40`–`80` suits a healthy link.
+
+When the lead is enabled the buffer also compensates for clock drift. The producer's clock and the mixer's 20 ms tick never run at exactly the same rate, so over time one frame has to be given back or taken away — a producer only 2–3% slow leaves a 20 ms hole in the mix roughly every second, which is audible as a click. The buffer makes that correction during a pause instead: whenever its level drifts off target and the audio at the head is below the speech floor, it duplicates or drops one frame of silence, which nothing can hear. Speech is never dropped. If the buffer does run dry mid-word it emits a short faded repeat rather than digital silence, bounded to 40 ms, after which it waits for real audio so a genuinely dead producer still shows up as a gap.
+
+**Sizing the lead.** Drift and jitter are separate problems and only one of them needs buffer. Drift is corrected during pauses, so it is absorbed at any lead down to a single frame — it does not need to be *stored*. Jitter does: a transport that goes quiet for N ms needs a lead of at least N ms, because there is nothing else to play. So size `WS_JITTER_BUFFER_MS` to the worst-case stall you expect from the transport and nothing more; the lead is added one-way latency on every call, which matters far more for a voice agent than for a recording.
+
+**Comfort noise:** `COMFORT_NOISE_ENABLED` (default `true`) injects low-level noise (~−75 dBFS) into otherwise silent mixer frames, so a quiet room does not sound like a dead line. Set it to `false` when downstream processing needs digital silence to stay digital.
 
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
@@ -1330,6 +1343,9 @@ participant, or plain packet loss — appears as silence on that channel for
 exactly as long as it lasted, and never shortens the recording or shifts the
 other channel.
 
+Leg types with a single audio stream record mono, on the same clock and with the
+same guarantee.
+
 **Request:**
 
 ```json
@@ -1501,14 +1517,14 @@ Start real-time speech-to-text transcription on a leg.
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
 | `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, `"azure"`, or `"speechmatics"` |
 | `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, `AZURE_SPEECH_KEY`, or `SPEECHMATICS_API_KEY` env var depending on provider) |
-| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default) or `"flux-general-multi"`. Speechmatics: `"standard"` (default) or `"enhanced"`. |
+| `model` | string | no | Provider-specific model. Deepgram: default `"nova-3"`. Deepgram Flux: `"flux-general-en"` (default, or `"flux-general-multi"` when `language_hints` is given) or `"flux-general-multi"`. Speechmatics: `"standard"` (default) or `"enhanced"`. |
 | `keyterms` | string[] | no | Terms to boost recognition of (Deepgram, Deepgram Flux, and Speechmatics — where they become `additional_vocab`) |
 | `endpointing` | integer | no | **Deepgram:** milliseconds of silence before a segment is finalized; `0` disables endpointing. **Speechmatics:** maps to `max_delay`, clamped to 700–4000 ms; `0` leaves the provider default. |
 | `utterance_end_ms` | integer | no | **Deepgram:** milliseconds of silence after which an `stt.turn` event with `event: "utterance_end"` is emitted. **Speechmatics:** milliseconds of silence that close a turn and emit an `stt.turn` event with `event: "end_of_turn"` — default `600`, capped at `2000`, and `0` disables turn detection. |
 | `eager_eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence (0.3–0.9) that fires an `eager_end_of_turn` `stt.turn` event. **When unset, no `eager_end_of_turn` or `turn_resumed` events are emitted at all.** |
 | `eot_threshold` | number | no | **Deepgram Flux only.** End-of-turn confidence required to close a turn (0–1). Deepgram default `0.7`. |
 | `eot_timeout_ms` | integer | no | **Deepgram Flux only.** Milliseconds of silence after which a turn closes regardless of confidence. Deepgram default `5000`. |
-| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes for the `"flux-general-multi"` model. |
+| `language_hints` | string[] | no | **Deepgram Flux only.** Candidate language codes. Selects `"flux-general-multi"` when `model` is not given, since that is the only model Deepgram accepts them on. Ignored when `model` names a different one. |
 
 Fields that do not apply to the selected provider are ignored, so switching
 providers never turns a previously valid request into an error.
@@ -1526,7 +1542,12 @@ providers never turns a previously valid request into an error.
 { "status": "stt_started", "leg_id": "550e8400-..." }
 ```
 
-Transcripts are delivered via `stt.text` webhook events.
+Transcripts are delivered via `stt.text` webhook events (and over `/v1/vsi`).
+
+A leg whose m-line 0 is another party's audio rather than the call — a SIPREC
+recording session — is refused with `409`: transcribe its room instead, which
+starts one transcriber per stream. Reading such a leg's audio directly would take
+frames away from the mixer that is already carrying them.
 
 **Errors:**
 - `404` — Leg not found
@@ -1741,6 +1762,29 @@ curl -X POST localhost:8080/v1/legs/$LEG_ID/stt \
 
 Neither ElevenLabs nor Azure reports turn boundaries: they emit no `stt.turn`
 events, and `speech_final` on their `stt.text` events is always `false`.
+
+#### Where in the audio it was said
+
+`stt.text` carries `audio_start_ms` and `audio_end_ms`: the span the transcript
+covers, in milliseconds from the first audio the transcriber was given. Both are
+absent when the provider reports no timing (ElevenLabs, Azure).
+
+Use these rather than the event's arrival time to line a transcript up against a
+recording. A provider with a turn detector reports a turn when the turn *ends*,
+so arrival time places a sentence after the words rather than on them, and the
+further out the longer the speaker went on.
+
+```json
+{ "type": "stt.text", "leg_id": "550e8400-...", "text": "hello there",
+  "is_final": true, "speech_final": true, "audio_start_ms": 7200, "audio_end_ms": 8100 }
+```
+
+For Deepgram Flux the span is the first and last word's own timings where the
+turn has words, and its audio window otherwise — the window opens before the
+speaker does, so seeking to it lands on silence.
+
+For Speechmatics the span is the segment's own window, so a turn split across
+several finals gives each final its own slice rather than the whole utterance.
 
 ---
 
@@ -2749,7 +2793,7 @@ Start recording the full room mix to a WAV file (16-bit, mono, at the room's con
 |-------|------|----------|-------------|
 | `storage` | string | no | `"file"` (default) — local disk, `"s3"` — upload to S3 after recording stops, `"gcs"` — upload to Google Cloud Storage via the native GCS API |
 | `filename` | string | no | Optional output basename for the room-mix WAV. Same rules as `POST /v1/legs/{id}/record` (`filename`): single path segment, `.wav` appended when missing, dots preserved, `409` on collision. When omitted, a timestamped name is generated. Does not rename the optional multi-channel merge file. |
-| `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Default `false`. |
+| `multi_channel` | boolean | no | When `true`, produce a single multi-channel WAV file with one track per participant (time-aligned with silence padding), in addition to the full mix. Covers leg participants and attached streams alike. Default `false`. |
 | `s3_bucket` | string | no | S3 bucket name. Overrides `S3_BUCKET` env var. Required if env var is not set. |
 | `s3_region` | string | no | AWS region. Overrides `S3_REGION` env var. Default `us-east-1`. |
 | `s3_endpoint` | string | no | Custom S3 endpoint (MinIO, etc.). Overrides `S3_ENDPOINT` env var. |
@@ -2796,10 +2840,24 @@ This gives you one file ready for post-production — each speaker on a clean is
 
 The per-participant audio capture uses a dedicated mixer tap that is independent of STT/agent taps, so multi-channel recording and STT can run simultaneously without conflict.
 
+A room holds two kinds of audio source and both are recorded: ordinary **leg**
+participants, and a leg's individual **streams** attached with
+[`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom).
+A SIPREC recording session is the second kind and only the second kind — its m=
+sections are other parties' audio, so the room holds one stream participant per
+recorded party and no leg participant at all. `channels` is keyed by the mixer
+participant ID, which for a stream is `"<legID>#<streamID>"`; resolve it to a
+person through [`GET /v1/legs/{id}/siprec`](#get-v1legsidsiprec).
+
+Recording a room is therefore how a controller records *some* of a session's
+parties: which streams are in the room decides who is captured, and a stream in
+no room is never read. Recording the whole session with
+[`POST /v1/legs/{id}/record`](#post-v1legsidrecord) captures every party instead.
+
 **Errors:**
 - `400` — Invalid storage type, S3 not configured, invalid S3 credentials, or invalid `filename`
 - `404` — Room not found
-- `409` — Room has no participants, or `filename` already exists / in use
+- `409` — Room has no audio sources (no leg participants and no attached streams), or `filename` already exists / in use
 - `500` — Failed to create recording file
 
 ---
@@ -2905,7 +2963,22 @@ Emits a `recording.resumed` event.
 
 ### POST /v1/rooms/{id}/stt
 
-Start real-time speech-to-text on all participants in a room.
+Start real-time speech-to-text on every audio source in a room — one transcriber
+each, so every speaker is transcribed separately.
+
+A room holds two kinds of source and both are covered: ordinary **leg**
+participants, and a leg's individual **streams** attached with
+[`POST /v1/legs/{id}/streams/{streamId}/room`](#post-v1legsidstreamsstreamidroom).
+A SIPREC recording session is the second kind and only the second kind: its m=
+sections are other parties' audio, so the room holds one stream participant per
+recorded party and no leg participant at all. This is the endpoint to use for a
+recording session — `POST /v1/legs/{id}/stt` answers `409` on such a leg, because
+its m-line 0 is one party's audio rather than "the call".
+
+Each transcript carries `stream_id` (see `stt.text` / `stt.turn`), empty for a leg
+participant and set for a stream. Resolve it to a participant through
+[`GET /v1/legs/{id}/siprec`](#get-v1legsidsiprec), whose `streams[].leg_stream_id`
+carries the same value alongside `participant_aor`.
 
 **Request:**
 
@@ -2921,8 +2994,8 @@ Start real-time speech-to-text on all participants in a room.
 |-------|------|----------|-------------|
 | `language` | string | no | Language code |
 | `partial` | boolean | no | Emit partial (non-final) transcripts |
-| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, or `"azure"` |
-| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, or `AZURE_SPEECH_KEY` env var depending on provider) |
+| `provider` | string | no | STT provider: `"elevenlabs"` (default), `"deepgram"`, `"deepgram_flux"`, `"azure"`, or `"speechmatics"` |
+| `api_key` | string | no | API key override (falls back to `ELEVENLABS_API_KEY`, `DEEPGRAM_API_KEY`, `AZURE_SPEECH_KEY`, or `SPEECHMATICS_API_KEY` env var depending on provider) |
 
 The provider tuning fields documented for [`POST /v1/legs/{id}/stt`](#post-v1legsidstt)
 (`model`, `keyterms`, `endpointing`, `utterance_end_ms`, `eager_eot_threshold`,
@@ -2934,6 +3007,10 @@ used for every participant in the room.
 ```json
 { "status": "stt_started", "room_id": "room-123", "leg_ids": ["leg-1", "leg-2"] }
 ```
+
+`leg_ids` lists one entry per transcriber. A stream source appears as its mixer
+participant ID, `"<legID>#<streamID>"` — e.g. a recording session yields
+`["<legID>#0", "<legID>#1"]`.
 
 Transcripts are delivered via `stt.text` webhook events, each carrying the
 `leg_id` of the participant who spoke. Providers that report turn boundaries
@@ -3493,6 +3570,48 @@ curl localhost:8080/v1/legs/$LEG_ID/siprec
 
 The VSI equivalent is the `siprec_get` command with `{"id": "<leg id>"}`.
 
+#### `warnings`
+
+The metadata is checked against the SDP it arrived with, and anything that can
+be disproved is reported in `warnings` (absent when there is nothing to report):
+
+```json
+"warnings": [
+  "participant_mismatch (label 0): offer says alice sends on it, metadata assigns it to bob (pb)"
+]
+```
+
+This exists because the binding between the two — `a=label` in the SDP,
+`<label>` in the metadata — is the only thing that says which recorded stream
+carries which party, and a recording client that gets it backwards sends a
+document that is schema-valid, internally consistent and completely wrong. The
+session establishes, both streams arrive, and every word is attributed to the
+other participant. No status code reveals it.
+
+The kinds are `participant_mismatch` (the section's `a=ssrc cname` names a
+different party than the metadata binds to that label — only the user part is
+compared, since the cname is written by whatever anchored the media),
+`ambiguous_sender` (two participants claim to send on one section, so it belongs
+to neither), `duplicate_label`, `unknown_label` (the metadata labels a stream the
+offer does not carry) and `unclaimed_label` (the metadata declares a stream no
+participant sends on).
+
+A section the metadata says nothing about is **not** reported. It is not a
+contradiction, and it is what a departure leaves behind: a party's association is
+closed with a `disassociate-time` and its stream drops out of the session while
+the `m=` section stays in the offer. Reporting it would flag every call somebody
+hangs up early on.
+
+An empty or absent `warnings` is **not** an assertion that the mapping is
+correct — only that nothing could be disproved. An offer that carries no
+`a=label` values, or no `a=ssrc cname`, gives nothing to check the metadata
+against, and produces no warnings however wrong it is.
+
+The session is answered and recorded either way: which party is on which label
+is the recording client's statement to make, an SRS cannot always disprove it,
+and dropping a recording is worse than keeping one that is flagged. Warnings are
+also logged at `warn`.
+
 ### Using the recorded audio
 
 Because the streams are ordinary leg streams, everything that already works on a
@@ -3538,6 +3657,11 @@ rate. A party whose capture produced nothing is listed in `omitted_legs` rather
 than failing the merge. `/record/pause` and `/record/resume` apply to every
 channel at once, so they stay time-aligned. Set `SIPREC_AUTO_RECORD=true` to
 start this automatically when a session arrives.
+
+Each capture runs on the recorder's own 20 ms clock, so a stream that stops
+sending RTP — a party on hold, or loss — is silence-filled for exactly that
+long. The audio that follows keeps its real offset instead of sliding forward
+over the gap.
 
 **Or place streams yourself** with `SIPREC_ROOM_MODE=none` (the default):
 
@@ -3605,7 +3729,7 @@ curl -X POST localhost:8080/v1/rooms/conf-1/siprec -d '{
 
 | Field | Meaning |
 |---|---|
-| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. |
+| `srs_uri` | SIP URI of the recording server. Use `;transport=tcp` — the INVITE carries the metadata document and exceeds the 1300-byte limit RFC 3261 §18.1.1 puts on UDP requests. `sips:` / `;transport=tls` selects TLS. |
 | `leg_ids` | Which participants to record. Omit to record everything in the room. |
 | `session_id` | Communication session ID in the metadata. Defaults to the room ID. |
 | `auth_username` / `auth_password` | Digest credentials, when the recording server challenges. |
@@ -3986,8 +4110,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.finished` | Recording ended — including when a room recording is [stopped automatically](#automatic-stop) because the room ran out of participants | `leg_id` or `room_id`, `file`, `multi_channel_file`, `channels`, `omitted_legs` (multi-channel only; `omitted_legs` only when a participant's capture failed) |
 | `recording.paused` | Recording paused (audio replaced with silence) | `leg_id` or `room_id` |
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
-| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `text`, `is_final`, `speech_final` |
-| `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
+| `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `stream_id` (which of the leg's streams; empty when the leg's audio is the call), `text`, `is_final`, `speech_final`, `audio_start_ms`, `audio_end_ms` |
+| `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `stream_id`, `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |
 | `agent.user_transcript` | User speech transcribed by agent | `leg_id` or `room_id`, `text` |
@@ -4464,15 +4588,179 @@ Field reference (`sip_register` block):
 
 | Field | Required | Description |
 |---|---|---|
-| `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS. |
+| `registrar_uri` | yes | Upstream registrar SIP URI. `sips:` / `;transport=tls` switches to TLS — and applies to calls placed over the trunk, not only to the REGISTER. Note that `transport` is a URI *parameter* (`;transport=tls`), not a URI *header*: `?transport=tls` is not a transport selector (RFC 3261 §19.1) and leaves the trunk on UDP. |
+| `outbound_proxy` | no | Next-hop proxy for this trunk's REGISTER and for outbound INVITEs from its AOR. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). Defaults to `SIP_OUTBOUND_PROXY`. |
 | `aor` | yes | Address-of-record. Becomes the `From` URI and the implicit-match key for outbound calls. |
 | `username` | no | Digest username. Defaults to the AOR user-part. |
 | `password` | yes | Digest password. **Never returned in any response.** |
 | `contact_user` | no | Override the `Contact` user-part. Defaults to the AOR user-part. |
 | `expires_seconds` | no | Requested expiry. Clamped to `[SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]`. |
+| `tls_insecure_skip_verify` | no | Accept this trunk's TLS next hop certificate without verifying it — self-signed, privately signed, or SAN-less (`x509: certificate relies on legacy Common Name field`). Scoped to that peer; every other TLS peer is still verified, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored with a logged warning when the next hop is not TLS or is named by IP literal. See [TLS proxies](#tls-proxies). |
 
 Errors: `400` for invalid JSON, missing fields, or invalid URIs. `501` when
 `type == "ip_ip"` (not yet implemented). `400` for unknown types.
+
+### Routing through an outbound proxy
+
+By default every request goes straight to the host in its Request-URI — the
+registrar for a REGISTER, the dialed URI for an INVITE. When signalling must
+egress through an SBC or edge proxy instead, name it and VoiceBlender attaches a
+loose `Route` header (RFC 3261 §16.12.1) while leaving the Request-URI alone.
+
+```bash
+curl -X POST http://vb.local:8080/v1/sip/trunks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "sip_register",
+    "sip_register": {
+      "registrar_uri":  "sip:pbx.example.com:5060",
+      "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
+      "aor":            "sip:alice@pbx.example.com",
+      "password":       "supersecret"
+    }
+  }'
+```
+
+The REGISTER then goes on the wire as:
+
+```
+REGISTER sip:pbx.example.com:5060 SIP/2.0
+Route: <sip:edge.acme.net:5060;transport=tcp;lr>
+From: <sip:alice@pbx.example.com>;tag=...
+To: <sip:alice@pbx.example.com>
+```
+
+Note what does **not** change: the Request-URI still names the registrar, and
+digest authentication still computes its `uri` against the registrar (RFC 3261
+§22.4). Only the next hop moves. The same `Route` is attached to every INVITE
+placed `from` that trunk's AOR.
+
+A `407 Proxy Authentication Required` from the proxy is answered with the
+trunk's credentials in a `Proxy-Authorization` header, exactly as a `401` from
+the registrar is answered with `Authorization`.
+
+#### TLS proxies
+
+Both spellings work and are equivalent — `sips:edge.acme.net:5061` and
+`sip:edge.acme.net:5061;transport=tls`. The port defaults to `5061` for `sips:`
+and `5060` otherwise.
+
+**Certificates.** VoiceBlender does not present a client certificate, so
+`SIP_TLS_CERT` / `SIP_TLS_KEY` are *not* required to dial a TLS proxy — they are
+required only when `SIP_TLS_PORT` is set, and the server refuses to start if the
+port is set without them. What is mandatory is the other direction: by default
+the **proxy's** certificate must chain to a root the host trusts and must carry
+a SAN matching the URI host (also used as SNI). Configuring `SIP_TLS_CERT` does
+*not* make an otherwise-untrusted proxy cert acceptable — the two are unrelated.
+
+An SBC using a private CA or a self-signed cert therefore fails the handshake
+with `x509: certificate signed by unknown authority`, and one whose name lives
+only in the certificate's Common Name fails with `x509: certificate relies on
+legacy Common Name field, use SANs instead`. Either way the trunk goes to
+`failed` with that text in `last_error`.
+
+Three settings relax this, from narrowest to widest:
+
+```bash
+# 1. Per trunk — accept this one peer's certificate, verify everyone else's.
+curl -X POST http://localhost:8080/v1/sip/trunks -d '{
+  "type": "sip_register",
+  "sip_register": {
+    "registrar_uri": "sips:sip.carrier.example:5061",
+    "aor": "sip:3005113@sip.carrier.example",
+    "password": "s3cret",
+    "tls_insecure_skip_verify": true
+  }
+}'
+
+# 2. Server-wide — trust an extra CA (or pin a peer's self-signed cert) on top
+#    of the system trust store. The name in the certificate is still checked.
+SIP_TLS_CA_FILE=/etc/voiceblender/internal-ca.pem
+
+# 3. Server-wide — accept whatever any peer presents. Last resort.
+SIP_TLS_INSECURE_SKIP_VERIFY=true
+```
+
+`tls_insecure_skip_verify` is the one to reach for when a single carrier's
+certificate is the problem, including the legacy Common Name case, which
+`SIP_TLS_CA_FILE` cannot fix on its own — trusting the certificate as a root
+does not give it the SAN it lacks. The exemption is echoed back in
+`GET /v1/sip/trunks/{id}` and logged as a warning when the trunk is created.
+
+Its scope is the peer's **hostname** — the trunk's next hop, so the outbound
+proxy when one is configured, otherwise the registrar — because the SNI a
+handshake carries is the only per-connection identity available. Consequences
+worth knowing:
+
+- A next hop named by **IP literal** cannot be exempted this way: such a dial
+  sends no SNI. The flag is ignored with a logged warning; use
+  `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` for that peer. For the
+  same reason an IP-dialed peer's certificate is chain-verified but not
+  name-verified.
+- Two trunks pointing at the same hostname share the exemption, and connections
+  are pooled per remote socket — a second trunk to a peer an exempted trunk has
+  already connected to rides that connection unverified.
+- The exemption lives as long as the trunk: `DELETE /v1/sip/trunks/{id}`
+  revokes it after the final unregister.
+
+All of these affect **outbound** dials only — REGISTERs, INVITEs, and TLS
+proxies alike — and never loosen the inbound TLS listener, which keeps
+presenting `SIP_TLS_CERT` unchanged. A private CA can equally be trusted at the
+host level instead, with `SSL_CERT_FILE=/etc/voiceblender/internal-ca.pem`, or
+in a container by `COPY internal-ca.pem /usr/local/share/ca-certificates/` plus
+`update-ca-certificates` in the image build.
+
+The proxy's transport is independent of the registrar's: a `sips:` proxy in
+front of a `sip:` registrar is a normal configuration, and the Request-URI still
+reads `REGISTER sip:pbx.example.com:5060`.
+
+> **Set `SIP_TLS_PORT` when using a TLS proxy.** Outbound TLS works without it,
+> but the `Contact` in the REGISTER can then only advertise the plaintext UDP
+> socket — so the upstream sends calls *back* to you unencrypted, and the trunk
+> still reports `active` with nothing obviously wrong. `POST /v1/sip/trunks`
+> logs a warning when it sees this combination. With `SIP_TLS_PORT` set, the
+> Contact goes out as `sips:alice@vb.example:5061;transport=tls`.
+
+#### Precedence
+
+A single call can name its own proxy, which needs no trunk at all:
+
+```bash
+curl -X POST http://vb.local:8080/v1/legs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "sip",
+    "to": "sip:bob@example.com",
+    "outbound_proxy": "sip:edge-eu.acme.net:5060"
+  }'
+```
+
+Resolution order, most specific first:
+
+| # | Source | Applies to |
+|---|---|---|
+| 1 | `to` resolves to an AOR registered here | Delivered to the bound contact; any proxy is ignored (and logged). Local delivery is not an egress. |
+| 2 | `outbound_proxy` on `POST /v1/legs` | That one INVITE. |
+| 3 | `sip_register.outbound_proxy` on the matched trunk | That trunk's REGISTER and its INVITEs. |
+| 4 | `SIP_OUTBOUND_PROXY` | Everything not covered above. |
+| 5 | The matched trunk's `registrar_uri` | Trunk-matched INVITEs, unchanged from earlier releases. |
+| 6 | The Request-URI host | Everything else. |
+
+`SIP_OUTBOUND_PROXY` deliberately does **not** displace rule 5: setting it
+cannot silently redirect calls on trunks that already work. A trunk that wants a
+proxy names one, and a trunk created while the env var is set adopts it at
+creation time — so `GET /v1/sip/trunks/{id}` always reports the hop in effect
+rather than leaving you to infer it from the environment.
+
+Not applied to SIPREC SRC legs or WhatsApp legs, which address their own
+endpoints. A malformed `outbound_proxy` is a `400`; a malformed
+`SIP_OUTBOUND_PROXY` fails startup.
+
+> **Inbound tagging caveat.** Inbound INVITEs are matched back to a trunk by the
+> peer socket they arrive on, which is the proxy once one is configured. Several
+> trunks behind the same proxy therefore cannot be told apart, and `trunk_id` on
+> `leg.ringing` may name any one of them. The tag is informational and gates
+> nothing.
 
 ### GET /v1/sip/trunks
 
@@ -4494,6 +4782,7 @@ curl http://vb.local:8080/v1/sip/trunks
       "created_at": "2026-06-24T12:00:00Z",
       "sip_register": {
         "registrar_uri": "sip:pbx.example.com:5060",
+        "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
         "aor": "sip:alice@pbx.example.com",
         "username": "alice",
         "contact_uri": "sip:alice@vb.example:5060",
@@ -4508,6 +4797,10 @@ curl http://vb.local:8080/v1/sip/trunks
   ]
 }
 ```
+
+`outbound_proxy` is omitted entirely when the trunk routes at its registrar.
+When present it is the hop actually in effect, whether it came from the trunk's
+own `outbound_proxy` or from `SIP_OUTBOUND_PROXY`.
 
 ### GET /v1/sip/trunks/{id}
 
@@ -4548,6 +4841,7 @@ Payloads and result shapes mirror the REST endpoints above.
 | `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on requested expiry |
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of granted expiry at which the trunk refreshes |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the failure-retry exponential backoff |
+| `SIP_OUTBOUND_PROXY` | _(empty)_ | Default next hop for outbound REGISTERs and INVITEs. Overridden per-trunk by `outbound_proxy` and per-call by `outbound_proxy` on `POST /v1/legs`. A malformed value fails startup. |
 
 ---
 

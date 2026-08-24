@@ -71,6 +71,11 @@ func main() {
 	// Leg and room managers
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)
+	roomMgr.SetComfortNoiseEnabled(cfg.ComfortNoiseEnabled)
+	log.Info("mixer audio",
+		"comfort_noise", cfg.ComfortNoiseEnabled,
+		"ws_jitter_buffer_ms", cfg.WSJitterBufferMs,
+	)
 
 	// Parse SIP port
 	sipPort, err := strconv.Atoi(cfg.SIPPort)
@@ -87,6 +92,16 @@ func main() {
 			log.Error("invalid SIP_TLS_PORT", "error", err)
 			os.Exit(1)
 		}
+	}
+
+	// Fail fast on a malformed default outbound proxy rather than silently
+	// dropping it on every call.
+	if cfg.SIPOutboundProxy != "" {
+		if _, perr := sipmod.ParseProxyURI(cfg.SIPOutboundProxy); perr != nil {
+			log.Error("invalid SIP_OUTBOUND_PROXY", "error", perr)
+			os.Exit(1)
+		}
+		log.Info("default SIP outbound proxy configured", "proxy", cfg.SIPOutboundProxy)
 	}
 
 	// RTP port allocator (nil when range not configured)
@@ -110,16 +125,20 @@ func main() {
 
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:            cfg.SIPBindIP,
-		BindIPV6:          cfg.SIPBindIPV6,
-		ListenIP:          cfg.SIPListenIP,
-		ListenIPV6:        cfg.SIPListenIPV6,
-		ExternalIP:        cfg.SIPExternalIP,
-		PublicHost:        cfg.SIPDomain,
-		BindPort:          sipPort,
-		TLSBindPort:       sipTLSPort,
-		TLSCertPath:       cfg.SIPTLSCert,
-		TLSKeyPath:        cfg.SIPTLSKey,
+		BindIP:      cfg.SIPBindIP,
+		BindIPV6:    cfg.SIPBindIPV6,
+		ListenIP:    cfg.SIPListenIP,
+		ListenIPV6:  cfg.SIPListenIPV6,
+		ExternalIP:  cfg.SIPExternalIP,
+		PublicHost:  cfg.SIPDomain,
+		BindPort:    sipPort,
+		TLSBindPort: sipTLSPort,
+		TLSCertPath: cfg.SIPTLSCert,
+		TLSKeyPath:  cfg.SIPTLSKey,
+		ClientTLS: sipmod.ClientTLSConfig{
+			CAFile:             cfg.SIPTLSCAFile,
+			InsecureSkipVerify: cfg.SIPTLSInsecure,
+		},
 		SIPDebug:          cfg.SIPDebug,
 		SIPHost:           cfg.SIPHost,
 		UseSourceSocket:   cfg.SIPUseSourceSocket,

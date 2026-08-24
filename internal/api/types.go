@@ -26,6 +26,7 @@ type CreateLegRequest struct {
 	To              string            `json:"to,omitempty"`               // destination — SIP URI for sip legs, E.164 phone number for whatsapp legs
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID — a bare user-part ("+15551234567") or a full SIP URI ("sip:alice@pbx.example.com")
+	OutboundProxy   string            `json:"outbound_proxy,omitempty"`   // next-hop SIP proxy for this INVITE; overrides the matched trunk's and the global default
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
@@ -103,9 +104,10 @@ type LiveKitPermissions struct {
 
 var createLegRequestFields = map[string]FieldEnrichment{
 	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket", "livekit_room"}},
-	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"). For whatsapp legs, an E.164 phone number (with or without '+')."},
+	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"); a \"sips:\" URI or a \";transport=tls\" param sends the INVITE over TLS, and \";transport=tcp\" over TCP. For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
+	"outbound_proxy":   {Description: `Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
 	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
@@ -395,7 +397,7 @@ type StartSIPRECRequest struct {
 
 var startSIPRECRequestFields = map[string]FieldEnrichment{
 	"leg_ids":       {Description: "Which participants to record. Each entry is either a leg ID (that leg's own audio) or \"<legID>#<streamID>\" for one of a leg's secondary audio streams mixed into the room. Empty or absent records every participant. An entry that is not in the room is a 404."},
-	"srs_uri":       {Description: "SIP URI of the session recording server, e.g. \"sip:srs@recorder.example.com:5060\". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP."},
+	"srs_uri":       {Description: "SIP URI of the session recording server, e.g. \"sip:srs@recorder.example.com:5060;transport=tcp\". A recording session carries the metadata document alongside the SDP and exceeds the UDP message limit, so the target should accept TCP. The transport comes from the URI: \";transport=tcp\", or \"sips:\" / \";transport=tls\" for TLS."},
 	"session_id":    {Description: "Communication session identifier put in the recording metadata. Defaults to the room ID."},
 	"app_id":        {Description: "Application identifier tagged onto the resulting leg and its events."},
 	"auth_username": {Description: "SIP digest username, when the recording server challenges the INVITE."},
@@ -455,6 +457,11 @@ type SIPRECSessionView struct {
 	Participants []SIPRECParticipantView `json:"participants"`
 	Streams      []SIPRECStreamView      `json:"streams"`
 	Metadata     string                  `json:"metadata,omitempty"`
+
+	// Warnings holds what the SDP disproves about the metadata; an entry means
+	// the participant shown against a stream may be wrong. Empty is not
+	// "verified" — an offer with no labels or no a=ssrc cname proves nothing.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 var siprecSessionViewFields = map[string]FieldEnrichment{
@@ -465,6 +472,7 @@ var siprecSessionViewFields = map[string]FieldEnrichment{
 	"participants": {Description: "Every party currently recorded by this session."},
 	"streams":      {Description: "Every negotiated media stream, joined to the participant it carries."},
 	"metadata":     {Description: "The raw rs-metadata XML document as most recently received."},
+	"warnings":     {Description: "What could be disproved about the metadata by the SDP it arrived with. Non-empty means the participant attributed to a stream may be wrong; the session is still recorded. Empty means nothing was disproved, which is not an assertion that the mapping is correct \u2014 an offer with no labels or no a=ssrc cname gives nothing to check against."},
 }
 
 // AddLegStreamRequest is the request body for POST /v1/legs/{id}/streams.
@@ -842,20 +850,26 @@ var createTrunkRequestFields = map[string]FieldEnrichment{
 // password is required on creation but never returned in any response.
 type SIPRegisterTrunkSpec struct {
 	RegistrarURI   string `json:"registrar_uri"`
+	OutboundProxy  string `json:"outbound_proxy,omitempty"`
 	AOR            string `json:"aor"`
 	Username       string `json:"username,omitempty"`
 	Password       string `json:"password"`
 	ContactUser    string `json:"contact_user,omitempty"`
 	ExpiresSeconds int    `json:"expires_seconds,omitempty"`
+	// TLSInsecureSkipVerify disables certificate verification for this trunk's
+	// TLS next hop only.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
-	"registrar_uri":   {Description: "Upstream registrar SIP URI (e.g. \"sip:pbx.example.com:5060\" or \"sips:pbx.example.com:5061;transport=tls\")."},
-	"aor":             {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR."},
-	"username":        {Description: "Digest auth username. Defaults to the AOR user-part when empty."},
-	"password":        {Description: "Digest auth password. Required. Never returned in any response."},
-	"contact_user":    {Description: "Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part."},
-	"expires_seconds": {Description: "Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600)."},
+	"registrar_uri":            {Description: "Upstream registrar SIP URI (e.g. \"sip:pbx.example.com:5060\" or \"sips:pbx.example.com:5061\"). Transport is taken from the URI: a \"sips:\" scheme or a \";transport=tls\" parameter selects TLS, \";transport=tcp\" selects TCP, otherwise UDP. Note that \"transport\" is a URI parameter (\";\"), not a URI header (\"?\") — RFC 3261 section 19.1."},
+	"outbound_proxy":           {Description: "Next-hop SIP proxy for this trunk's REGISTER and for outbound INVITEs placed from its AOR, attached as a loose `Route` header (the Request-URI is left unchanged, and digest auth still targets `registrar_uri`). E.g. \"sip:edge.example.com:5060;transport=tcp\". Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `registrar_uri`."},
+	"aor":                      {Description: "Address-of-record this trunk REGISTERs (e.g. \"sip:alice@pbx.example.com\"). Becomes the From URI on outbound REGISTER, and the From / P-Asserted-Identity host on outbound INVITEs placed `from` this AOR."},
+	"username":                 {Description: "Digest auth username. Defaults to the AOR user-part when empty."},
+	"password":                 {Description: "Digest auth password. Required. Never returned in any response."},
+	"contact_user":             {Description: "Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part."},
+	"tls_insecure_skip_verify": {Description: "Accept this trunk's next-hop certificate without verifying it, for a `sips:` / `;transport=tls` registrar or outbound proxy whose certificate is self-signed, privately signed, or carries no SAN (`x509: certificate relies on legacy Common Name field`). Scoped to that peer's hostname — every other TLS peer is still verified in full, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored (with a logged warning) when the next hop is not TLS, or when it is named by IP literal: such a dial sends no SNI and cannot be told apart from any other, so use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there. Prefer `SIP_TLS_CA_FILE` when the peer's CA can simply be trusted."},
+	"expires_seconds":          {Description: "Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600)."},
 }
 
 // IPIPTrunkSpec is the placeholder shape for the unimplemented ip_ip type.

@@ -285,7 +285,10 @@ func TestRecorder_CaptureError_DiscardsStagedFile(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(slog.Default())
 
-	fpath, err := r.StartStereo(context.Background(), &blockingReader{}, &blockingReader{}, dir, 8000, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fpath, err := r.StartStereo(ctx, &blockingReader{ctx: ctx}, &blockingReader{ctx: ctx}, dir, 8000, "")
 	if err != nil {
 		t.Fatalf("StartStereo: %v", err)
 	}

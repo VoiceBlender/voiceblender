@@ -21,6 +21,8 @@ type Config struct {
 	SIPTLSPort         string // "" = TLS disabled
 	SIPTLSCert         string // path to CA-signed cert (fullchain.pem)
 	SIPTLSKey          string // path to private key (privkey.pem)
+	SIPTLSCAFile       string // extra PEM roots trusted when dialing remote peers over TLS
+	SIPTLSInsecure     bool   // accept any certificate a remote peer presents
 	SIPDebug           bool   // dump full SIP message content for every request and response
 	SIPDomain          string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
 	SIPHost            string
@@ -70,6 +72,13 @@ type Config struct {
 	RTPPortMax            int
 	SIPJitterBufferMs     int
 	SIPJitterBufferMaxMs  int
+	// WSJitterBufferMs is the WebSocket ingress playout lead. Unlike the SIP
+	// buffer it needs no separate cap: the WS ingress buffer is already bounded
+	// by wsmedia's IngressBufferMs.
+	WSJitterBufferMs int
+	// ComfortNoiseEnabled injects low-level comfort noise into otherwise silent
+	// mixer frames.
+	ComfortNoiseEnabled bool
 	// SIPSDPStrictMLineAnswer makes answers carry a port-0 placeholder for every
 	// offered m= section we do not accept, as RFC 3264 §6 requires. It is gated
 	// separately from multi-stream because it changes the SDP single-stream
@@ -108,9 +117,13 @@ type Config struct {
 	SIPOutboundRegistrationMaxExpiresSeconds     int
 	SIPOutboundRegistrationRefreshRatio          float64
 	SIPOutboundRegistrationFailureBackoffMaxMs   int
-	VSIEventBufferSize                           int
-	DefaultSampleRate                            int
-	SpeechDetectionEnabled                       bool
+	// SIPOutboundProxy is the default next hop for outbound REGISTERs and
+	// INVITEs, overridden per-trunk and per-leg by `outbound_proxy`. Validated
+	// at startup; stored raw because this package does not import sipgo.
+	SIPOutboundProxy       string
+	VSIEventBufferSize     int
+	DefaultSampleRate      int
+	SpeechDetectionEnabled bool
 
 	// Codecs is the engine's supported codec list, ordered by preference. Used
 	// for both outbound offer construction and inbound offer/answer matching —
@@ -166,6 +179,8 @@ func Load() Config {
 		SIPTLSPort:                os.Getenv("SIP_TLS_PORT"),
 		SIPTLSCert:                os.Getenv("SIP_TLS_CERT"),
 		SIPTLSKey:                 os.Getenv("SIP_TLS_KEY"),
+		SIPTLSCAFile:              os.Getenv("SIP_TLS_CA_FILE"),
+		SIPTLSInsecure:            envBool("SIP_TLS_INSECURE_SKIP_VERIFY", false),
 		SIPDebug:                  os.Getenv("SIP_DEBUG") == "true",
 		SIPDomain:                 os.Getenv("SIP_DOMAIN"),
 		SIPHost:                   envOr("SIP_HOST", "voiceblender"),
@@ -204,6 +219,8 @@ func Load() Config {
 		RTPPortMax:                envInt("RTP_PORT_MAX", 20000),
 		SIPJitterBufferMs:         envInt("SIP_JITTER_BUFFER_MS", 0),
 		SIPJitterBufferMaxMs:      envInt("SIP_JITTER_BUFFER_MAX_MS", 300),
+		WSJitterBufferMs:          envInt("WS_JITTER_BUFFER_MS", 0),
+		ComfortNoiseEnabled:       envBool("COMFORT_NOISE_ENABLED", true),
 		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
@@ -225,9 +242,10 @@ func Load() Config {
 		SIPOutboundRegistrationMaxExpiresSeconds:     envInt("SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS", 7200),
 		SIPOutboundRegistrationRefreshRatio:          envFloat("SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO", 0.5),
 		SIPOutboundRegistrationFailureBackoffMaxMs:   envInt("SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS", 300000),
-		VSIEventBufferSize:                           vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
-		DefaultSampleRate:                            defaultRate,
-		SpeechDetectionEnabled:                       os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
+		SIPOutboundProxy:       os.Getenv("SIP_OUTBOUND_PROXY"),
+		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
+		DefaultSampleRate:      defaultRate,
+		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
 		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),
 

@@ -62,6 +62,33 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.aor is invalid: %s", err.Error())
 	}
 
+	// Resolve the global default now rather than per-REGISTER, so the trunk
+	// snapshot reports the next hop actually in effect.
+	var outboundProxy *sip.Uri
+	if raw := spec.OutboundProxy; raw != "" {
+		u, err := sipmod.ParseProxyURI(raw)
+		if err != nil {
+			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.outbound_proxy is invalid: %s", err.Error())
+		}
+		outboundProxy = &u
+	} else if s.Config.SIPOutboundProxy != "" {
+		u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
+		if err != nil {
+			s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; trunk will route at its registrar", "error", err)
+		} else {
+			outboundProxy = &u
+		}
+	}
+	// A TLS proxy without a TLS listener still registers, but the Contact can
+	// only advertise the UDP socket — so the upstream sends calls back in the
+	// clear. Nothing downstream surfaces that, hence the warning here.
+	if outboundProxy != nil && sipmod.TransportForURI(*outboundProxy) == "tls" &&
+		s.SIPEngine != nil && s.SIPEngine.TLSPort() == 0 {
+		s.Log.Warn("outbound proxy uses TLS but SIP_TLS_PORT is not configured; "+
+			"REGISTER Contact will advertise the plaintext UDP socket",
+			"proxy", outboundProxy.String())
+	}
+
 	id := uuid.NewString()
 	cfg := sipmod.OutboundRegistrationConfig{
 		DefaultExpiresSeconds: s.Config.SIPOutboundRegistrationDefaultExpiresSeconds,
@@ -79,6 +106,8 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		Password:                spec.Password,
 		ContactUser:             spec.ContactUser,
 		RequestedExpiresSeconds: spec.ExpiresSeconds,
+		OutboundProxy:           outboundProxy,
+		TLSInsecureSkipVerify:   spec.TLSInsecureSkipVerify,
 	})
 	s.SIPEngine.Trunks().Add(trunk)
 	// The trunk lifecycle outlives the request that created it — using a

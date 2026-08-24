@@ -18,7 +18,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Room bridging** -- join two rooms' mixers (same sample rate) with live-configurable direction (bidirectional, one-way each way, or parked); echo-free via mixed-minus-self
 - **Audio routing matrix** -- per-room role-based routing for asymmetric audio (barge-in / whisper / supervisor monitor). Tag legs with a free-form `role` and declare a matrix of who-hears-whom by role. Applied atomically at leg-join time so a supervisor cannot momentarily bleed into the customer's audio. See [API.md](API.md#audio-routing-matrix).
 - **Multi-stream SIP calls** -- several `m=audio` sections in one dialog (RFC 3264), each with its own RTP port, direction, language and mixer room; built for live translation, where the original audio and a translated feed are mixed separately. Follows the SIPREC (RFC 7866) wire profile for interoperability. See [API.md](API.md#per-leg-audio-streams-multiple-maudio-lines).
-- **SIPREC session recording server (RFC 7865 / RFC 7866)** -- accept recording sessions forked from an SBC or PBX: multipart `SDP` + `rs-metadata` INVITEs are answered receive-only on every `m=audio` section, and each section is bound to the participant the metadata names. The received audio is an ordinary set of leg streams, so it can be recorded to file *and* attached to rooms for live STT/agents. Disabled by default; enable with `SIPREC_ENABLED=true` (needs `SIP_TCP_ENABLED=true`). VoiceBlender can also act as the **recording client**, forking a room's participants to an external recording server one stream each (`POST /v1/rooms/{id}/siprec`, `SIPREC_SRC_ENABLED=true`). See [API.md](API.md#siprec-session-recording).
+- **SIPREC session recording server (RFC 7865 / RFC 7866)** -- accept recording sessions forked from an SBC or PBX: multipart `SDP` + `rs-metadata` INVITEs are answered receive-only on every `m=audio` section, and each section is bound to the participant the metadata names. The received audio is an ordinary set of leg streams, so it can be recorded to file *and* attached to rooms for live STT/agents. Disabled by default; enable with `SIPREC_ENABLED=true` (needs `SIP_TCP_ENABLED=true`). The metadata is checked against the SDP it arrived with, so a client that binds a participant to the wrong `a=label` -- a document that is otherwise valid and would silently attribute audio to the wrong party -- is reported in `warnings` on `GET /v1/legs/{id}/siprec` instead of being recorded as if it were correct. VoiceBlender can also act as the **recording client**, forking a room's participants to an external recording server one stream each (`POST /v1/rooms/{id}/siprec`, `SIPREC_SRC_ENABLED=true`). See [API.md](API.md#siprec-session-recording).
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
@@ -71,6 +71,8 @@ All configuration is via environment variables:
 | `SIP_TLS_PORT` | *(disabled)* | SIP-over-TLS listen port (typically `5061`). When set, `SIP_TLS_CERT` and `SIP_TLS_KEY` must also be provided. Required for WhatsApp Business Calling integration. |
 | `SIP_TLS_CERT` | | Path to PEM-encoded TLS certificate (e.g. `fullchain.pem`). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN. |
 | `SIP_TLS_KEY` | | Path to PEM-encoded TLS private key (e.g. `privkey.pem`). |
+| `SIP_TLS_CA_FILE` | *(system trust store only)* | Path to a PEM bundle of extra CA certificates trusted when **dialing** a remote peer over TLS (registrar, outbound proxy, carrier SBC). Added to the system roots, not a replacement. To trust a peer that presents a self-signed certificate, point this at that certificate. The name in the certificate is still checked, so a peer whose certificate has no SAN needs the per-trunk `tls_insecure_skip_verify` instead. Not a client certificate — VoiceBlender never presents one. |
+| `SIP_TLS_INSECURE_SKIP_VERIFY` | `false` | When `true`, any certificate a remote peer presents on an outbound TLS dial is accepted without verification — every peer, server-wide. Prefer `SIP_TLS_CA_FILE`, or the per-trunk `sip_register.tls_insecure_skip_verify`, which scopes the exemption to one peer. Never affects the inbound TLS listener. |
 | `SIP_DEBUG` | `false` | When `true`, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting. |
 | `SIP_DOMAIN` | *(falls back to advertised IP)* | FQDN advertised in From, Contact and Via on outbound SIP signalling (classic trunks and WhatsApp). Two exceptions apply to the From host only: a call matched to a registered SIP trunk uses that trunk's AOR realm, and a `from` given as a full SIP URI uses the host in that URI. Should match the SAN on `SIP_TLS_CERT` and any allowlist your carrier or Meta keeps. |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
@@ -108,6 +110,8 @@ All configuration is via environment variables:
 | `RTP_PORT_MAX` | `20000` | Maximum UDP port for RTP/RTCP media |
 | `SIP_JITTER_BUFFER_MS` | `0` | SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg. |
 | `SIP_JITTER_BUFFER_MAX_MS` | `300` | Max depth of the SIP ingress jitter buffer (ms); frames beyond this are dropped oldest-first. |
+| `WS_JITTER_BUFFER_MS` | `0` | WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20 ms hole in the mix. Size it to the transport's worst-case stall, not to the drift — `40`–`80` suits a healthy link, and every millisecond is added one-way latency. |
+| `COMFORT_NOISE_ENABLED` | `true` | Inject low-level comfort noise (~−75 dBFS) into otherwise silent mixer frames. |
 | `SIP_SDP_STRICT_MLINE_ANSWER` | `false` | Emit a port-0 placeholder for every offered `m=` section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP **single-stream** calls emit whenever a peer offers a section we don't handle, such as video. |
 | `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
@@ -129,6 +133,7 @@ All configuration is via environment variables:
 | `SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS` | `7200` | Upper clamp on the requested outbound REGISTER expiry. |
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of the **granted** expiry at which the trunk refreshes (e.g. `0.5` of a 600 s grant → refresh every 300 s). Must be `(0, 1)`; out-of-range values fall back to `0.5`. |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the exponential backoff between failed outbound REGISTER attempts. Failures emit `sip.outbound_registration_failed`; the trunk stays in the manager and keeps retrying. |
+| `SIP_OUTBOUND_PROXY` | _(empty = route at the registrar / dialed URI)_ | Default next hop for outbound REGISTERs and INVITEs, attached as a loose `Route: <sip:proxy;lr>` header with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on `POST /v1/sip/trunks` and per-call by `outbound_proxy` on `POST /v1/legs`; a `to` that resolves to an AOR registered here outranks all three. Digest auth still targets the registrar, not the proxy. Not applied to SIPREC SRC or WhatsApp legs. A malformed value fails startup. **Caveat:** inbound legs are tagged with `trunk_id` by the peer socket they arrive on, so when several trunks share one proxy that tag becomes ambiguous — it is informational, never an authorization gate. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
 | `AMRWB_MODE` | `2` | AMR-WB (G.722.2) encoder speech-mode **ceiling** `0..8`: `0`=6.60, `1`=8.85, `2`=12.65, `3`=14.25, `4`=15.85, `5`=18.25, `6`=19.85, `7`=23.05, `8`=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set` (so e.g. `8` yields HD 23.85 only when the peer allows it, falling back automatically). Default `2` (12.65) matches the GSMA IR.92 / VoLTE common rate. Out-of-range values clamp to `0..8`. |
 | `AMRWB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
@@ -338,7 +343,8 @@ DELETE /v1/sip/trunks/{id}                 # Unregister + remove (202 Accepted, 
 
 Outbound calls placed with `POST /v1/legs` whose `from` matches a registered
 trunk's AOR (or AOR user-part) automatically attach the trunk's digest
-credentials and traverse the trunk's upstream proxy via a Route header.
+credentials and traverse the trunk's upstream via a Route header — the trunk's
+`outbound_proxy` when one is configured, otherwise its `registrar_uri`.
 Such calls also send `From` and `P-Asserted-Identity` in the trunk's AOR realm
 rather than `SIP_DOMAIN`, so the call claims the identity the registrar
 actually authenticated. An AOR port, if configured, is not carried into the
@@ -356,8 +362,37 @@ From — `sip:alice@pbx.example.com:5070` yields a From host of
 > trunk AOR and no trunk AOR user-part, which also drops the trunk's
 > credentials and Route.
 
-Inbound INVITEs arriving from a registered trunk's registrar are tagged with
-`trunk_id` on the `leg.ringing` event.
+#### Routing through an outbound proxy
+
+By default a trunk talks straight to its `registrar_uri`. Set
+`sip_register.outbound_proxy` to put an SBC or edge proxy in front:
+
+```json
+{
+  "type": "sip_register",
+  "sip_register": {
+    "registrar_uri": "sip:pbx.example.com:5060",
+    "outbound_proxy": "sip:edge.acme.net:5060;transport=tcp",
+    "aor": "sip:alice@pbx.example.com",
+    "password": "s3cret"
+  }
+}
+```
+
+Both the REGISTER and every INVITE placed from that AOR then carry
+`Route: <sip:edge.acme.net:5060;transport=tcp;lr>`. The Request-URI still names
+the registrar, and digest authentication still computes against it — only the
+next hop changes. The field defaults to `SIP_OUTBOUND_PROXY` and is resolved
+when the trunk is created, so `GET /v1/sip/trunks/{id}` reports the hop actually
+in effect.
+
+A single call can override this with `outbound_proxy` on `POST /v1/legs`, which
+also works with no trunk involved at all.
+
+Inbound INVITEs arriving from a registered trunk's peer socket are tagged with
+`trunk_id` on the `leg.ringing` event. That socket is the proxy when one is
+configured, so several trunks sharing a proxy cannot be told apart this way; the
+tag is informational and never gates anything.
 
 A leg associated with a trunk — in either direction — transfers out over that
 same trunk. With `SIP_REFER_AUTO_DIAL=true`, an inbound REFER on such a leg

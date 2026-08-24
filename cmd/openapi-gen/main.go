@@ -404,12 +404,15 @@ func configVars() *seq {
 		{Name: "SIP_TLS_PORT", Default: "(disabled)", Description: "SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration."},
 		{Name: "SIP_TLS_CERT", Default: "", Description: "Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN."},
 		{Name: "SIP_TLS_KEY", Default: "", Description: "Path to PEM-encoded TLS private key (e.g. privkey.pem)."},
+		{Name: "SIP_TLS_CA_FILE", Default: "", Description: "Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate."},
+		{Name: "SIP_TLS_INSECURE_SKIP_VERIFY", Default: "false", Description: "When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk sip_register.tls_insecure_skip_verify, which scopes the exemption to one peer. Does not affect the inbound TLS listener."},
 		{Name: "SIP_DEBUG", Default: "false", Description: "When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting."},
 		{Name: "SIP_DOMAIN", Default: "(falls back to advertised IP)", Description: "FQDN advertised in From, Contact and Via on all outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on SIP_TLS_CERT and any allowlist your carrier or Meta keeps."},
 		{Name: "SIP_HOST", Default: "voiceblender", Description: "SIP User-Agent name"},
 		{Name: "SIP_CODECS", Default: "PCMU,PCMA", Description: "Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs and accepts on inbound INVITEs. Recognized names (case-insensitive): PCMU, PCMA, G722, opus, AMR-WB, AMR-NB (bare token AMR resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently."},
 		{Name: "SIP_AUTO_RINGING", Default: "false", Description: "When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer."},
 		{Name: "SIP_USE_SOURCE_SOCKET", Default: "false", Description: "When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT)."},
+		{Name: "SIP_OUTBOUND_PROXY", Default: "", Description: "Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only."},
 		{Name: "SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS", Default: "3600", Description: "Expiry used when an inbound REGISTER carries no Expires value."},
 		{Name: "SIP_REGISTRATION_MAX_EXPIRES_SECONDS", Default: "7200", Description: "Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum."},
 		{Name: "SIP_REGISTRATION_SWEEP_INTERVAL_MS", Default: "1000", Description: "Sweeper period (ms) for evicting expired AOR bindings."},
@@ -456,6 +459,8 @@ func configVars() *seq {
 		{Name: "TTS_CACHE_INCLUDE_API_KEY", Default: "false", Description: "Include API key in TTS cache key; set true if different keys map to different voice clones"},
 		{Name: "SIP_JITTER_BUFFER_MS", Default: "0", Description: "SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg."},
 		{Name: "SIP_JITTER_BUFFER_MAX_MS", Default: "300", Description: "Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall."},
+		{Name: "WS_JITTER_BUFFER_MS", Default: "0", Description: "WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport's worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency."},
+		{Name: "COMFORT_NOISE_ENABLED", Default: "true", Description: "Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames."},
 		{Name: "SIP_SDP_STRICT_MLINE_ANSWER", Default: "false", Description: "Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video."},
 		{Name: "SIP_REFER_AUTO_DIAL", Default: "false", Description: "When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag."},
 		{Name: "SIP_TCP_ENABLED", Default: "false", Description: "Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session's INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP."},
@@ -873,12 +878,7 @@ func main() {
 	doc.set("servers", servers)
 
 	// Tags.
-	tags := newSeq().
-		add(newMap().set("name", "Legs").set("description", "Voice call legs (SIP or WebRTC)")).
-		add(newMap().set("name", "Rooms").set("description", "Multi-party audio conference rooms")).
-		add(newMap().set("name", "WebRTC").set("description", "WebRTC peer connection establishment")).
-		add(newMap().set("name", "Observability").set("description", "Metrics and health endpoints"))
-	doc.set("tags", tags)
+	doc.set("tags", buildTags(pathsNode))
 
 	// Paths.
 	doc.set("paths", pathsNode)
@@ -922,6 +922,84 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Generated %s (%d bytes)\n", outPath, len(out))
+}
+
+// tagDescriptions supplies the prose for each root-level tag. Every tag used by
+// an operation must have an entry here — buildTags fails the generation
+// otherwise, so a new route group cannot silently ship undeclared.
+func tagDescriptions() map[string]string {
+	return map[string]string{
+		"Legs":              "Voice call legs (SIP or WebRTC)",
+		"WebRTC":            "WebRTC peer connection establishment",
+		"Rooms":             "Multi-party audio conference rooms, including audio bridges between room mixers",
+		"SIP Registrations": "Inbound SIP AOR registrations and parked REGISTER attempts",
+		"SIP Trunks":        "Outbound SIP trunks (REGISTER or static peering)",
+		"Events":            "Real-time event stream and command channel (VSI)",
+		"Observability":     "Metrics and health endpoints",
+	}
+}
+
+// buildTags derives the root-level tags list from the tags the operations
+// actually carry, in first-appearance order, so it can never drift from the
+// paths block the way a hand-maintained list does.
+func buildTags(paths *omap) *seq {
+	descs := tagDescriptions()
+
+	tags := newSeq()
+	seen := map[string]bool{}
+	var missing []string
+	for _, name := range collectOperationTags(paths) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		desc, ok := descs[name]
+		if !ok {
+			missing = append(missing, name)
+			continue
+		}
+		tags.add(newMap().set("name", name).set("description", desc))
+	}
+
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "tag %q used by an operation but has no entry in tagDescriptions()\n",
+			strings.Join(missing, `", "`))
+		os.Exit(1)
+	}
+
+	return tags
+}
+
+// collectOperationTags walks the built paths node and returns every tag named
+// by an operation, in document order (duplicates included).
+func collectOperationTags(paths *omap) []string {
+	var out []string
+	for i := 0; i+1 < len(paths.node.Content); i += 2 {
+		pathItem := paths.node.Content[i+1]
+		for j := 0; j+1 < len(pathItem.Content); j += 2 {
+			if !isMethodKey(pathItem.Content[j].Value) {
+				continue
+			}
+			op := pathItem.Content[j+1]
+			for k := 0; k+1 < len(op.Content); k += 2 {
+				if op.Content[k].Value != "tags" {
+					continue
+				}
+				for _, t := range op.Content[k+1].Content {
+					out = append(out, t.Value)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func isMethodKey(key string) bool {
+	switch key {
+	case "get", "put", "post", "delete", "options", "head", "patch", "trace":
+		return true
+	}
+	return false
 }
 
 func buildParameters() *omap {
