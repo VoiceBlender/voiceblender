@@ -40,6 +40,7 @@ type CreateLegRequest struct {
 	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	TurnDetection   *bool             `json:"turn_detection,omitempty"`   // opt-in SmartTurn turn.complete/turn.incomplete events
 	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
 
 	// Streams describes audio streams to offer *in addition to* the call's
@@ -121,6 +122,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"turn_detection":   {Description: "If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Requires SMART_TURN_URL. Omit to use the server default (SMART_TURN_ENABLED env var, default false)."},
 	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
 	"streams":          {Description: "SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead."},
 	"url":              {Description: "WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.", Format: "uri"},
@@ -133,6 +135,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
 type AnswerLegRequest struct {
 	SpeechDetection *bool  `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	TurnDetection   *bool  `json:"turn_detection,omitempty"`   // opt-in SmartTurn turn.complete/turn.incomplete events
 	Codec           string `json:"codec,omitempty"`            // explicit codec to use (must be in the remote offer)
 
 	// Streams routes the caller's additional audio streams to rooms once the
@@ -155,6 +158,7 @@ var answerLegStreamFields = map[string]FieldEnrichment{
 
 var answerLegRequestFields = map[string]FieldEnrichment{
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"turn_detection":   {Description: "If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Requires SMART_TURN_URL. Omit to use the server default (SMART_TURN_ENABLED env var, default false)."},
 	"codec":            {Description: "Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
 	"streams":          {Description: "Rooms for the caller's additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later."},
 }
@@ -816,13 +820,17 @@ var agentMessageRequestFields = map[string]FieldEnrichment{
 
 // WebRTCOfferRequest is the request body for POST /v1/webrtc/offer.
 type WebRTCOfferRequest struct {
-	SDP   string `json:"sdp"`
-	AppID string `json:"app_id,omitempty"`
+	SDP             string `json:"sdp"`
+	AppID           string `json:"app_id,omitempty"`
+	SpeechDetection *bool  `json:"speech_detection,omitempty"`
+	TurnDetection   *bool  `json:"turn_detection,omitempty"`
 }
 
 var webRTCOfferRequestFields = map[string]FieldEnrichment{
-	"sdp":    {Description: "SDP offer from the browser"},
-	"app_id": {Description: "Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter."},
+	"sdp":              {Description: "SDP offer from the browser"},
+	"app_id":           {Description: "Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter."},
+	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. Omit to use server default."},
+	"turn_detection":   {Description: "If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Omit to use server default."},
 }
 
 // CreateTrunkRequest is the request body for POST /v1/sip/trunks. The shape

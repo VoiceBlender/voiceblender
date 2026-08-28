@@ -63,6 +63,9 @@ const (
 	SpeakingStarted EventType = "speaking.started"
 	SpeakingStopped EventType = "speaking.stopped"
 
+	TurnComplete   EventType = "turn.complete"
+	TurnIncomplete EventType = "turn.incomplete"
+
 	RoomCreated EventType = "room.created"
 	RoomDeleted EventType = "room.deleted"
 

@@ -84,6 +84,7 @@ type sttStartPayload struct {
 type answerLegPayload struct {
 	ID              string            `json:"id"`
 	SpeechDetection *bool             `json:"speech_detection,omitempty"`
+	TurnDetection   *bool             `json:"turn_detection,omitempty"`
 	Codec           string            `json:"codec,omitempty"`
 	Streams         []AnswerLegStream `json:"streams,omitempty"`
 }
@@ -337,7 +338,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.TurnDetection, p.Codec, p.Streams); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}

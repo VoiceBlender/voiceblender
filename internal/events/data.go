@@ -285,6 +285,16 @@ type SpeakingData struct {
 	LegRoomScope
 }
 
+// TurnDetectionData is emitted for turn.complete and turn.incomplete events.
+type TurnDetectionData struct {
+	LegRoomScope
+	// Transport is "ws" or "http", identifying which SmartTurn backend produced this event.
+	Transport     string  `json:"transport"`
+	Probability   float64 `json:"probability"`
+	Threshold     float64 `json:"threshold"`
+	ProcessingMs  int64   `json:"processing_ms"`
+}
+
 // --- DTMF ---
 
 type DTMFReceivedData struct {

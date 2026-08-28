@@ -466,6 +466,10 @@ channels:
                 $ref: '#/components/messages/evt_speaking_started'
             speaking.stopped:
                 $ref: '#/components/messages/evt_speaking_stopped'
+            turn.complete:
+                $ref: '#/components/messages/evt_turn_complete'
+            turn.incomplete:
+                $ref: '#/components/messages/evt_turn_incomplete'
             playback.started:
                 $ref: '#/components/messages/evt_playback_started'
             playback.finished:
@@ -2043,6 +2047,20 @@ operations:
         summary: Participant stopped speaking
         messages:
             - $ref: '#/channels/vsi/messages/speaking.stopped'
+    send_turn_complete:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SmartTurn determined the speaker has completed their conversational turn
+        messages:
+            - $ref: '#/channels/vsi/messages/turn.complete'
+    send_turn_incomplete:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
+        messages:
+            - $ref: '#/channels/vsi/messages/turn.incomplete'
     send_playback_started:
         action: send
         channel:
@@ -5531,6 +5549,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/speaking.stopped. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/speaking.stopped/post/requestBody/content/application~1json/schema
+        evt_turn_complete:
+            name: evt_turn_complete
+            title: SmartTurn determined the speaker has completed their conversational turn
+            summary: SmartTurn determined the speaker has completed their conversational turn
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/turn.complete. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/turn.complete/post/requestBody/content/application~1json/schema
+        evt_turn_incomplete:
+            name: evt_turn_incomplete
+            title: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
+            summary: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/turn.incomplete. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/turn.incomplete/post/requestBody/content/application~1json/schema
         evt_playback_started:
             name: evt_playback_started
             title: Playback began
@@ -6425,6 +6457,10 @@ components:
                     type: string
                 app_id:
                     type: string
+                speech_detection:
+                    type: boolean
+                turn_detection:
+                    type: boolean
             required:
                 - sdp
         WebRTCOfferResult:
@@ -6551,6 +6587,8 @@ components:
                 id:
                     type: string
                 speech_detection:
+                    type: boolean
+                turn_detection:
                     type: boolean
                 codec:
                     type: string

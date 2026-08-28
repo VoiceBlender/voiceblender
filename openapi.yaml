@@ -3678,6 +3678,9 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                turn_detection:
+                    type: boolean
+                    description: If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Requires SMART_TURN_URL. Omit to use the server default (SMART_TURN_ENABLED env var, default false).
                 codec:
                     type: string
                     description: Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.
@@ -3806,6 +3809,9 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                turn_detection:
+                    type: boolean
+                    description: If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Requires SMART_TURN_URL. Omit to use the server default (SMART_TURN_ENABLED env var, default false).
                 rtt:
                     type: boolean
                     description: 'For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.'
@@ -4359,6 +4365,12 @@ components:
                 app_id:
                     type: string
                     description: Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter.
+                speech_detection:
+                    type: boolean
+                    description: If true, emit speaking.started and speaking.stopped events for this leg. Omit to use server default.
+                turn_detection:
+                    type: boolean
+                    description: If true, emit turn.complete and turn.incomplete events via SmartTurn for this leg. Omit to use server default.
             required:
                 - sdp
         AMDParams:
@@ -5022,6 +5034,8 @@ components:
                 - rtt.received
                 - speaking.started
                 - speaking.stopped
+                - turn.complete
+                - turn.incomplete
                 - playback.started
                 - playback.finished
                 - playback.error
@@ -5738,6 +5752,66 @@ x-webhooks:
                                         description: Room identifier (present only when the leg is in a room)
                                     app_id:
                                         type: string
+    turn.complete:
+        post:
+            summary: SmartTurn determined the speaker has completed their conversational turn
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                        description: Room identifier (present only when the leg is in a room)
+                                    app_id:
+                                        type: string
+                                    transport:
+                                        type: string
+                                        description: 'SmartTurn transport used: ''ws'' (streaming WebSocket) or ''http'' (stateless evaluate)'
+                                    probability:
+                                        type: number
+                                        description: Model probability score returned by SmartTurn (0.0–1.0)
+                                    threshold:
+                                        type: number
+                                        description: Threshold applied to determine TURN_COMPLETE
+                                    processing_ms:
+                                        type: integer
+                                        description: End-to-end SmartTurn inference latency in milliseconds
+    turn.incomplete:
+        post:
+            summary: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    room_id:
+                                        type: string
+                                        description: Room identifier (present only when the leg is in a room)
+                                    app_id:
+                                        type: string
+                                    transport:
+                                        type: string
+                                        description: 'SmartTurn transport used: ''ws'' (streaming WebSocket) or ''http'' (stateless evaluate)'
+                                    probability:
+                                        type: number
+                                        description: Model probability score returned by SmartTurn (0.0–1.0)
+                                    threshold:
+                                        type: number
+                                        description: Threshold applied to determine TURN_INCOMPLETE
+                                    processing_ms:
+                                        type: integer
+                                        description: End-to-end SmartTurn inference latency in milliseconds
     playback.started:
         post:
             summary: Playback began

@@ -48,6 +48,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 				LegType:  "webrtc",
 			})
 			s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+			s.maybeStartTurnDetector(l, s.takeTurnOverride(l.ID()))
 		},
 	})
 	if err != nil {
@@ -75,6 +76,12 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 	// Must precede Add: OnConnected can fire immediately and publishes l.AppID().
 	if req.AppID != "" {
 		l.SetAppID(req.AppID)
+	}
+	if req.SpeechDetection != nil {
+		s.setSpeechOverride(l.ID(), req.SpeechDetection)
+	}
+	if req.TurnDetection != nil {
+		s.setTurnOverride(l.ID(), req.TurnDetection)
 	}
 	s.LegMgr.Add(l)
 
