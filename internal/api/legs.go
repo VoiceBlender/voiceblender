@@ -153,7 +153,7 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, turnDetection *bool, codecName string, streams []AnswerLegStream) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
@@ -185,6 +185,9 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string,
 		}
 		if speechDetection != nil {
 			s.setSpeechOverride(id, speechDetection)
+		}
+		if turnDetection != nil {
+			s.setTurnOverride(id, turnDetection)
 		}
 		tl.SignalAnswer(preferred)
 		return nil
@@ -285,7 +288,7 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.TurnDetection, req.Codec, req.Streams); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -654,6 +657,7 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	}
 
 	s.stopSpeakingDetector(l.ID())
+	s.stopTurnDetector(l.ID())
 	s.cleanupLegAgent(l.ID())
 	s.stopLegRecording(l.ID())
 	s.cleanupSIPRECSession(l)
@@ -1197,6 +1201,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			LegType:  string(l.Type()),
 		})
 		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
+		s.maybeStartTurnDetector(l, req.TurnDetection)
 		startAMD()
 		addToRoom()
 		s.attachOfferedStreamRooms(l, req.Streams)
@@ -1326,6 +1331,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			LegType:  string(l.Type()),
 		})
 		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+		s.maybeStartTurnDetector(l, s.takeTurnOverride(l.ID()))
 		s.attachAnsweredStreamRooms(l, s.takeStreamRoomsOverride(l.ID()))
 
 		// Block until call ends (BYE received or context cancelled)

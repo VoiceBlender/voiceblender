@@ -51,6 +51,11 @@ type Collector struct {
 	// send buffer was full.
 	vsiEventsDropped prometheus.Counter
 
+	// Turn detection metrics (SmartTurn microservice).
+	turnEvaluationsTotal    *prometheus.CounterVec
+	turnEvalDurationSeconds *prometheus.HistogramVec
+	turnProbabilities       prometheus.Histogram
+
 	registry *prometheus.Registry
 }
 
@@ -118,6 +123,23 @@ func New(bus *events.Bus) *Collector {
 			Help: "Total events dropped because a VSI WebSocket client's buffer was full.",
 		}),
 
+		turnEvaluationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "voiceblender_turn_evaluations_total",
+			Help: "Total turn completion evaluations by result and transport.",
+		}, []string{"result", "transport"}),
+
+		turnEvalDurationSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "voiceblender_turn_eval_duration_seconds",
+			Help:    "Turn evaluation latency in seconds.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
+		}, []string{"transport"}),
+
+		turnProbabilities: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "voiceblender_turn_probabilities",
+			Help:    "Distribution of turn completion probabilities.",
+			Buckets: prometheus.LinearBuckets(0.0, 0.1, 11),
+		}),
+
 		registry: reg,
 	}
 
@@ -139,6 +161,9 @@ func New(bus *events.Bus) *Collector {
 		c.webhookDropped,
 		c.webhookDeliveries,
 		c.vsiEventsDropped,
+		c.turnEvaluationsTotal,
+		c.turnEvalDurationSeconds,
+		c.turnProbabilities,
 		recoveredPanics,
 	)
 
@@ -230,5 +255,26 @@ func (c *Collector) handle(e events.Event) {
 
 	case events.RoomDeleted:
 		c.activeRooms.Dec()
+
+	case events.TurnComplete, events.TurnIncomplete:
+		d, ok := e.Data.(*events.TurnDetectionData)
+		if !ok || d == nil {
+			return
+		}
+		result := "incomplete"
+		if e.Type == events.TurnComplete {
+			result = "complete"
+		}
+		transport := d.Transport
+		if transport == "" {
+			transport = "unknown"
+		}
+		c.turnEvaluationsTotal.WithLabelValues(result, transport).Inc()
+		if d.ProcessingMs > 0 {
+			c.turnEvalDurationSeconds.WithLabelValues(transport).Observe(float64(d.ProcessingMs) / 1000.0)
+		}
+		if d.Probability >= 0 {
+			c.turnProbabilities.Observe(d.Probability)
+		}
 	}
 }

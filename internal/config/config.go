@@ -161,6 +161,15 @@ type Config struct {
 	LiveKitAPIKey              string // required when LiveKitTokenSigningEnabled=true
 	LiveKitAPISecret           string // required when LiveKitTokenSigningEnabled=true; redact in logs
 	LiveKitDefaultTokenTTL     time.Duration
+
+	// SmartTurn turn detection (external microservice).
+	SmartTurnEnabled         bool    // SMART_TURN_ENABLED — global default; false = opt-out until per-leg override
+	SmartTurnURL             string  // SMART_TURN_URL — base URL of the smartturn-go service (e.g. http://smartturn:8080)
+	SmartTurnTransport       string  // SMART_TURN_TRANSPORT — "ws" (default) or "http"
+	SmartTurnVAD             string  // SMART_TURN_VAD — "rms" (default) or "silero" (WS mode only)
+	SmartTurnThreshold       float64 // SMART_TURN_THRESHOLD — probability cut-off for TURN_COMPLETE (default 0.55)
+	SmartTurnPauseDurationMs int     // SMART_TURN_PAUSE_DURATION_MS — silence window (default 500)
+	SmartTurnAdaptive        bool    // SMART_TURN_ADAPTIVE — enable adaptive thresholding in WS mode
 }
 
 func Load() Config {
@@ -277,6 +286,14 @@ func Load() Config {
 		LiveKitAPIKey:              os.Getenv("LIVEKIT_API_KEY"),
 		LiveKitAPISecret:           os.Getenv("LIVEKIT_API_SECRET"),
 		LiveKitDefaultTokenTTL:     envDuration("LIVEKIT_DEFAULT_TOKEN_TTL", 6*time.Hour),
+
+		SmartTurnEnabled:         envBool("SMART_TURN_ENABLED", false),
+		SmartTurnURL:             os.Getenv("SMART_TURN_URL"),
+		SmartTurnTransport:       smartTurnTransport(envOr("SMART_TURN_TRANSPORT", "ws")),
+		SmartTurnVAD:             envOr("SMART_TURN_VAD", "silero"),
+		SmartTurnThreshold:       envFloat("SMART_TURN_THRESHOLD", 0.55),
+		SmartTurnPauseDurationMs: envInt("SMART_TURN_PAUSE_DURATION_MS", 500),
+		SmartTurnAdaptive:        envBool("SMART_TURN_ADAPTIVE", false),
 	}
 }
 
@@ -424,4 +441,15 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// smartTurnTransport clamps the transport value to the two recognised modes.
+// Unrecognised values default to "ws" so a typo cannot silently break things.
+func smartTurnTransport(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "http":
+		return "http"
+	default:
+		return "ws"
+	}
 }

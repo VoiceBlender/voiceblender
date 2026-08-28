@@ -270,6 +270,8 @@ func EventsMetadata() []EventMeta {
 		{events.RTTReceived, "Real-Time Text (T.140 / RFC 4103) chunk received from the remote", reflect.TypeOf(events.RTTReceivedData{})},
 		{events.SpeakingStarted, "Participant started speaking", reflect.TypeOf(events.SpeakingData{})},
 		{events.SpeakingStopped, "Participant stopped speaking", reflect.TypeOf(events.SpeakingData{})},
+		{events.TurnComplete, "SmartTurn determined the speaker has completed their conversational turn", reflect.TypeOf(events.TurnDetectionData{})},
+		{events.TurnIncomplete, "SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)", reflect.TypeOf(events.TurnDetectionData{})},
 		{events.PlaybackStarted, "Playback began", reflect.TypeOf(events.PlaybackStartedData{})},
 		{events.PlaybackFinished, "Playback ended", reflect.TypeOf(events.PlaybackFinishedData{})},
 		{events.PlaybackError, "Playback failed", reflect.TypeOf(events.PlaybackErrorData{})},

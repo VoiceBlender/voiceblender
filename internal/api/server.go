@@ -18,6 +18,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/VoiceBlender/voiceblender/internal/storage"
 	"github.com/VoiceBlender/voiceblender/internal/tts"
+	"github.com/VoiceBlender/voiceblender/internal/turndetector"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -49,6 +50,13 @@ type Server struct {
 
 	speechOverrideMu sync.Mutex
 	speechOverride   map[string]*bool
+
+	// SmartTurn per-leg sessions, keyed by leg ID.
+	turnDetMu sync.Mutex
+	turnDets  map[string]turndetector.Provider
+
+	turnOverrideMu sync.Mutex
+	turnOverride   map[string]*bool
 
 	// streamRoomsMu guards streamRooms, the per-stream room placement an
 	// answer request asked for. It is stashed here because the answer is
@@ -107,6 +115,8 @@ func NewServer(
 		Log:              log,
 		speakDets:        make(map[string]*speaking.Detector),
 		speechOverride:   make(map[string]*bool),
+		turnDets:         make(map[string]turndetector.Provider),
+		turnOverride:     make(map[string]*bool),
 		streamRooms:      make(map[string][]AnswerLegStream),
 		siprecSessions:   make(map[string]*siprecSession),
 		siprecRecordings: make(map[string]*siprecRecording),

@@ -170,3 +170,38 @@ func getMetrics(t *testing.T, c *Collector) string {
 	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	return rec.Body.String()
 }
+
+func TestMetrics_TurnDetection(t *testing.T) {
+	bus := events.NewBus("test")
+	c := New(bus)
+
+	bus.Publish(events.TurnComplete, &events.TurnDetectionData{
+		LegRoomScope: events.LegRoomScope{LegID: "leg-1"},
+		Transport:    "ws",
+		Probability:  0.92,
+		Threshold:    0.60,
+		ProcessingMs: 45,
+	})
+
+	bus.Publish(events.TurnIncomplete, &events.TurnDetectionData{
+		LegRoomScope: events.LegRoomScope{LegID: "leg-1"},
+		Transport:    "http",
+		Probability:  0.15,
+		Threshold:    0.60,
+		ProcessingMs: 18,
+	})
+
+	body := getMetrics(t, c)
+	for _, want := range []string{
+		`voiceblender_turn_evaluations_total{result="complete",transport="ws"} 1`,
+		`voiceblender_turn_evaluations_total{result="incomplete",transport="http"} 1`,
+		`voiceblender_turn_eval_duration_seconds_count{transport="ws"} 1`,
+		`voiceblender_turn_eval_duration_seconds_count{transport="http"} 1`,
+		`voiceblender_turn_probabilities_count 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q, body:\n%s", want, body)
+		}
+	}
+}
+

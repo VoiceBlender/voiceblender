@@ -436,3 +436,82 @@ func TestLoad_SIPTLSTrust(t *testing.T) {
 		t.Error("SIPTLSInsecure = false, want true")
 	}
 }
+
+func TestLoad_SmartTurnConfig(t *testing.T) {
+	// Clear env vars
+	for _, k := range []string{
+		"SMART_TURN_ENABLED", "SMART_TURN_URL", "SMART_TURN_TRANSPORT",
+		"SMART_TURN_VAD", "SMART_TURN_THRESHOLD", "SMART_TURN_PAUSE_DURATION_MS",
+		"SMART_TURN_ADAPTIVE",
+	} {
+		t.Setenv(k, "")
+	}
+
+	// Verify defaults
+	cfg := Load()
+	if cfg.SmartTurnEnabled {
+		t.Error("expected SmartTurnEnabled = false by default")
+	}
+	if cfg.SmartTurnURL != "" {
+		t.Errorf("SmartTurnURL = %q, want empty", cfg.SmartTurnURL)
+	}
+	if cfg.SmartTurnTransport != "ws" {
+		t.Errorf("SmartTurnTransport = %q, want ws", cfg.SmartTurnTransport)
+	}
+	if cfg.SmartTurnVAD != "silero" {
+		t.Errorf("SmartTurnVAD = %q, want silero", cfg.SmartTurnVAD)
+	}
+	if cfg.SmartTurnThreshold != 0.55 {
+		t.Errorf("SmartTurnThreshold = %v, want 0.55", cfg.SmartTurnThreshold)
+	}
+	if cfg.SmartTurnPauseDurationMs != 500 {
+		t.Errorf("SmartTurnPauseDurationMs = %d, want 500", cfg.SmartTurnPauseDurationMs)
+	}
+	if cfg.SmartTurnAdaptive {
+		t.Error("expected SmartTurnAdaptive = false by default")
+	}
+
+	// Set overrides
+	t.Setenv("SMART_TURN_ENABLED", "true")
+	t.Setenv("SMART_TURN_URL", "http://localhost:8081")
+	t.Setenv("SMART_TURN_TRANSPORT", "http")
+	t.Setenv("SMART_TURN_VAD", "rms")
+	t.Setenv("SMART_TURN_THRESHOLD", "0.65")
+	t.Setenv("SMART_TURN_PAUSE_DURATION_MS", "400")
+	t.Setenv("SMART_TURN_ADAPTIVE", "true")
+
+	cfg = Load()
+	if !cfg.SmartTurnEnabled {
+		t.Error("expected SmartTurnEnabled = true")
+	}
+	if cfg.SmartTurnURL != "http://localhost:8081" {
+		t.Errorf("SmartTurnURL = %q, want http://localhost:8081", cfg.SmartTurnURL)
+	}
+	if cfg.SmartTurnTransport != "http" {
+		t.Errorf("SmartTurnTransport = %q, want http", cfg.SmartTurnTransport)
+	}
+	if cfg.SmartTurnVAD != "rms" {
+		t.Errorf("SmartTurnVAD = %q, want rms", cfg.SmartTurnVAD)
+	}
+	if cfg.SmartTurnThreshold != 0.65 {
+		t.Errorf("SmartTurnThreshold = %v, want 0.65", cfg.SmartTurnThreshold)
+	}
+	if cfg.SmartTurnPauseDurationMs != 400 {
+		t.Errorf("SmartTurnPauseDurationMs = %d, want 400", cfg.SmartTurnPauseDurationMs)
+	}
+	if !cfg.SmartTurnAdaptive {
+		t.Error("expected SmartTurnAdaptive = true")
+	}
+}
+
+func TestSmartTurnTransport_Validation(t *testing.T) {
+	if got := smartTurnTransport("ws"); got != "ws" {
+		t.Errorf("smartTurnTransport(ws) = %q", got)
+	}
+	if got := smartTurnTransport("http"); got != "http" {
+		t.Errorf("smartTurnTransport(http) = %q", got)
+	}
+	if got := smartTurnTransport("invalid"); got != "ws" {
+		t.Errorf("smartTurnTransport(invalid) = %q, want fallback ws", got)
+	}
+}

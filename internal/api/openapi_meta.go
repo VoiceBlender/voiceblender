@@ -85,6 +85,20 @@ func WebhookFieldDescriptions() map[string]string {
 		"speaking.stopped.leg_id":  "Leg identifier",
 		"speaking.stopped.room_id": "Room identifier (present only when the leg is in a room)",
 
+		// SmartTurn turn detection
+		"turn.complete.leg_id":       "Leg identifier",
+		"turn.complete.room_id":      "Room identifier (present only when the leg is in a room)",
+		"turn.complete.transport":    "SmartTurn transport used: 'ws' (streaming WebSocket) or 'http' (stateless evaluate)",
+		"turn.complete.probability":  "Model probability score returned by SmartTurn (0.0–1.0)",
+		"turn.complete.threshold":    "Threshold applied to determine TURN_COMPLETE",
+		"turn.complete.processing_ms": "End-to-end SmartTurn inference latency in milliseconds",
+		"turn.incomplete.leg_id":       "Leg identifier",
+		"turn.incomplete.room_id":      "Room identifier (present only when the leg is in a room)",
+		"turn.incomplete.transport":    "SmartTurn transport used: 'ws' (streaming WebSocket) or 'http' (stateless evaluate)",
+		"turn.incomplete.probability":  "Model probability score returned by SmartTurn (0.0–1.0)",
+		"turn.incomplete.threshold":    "Threshold applied to determine TURN_INCOMPLETE",
+		"turn.incomplete.processing_ms": "End-to-end SmartTurn inference latency in milliseconds",
+
 		// playback
 		"playback.started.leg_id":       "Leg identifier",
 		"playback.started.room_id":      "Room identifier",
