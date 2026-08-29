@@ -57,7 +57,31 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 	// Pace: wait at least one frame interval between reads so the mixer's
 	// readLoop doesn't flood its tiny incoming channel.
 	sb.awaitSlot()
+	return sb.readBlocking(p)
+}
 
+// ReadUnpaced blocks until at least len(p) bytes are buffered (or the buffer
+// is closed), with no self-imposed pacing of its own. Use this instead of
+// Read when the caller already has its own real-time consumer clock — for
+// example sip_leg.go's writeLoop, which drains outFrames on its own 20ms
+// ticker. Read's awaitSlot pacing is redundant there, and being a second,
+// uncoordinated ~20ms clock alongside writeLoop's ticker, the two slowly walk
+// out of phase with each other; periodically that phase offset crosses a full
+// frame boundary and writeLoop's non-blocking read finds outFrames empty,
+// substituting a silence frame even though the real audio was buffered and
+// ready on time. outFrames is a blocking-send, backpressured channel (unlike
+// the mixer's lossy 3-slot one Read's pacing protects), so nothing is lost by
+// reading as fast as data arrives.
+func (sb *streamBuffer) ReadUnpaced(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return sb.readBlocking(p)
+}
+
+// readBlocking is the shared wait-for-data-and-copy body of Read and
+// ReadUnpaced.
+func (sb *streamBuffer) readBlocking(p []byte) (int, error) {
 	sb.mu.Lock()
 	for len(sb.buf) < len(p) && !sb.closed {
 		sb.cond.Wait()
@@ -380,7 +404,7 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 		go func() {
 			buf := make([]byte, frameSize)
 			for {
-				n, err := sb.Read(buf)
+				n, err := sb.ReadUnpaced(buf)
 				if err != nil || n == 0 {
 					return
 				}
