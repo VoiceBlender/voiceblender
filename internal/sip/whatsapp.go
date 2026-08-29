@@ -14,8 +14,11 @@ const (
 	whatsAppInboundDomain = "meta.vc"
 )
 
-// IsWhatsAppInvite reports whether an inbound INVITE comes from a Meta
-// WhatsApp gateway (meta.vc or any subdomain).
+// IsWhatsAppInvite reports whether an inbound INVITE should take the
+// WhatsApp WebRTC-over-SIP media path: From host is meta.vc (or a
+// subdomain) and the offer still carries DTLS-SRTP (a=fingerprint).
+// A Meta From with plain RTP — typical when a fronting SIP proxy has
+// already terminated ICE+DTLS — falls through to the classic SIP path.
 func IsWhatsAppInvite(call *InboundCall) bool {
 	if call == nil || call.Request == nil {
 		return false
@@ -25,7 +28,23 @@ func IsWhatsAppInvite(call *InboundCall) bool {
 		return false
 	}
 	host := strings.ToLower(from.Address.Host)
-	return host == whatsAppInboundDomain || strings.HasSuffix(host, "."+whatsAppInboundDomain)
+	if host != whatsAppInboundDomain && !strings.HasSuffix(host, "."+whatsAppInboundDomain) {
+		return false
+	}
+	return inviteHasDTLSFingerprint(call.Request)
+}
+
+// inviteHasDTLSFingerprint reports whether the INVITE body carries a
+// DTLS fingerprint attribute. That is the media-layer signal that
+// Meta's ICE+DTLS-SRTP path is still intact; classic RTP/AVP offers
+// after a terminating proxy do not include it.
+func inviteHasDTLSFingerprint(msg BodyCarrier) bool {
+	sdp, err := SDPOf(msg)
+	if err != nil {
+		return false
+	}
+	// SDP attribute names are case-insensitive (RFC 4566).
+	return strings.Contains(strings.ToLower(string(sdp)), "a=fingerprint:")
 }
 
 type WhatsAppInviteOptions struct {

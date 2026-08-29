@@ -407,7 +407,7 @@ VoiceBlender bridges WhatsApp consumer voice calls to and from your stack via Me
 
 ### Capabilities
 
-- **Inbound** — Meta-originated INVITEs are auto-routed to a WhatsApp handler when the From URI host ends in `meta.vc`. The leg comes up in `ringing`, fires `leg.ringing` (`leg_type: "whatsapp_in"`), and waits for `POST /v1/legs/{id}/answer`. The 200 OK then carries the pre-gathered ICE/DTLS-SRTP answer.
+- **Inbound** — Meta-originated INVITEs are auto-routed to a WhatsApp handler when the From URI host ends in `meta.vc` **and** the offer still carries DTLS-SRTP (`a=fingerprint`). A fronting SIP proxy that terminates encryption into plain RTP keeps the Meta From but takes the classic SIP path. On the WhatsApp path the leg comes up in `ringing`, fires `leg.ringing` (`leg_type: "whatsapp_in"`), and waits for `POST /v1/legs/{id}/answer`. The 200 OK then carries the pre-gathered ICE/DTLS-SRTP answer.
 - **Outbound** — `POST /v1/legs {"type":"whatsapp", ...}` returns `201` immediately with the leg in `ringing`. ICE gathering, the digest 401/407 round-trip, and the SDP-answer apply happen asynchronously; outcome is signalled via `leg.connected` or `leg.disconnected`.
 - **Audio** — full-duplex Opus at 48 kHz with mixed-minus-self room participation, recording, TTS, STT, agent attachment, speaking detection, playback. The mixer auto-resamples between WhatsApp's 48 kHz and your room's configured rate.
 - **DTMF** — inbound RFC 4733 telephone-events are decoded and emitted as `dtmf.received` plus the standard cross-leg broadcast.

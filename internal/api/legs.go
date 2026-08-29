@@ -1210,8 +1210,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.
 func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
-	// WhatsApp INVITEs have a meta.vc From URI host; dispatch them to the
-	// WebRTC-over-SIP media path instead of the classic RTP pipeline.
+	// WhatsApp INVITEs: meta.vc From host plus still-encrypted DTLS-SRTP
+	// media. A fronting proxy that terminates ICE+DTLS into plain RTP
+	// keeps the Meta From but takes the classic SIP path below.
 	if sipmod.IsWhatsAppInvite(call) {
 		s.handleWhatsAppInbound(call)
 		return

@@ -7,10 +7,35 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-func newInboundCallWithFrom(fromHost string) *InboundCall {
+const (
+	// Fingerprint value is arbitrary; only the a=fingerprint: attribute matters.
+	webrtcOfferSDP = "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
+		"c=IN IP4 0.0.0.0\r\n" +
+		"a=fingerprint:sha-256 AB:CD:EF:00\r\n" +
+		"a=setup:actpass\r\n" +
+		"a=ice-ufrag:abcd\r\n" +
+		"a=ice-pwd:abcdefghijklmnopqrstuvwx\r\n"
+
+	plainRTPSDP = "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 40000 RTP/AVP 0\r\n" +
+		"c=IN IP4 127.0.0.1\r\n"
+)
+
+func newInboundCallWithFrom(fromHost string, sdp []byte) *InboundCall {
 	req := sip.NewRequest(sip.INVITE, sip.Uri{Scheme: "sips", User: "1234", Host: "business.example"})
 	from := &sip.FromHeader{Address: sip.Uri{Scheme: "sips", User: "15551234567", Host: fromHost}}
 	req.AppendHeader(from)
+	if len(sdp) > 0 {
+		req.SetBody(sdp)
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
 	return &InboundCall{Request: req}
 }
 
@@ -18,23 +43,34 @@ func TestIsWhatsAppInvite(t *testing.T) {
 	cases := []struct {
 		name string
 		host string
+		sdp  []byte
 		want bool
 	}{
-		{"exact meta.vc", "meta.vc", true},
-		{"wa subdomain", "wa.meta.vc", true},
-		{"deep subdomain", "us-east-1.wa.meta.vc", true},
-		{"mixed case", "WA.Meta.VC", true},
-		{"lookalike suffix", "evilmeta.vc", false},
-		{"unrelated host", "example.com", false},
-		{"empty host", "", false},
+		{"exact meta.vc + DTLS", "meta.vc", []byte(webrtcOfferSDP), true},
+		{"wa subdomain + DTLS", "wa.meta.vc", []byte(webrtcOfferSDP), true},
+		{"deep subdomain + DTLS", "us-east-1.wa.meta.vc", []byte(webrtcOfferSDP), true},
+		{"mixed case + DTLS", "WA.Meta.VC", []byte(webrtcOfferSDP), true},
+		{"meta.vc + plain RTP", "meta.vc", []byte(plainRTPSDP), false},
+		{"wa subdomain + plain RTP", "wa.meta.vc", []byte(plainRTPSDP), false},
+		{"meta.vc + no SDP", "meta.vc", nil, false},
+		{"lookalike suffix + DTLS", "evilmeta.vc", []byte(webrtcOfferSDP), false},
+		{"unrelated host + DTLS", "example.com", []byte(webrtcOfferSDP), false},
+		{"empty host + DTLS", "", []byte(webrtcOfferSDP), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IsWhatsAppInvite(newInboundCallWithFrom(tc.host))
+			got := IsWhatsAppInvite(newInboundCallWithFrom(tc.host, tc.sdp))
 			if got != tc.want {
 				t.Errorf("IsWhatsAppInvite(%q) = %v, want %v", tc.host, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsWhatsAppInvite_FingerprintCaseInsensitive(t *testing.T) {
+	sdp := []byte("v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nA=Fingerprint:sha-256 AA:BB\r\n")
+	if !IsWhatsAppInvite(newInboundCallWithFrom("meta.vc", sdp)) {
+		t.Error("expected match when a=fingerprint is mixed-case")
 	}
 }
 
