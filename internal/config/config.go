@@ -35,6 +35,7 @@ type Config struct {
 	LogLevel           string
 	WebhookURL         string
 	WebhookSecret      string
+	CustomDataMaxBytes int // cap on a leg's custom_data JSON; 0 = unlimited
 	ElevenLabsAPIKey   string
 	VAPIAPIKey         string
 	DeepgramAPIKey     string
@@ -193,6 +194,7 @@ func Load() Config {
 		LogLevel:                  envOr("LOG_LEVEL", "info"),
 		WebhookURL:                os.Getenv("WEBHOOK_URL"),
 		WebhookSecret:             os.Getenv("WEBHOOK_SECRET"),
+		CustomDataMaxBytes:        envInt("CUSTOM_DATA_MAX_BYTES", 1024),
 		ElevenLabsAPIKey:          os.Getenv("ELEVENLABS_API_KEY"),
 		VAPIAPIKey:                os.Getenv("VAPI_API_KEY"),
 		DeepgramAPIKey:            os.Getenv("DEEPGRAM_API_KEY"),

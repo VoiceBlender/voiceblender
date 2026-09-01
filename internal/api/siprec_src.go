@@ -115,7 +115,7 @@ func (s *Server) doStartRoomSIPREC(ctx context.Context, roomID string, req Start
 
 	go s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
 
-	view := toLegView(l)
+	view := s.toLegView(l)
 	return &view, nil
 }
 
@@ -423,7 +423,7 @@ func (s *Server) doStartLegSIPREC(ctx context.Context, legID string, req StartSI
 
 	go s.watchLegDialogEnd(out, call.Dialog.Context(), 0)
 
-	view := toLegView(out)
+	view := s.toLegView(out)
 	return &view, nil
 }
 

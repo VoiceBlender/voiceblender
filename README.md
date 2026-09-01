@@ -82,6 +82,7 @@ All configuration is via environment variables:
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |
 | `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
+| `CUSTOM_DATA_MAX_BYTES` | `1024` | Maximum size in bytes of a leg's `custom_data` JSON. The value is repeated on every event for that leg, so this caps webhook payload growth. `0` = unlimited. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
 | `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |

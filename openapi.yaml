@@ -497,11 +497,16 @@ paths:
             description: 'Queues a SIP 180 Ringing provisional response with no SDP. Use when `SIP_AUTO_RINGING=false` (the default) and you want to indicate alerting before deciding to early-media or answer. Idempotent: each call emits another 180 — receivers tolerate re-sends. The HTTP call returns 202 as soon as the request is validated; SIP-level send failures surface as `leg.command_failed` with `command="ring"`.'
             tags:
                 - Legs
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RingLegRequest'
             responses:
                 '202':
                     description: 180 Ringing queued
                 '400':
-                    description: Not a SIP inbound leg
+                    description: Not a SIP inbound leg, or custom_data over the size limit
                     content:
                         application/json:
                             schema:
@@ -3553,6 +3558,8 @@ components:
                     additionalProperties:
                         type: string
                     description: Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time.
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
             required:
                 - id
                 - type
@@ -3693,6 +3700,8 @@ components:
                     items:
                         $ref: '#/components/schemas/AnswerLegStream'
                     description: 'Rooms for the caller''s additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller''s offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later.'
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited). Omit to leave any existing value untouched; send null to clear it.
         AttachStreamRoomRequest:
             type: object
             properties:
@@ -3810,6 +3819,8 @@ components:
                     type: boolean
                     description: 'For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.'
                     default: false
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
                 streams:
                     type: array
                     items:
@@ -3931,8 +3942,7 @@ components:
             properties:
                 settings:
                     type: object
-                    additionalProperties:
-                        type: string
+                    additionalProperties: {}
                     description: Full Deepgram agent settings object (agent.listen, agent.think, agent.speak, etc.). When omitted, sensible defaults are used (nova-3 STT, gpt-4o-mini LLM, aura-2-asteria-en TTS).
                 greeting:
                     type: string
@@ -3970,6 +3980,8 @@ components:
                         - opus
                         - AMR-WB
                         - AMR-NB
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited). Omit to leave any existing value untouched; send null to clear it.
         ElevenLabsAgentRequest:
             type: object
             properties:
@@ -4109,6 +4121,11 @@ components:
                     type: integer
                 reason:
                     type: string
+        RingLegRequest:
+            type: object
+            properties:
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited). Omit to leave any existing value untouched; send null to clear it.
         RoomRoutingRequest:
             type: object
             properties:
@@ -4359,6 +4376,8 @@ components:
                 app_id:
                     type: string
                     description: Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter.
+                custom_data:
+                    description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
             required:
                 - sdp
         AMDParams:
@@ -4988,6 +5007,8 @@ components:
                 instance_id:
                     type: string
                     description: Instance identifier
+                custom_data:
+                    description: Opaque application JSON attached to the event's leg via custom_data at leg creation, answer, ring or early-media. Any JSON value. Absent when the leg has none.
             required:
                 - type
                 - timestamp

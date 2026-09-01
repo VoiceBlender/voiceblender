@@ -101,6 +101,9 @@ type Event struct {
 	Timestamp  time.Time `json:"timestamp"`
 	InstanceID string    `json:"instance_id,omitempty"`
 	Data       EventData `json:"-"`
+	// CustomData is the opaque JSON attached to this event's leg, stamped by
+	// Bus.Publish and flattened into the envelope as "custom_data".
+	CustomData CustomData `json:"-"`
 }
 
 // MarshalJSON flattens the event envelope and data fields into a single JSON
@@ -115,6 +118,9 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	}
 	if e.InstanceID != "" {
 		envelope["instance_id"] = e.InstanceID
+	}
+	if len(e.CustomData) > 0 {
+		envelope["custom_data"] = e.CustomData
 	}
 
 	// Marshal the typed data struct and merge its fields into the envelope.

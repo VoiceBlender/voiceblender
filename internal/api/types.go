@@ -1,6 +1,9 @@
 package api
 
-import "github.com/VoiceBlender/voiceblender/internal/leg"
+import (
+	"github.com/VoiceBlender/voiceblender/internal/events"
+	"github.com/VoiceBlender/voiceblender/internal/leg"
+)
 
 // FieldEnrichment holds additional OpenAPI metadata for a struct field
 // that cannot be derived from Go types and tags alone.
@@ -14,6 +17,16 @@ type FieldEnrichment struct {
 }
 
 func intPtr(v int) *int { return &v }
+
+// Descriptions shared by every custom_data field in the spec.
+const (
+	customDataDescription = "Opaque application JSON attached to the leg. Any JSON value is accepted " +
+		"(object, array, string, number, boolean). It is echoed on the leg view and carried at the " +
+		"top level of every event published for this leg, so external state can be correlated without " +
+		"keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited)."
+	customDataMutableDescription = customDataDescription +
+		" Omit to leave any existing value untouched; send null to clear it."
+)
 
 // CodecsItemEnum provides the enum for CreateLegRequest.codecs array items.
 var CodecsItemEnum = []string{"PCMU", "PCMA", "G722", "opus", "AMR-WB", "AMR-NB"}
@@ -41,6 +54,10 @@ type CreateLegRequest struct {
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
 	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
+
+	// CustomData is opaque application JSON echoed on the leg view and in
+	// every event published for this leg.
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 
 	// Streams describes audio streams to offer *in addition to* the call's
 	// primary bidirectional audio, so a multi-stream call is up from the first
@@ -121,6 +138,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"custom_data":      {Description: customDataDescription},
 	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
 	"streams":          {Description: "SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead."},
 	"url":              {Description: "WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.", Format: "uri"},
@@ -139,6 +157,8 @@ type AnswerLegRequest struct {
 	// answer is negotiated. Positional: entry i addresses the i-th accepted
 	// stream beyond the primary, in m-line order.
 	Streams []AnswerLegStream `json:"streams,omitempty"`
+
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
 // AnswerLegStream places one of an inbound call's additional audio streams into
@@ -156,16 +176,28 @@ var answerLegStreamFields = map[string]FieldEnrichment{
 var answerLegRequestFields = map[string]FieldEnrichment{
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
 	"codec":            {Description: "Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
+	"custom_data":      {Description: customDataMutableDescription},
 	"streams":          {Description: "Rooms for the caller's additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later."},
 }
 
 // EarlyMediaLegRequest is the optional request body for POST /v1/legs/{id}/early-media.
 type EarlyMediaLegRequest struct {
-	Codec string `json:"codec,omitempty"` // explicit codec to use (must be in the remote offer)
+	Codec      string            `json:"codec,omitempty"` // explicit codec to use (must be in the remote offer)
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
 var earlyMediaLegRequestFields = map[string]FieldEnrichment{
-	"codec": {Description: "Explicit codec for the 183 Session Progress SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
+	"codec":       {Description: "Explicit codec for the 183 Session Progress SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
+	"custom_data": {Description: customDataMutableDescription},
+}
+
+// RingLegRequest is the optional request body for POST /v1/legs/{id}/ring.
+type RingLegRequest struct {
+	CustomData events.CustomData `json:"custom_data,omitempty"`
+}
+
+var ringLegRequestFields = map[string]FieldEnrichment{
+	"custom_data": {Description: customDataMutableDescription},
 }
 
 // DeleteLegRequest is the optional request body for DELETE /v1/legs/{id}.
@@ -259,6 +291,7 @@ type LegView struct {
 	AppID      string            `json:"app_id,omitempty"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
 var legViewFields = map[string]FieldEnrichment{
@@ -274,6 +307,7 @@ var legViewFields = map[string]FieldEnrichment{
 	"app_id":      {Description: "Application identifier for event stream filtering."},
 	"sip_headers": {Description: "Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
 	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time."},
+	"custom_data": {Description: customDataDescription},
 }
 
 // CreateRoomRequest is the request body for POST /v1/rooms.
@@ -816,13 +850,15 @@ var agentMessageRequestFields = map[string]FieldEnrichment{
 
 // WebRTCOfferRequest is the request body for POST /v1/webrtc/offer.
 type WebRTCOfferRequest struct {
-	SDP   string `json:"sdp"`
-	AppID string `json:"app_id,omitempty"`
+	SDP        string            `json:"sdp"`
+	AppID      string            `json:"app_id,omitempty"`
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
 var webRTCOfferRequestFields = map[string]FieldEnrichment{
-	"sdp":    {Description: "SDP offer from the browser"},
-	"app_id": {Description: "Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter."},
+	"sdp":         {Description: "SDP offer from the browser"},
+	"app_id":      {Description: "Application identifier. Carried through to all events emitted for this leg, and matched against the VSI `app_id` filter."},
+	"custom_data": {Description: customDataDescription},
 }
 
 // CreateTrunkRequest is the request body for POST /v1/sip/trunks. The shape
@@ -896,6 +932,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("CreateLegRequest", createLegRequestFields)
 	collect("AnswerLegRequest", answerLegRequestFields)
 	collect("EarlyMediaLegRequest", earlyMediaLegRequestFields)
+	collect("RingLegRequest", ringLegRequestFields)
 	collect("DeleteLegRequest", deleteLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)

@@ -25,6 +25,9 @@ type WebRTCCandidatesResult struct {
 }
 
 func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, error) {
+	if err := s.validateCustomData(req.CustomData); err != nil {
+		return nil, err
+	}
 	var l *leg.WebRTCLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:       codec.CodecOpus,
@@ -76,6 +79,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 	if req.AppID != "" {
 		l.SetAppID(req.AppID)
 	}
+	s.applyCustomData(l.ID(), req.CustomData)
 	s.LegMgr.Add(l)
 
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil

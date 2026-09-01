@@ -119,6 +119,13 @@ func goTypeToSchema(t reflect.Type) *omap {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	// events.CustomData is slice-kind but carries arbitrary JSON, so it must
+	// not be rendered as an array of bytes. An empty schema means "any value";
+	// the per-field description comes from the enrichment tables, and setting
+	// one here would emit a duplicate key.
+	if isCustomData(t) {
+		return newMap()
+	}
 	switch t.Kind() {
 	case reflect.String:
 		return newMap().set("type", "string")
@@ -148,8 +155,14 @@ func goTypeToSchema(t reflect.Type) *omap {
 			return schemaRef(t.Name())
 		}
 		return structToSchema(t)
+	case reflect.Interface:
+		return newMap()
 	}
 	return newMap().set("type", "string")
+}
+
+func isCustomData(t reflect.Type) bool {
+	return t.Name() == "CustomData" && strings.HasSuffix(t.PkgPath(), "internal/events")
 }
 
 // responseSchemaTypes tracks types that represent API responses (not requests).
@@ -840,7 +853,10 @@ func main() {
 			set("timestamp", newMap().set("type", "string").set("format", "date-time")).
 			set("event_id", newMap().set("type", "string").set("format", "uuid").
 				set("description", "Stable per-event idempotency key; identical across delivery retries and across all subscribers of the event.")).
-			set("instance_id", newMap().set("type", "string").set("description", "Instance identifier"))).
+			set("instance_id", newMap().set("type", "string").set("description", "Instance identifier")).
+			set("custom_data", newMap().set("description",
+				"Opaque application JSON attached to the event's leg via custom_data at leg creation, "+
+					"answer, ring or early-media. Any JSON value. Absent when the leg has none."))).
 		set("required", newSeq().add("type").add("timestamp"))
 
 	schemaRegistry["WebhookEventType"] = buildWebhookEventType()

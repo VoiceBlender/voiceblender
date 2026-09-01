@@ -28,7 +28,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func toLegView(l leg.Leg) LegView {
+func (s *Server) toLegView(l leg.Leg) LegView {
 	return LegView{
 		ID:         l.ID(),
 		Type:       l.Type(),
@@ -42,6 +42,7 @@ func toLegView(l leg.Leg) LegView {
 		AppID:      l.AppID(),
 		SIPHeaders: l.SIPHeaders(),
 		Headers:    l.Headers(),
+		CustomData: s.Bus.CustomData.Leg(l.ID()),
 	}
 }
 
@@ -79,6 +80,46 @@ func (s *Server) publishDisconnect(l leg.Leg, reason string) {
 	}
 	s.Bus.Publish(events.LegDisconnected, disconnectData(l, reason))
 	s.Webhooks.ClearLegWebhook(l.ID())
+	s.Bus.CustomData.ClearLeg(l.ID())
+}
+
+// validateCustomData enforces CUSTOM_DATA_MAX_BYTES. The JSON decoder already
+// guarantees well-formed input and any JSON value is accepted, so size is the
+// only check.
+func (s *Server) validateCustomData(cd events.CustomData) error {
+	if max := s.Config.CustomDataMaxBytes; max > 0 && len(cd) > max {
+		return newAPIError(http.StatusBadRequest,
+			"custom_data is %d bytes, exceeds limit of %d", len(cd), max)
+	}
+	return nil
+}
+
+// parseCustomDataQuery reads a custom_data query parameter, which carries the
+// JSON value directly rather than arriving through a body decoder.
+func (s *Server) parseCustomDataQuery(raw string) (events.CustomData, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(raw)) {
+		return nil, newAPIError(http.StatusBadRequest, "custom_data is not valid JSON")
+	}
+	cd := events.CustomData(raw)
+	if err := s.validateCustomData(cd); err != nil {
+		return nil, err
+	}
+	return cd, nil
+}
+
+// applyCustomData attaches cd to legID. An omitted value leaves any existing
+// data untouched; an explicit JSON null clears it.
+func (s *Server) applyCustomData(legID string, cd events.CustomData) {
+	switch {
+	case len(cd) == 0:
+	case cd.IsNull():
+		s.Bus.CustomData.ClearLeg(legID)
+	default:
+		s.Bus.CustomData.SetLeg(legID, cd)
+	}
 }
 
 func roundTo2(v float64) float64 {
@@ -138,7 +179,7 @@ func (s *Server) listLegs(w http.ResponseWriter, r *http.Request) {
 	legs := s.LegMgr.List()
 	views := make([]LegView, len(legs))
 	for i, l := range legs {
-		views[i] = toLegView(l)
+		views[i] = s.toLegView(l)
 	}
 	writeJSON(w, http.StatusOK, views)
 }
@@ -150,13 +191,16 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "leg not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toLegView(l))
+	writeJSON(w, http.StatusOK, s.toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream, customData events.CustomData) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	if err := s.validateCustomData(customData); err != nil {
+		return err
 	}
 
 	switch tl := l.(type) {
@@ -186,6 +230,7 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string,
 		if speechDetection != nil {
 			s.setSpeechOverride(id, speechDetection)
 		}
+		s.applyCustomData(id, customData)
 		tl.SignalAnswer(preferred)
 		return nil
 	case *leg.WhatsAppLeg:
@@ -195,6 +240,7 @@ func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string,
 		if len(streams) > 0 {
 			return newAPIError(http.StatusBadRequest, "multiple audio streams are not supported for WhatsApp legs")
 		}
+		s.applyCustomData(id, customData)
 		if err := tl.RequestAnswer(); err != nil {
 			return newAPIError(http.StatusConflict, "%s", err.Error())
 		}
@@ -285,17 +331,20 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams, req.CustomData); err != nil {
 		handleAPIError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "answering"})
 }
 
-func (s *Server) doRingLeg(id string) error {
+func (s *Server) doRingLeg(id string, customData events.CustomData) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	if err := s.validateCustomData(customData); err != nil {
+		return err
 	}
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
@@ -304,6 +353,7 @@ func (s *Server) doRingLeg(id string) error {
 	if l.State() != leg.StateRinging {
 		return newAPIError(http.StatusConflict, "leg is %s, not ringing", l.State())
 	}
+	s.applyCustomData(id, customData)
 	go func() {
 		if err := sipLeg.SendRinging(context.Background()); err != nil {
 			s.publishCommandFailed(sipLeg, "ring", err)
@@ -314,17 +364,27 @@ func (s *Server) doRingLeg(id string) error {
 
 func (s *Server) ringLeg(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.doRingLeg(id); err != nil {
+	var req RingLegRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+	}
+	if err := s.doRingLeg(id, req.CustomData); err != nil {
 		handleAPIError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ringing"})
 }
 
-func (s *Server) doEarlyMediaLeg(id, codecName string) error {
+func (s *Server) doEarlyMediaLeg(id, codecName string, customData events.CustomData) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
+	}
+	if err := s.validateCustomData(customData); err != nil {
+		return err
 	}
 	sipLeg, ok := l.(*leg.SIPLeg)
 	if !ok {
@@ -341,6 +401,7 @@ func (s *Server) doEarlyMediaLeg(id, codecName string) error {
 		}
 		preferred = c
 	}
+	s.applyCustomData(id, customData)
 	go func() {
 		if err := sipLeg.EnableEarlyMedia(context.Background(), preferred); err != nil {
 			s.publishCommandFailed(sipLeg, "early_media", err)
@@ -358,7 +419,7 @@ func (s *Server) earlyMediaLeg(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.doEarlyMediaLeg(id, req.Codec); err != nil {
+	if err := s.doEarlyMediaLeg(id, req.Codec, req.CustomData); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -840,6 +901,10 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	if err := s.validateCustomData(req.CustomData); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 
 	switch req.Type {
 	case "sip":
@@ -1145,6 +1210,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	if req.WebhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), req.WebhookURL, req.WebhookSecret)
 	}
+	s.applyCustomData(l.ID(), req.CustomData)
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:   events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 		LegType:    string(l.Type()),
@@ -1205,7 +1271,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		s.watchLegDialogEnd(l, call.Dialog.Context(), time.Duration(req.MaxDuration)*time.Second)
 	}()
 
-	return toLegView(l), nil
+	return s.toLegView(l), nil
 }
 
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.
@@ -1322,6 +1388,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
 			s.LegMgr.Remove(l.ID())
 			s.Webhooks.ClearLegWebhook(l.ID())
+			s.Bus.CustomData.ClearLeg(l.ID())
 			return
 		}
 

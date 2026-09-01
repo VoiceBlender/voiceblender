@@ -78,7 +78,7 @@ func (s *Server) doSetLegRole(legID string, req SetLegRoleRequest) (LegView, err
 	if !ok {
 		return LegView{}, newAPIError(http.StatusNotFound, "leg %s not found", legID)
 	}
-	return toLegView(l), nil
+	return s.toLegView(l), nil
 }
 
 func (s *Server) setLegRole(w http.ResponseWriter, r *http.Request) {

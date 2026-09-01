@@ -436,3 +436,21 @@ func TestLoad_SIPTLSTrust(t *testing.T) {
 		t.Error("SIPTLSInsecure = false, want true")
 	}
 }
+
+func TestLoad_CustomDataMaxBytes(t *testing.T) {
+	cfg := Load()
+	if cfg.CustomDataMaxBytes != 1024 {
+		t.Errorf("default CustomDataMaxBytes = %d, want 1024", cfg.CustomDataMaxBytes)
+	}
+
+	t.Setenv("CUSTOM_DATA_MAX_BYTES", "8192")
+	if cfg := Load(); cfg.CustomDataMaxBytes != 8192 {
+		t.Errorf("CustomDataMaxBytes = %d, want 8192", cfg.CustomDataMaxBytes)
+	}
+
+	// 0 disables the cap.
+	t.Setenv("CUSTOM_DATA_MAX_BYTES", "0")
+	if cfg := Load(); cfg.CustomDataMaxBytes != 0 {
+		t.Errorf("CustomDataMaxBytes = %d, want 0", cfg.CustomDataMaxBytes)
+	}
+}

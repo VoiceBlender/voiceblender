@@ -46,6 +46,10 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
   },
   "headers": {
     "X-Correlation-ID": "abc-123"
+  },
+  "custom_data": {
+    "order_id": "A-991",
+    "tenant": 42
   }
 }
 ```
@@ -62,6 +66,53 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | `role` | string | Routing role used by the room's audio routing matrix (e.g. `"customer"`, `"agent"`, `"supervisor"`). Omitted/empty means full mesh. |
 | `sip_headers` | object | Deprecated — `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. Use `headers` for new code. |
 | `headers` | object | Custom protocol headers exposed by the leg's transport — `X-`/`P-` headers from a SIP INVITE, WebSocket handshake, or supplied at outbound dial time. |
+| `custom_data` | any | Opaque application JSON attached to the leg. Omitted when the leg has none. See [Custom data](#custom-data). |
+
+---
+
+### Custom data
+
+`custom_data` attaches an arbitrary JSON value to a leg. It is echoed on the leg object and
+repeated at the **top level of every event published for that leg**, so an application can carry
+its own identifiers through the call without maintaining a `leg_id → external state` lookup table.
+
+```jsonc
+// POST /v1/legs
+{ "type": "sip", "to": "sip:alice@example.com",
+  "custom_data": { "order_id": "A-991", "tenant": 42 } }
+```
+
+```jsonc
+// every subsequent event for that leg
+{ "type": "leg.connected", "leg_id": "550e8400-…", "timestamp": "…",
+  "custom_data": { "order_id": "A-991", "tenant": 42 } }
+```
+
+**Where it can be set**
+
+| Entry point | How |
+|---|---|
+| `POST /v1/legs` (all leg types) | `custom_data` in the request body |
+| VSI `create_leg` | `custom_data` in the command payload |
+| `POST /v1/legs/{id}/answer`, `/ring`, `/early-media` | `custom_data` in the request body — the hook for **inbound** calls |
+| VSI `answer_leg`, `leg_ring`, `leg_early_media` | `custom_data` in the command payload |
+| `POST /v1/webrtc/offer` | `custom_data` in the request body |
+| `GET /v1/legs/websocket`, `CONNECT /v1/legs/moq` | `custom_data=<url-encoded JSON>` query parameter |
+
+**Semantics**
+
+- Any JSON value is accepted — object, array, string, number or boolean.
+- On the answer/ring/early-media endpoints, **omitting** the field leaves any existing value
+  untouched, and sending `null` clears it. Sending a value replaces the previous one outright;
+  there is no merge.
+- The value is stored verbatim, so large integers and key order survive the round trip unchanged.
+- Size is capped by `CUSTOM_DATA_MAX_BYTES` (default `1024`, `0` = unlimited). Exceeding it is
+  rejected with `400` and the leg is not created.
+- Data lives for the leg's lifetime and is released after `leg.disconnected` is published — that
+  final CDR event still carries it.
+- **Inbound SIP legs:** `leg.ringing` fires before the application has seen the call, so it never
+  carries `custom_data`. Attach it on `/ring`, `/early-media` or `/answer`; every event from that
+  point on carries it.
 
 ---
 
@@ -89,6 +140,7 @@ Originate an outbound SIP call.
     "password": "trunk-pass"
   },
   "room_id": "room-123",
+  "custom_data": { "order_id": "A-991", "tenant": 42 },
   "streams": [
     { "direction": "sendonly", "content": "alt", "lang": "es",
       "room_id": "room-translated", "role": "translator" }
@@ -120,6 +172,7 @@ Originate an outbound SIP call.
 | `room_id` | string | no | Room ID to auto-add the leg to once media is ready. The leg joins the room on `early_media` (183+SDP) or `connected` (200 OK), whichever comes first. If the room does not exist, it is automatically created. |
 | `webhook_url` | string | no | Per-leg webhook URL. Events for this leg are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
+| `custom_data` | any | no | Opaque application JSON attached to the leg and repeated on every event for it. Capped by `CUSTOM_DATA_MAX_BYTES` (default 1024). See [Custom data](#custom-data). |
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
@@ -508,7 +561,17 @@ The endpoint is **idempotent in spirit** — each call emits another 180 on the 
 
 > **Auto-ringing default:** Starting with this version, VoiceBlender does **not** send 180 Ringing automatically on inbound INVITE — only 100 Trying. The API caller drives ringing via `/ring`, `/early-media`, or `/answer`. Set `SIP_AUTO_RINGING=true` to restore the legacy "auto-180-on-INVITE" behavior.
 
-**Request:** Empty body
+**Request:** Optional body
+
+```json
+{
+  "custom_data": { "crm": "case-7" }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `custom_data` | any (optional) | Attach opaque application JSON to this inbound leg. Omit to leave any existing value untouched; send `null` to clear it. See [Custom data](#custom-data). |
 
 **Response:** `202 Accepted`
 
@@ -519,7 +582,7 @@ The endpoint is **idempotent in spirit** — each call emits another 180 on the 
 SIP-level send failures surface as `leg.command_failed` with `command="ring"`.
 
 **Errors:**
-- `400` — Not a SIP inbound leg
+- `400` — Not a SIP inbound leg, or `custom_data` over `CUSTOM_DATA_MAX_BYTES`
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` state (already early-media, connected, or hung up)
 
@@ -582,6 +645,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 {
   "speech_detection": true,
   "codec": "PCMA",
+  "custom_data": { "crm": "case-7" },
   "streams": [
     { "room_id": "room-translated", "role": "translator" }
   ]
@@ -592,6 +656,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
+| `custom_data` | any (optional) | Attach opaque application JSON to this inbound leg. Omit to leave any existing value untouched; send `null` to clear it. See [Custom data](#custom-data). |
 | `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
 **Response:** `202 Accepted`
@@ -601,7 +666,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 ```
 
 **Errors:**
-- `400` — Not a SIP inbound leg, invalid request body, unknown codec name, or codec not in remote offer
+- `400` — Not a SIP inbound leg, invalid request body, unknown codec name, codec not in remote offer, or `custom_data` over `CUSTOM_DATA_MAX_BYTES`
 - `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
 - `409` — Leg is not in `ringing` or `early_media` state
 
@@ -615,12 +680,14 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 
 ```json
 {
-  "codec": "opus"
+  "codec": "opus",
+  "custom_data": { "crm": "case-7" }
 }
 ```
 
 | Field | Type | Description |
 |---|---|---|
+| `custom_data` | any (optional) | Attach opaque application JSON to this inbound leg. Omit to leave any existing value untouched; send `null` to clear it. See [Custom data](#custom-data). |
 | `codec` | string (optional) | Force a specific codec for the 183 Session Progress SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list. The codec chosen here is locked in for the subsequent `/answer`. When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. |
 
 **Response:** `202 Accepted`
@@ -630,7 +697,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 ```
 
 **Errors:**
-- `400` — Not a SIP inbound leg, unknown codec name, or codec not in remote offer
+- `400` — Not a SIP inbound leg, unknown codec name, codec not in remote offer, or `custom_data` over `CUSTOM_DATA_MAX_BYTES`
 - `404` — Leg not found
 - `409` — Leg is not in `ringing` state
 
@@ -4039,6 +4106,7 @@ Event data fields are flattened into the top-level JSON object alongside the env
   "timestamp": "2026-03-01T11:05:00.123Z",
   "event_id": "8f14e45f-ceea-467a-9575-9b0ba1f0e3a1",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "custom_data": { "order_id": "A-991", "tenant": 42 },
   "leg_id": "550e8400-e29b-41d4-a716-446655440000",
   "leg_type": "sip_inbound",
   "from": "sip:alice@example.com",
@@ -4056,6 +4124,8 @@ Event data fields are flattened into the top-level JSON object alongside the env
 **`source_address`** (inbound SIP only) is the transport-layer `host:port` the INVITE arrived on. Use it to decide whether to challenge the call via `POST /v1/legs/{id}/challenge`.
 
 **`authenticated`** / **`auth_username`** (inbound SIP only) are present and set when the INVITE carried digest credentials that VoiceBlender verified against a prior `/challenge` — i.e. the credentialed retry surfaced as a new, authenticated leg. They are omitted for un-challenged calls.
+
+**`custom_data`** is the opaque JSON attached to the event's leg (see [Custom data](#custom-data)). It appears on every leg-scoped event, from the point it was attached until after `leg.disconnected`, and is omitted entirely when the leg has none. Room-scoped events never carry it.
 
 All events include `event_id` and `instance_id` alongside the event-specific fields.
 
