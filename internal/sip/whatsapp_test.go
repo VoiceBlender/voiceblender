@@ -166,3 +166,40 @@ func TestInviteWhatsApp_RejectsMissingFields(t *testing.T) {
 		})
 	}
 }
+
+func TestIsWhatsAppInvite_FingerprintOnlyCountsAtLineStart(t *testing.T) {
+	sdp := []byte("v=0\r\nm=audio 40000 RTP/AVP 0\r\na=label:a=fingerprint:not-a-real-attribute\r\n")
+	if IsWhatsAppInvite(newInboundCallWithFrom("meta.vc", sdp)) {
+		t.Error("a=fingerprint: inside an attribute value should not match")
+	}
+}
+
+func TestIsWhatsAppInvite_MultipartBody(t *testing.T) {
+	contentType, body, err := BuildMultipartMixed("vb-test-boundary", []BodyPart{
+		{ContentType: ContentTypeSDP, Data: []byte(webrtcOfferSDP)},
+		{ContentType: ContentTypeRSMetadata, Data: []byte("<recording/>")},
+	})
+	if err != nil {
+		t.Fatalf("BuildMultipartMixed: %v", err)
+	}
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Scheme: "sips", User: "1234", Host: "business.example"})
+	req.AppendHeader(&sip.FromHeader{Address: sip.Uri{Scheme: "sips", User: "15551234567", Host: "meta.vc"}})
+	req.SetBody(body)
+	req.AppendHeader(sip.NewHeader("Content-Type", contentType))
+	if !IsWhatsAppInvite(&InboundCall{Request: req}) {
+		t.Error("expected match when the SDP part of a multipart body carries a fingerprint")
+	}
+}
+
+func TestIsMetaFromHost(t *testing.T) {
+	// Independent of the media the offer carries: plain RTP still matches.
+	if !IsMetaFromHost(newInboundCallWithFrom("wa.meta.vc", []byte(plainRTPSDP))) {
+		t.Error("wa.meta.vc should be a Meta From host")
+	}
+	if IsMetaFromHost(newInboundCallWithFrom("evilmeta.vc", []byte(webrtcOfferSDP))) {
+		t.Error("evilmeta.vc should not be a Meta From host")
+	}
+	if IsMetaFromHost(nil) || IsMetaFromHost(&InboundCall{}) {
+		t.Error("nil/empty call should not be a Meta From host")
+	}
+}

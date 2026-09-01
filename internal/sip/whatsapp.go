@@ -12,14 +12,13 @@ import (
 const (
 	WhatsAppOutboundHost  = "wa.meta.vc"
 	whatsAppInboundDomain = "meta.vc"
+
+	fingerprintAttr = "a=fingerprint:"
 )
 
-// IsWhatsAppInvite reports whether an inbound INVITE should take the
-// WhatsApp WebRTC-over-SIP media path: From host is meta.vc (or a
-// subdomain) and the offer still carries DTLS-SRTP (a=fingerprint).
-// A Meta From with plain RTP — typical when a fronting SIP proxy has
-// already terminated ICE+DTLS — falls through to the classic SIP path.
-func IsWhatsAppInvite(call *InboundCall) bool {
+// IsMetaFromHost reports whether an inbound INVITE's From URI host is
+// meta.vc or a subdomain of it.
+func IsMetaFromHost(call *InboundCall) bool {
 	if call == nil || call.Request == nil {
 		return false
 	}
@@ -28,23 +27,38 @@ func IsWhatsAppInvite(call *InboundCall) bool {
 		return false
 	}
 	host := strings.ToLower(from.Address.Host)
-	if host != whatsAppInboundDomain && !strings.HasSuffix(host, "."+whatsAppInboundDomain) {
-		return false
-	}
-	return inviteHasDTLSFingerprint(call.Request)
+	return host == whatsAppInboundDomain || strings.HasSuffix(host, "."+whatsAppInboundDomain)
+}
+
+// IsWhatsAppInvite reports whether an inbound INVITE should take the
+// WhatsApp WebRTC-over-SIP media path: From host is meta.vc (or a
+// subdomain) and the offer still carries DTLS-SRTP (a=fingerprint).
+// A Meta From with plain RTP — typical when a fronting SIP proxy has
+// already terminated ICE+DTLS — falls through to the classic SIP path.
+func IsWhatsAppInvite(call *InboundCall) bool {
+	return IsMetaFromHost(call) && inviteHasDTLSFingerprint(call.Request)
 }
 
 // inviteHasDTLSFingerprint reports whether the INVITE body carries a
 // DTLS fingerprint attribute. That is the media-layer signal that
 // Meta's ICE+DTLS-SRTP path is still intact; classic RTP/AVP offers
-// after a terminating proxy do not include it.
+// after a terminating proxy do not include it. An unreadable or
+// missing body cannot be that path — the engine rejects a bodyless
+// INVITE with 400 before any of this runs, so this is defensive.
 func inviteHasDTLSFingerprint(msg BodyCarrier) bool {
 	sdp, err := SDPOf(msg)
 	if err != nil {
 		return false
 	}
-	// SDP attribute names are case-insensitive (RFC 4566).
-	return strings.Contains(strings.ToLower(string(sdp)), "a=fingerprint:")
+	for _, line := range strings.Split(string(sdp), "\n") {
+		// SDP attribute names are case-insensitive (RFC 4566), and the
+		// attribute only counts at the start of a line — not inside
+		// some other attribute's value.
+		if len(line) >= len(fingerprintAttr) && strings.EqualFold(line[:len(fingerprintAttr)], fingerprintAttr) {
+			return true
+		}
+	}
+	return false
 }
 
 type WhatsAppInviteOptions struct {

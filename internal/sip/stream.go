@@ -1,6 +1,10 @@
 package sip
 
-import "github.com/VoiceBlender/voiceblender/internal/codec"
+import (
+	"strings"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
+)
 
 // Media direction attribute values (RFC 4566 / RFC 8866).
 const (
@@ -176,4 +180,37 @@ func HoldDirection(desired string, held bool) string {
 	default:
 		return DirSendOnly
 	}
+}
+
+// AudioIsSRTPOnly reports whether every active audio section the offer carries
+// is on an SRTP profile. Nothing in the RTP media path decrypts SRTP, so such
+// an offer has no section we can play; an offer with at least one plain-RTP
+// audio section, or with no audio at all, is not reported.
+func (m *SDPMedia) AudioIsSRTPOnly() bool {
+	if m == nil {
+		return false
+	}
+	active := 0
+	for _, ml := range m.MLines {
+		if ml.Media != "audio" || ml.Port == 0 {
+			continue
+		}
+		active++
+		if !protoIsSRTP(ml.Proto) {
+			return false
+		}
+	}
+	return active > 0
+}
+
+// protoIsSRTP reports whether an m= transport profile is an SRTP one:
+// RTP/SAVP (SDES) or UDP/TLS/RTP/SAVPF (DTLS-SRTP).
+func protoIsSRTP(proto []string) bool {
+	for _, tok := range proto {
+		switch strings.ToUpper(tok) {
+		case "SAVP", "SAVPF":
+			return true
+		}
+	}
+	return false
 }
