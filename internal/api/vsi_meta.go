@@ -152,7 +152,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		// New commands use resource-first naming (leg_*, room_*) by design.
 		// This diverges from earlier verb-first commands (mute_leg, send_leg_dtmf)
 		// — preserve the resource-first style for any future commands added here.
-		{Name: "leg_ring", Summary: "Send a 180 Ringing on a SIP inbound leg", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
+		{Name: "leg_ring", Summary: "Send a 180 Ringing on a SIP inbound leg", PayloadType: ringLegPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
 		{Name: "leg_early_media", Summary: "Enable early media (183 Session Progress) on a SIP inbound leg", PayloadType: earlyMediaPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
 		{Name: "leg_amd_start", Summary: "Start Answering Machine Detection on a connected SIP leg", PayloadType: legAMDStartPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{400, 404, 409}},
 

@@ -14,12 +14,17 @@ type Bus struct {
 	handlers   map[uint64]Handler
 	nextID     uint64
 	instanceID string
+
+	// CustomData holds the opaque per-leg JSON that Publish stamps onto every
+	// leg-scoped event. Owned by the bus so no wiring step can be missed.
+	CustomData *CustomDataRegistry
 }
 
 func NewBus(instanceID string) *Bus {
 	return &Bus{
 		handlers:   make(map[uint64]Handler),
 		instanceID: instanceID,
+		CustomData: NewCustomDataRegistry(),
 	}
 }
 
@@ -46,6 +51,11 @@ func (b *Bus) Publish(typ EventType, data EventData) {
 		Timestamp:  time.Now().UTC(),
 		InstanceID: b.instanceID,
 		Data:       data,
+	}
+	// Resolved once, before fan-out, so every subscriber and every webhook
+	// retry sees the same value.
+	if data != nil {
+		e.CustomData = b.CustomData.Leg(data.GetLegID())
 	}
 	b.mu.RLock()
 	handlers := make([]Handler, 0, len(b.handlers))

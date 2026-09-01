@@ -16,6 +16,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
 	"gopkg.in/yaml.v3"
@@ -112,6 +113,11 @@ func localRef(name string) *omap {
 func goTypeToSchema(t reflect.Type) *omap {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+	// events.CustomData is slice-kind but carries arbitrary JSON, so it must
+	// not be rendered as an array of bytes. An empty schema means "any value".
+	if t.Name() == "CustomData" && strings.HasSuffix(t.PkgPath(), "internal/events") {
+		return newMap()
 	}
 	switch t.Kind() {
 	case reflect.String:

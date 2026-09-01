@@ -457,10 +457,12 @@ func RoutesMetadata() []RouteMeta {
 				"emits another 180 — receivers tolerate re-sends. The HTTP call returns 202 " +
 				"as soon as the request is validated; SIP-level send failures surface as " +
 				"`leg.command_failed` with `command=\"ring\"`.",
-			Tags: []string{"Legs"},
+			Tags:         []string{"Legs"},
+			RequestType:  RingLegRequest{},
+			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
 				202: {Description: "180 Ringing queued"},
-				400: {Description: "Not a SIP inbound leg"},
+				400: {Description: "Not a SIP inbound leg, or custom_data over the size limit"},
 				404: {Description: "Leg not found"},
 				409: {Description: "Leg is not in ringing state"},
 			},

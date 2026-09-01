@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/pion/webrtc/v4"
 )
@@ -27,8 +28,15 @@ type dtmfPayload struct {
 
 // earlyMediaPayload carries codec selection for leg_early_media.
 type earlyMediaPayload struct {
-	ID    string `json:"id"`
-	Codec string `json:"codec,omitempty"`
+	ID         string            `json:"id"`
+	Codec      string            `json:"codec,omitempty"`
+	CustomData events.CustomData `json:"custom_data,omitempty"`
+}
+
+// ringLegPayload carries the inputs for leg_ring.
+type ringLegPayload struct {
+	ID         string            `json:"id"`
+	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
 // playbackTargetPayload identifies a single playback on a leg or room.
@@ -86,6 +94,7 @@ type answerLegPayload struct {
 	SpeechDetection *bool             `json:"speech_detection,omitempty"`
 	Codec           string            `json:"codec,omitempty"`
 	Streams         []AnswerLegStream `json:"streams,omitempty"`
+	CustomData      events.CustomData `json:"custom_data,omitempty"`
 }
 
 // deleteLegPayload carries the inputs for delete_leg.
@@ -308,7 +317,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		legs := s.LegMgr.List()
 		views := make([]LegView, len(legs))
 		for i, l := range legs {
-			views[i] = toLegView(l)
+			views[i] = s.toLegView(l)
 		}
 		s.wsCommandResult(lw, msg, views)
 
@@ -322,7 +331,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			s.wsCommandError(lw, msg, newAPIError(404, "leg not found"))
 			return
 		}
-		s.wsCommandResult(lw, msg, toLegView(l))
+		s.wsCommandResult(lw, msg, s.toLegView(l))
 
 	// ── Leg lifecycle ───────────────────────────────────────────────
 	case "create_leg":
@@ -337,7 +346,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams, p.CustomData); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -472,7 +481,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			parts := rm.Participants()
 			pViews := make([]LegView, len(parts))
 			for j, p := range parts {
-				pViews[j] = toLegView(p)
+				pViews[j] = s.toLegView(p)
 			}
 			views[i] = RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews}
 		}
@@ -491,7 +500,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		parts := rm.Participants()
 		pViews := make([]LegView, len(parts))
 		for j, p := range parts {
-			pViews[j] = toLegView(p)
+			pViews[j] = s.toLegView(p)
 		}
 		s.wsCommandResult(lw, msg, RoomView{ID: rm.ID, AppID: rm.AppID, Participants: pViews})
 
@@ -789,11 +798,11 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 
 	// ── Leg control gaps ────────────────────────────────────────────
 	case "leg_ring":
-		var p idPayload
+		var p ringLegPayload
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doRingLeg(p.ID); err != nil {
+		if err := s.doRingLeg(p.ID, p.CustomData); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -803,7 +812,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doEarlyMediaLeg(p.ID, p.Codec); err != nil {
+		if err := s.doEarlyMediaLeg(p.ID, p.Codec, p.CustomData); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -1395,6 +1404,10 @@ func (s *Server) wsCommandError(lw *wsutilx.LockedWriter, msg vsiInMsg, err erro
 
 // wsCreateLeg handles create_leg over the VSI WebSocket, mirroring POST /v1/legs.
 func (s *Server) wsCreateLeg(lw *wsutilx.LockedWriter, msg vsiInMsg, req CreateLegRequest) {
+	if err := s.validateCustomData(req.CustomData); err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
 	var (
 		view LegView
 		err  error

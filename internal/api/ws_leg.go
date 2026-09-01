@@ -38,6 +38,11 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 	webhookURL := q.Get("webhook_url")
 	webhookSecret := q.Get("webhook_secret")
 	rtt := parseBoolQuery(q.Get("rtt"))
+	customData, cdErr := s.parseCustomDataQuery(q.Get("custom_data"))
+	if cdErr != nil {
+		handleAPIError(w, cdErr)
+		return
+	}
 
 	if roomID != "" {
 		if _, ok := s.RoomMgr.Get(roomID); !ok {
@@ -60,6 +65,7 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 	if appID != "" {
 		l.SetAppID(appID)
 	}
+	s.applyCustomData(l.ID(), customData)
 	s.LegMgr.Add(l)
 	if webhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)
@@ -153,6 +159,7 @@ func (s *Server) doCreateWebSocketOutboundLeg(req CreateLegRequest) (LegView, er
 	if req.WebhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), req.WebhookURL, req.WebhookSecret)
 	}
+	s.applyCustomData(l.ID(), req.CustomData)
 
 	s.wireWSLegEventForwarding(l)
 
@@ -166,7 +173,7 @@ func (s *Server) doCreateWebSocketOutboundLeg(req CreateLegRequest) (LegView, er
 
 	go s.runWSOutboundDial(l, req, cfg)
 
-	return toLegView(l), nil
+	return s.toLegView(l), nil
 }
 
 func (s *Server) runWSOutboundDial(l *leg.WebSocketLeg, req CreateLegRequest, cfg wsmedia.Config) {

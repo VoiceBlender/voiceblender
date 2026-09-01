@@ -352,6 +352,7 @@ type legView struct {
 	Deaf       bool              `json:"deaf"`
 	Held       bool              `json:"held"`
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
+	CustomData json.RawMessage   `json:"custom_data,omitempty"`
 }
 
 type roomView struct {

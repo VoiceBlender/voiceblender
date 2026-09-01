@@ -51,7 +51,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		parts := rm.Participants()
 		pViews := make([]LegView, len(parts))
 		for j, p := range parts {
-			pViews[j] = toLegView(p)
+			pViews[j] = s.toLegView(p)
 		}
 		views[i] = RoomView{ID: rm.ID, AppID: rm.AppID, SampleRate: rm.SampleRate, Participants: pViews}
 	}
@@ -68,7 +68,7 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 	parts := rm.Participants()
 	pViews := make([]LegView, len(parts))
 	for j, p := range parts {
-		pViews[j] = toLegView(p)
+		pViews[j] = s.toLegView(p)
 	}
 	writeJSON(w, http.StatusOK, RoomView{ID: rm.ID, AppID: rm.AppID, SampleRate: rm.SampleRate, Participants: pViews})
 }

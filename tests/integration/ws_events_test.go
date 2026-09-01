@@ -21,6 +21,8 @@ type wsEventFrame struct {
 	AppID      string `json:"app_id,omitempty"`
 	RequestID  string `json:"request_id,omitempty"`
 	InstanceID string `json:"instance_id,omitempty"`
+
+	CustomData json.RawMessage `json:"custom_data,omitempty"`
 }
 
 func dialVSI(t *testing.T, inst *testInstance) net.Conn {

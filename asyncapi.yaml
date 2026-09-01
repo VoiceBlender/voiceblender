@@ -3726,7 +3726,7 @@ components:
                         type: string
                         description: Echoed back on the matching .result/error frame; clients use it to correlate.
                     payload:
-                        $ref: '#/components/schemas/idPayload'
+                        $ref: '#/components/schemas/ringLegPayload'
                 required:
                     - type
         leg_ringResult:
@@ -6425,6 +6425,7 @@ components:
                     type: string
                 app_id:
                     type: string
+                custom_data: {}
             required:
                 - sdp
         WebRTCOfferResult:
@@ -6558,6 +6559,7 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/AnswerLegStream'
+                custom_data: {}
             required:
                 - id
         bridgeCreatePayload:
@@ -6712,6 +6714,7 @@ components:
                     type: string
                 codec:
                     type: string
+                custom_data: {}
             required:
                 - id
         idPayload:
@@ -6902,6 +6905,14 @@ components:
                     type: integer
                 reason:
                     type: string
+            required:
+                - id
+        ringLegPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                custom_data: {}
             required:
                 - id
         roomLegPayload:

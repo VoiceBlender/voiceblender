@@ -29,6 +29,11 @@ func (s *Server) moqLeg(w http.ResponseWriter, r *http.Request) {
 	appID := q.Get("app_id")
 	webhookURL := q.Get("webhook_url")
 	webhookSecret := q.Get("webhook_secret")
+	customData, cdErr := s.parseCustomDataQuery(q.Get("custom_data"))
+	if cdErr != nil {
+		handleAPIError(w, cdErr)
+		return
+	}
 
 	sampleRate := moqmedia.DefaultSampleRate
 	if v := q.Get("sample_rate"); v != "" {
@@ -76,6 +81,7 @@ func (s *Server) moqLeg(w http.ResponseWriter, r *http.Request) {
 	if appID != "" {
 		l.SetAppID(appID)
 	}
+	s.applyCustomData(l.ID(), customData)
 	s.LegMgr.Add(l)
 	if webhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), webhookURL, webhookSecret)

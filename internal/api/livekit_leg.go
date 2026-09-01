@@ -126,6 +126,7 @@ func (s *Server) doCreateLiveKitRoomLeg(ctx context.Context, headers map[string]
 	if req.WebhookURL != "" {
 		s.Webhooks.SetLegWebhook(publishLeg.ID(), req.WebhookURL, req.WebhookSecret)
 	}
+	s.applyCustomData(publishLeg.ID(), req.CustomData)
 
 	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
 		LegScope: events.LegScope{LegID: publishLeg.ID(), AppID: publishLeg.AppID()},
@@ -149,7 +150,7 @@ func (s *Server) doCreateLiveKitRoomLeg(ctx context.Context, headers map[string]
 
 	go conn.watch(unsubHears)
 
-	return toLegView(publishLeg), nil
+	return s.toLegView(publishLeg), nil
 }
 
 // resolveLiveKitToken returns the JWT to use for this leg-create request.

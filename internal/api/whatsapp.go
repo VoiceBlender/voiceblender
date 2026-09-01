@@ -235,6 +235,7 @@ func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, err
 		l.SetAppID(req.AppID)
 	}
 	s.LegMgr.Add(l)
+	s.applyCustomData(l.ID(), req.CustomData)
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
@@ -245,7 +246,7 @@ func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, err
 
 	go s.driveWhatsAppOutbound(l, media, gatherDone, req)
 
-	return legViewFrom(l), nil
+	return s.toLegView(l), nil
 }
 
 func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, gatherDone <-chan struct{}, req CreateLegRequest) {
@@ -308,22 +309,6 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 	})
 
 	s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
-}
-
-func legViewFrom(l leg.Leg) LegView {
-	return LegView{
-		ID:         l.ID(),
-		Type:       l.Type(),
-		State:      l.State(),
-		RoomID:     l.RoomID(),
-		AppID:      l.AppID(),
-		Muted:      l.IsMuted(),
-		Deaf:       l.IsDeaf(),
-		AcceptDTMF: l.AcceptDTMF(),
-		Held:       l.IsHeld(),
-		Role:       l.Role(),
-		SIPHeaders: l.SIPHeaders(),
-	}
 }
 
 func sipHeadersFromRequest(req *sip.Request) map[string]string {
