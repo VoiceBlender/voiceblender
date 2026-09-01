@@ -57,7 +57,22 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 	// Pace: wait at least one frame interval between reads so the mixer's
 	// readLoop doesn't flood its tiny incoming channel.
 	sb.awaitSlot()
+	return sb.readBlocking(p)
+}
 
+// ReadUnpaced blocks for a full frame without Read's pacing. Callers that
+// already have their own real-time clock and a backpressured sink (sip_leg's
+// writeLoop) must use this: a second 20ms clock in front of that ticker drifts
+// out of phase with it, and the ticker then substitutes silence for frames that
+// were buffered and ready on time.
+func (sb *streamBuffer) ReadUnpaced(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return sb.readBlocking(p)
+}
+
+func (sb *streamBuffer) readBlocking(p []byte) (int, error) {
 	sb.mu.Lock()
 	for len(sb.buf) < len(p) && !sb.closed {
 		sb.cond.Wait()
@@ -380,7 +395,7 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 		go func() {
 			buf := make([]byte, frameSize)
 			for {
-				n, err := sb.Read(buf)
+				n, err := sb.ReadUnpaced(buf)
 				if err != nil || n == 0 {
 					return
 				}
