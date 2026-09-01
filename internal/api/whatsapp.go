@@ -55,7 +55,15 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	}
 
 	pc := media.PC()
-	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(call.Request.Body())}
+	offerSDP, err := sipmod.SDPOf(call.Request)
+	if err != nil {
+		s.Log.Error("whatsapp inbound: extract SDP offer", "call_id", callID, "error", err)
+		media.Close()
+		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
+		_ = s.SIPEngine.DialogRespond(call.Dialog, sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
+		return
+	}
+	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(offerSDP)}
 	if err := pc.SetRemoteDescription(offer); err != nil {
 		s.Log.Error("whatsapp inbound: SetRemoteDescription", "call_id", callID, "error", err)
 		media.Close()

@@ -1210,11 +1210,26 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 
 // HandleInboundCall is called from the SIP engine for inbound INVITE requests.
 func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
-	// WhatsApp INVITEs have a meta.vc From URI host; dispatch them to the
-	// WebRTC-over-SIP media path instead of the classic RTP pipeline.
+	// WhatsApp INVITEs: meta.vc From host plus still-encrypted DTLS-SRTP
+	// media. A fronting proxy that terminates ICE+DTLS into plain RTP
+	// keeps the Meta From but takes the classic SIP path below.
 	if sipmod.IsWhatsAppInvite(call) {
 		s.handleWhatsAppInbound(call)
 		return
+	}
+	if sipmod.IsMetaFromHost(call) {
+		// A proxy that re-encrypted with SDES leaves an SRTP offer no
+		// path here can decrypt; answering it would be silent audio.
+		if call.RemoteSDP.AudioIsSRTPOnly() {
+			s.Log.Error("meta From host offers SRTP without a DTLS fingerprint; no media path can carry it",
+				"from", call.From, "to", call.To)
+			if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusNotAcceptableHere, "Unsupported Media Transport", nil, s.SIPEngine.ServerHeader()); err != nil {
+				s.Log.Error("failed to send 488 Not Acceptable Here", "error", err)
+			}
+			return
+		}
+		s.Log.Info("meta From host without DTLS media; taking the classic SIP path",
+			"from", call.From, "to", call.To)
 	}
 
 	// A SIPREC recording session (RFC 7866) is not a call: it is answered

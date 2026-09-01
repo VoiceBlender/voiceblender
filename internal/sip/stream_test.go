@@ -358,3 +358,37 @@ func TestAudioStreamPayloadType(t *testing.T) {
 		t.Errorf("PayloadType(PCMU) = %d, want the static default", got)
 	}
 }
+
+func TestAudioIsSRTPOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		sdp  string
+		want bool
+	}{
+		{"plain RTP/AVP", "m=audio 40000 RTP/AVP 0\r\n", false},
+		{"SDES SRTP", "m=audio 40000 RTP/SAVP 0\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:abcd\r\n", true},
+		{"DTLS-SRTP", "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", true},
+		{"SRTP alongside plain RTP", "m=audio 40000 RTP/SAVP 0\r\nm=audio 40002 RTP/AVP 0\r\n", false},
+		{"plain RTP section rejected with port 0", "m=audio 40000 RTP/SAVP 0\r\nm=audio 0 RTP/AVP 0\r\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n" + tc.sdp
+			m, err := ParseSDP([]byte(raw))
+			if err != nil {
+				t.Fatalf("ParseSDP: %v", err)
+			}
+			if got := m.AudioIsSRTPOnly(); got != tc.want {
+				t.Errorf("AudioIsSRTPOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if (*SDPMedia)(nil).AudioIsSRTPOnly() {
+		t.Error("nil SDPMedia should not report SRTP-only")
+	}
+	// ParseSDP rejects an audio-less offer, so build one directly.
+	videoOnly := &SDPMedia{MLines: []RemoteMLine{{Media: "video", Proto: []string{"RTP", "SAVP"}, Port: 40000}}}
+	if videoOnly.AudioIsSRTPOnly() {
+		t.Error("an offer with no audio section should not report SRTP-only")
+	}
+}
