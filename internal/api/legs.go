@@ -122,6 +122,55 @@ func (s *Server) applyCustomData(legID string, cd events.CustomData) {
 	}
 }
 
+// doSetLegCustomData replaces the leg's custom data. A JSON null clears it,
+// matching the semantics of the answer/ring/early-media bodies.
+func (s *Server) doSetLegCustomData(legID string, req SetLegCustomDataRequest) (LegView, error) {
+	l, ok := s.LegMgr.Get(legID)
+	if !ok {
+		return LegView{}, newAPIError(http.StatusNotFound, "leg not found")
+	}
+	if len(req.CustomData) == 0 {
+		return LegView{}, newAPIError(http.StatusBadRequest, "custom_data is required")
+	}
+	if err := s.validateCustomData(req.CustomData); err != nil {
+		return LegView{}, err
+	}
+	s.applyCustomData(legID, req.CustomData)
+	return s.toLegView(l), nil
+}
+
+func (s *Server) doDeleteLegCustomData(legID string) (LegView, error) {
+	l, ok := s.LegMgr.Get(legID)
+	if !ok {
+		return LegView{}, newAPIError(http.StatusNotFound, "leg not found")
+	}
+	s.Bus.CustomData.ClearLeg(legID)
+	return s.toLegView(l), nil
+}
+
+func (s *Server) setLegCustomData(w http.ResponseWriter, r *http.Request) {
+	var req SetLegCustomDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	view, err := s.doSetLegCustomData(chi.URLParam(r, "id"), req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) deleteLegCustomData(w http.ResponseWriter, r *http.Request) {
+	view, err := s.doDeleteLegCustomData(chi.URLParam(r, "id"))
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 func roundTo2(v float64) float64 {
 	return math.Round(v*100) / 100
 }

@@ -33,6 +33,12 @@ type earlyMediaPayload struct {
 	CustomData events.CustomData `json:"custom_data,omitempty"`
 }
 
+// setLegCustomDataPayload carries the inputs for set_leg_custom_data.
+type setLegCustomDataPayload struct {
+	ID         string            `json:"id"`
+	CustomData events.CustomData `json:"custom_data"`
+}
+
 // ringLegPayload carries the inputs for leg_ring.
 type ringLegPayload struct {
 	ID         string            `json:"id"`
@@ -656,6 +662,30 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		view, err := s.doUpdateRoomRouting(p.RoomID, RoomRoutingUpdateRequest{Updates: p.Updates})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "set_leg_custom_data":
+		var p setLegCustomDataPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doSetLegCustomData(p.ID, SetLegCustomDataRequest{CustomData: p.CustomData})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "delete_leg_custom_data":
+		var p idPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doDeleteLegCustomData(p.ID)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

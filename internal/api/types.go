@@ -562,6 +562,19 @@ var setLegRoleRequestFields = map[string]FieldEnrichment{
 	"role": {Description: "New routing role for the leg. The room's routing matrix decides which other legs this leg hears and is heard by based on roles. Pass an empty string to clear the role (full mesh)."},
 }
 
+// SetLegCustomDataRequest is the request body for PUT /v1/legs/{id}/custom-data.
+// The value replaces any existing custom data outright; there is no merge.
+type SetLegCustomDataRequest struct {
+	CustomData events.CustomData `json:"custom_data"`
+}
+
+var setLegCustomDataRequestFields = map[string]FieldEnrichment{
+	"custom_data": {Description: "New opaque application JSON for the leg. Any JSON value is accepted " +
+		"(object, array, string, number, boolean). Replaces the existing value outright — there is no merge. " +
+		"Sending null clears it, the same as DELETE. Required: omitting the field is rejected with 400. " +
+		"Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited)."},
+}
+
 // RoomRoutingRequest is the request body for PUT /v1/rooms/{id}/routing.
 // Matrix maps a listener-role to the set of source roles that legs with
 // that role are allowed to hear. A listener role with no entry defaults
@@ -958,6 +971,7 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("AgentMessageRequest", agentMessageRequestFields)
 	collect("WebRTCOfferRequest", webRTCOfferRequestFields)
 	collect("SetLegRoleRequest", setLegRoleRequestFields)
+	collect("SetLegCustomDataRequest", setLegCustomDataRequestFields)
 	collect("LegStreamView", legStreamViewFields)
 	collect("StartSIPRECRequest", startSIPRECRequestFields)
 	collect("SIPRECSessionView", siprecSessionViewFields)

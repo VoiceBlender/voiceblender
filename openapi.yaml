@@ -2565,6 +2565,59 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/custom-data:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        put:
+            operationId: setLegCustomData
+            summary: Replace a leg's custom data
+            description: Replaces the leg's `custom_data` outright — there is no merge. The new value is carried at the top level of every event published for this leg from the next event onwards, and is released after `leg.disconnected`. Sending `null` clears it, the same as DELETE.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SetLegCustomDataRequest'
+            responses:
+                '200':
+                    description: Updated leg view
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '400':
+                    description: Invalid JSON, missing custom_data, or value over CUSTOM_DATA_MAX_BYTES
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: deleteLegCustomData
+            summary: Clear a leg's custom data
+            description: 'Removes the leg''s `custom_data`. Subsequent events for this leg omit the field. Idempotent: clearing a leg that has none succeeds.'
+            tags:
+                - Legs
+            responses:
+                '200':
+                    description: Updated leg view
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /rooms/{id}/play:
         parameters:
             - $ref: '#/components/parameters/RoomId'
@@ -4203,6 +4256,13 @@ components:
             required:
                 - language
                 - partial
+        SetLegCustomDataRequest:
+            type: object
+            properties:
+                custom_data:
+                    description: 'New opaque application JSON for the leg. Any JSON value is accepted (object, array, string, number, boolean). Replaces the existing value outright — there is no merge. Sending null clears it, the same as DELETE. Required: omitting the field is rejected with 400. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).'
+            required:
+                - custom_data
         SetLegRoleRequest:
             type: object
             properties:

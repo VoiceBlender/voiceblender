@@ -317,6 +317,24 @@ func httpDelete(t *testing.T, url string) *http.Response {
 	return resp
 }
 
+func httpPut(t *testing.T, url string, body interface{}) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new PUT request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", url, err)
+	}
+	return resp
+}
+
 func httpDeleteWithBody(t *testing.T, url string, body interface{}) *http.Response {
 	t.Helper()
 	b, err := json.Marshal(body)
