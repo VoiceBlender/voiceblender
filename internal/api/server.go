@@ -226,6 +226,8 @@ func (s *Server) routes() {
 		r.Put("/rooms/{id}/routing", s.setRoomRouting)
 		r.Patch("/rooms/{id}/routing", s.updateRoomRouting)
 		r.Patch("/legs/{id}/role", s.setLegRole)
+		r.Put("/legs/{id}/custom-data", s.setLegCustomData)
+		r.Delete("/legs/{id}/custom-data", s.deleteLegCustomData)
 
 		r.Get("/legs/{id}/siprec", s.getSIPRECSession)
 		r.Post("/legs/{id}/siprec", s.startLegSIPREC)

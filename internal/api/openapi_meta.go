@@ -1326,6 +1326,31 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 		{
+			Method: "PUT", Path: "/legs/{id}/custom-data", OperationID: "setLegCustomData",
+			Summary: "Replace a leg's custom data",
+			Description: "Replaces the leg's `custom_data` outright — there is no merge. The new value is " +
+				"carried at the top level of every event published for this leg from the next event onwards, " +
+				"and is released after `leg.disconnected`. Sending `null` clears it, the same as DELETE.",
+			Tags:        []string{"Legs"},
+			RequestType: SetLegCustomDataRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated leg view", Type: LegView{}},
+				400: {Description: "Invalid JSON, missing custom_data, or value over CUSTOM_DATA_MAX_BYTES"},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/legs/{id}/custom-data", OperationID: "deleteLegCustomData",
+			Summary: "Clear a leg's custom data",
+			Description: "Removes the leg's `custom_data`. Subsequent events for this leg omit the field. " +
+				"Idempotent: clearing a leg that has none succeeds.",
+			Tags: []string{"Legs"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Updated leg view", Type: LegView{}},
+				404: {Description: "Leg not found"},
+			},
+		},
+		{
 			Method: "POST", Path: "/rooms/{id}/play", OperationID: "playRoom",
 			Summary:     "Play audio to a room",
 			Tags:        []string{"Rooms"},

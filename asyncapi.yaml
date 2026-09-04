@@ -154,6 +154,14 @@ channels:
                 $ref: '#/components/messages/set_leg_role'
             set_leg_role.result:
                 $ref: '#/components/messages/set_leg_roleResult'
+            set_leg_custom_data:
+                $ref: '#/components/messages/set_leg_custom_data'
+            set_leg_custom_data.result:
+                $ref: '#/components/messages/set_leg_custom_dataResult'
+            delete_leg_custom_data:
+                $ref: '#/components/messages/delete_leg_custom_data'
+            delete_leg_custom_data.result:
+                $ref: '#/components/messages/delete_leg_custom_dataResult'
             leg_stream_list:
                 $ref: '#/components/messages/leg_stream_list'
             leg_stream_list.result:
@@ -1012,6 +1020,32 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/set_leg_role.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_set_leg_custom_data:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Replace a leg's custom_data (carried on every subsequent event for the leg)
+        messages:
+            - $ref: '#/channels/vsi/messages/set_leg_custom_data'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/set_leg_custom_data.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_delete_leg_custom_data:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Clear a leg's custom_data
+        messages:
+            - $ref: '#/channels/vsi/messages/delete_leg_custom_data'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/delete_leg_custom_data.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_leg_stream_list:
         action: receive
@@ -3405,6 +3439,66 @@ components:
                 properties:
                     type:
                         const: set_leg_role.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/Leg
+                required:
+                    - type
+        set_leg_custom_data:
+            name: set_leg_custom_data
+            title: Replace a leg's custom_data (carried on every subsequent event for the leg)
+            summary: Replace a leg's custom_data (carried on every subsequent event for the leg)
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_custom_data
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/setLegCustomDataPayload'
+                required:
+                    - type
+        set_leg_custom_dataResult:
+            name: set_leg_custom_dataResult
+            title: Replace a leg's custom_data (carried on every subsequent event for the leg) — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_custom_data.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/Leg
+                required:
+                    - type
+        delete_leg_custom_data:
+            name: delete_leg_custom_data
+            title: Clear a leg's custom_data
+            summary: Clear a leg's custom_data
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_leg_custom_data
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/idPayload'
+                required:
+                    - type
+        delete_leg_custom_dataResult:
+            name: delete_leg_custom_dataResult
+            title: Clear a leg's custom_data — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: delete_leg_custom_data.result
                     request_id:
                         type: string
                     data:
@@ -6987,6 +7081,15 @@ components:
             required:
                 - id
                 - text
+        setLegCustomDataPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                custom_data: {}
+            required:
+                - id
+                - custom_data
         setLegRolePayload:
             type: object
             properties:

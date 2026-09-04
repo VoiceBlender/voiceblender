@@ -13,6 +13,7 @@ func TestVSIMetadata_AllNewCommandsRegistered(t *testing.T) {
 	expected := []string{
 		// Leg control
 		"leg_ring", "leg_early_media", "leg_amd_start", "leg_transfer",
+		"set_leg_custom_data", "delete_leg_custom_data",
 		// Recording
 		"leg_record_start", "leg_record_stop", "leg_record_pause", "leg_record_resume",
 		"room_record_start", "room_record_stop", "room_record_pause", "room_record_resume",
@@ -102,6 +103,8 @@ var routeToVSICommand = map[string]string{
 	"Post /legs/{id}/early-media":                     "leg_early_media",
 	"Post /legs/{id}/ring":                            "leg_ring",
 	"Post /legs/{id}/challenge":                       "challenge_leg",
+	"Put /legs/{id}/custom-data":                      "set_leg_custom_data",
+	"Delete /legs/{id}/custom-data":                   "delete_leg_custom_data",
 	"Post /legs/{id}/mute":                            "mute_leg",
 	"Delete /legs/{id}/mute":                          "unmute_leg",
 	"Post /legs/{id}/deaf":                            "deaf_leg",

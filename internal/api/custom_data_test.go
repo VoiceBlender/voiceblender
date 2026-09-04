@@ -274,3 +274,129 @@ func TestRingLeg_HTTPBodyOptional(t *testing.T) {
 		t.Fatalf("got %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestSetLegCustomData_Endpoint(t *testing.T) {
+	s := newTestServer(t)
+	s.LegMgr.Add(&apiMockLeg{id: "leg-1", createdAt: time.Now()})
+
+	w := doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{"custom_data":{"order":"A-1"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	var view struct {
+		ID         string          `json:"id"`
+		CustomData json.RawMessage `json:"custom_data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.ID != "leg-1" || string(view.CustomData) != `{"order":"A-1"}` {
+		t.Fatalf("view = %+v", view)
+	}
+	if got := string(s.Bus.CustomData.Leg("leg-1")); got != `{"order":"A-1"}` {
+		t.Fatalf("registry = %s", got)
+	}
+
+	// Replaces outright — no merge.
+	w = doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{"custom_data":{"agent":"bob"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d", w.Code)
+	}
+	if got := string(s.Bus.CustomData.Leg("leg-1")); got != `{"agent":"bob"}` {
+		t.Fatalf("replace: got %s", got)
+	}
+
+	// Explicit null clears, same as DELETE.
+	w = doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{"custom_data":null}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d", w.Code)
+	}
+	if got := s.Bus.CustomData.Leg("leg-1"); got != nil {
+		t.Fatalf("null did not clear: %s", got)
+	}
+}
+
+func TestSetLegCustomData_Errors(t *testing.T) {
+	s := newTestServer(t)
+	s.LegMgr.Add(&apiMockLeg{id: "leg-1", createdAt: time.Now()})
+
+	// Missing custom_data is rejected rather than silently clearing.
+	w := doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "custom_data is required") {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{not json`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JSON: got %d", w.Code)
+	}
+
+	w = doRequest(s, http.MethodPut, "/v1/legs/missing/custom-data", `{"custom_data":{"a":1}}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown leg: got %d", w.Code)
+	}
+
+	s.Config.CustomDataMaxBytes = 8
+	w = doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data",
+		`{"custom_data":{"pad":"`+strings.Repeat("x", 50)+`"}}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "exceeds limit of 8") {
+		t.Fatalf("oversize: got %d %s", w.Code, w.Body.String())
+	}
+	if got := s.Bus.CustomData.Leg("leg-1"); got != nil {
+		t.Fatalf("stored despite rejection: %s", got)
+	}
+}
+
+func TestDeleteLegCustomData_Endpoint(t *testing.T) {
+	s := newTestServer(t)
+	s.LegMgr.Add(&apiMockLeg{id: "leg-1", createdAt: time.Now()})
+	s.Bus.CustomData.SetLeg("leg-1", events.CustomData(`{"order":"A-1"}`))
+
+	w := doRequest(s, http.MethodDelete, "/v1/legs/leg-1/custom-data", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "custom_data") {
+		t.Fatalf("cleared leg still reports custom_data: %s", w.Body.String())
+	}
+	if got := s.Bus.CustomData.Leg("leg-1"); got != nil {
+		t.Fatalf("registry = %s", got)
+	}
+
+	// Idempotent.
+	if w = doRequest(s, http.MethodDelete, "/v1/legs/leg-1/custom-data", ""); w.Code != http.StatusOK {
+		t.Fatalf("second delete: got %d", w.Code)
+	}
+
+	if w = doRequest(s, http.MethodDelete, "/v1/legs/missing/custom-data", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown leg: got %d", w.Code)
+	}
+}
+
+// A mid-call change must be visible on the very next event, and the final
+// leg.disconnected must carry the latest value.
+func TestSetLegCustomData_TakesEffectOnNextEvent(t *testing.T) {
+	s := newTestServer(t)
+	l := &apiMockLeg{id: "leg-1", createdAt: time.Now()}
+	s.LegMgr.Add(l)
+	s.Bus.CustomData.SetLeg("leg-1", events.CustomData(`{"v":1}`))
+	got := collectEvents(s)
+
+	s.Bus.Publish(events.LegMuted, &events.LegMutedData{LegScope: events.LegScope{LegID: "leg-1"}})
+	if w := doRequest(s, http.MethodPut, "/v1/legs/leg-1/custom-data", `{"custom_data":{"v":2}}`); w.Code != http.StatusOK {
+		t.Fatalf("put: %d", w.Code)
+	}
+	s.Bus.Publish(events.LegUnmuted, &events.LegUnmutedData{LegScope: events.LegScope{LegID: "leg-1"}})
+	s.LegMgr.Remove("leg-1")
+	s.publishDisconnect(l, "api_hangup")
+
+	if len(*got) != 3 {
+		t.Fatalf("got %d events", len(*got))
+	}
+	want := []string{`{"v":1}`, `{"v":2}`, `{"v":2}`}
+	for i, w := range want {
+		if s := string((*got)[i].CustomData); s != w {
+			t.Fatalf("event %d (%s): got %q, want %q", i, (*got)[i].Type, s, w)
+		}
+	}
+}

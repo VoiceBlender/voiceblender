@@ -98,6 +98,9 @@ its own identifiers through the call without maintaining a `leg_id → external 
 | VSI `answer_leg`, `leg_ring`, `leg_early_media` | `custom_data` in the command payload |
 | `POST /v1/webrtc/offer` | `custom_data` in the request body |
 | `GET /v1/legs/websocket`, `CONNECT /v1/legs/moq` | `custom_data=<url-encoded JSON>` query parameter |
+| `PUT /v1/legs/{id}/custom-data` | replace at any point in the call — see below |
+| `DELETE /v1/legs/{id}/custom-data` | clear at any point in the call |
+| VSI `set_leg_custom_data`, `delete_leg_custom_data` | same two operations over the WebSocket |
 
 **Semantics**
 
@@ -108,8 +111,11 @@ its own identifiers through the call without maintaining a `leg_id → external 
 - The value is stored verbatim, so large integers and key order survive the round trip unchanged.
 - Size is capped by `CUSTOM_DATA_MAX_BYTES` (default `1024`, `0` = unlimited). Exceeding it is
   rejected with `400` and the leg is not created.
+- It can be changed or cleared at any point in the call via `PUT`/`DELETE /v1/legs/{id}/custom-data`.
+  A change takes effect on the **next** event published for that leg; events already emitted are
+  unaffected.
 - Data lives for the leg's lifetime and is released after `leg.disconnected` is published — that
-  final CDR event still carries it.
+  final CDR event still carries whatever value was current.
 - **Inbound SIP legs:** `leg.ringing` fires before the application has seen the call, so it never
   carries `custom_data`. Attach it on `/ring`, `/early-media` or `/answer`; every event from that
   point on carries it.
@@ -2426,6 +2432,49 @@ Pass an empty string to clear the role (the leg falls back to full mesh).
 **Response:** `200 OK` — returns the updated `LegView`.
 
 **Errors:** `400` — invalid JSON; `404` — leg not found
+
+---
+
+### PUT /v1/legs/{id}/custom-data
+
+Replace the leg's [`custom_data`](#custom-data) at any point in the call. The new
+value is carried on every event published for the leg from the **next** event
+onwards; events already emitted are unaffected.
+
+**Request:**
+
+```json
+{ "custom_data": { "order_id": "A-991", "tenant": 42 } }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `custom_data` | any | **Required.** Any JSON value — object, array, string, number or boolean. Replaces the existing value **outright; there is no merge**. Pass `null` to clear it, exactly as `DELETE` does. Omitting the field is rejected with `400` rather than treated as a clear. |
+
+**Response:** `200 OK` — returns the updated `LegView`.
+
+```bash
+curl -sX PUT localhost:8080/v1/legs/$LEG/custom-data \
+  -H 'Content-Type: application/json' \
+  -d '{"custom_data":{"order_id":"A-991","tenant":42}}'
+```
+
+**Errors:**
+- `400` — invalid JSON, `custom_data` missing, or the value exceeds `CUSTOM_DATA_MAX_BYTES`
+- `404` — leg not found
+
+---
+
+### DELETE /v1/legs/{id}/custom-data
+
+Clear the leg's `custom_data`. Subsequent events for the leg omit the field
+entirely. Idempotent — clearing a leg that has none succeeds.
+
+**Request:** Empty body
+
+**Response:** `200 OK` — returns the updated `LegView` (with no `custom_data` key).
+
+**Errors:** `404` — leg not found
 
 ---
 
