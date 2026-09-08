@@ -415,9 +415,14 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 	// Pin Via sent-by to publicHost — wildcard binds make the response
 	// path unroutable, so peers black-hole our REFER/BYE/re-INVITE 200s.
+	// WithClientNAT adds ;rport: sipgo dials outbound requests from an
+	// ephemeral socket, so the pinned sent-by is not where a reply can
+	// actually land. Without it a peer that answers to sent-by rather than
+	// symmetrically leaves us waiting out Timer_B.
 	clientOpts := []sipgo.ClientOption{
 		sipgo.WithClientHostname(publicHost),
 		sipgo.WithClientPort(cfg.BindPort),
+		sipgo.WithClientNAT(),
 	}
 	if cfg.SIPDebug {
 		clientOpts = append(clientOpts, sipgo.WithClientLogger(sipgoLog))
