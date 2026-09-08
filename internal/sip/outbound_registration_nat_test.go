@@ -65,11 +65,17 @@ func (f *fakeRegistrar) received() []*sip.Request {
 
 func newNATTestEngine(t *testing.T) *Engine {
 	t.Helper()
+	return newNATTestEngineLogging(t, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})), false)
+}
+
+func newNATTestEngineLogging(t *testing.T, log *slog.Logger, sipDebug bool) *Engine {
+	t.Helper()
 	engine, err := NewEngine(EngineConfig{
 		BindIP:   "127.0.0.1",
 		BindPort: pickFreePort(t, "udp"),
 		SIPHost:  "test-vb",
-		Log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		SIPDebug: sipDebug,
+		Log:      log,
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -186,4 +192,63 @@ func TestRegisterOnce_DigestRetryTransportFailure(t *testing.T) {
 	if got := len(reg.received()) - before; got < 2 {
 		t.Errorf("registrar saw %d REGISTERs from registerOnce, want the challenge plus the authenticated retry", got)
 	}
+}
+
+// TestSendRegister_DebugLogShowsVia pins that the SIP_DEBUG wire dump of an
+// outbound REGISTER carries the Via sipgo actually sent. The dump used to be
+// taken before client.Do, which is where the Via is added — so every logged
+// REGISTER was Via-less and ;rport was invisible in exactly the logs someone
+// reads to diagnose a registration failure.
+func TestSendRegister_DebugLogShowsVia(t *testing.T) {
+	reg := startFakeRegistrar(t, func(_ int, req *sip.Request) *sip.Response {
+		return sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	})
+
+	var buf lockedBuffer
+	engine := newNATTestEngineLogging(t, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})), true)
+	r := newTrunkTo(engine, reg.port)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, err := r.sendRegister(ctx, 60, "", "")
+		cancel()
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	out := buf.String()
+	idx := strings.Index(out, "SIP outbound")
+	if idx < 0 {
+		t.Fatalf("no outbound REGISTER logged:\n%s", out)
+	}
+	dump := out[idx:]
+	if end := strings.Index(dump, "SIP inbound"); end > 0 {
+		dump = dump[:end]
+	}
+	if !strings.Contains(dump, "Via: SIP/2.0/UDP") {
+		t.Errorf("logged outbound REGISTER has no Via:\n%s", dump)
+	}
+	if !strings.Contains(dump, "rport") {
+		t.Errorf("logged outbound REGISTER Via has no rport:\n%s", dump)
+	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

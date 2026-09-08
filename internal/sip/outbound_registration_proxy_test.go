@@ -1,9 +1,11 @@
 package sip
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/emiago/sipgo/sip"
 )
@@ -87,10 +89,13 @@ func TestOutboundRegistration_NextHopURI(t *testing.T) {
 	}
 }
 
-// TestBuildRegister_ProxyRoute pins the core of loose routing: the REGISTER is
-// steered at the proxy while the Request-URI still names the registrar, which
-// is what the registrar matches on and what the digest `uri` must equal.
-func TestBuildRegister_ProxyRoute(t *testing.T) {
+// TestBuildRegister_ProxyDestination pins how an outbound proxy is applied to a
+// REGISTER: the request is steered at the proxy socket while the Request-URI
+// still names the registrar (what it matches on, and what the digest `uri` must
+// equal), and no Route header is pre-loaded. A proxy that does not recognise
+// the Route URI as one of its own forwards the REGISTER back at itself rather
+// than popping the header, which registers as silence rather than an error.
+func TestBuildRegister_ProxyDestination(t *testing.T) {
 	engine, err := NewEngine(EngineConfig{
 		BindIP:   "127.0.0.1",
 		BindPort: pickFreePort(t, "udp"),
@@ -107,15 +112,8 @@ func TestBuildRegister_ProxyRoute(t *testing.T) {
 		t.Fatalf("buildRegister: %v", err)
 	}
 
-	route := req.Route()
-	if route == nil {
-		t.Fatal("REGISTER has no Route header; the proxy was not applied")
-	}
-	if route.Address.Host != "edge.acme.net" || route.Address.Port != 5080 {
-		t.Errorf("Route = %q, want the proxy edge.acme.net:5080", route.Address.String())
-	}
-	if !route.Address.UriParams.Has("lr") {
-		t.Error("Route lacks lr; sipgo would strict-route and rewrite the Request-URI")
+	if req.GetHeader("Route") != nil {
+		t.Errorf("REGISTER carries a pre-loaded Route:\n%s", req.String())
 	}
 	if got, want := req.Recipient.Host, "pbx.example.com"; got != want {
 		t.Errorf("Request-URI host = %q, want the registrar %q", got, want)
@@ -303,5 +301,65 @@ func TestSnapshot_ContactMatchesWire(t *testing.T) {
 				t.Errorf("contact = %q, want the %q scheme", wire, tc.wantScheme)
 			}
 		})
+	}
+}
+
+func TestNextHopSocket_DefaultPorts(t *testing.T) {
+	cases := []struct{ proxy, want string }{
+		{"sip:edge.acme.net:5080", "edge.acme.net:5080"},
+		{"sip:edge.acme.net", "edge.acme.net:5060"},
+		{"sips:edge.acme.net", "edge.acme.net:5061"},
+		{"", ""},
+	}
+	for _, tt := range cases {
+		if got := newProxyTrunk(t, nil, tt.proxy).nextHopSocket(); got != tt.want {
+			t.Errorf("nextHopSocket() for proxy %q = %q, want %q", tt.proxy, got, tt.want)
+		}
+	}
+}
+
+// TestSendRegister_ProxyDeliversToProxySocket proves the routing end to end:
+// the registrar name resolves nowhere, so the REGISTER can only arrive if the
+// proxy socket is the transport destination. What lands there still names the
+// registrar in its Request-URI and carries no Route.
+func TestSendRegister_ProxyDeliversToProxySocket(t *testing.T) {
+	reg := startFakeRegistrar(t, func(_ int, req *sip.Request) *sip.Response {
+		return sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	})
+	engine := newNATTestEngine(t)
+	r := NewOutboundRegistration(engine, nil, nil, OutboundRegistrationConfig{}, OutboundRegistrationParams{
+		ID:            "t-proxy-e2e",
+		RegistrarURI:  sip.Uri{Scheme: "sip", Host: "registrar.invalid"},
+		AOR:           sip.Uri{Scheme: "sip", User: "alice", Host: "registrar.invalid"},
+		Username:      "alice",
+		Password:      "secret",
+		OutboundProxy: &sip.Uri{Scheme: "sip", Host: "127.0.0.1", Port: reg.port},
+	})
+
+	var lastErr error
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, lastErr = r.sendRegister(ctx, 60, "", "")
+		cancel()
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("REGISTER never reached the proxy socket: %v", lastErr)
+	}
+
+	seen := reg.received()
+	if len(seen) == 0 {
+		t.Fatal("proxy socket received no REGISTER")
+	}
+	got := seen[len(seen)-1]
+	if got.GetHeader("Route") != nil {
+		t.Errorf("REGISTER arrived with a pre-loaded Route:\n%s", got.String())
+	}
+	if got.Recipient.Host != "registrar.invalid" {
+		t.Errorf("Request-URI host = %q, want the registrar", got.Recipient.Host)
 	}
 }

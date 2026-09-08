@@ -4860,7 +4860,7 @@ Resolution order, most specific first:
 |---|---|---|
 | 1 | `to` resolves to an AOR registered here | Delivered to the bound contact; any proxy is ignored (and logged). Local delivery is not an egress. |
 | 2 | `outbound_proxy` on `POST /v1/legs` | That one INVITE. |
-| 3 | `sip_register.outbound_proxy` on the matched trunk | That trunk's REGISTER and its INVITEs. |
+| 3 | `sip_register.outbound_proxy` on the matched trunk | That trunk's REGISTER and its INVITEs. The INVITEs carry a loose `Route`; the REGISTER is sent to the hop with no Route (see below). |
 | 4 | `SIP_OUTBOUND_PROXY` | Everything not covered above. |
 | 5 | The matched trunk's `registrar_uri` | Trunk-matched INVITEs, unchanged from earlier releases. |
 | 6 | The Request-URI host | Everything else. |
@@ -4870,6 +4870,14 @@ cannot silently redirect calls on trunks that already work. A trunk that wants a
 proxy names one, and a trunk created while the env var is set adopts it at
 creation time — so `GET /v1/sip/trunks/{id}` always reports the hop in effect
 rather than leaving you to infer it from the environment.
+
+An INVITE carries the proxy as a loose `Route: <sip:proxy;lr>` header. A
+REGISTER does not: it is sent straight to the proxy socket with no Route at all,
+because a proxy that does not recognise the Route URI as one of its own names
+forwards the REGISTER back at itself rather than popping the header — which
+surfaces as a registration that times out with no response. In both cases the
+Request-URI still names the registrar, and digest authentication computes
+against it.
 
 Not applied to SIPREC SRC legs or WhatsApp legs, which address their own
 endpoints. A malformed `outbound_proxy` is a `400`; a malformed
