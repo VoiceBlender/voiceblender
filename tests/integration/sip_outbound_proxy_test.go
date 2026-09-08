@@ -20,8 +20,8 @@ import (
 
 // blackholePort returns a port nothing is listening on. Used as a registrar or
 // callee address that must never be contacted directly once a proxy is
-// configured — if the Route is dropped, the request lands nowhere and the test
-// fails on the missing arrival rather than passing by accident.
+// configured — if the proxy hop is dropped, the request lands nowhere and the
+// test fails on the missing arrival rather than passing by accident.
 func blackholePort(t *testing.T) int {
 	t.Helper()
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -120,9 +120,9 @@ func originateLeg(t *testing.T, baseURL string, body map[string]interface{}) {
 // Trunk REGISTER via a proxy
 // ---------------------------------------------------------------------------
 
-// TestTrunk_OutboundProxy_RegisterRoutedViaProxy is the core proof of loose
-// routing: the REGISTER reaches the proxy while its Request-URI still names a
-// registrar that is not listening at all.
+// TestTrunk_OutboundProxy_RegisterRoutedViaProxy is the core proof of the
+// REGISTER routing: it reaches the proxy socket while its Request-URI still
+// names a registrar that is not listening at all, and carries no Route.
 func TestTrunk_OutboundProxy_RegisterRoutedViaProxy(t *testing.T) {
 	inst := newTestInstance(t, "proxy-register")
 	proxy := newRawSIPRegistrar(t, rawRegistrarOpts{grantExpires: 600})
@@ -135,8 +135,17 @@ func TestTrunk_OutboundProxy_RegisterRoutedViaProxy(t *testing.T) {
 	if req == nil {
 		t.Fatal("proxy received no REGISTER")
 	}
-	assertLooseRoute(t, req, "127.0.0.1", proxy.port,
-		fmt.Sprintf("sip:127.0.0.1:%d", registrarPort))
+	// The REGISTER reached the proxy even though the registrar port is a
+	// black hole, so the proxy socket really was the transport destination —
+	// and it got there with no pre-loaded Route, which a proxy that does not
+	// recognise the Route URI as its own would forward straight back at
+	// itself. The Request-URI still names the registrar.
+	if req.GetHeader("Route") != nil {
+		t.Errorf("REGISTER carries a pre-loaded Route:\n%s", req.String())
+	}
+	if got, want := req.Recipient.String(), fmt.Sprintf("sip:127.0.0.1:%d", registrarPort); got != want {
+		t.Errorf("Request-URI = %q, want it unchanged at %q", got, want)
+	}
 
 	// The snapshot must report the next hop actually in effect.
 	snap := trunkSnapshot(t, inst.baseURL(), id)

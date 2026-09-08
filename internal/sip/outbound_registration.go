@@ -235,6 +235,22 @@ func (r *OutboundRegistration) nextHopURI() sip.Uri {
 	return r.registrarURI
 }
 
+// nextHopSocket is the transport-level destination for this trunk's requests:
+// the outbound proxy's socket when one is configured, else empty so sipgo
+// resolves the Request-URI itself. Derived from the configured proxy rather
+// than peerHost, which the first 2xx replaces with the response source.
+func (r *OutboundRegistration) nextHopSocket() string {
+	if r.outboundProxy == nil {
+		return ""
+	}
+	proxy := *r.outboundProxy
+	port := proxy.Port
+	if port == 0 {
+		port = defaultPortForURI(proxy)
+	}
+	return socketKey(proxy.Host, port)
+}
+
 // --- Trunk interface ---
 
 func (r *OutboundRegistration) ID() string      { return r.id }
@@ -577,8 +593,11 @@ func (r *OutboundRegistration) sendRegister(ctx context.Context, expires int, au
 	if authHeaderName != "" && authHeaderValue != "" {
 		req.AppendHeader(sip.NewHeader(authHeaderName, authHeaderValue))
 	}
-	r.engine.logSIPMessage("outbound", req)
 	res, err := r.engine.client.Do(ctx, req, sipgo.ClientRequestRegisterBuild)
+	// Logged after Do, not before: sipgo adds the Via (branch, ;rport) as it
+	// sends, so logging earlier prints a request that never went on the wire
+	// and hides exactly the header a registration failure turns on.
+	r.engine.logSIPMessage("outbound", req)
 	if err != nil {
 		return nil, err
 	}
@@ -630,11 +649,14 @@ func (r *OutboundRegistration) buildRegister(expiresSeconds int) (*sip.Request, 
 		req.SetTransport(strings.ToUpper(transport))
 	}
 
-	// Loose-route the REGISTER through the proxy while the Request-URI stays
-	// the registrar — which is what the registrar matches on, and what the
-	// digest `uri` must equal.
-	if r.outboundProxy != nil {
-		req.AppendHeader(looseRouteHeader(*r.outboundProxy))
+	// Send straight at the proxy rather than pre-loading a Route, while the
+	// Request-URI stays the registrar — which is what it matches on, and what
+	// the digest `uri` must equal. A Route naming the proxy is legal, but a
+	// proxy that does not recognise the name as one of its own forwards the
+	// REGISTER back at itself instead of popping the header, and the
+	// registration dies in silence.
+	if dest := r.nextHopSocket(); dest != "" {
+		req.SetDestination(dest)
 	}
 
 	from := &sip.FromHeader{Address: r.aor}
