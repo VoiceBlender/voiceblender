@@ -292,6 +292,47 @@ func TestTrunk_SIPRegister_HappyPath(t *testing.T) {
 	}
 }
 
+// TestTrunk_SIPRegister_ViaOffersRport pins RFC 3581 on the wired-up REGISTER
+// path. Outbound requests leave from an ephemeral socket while the Via sent-by
+// is pinned to the engine's advertised host:port, so behind NAT a registrar
+// that answers to sent-by rather than symmetrically black-holes the response
+// and the trunk sits out Timer_B. ;rport is what redirects it to the source.
+func TestTrunk_SIPRegister_ViaOffersRport(t *testing.T) {
+	inst := newTestInstance(t, "trunk-rport")
+	reg := newRawSIPRegistrar(t, rawRegistrarOpts{grantExpires: 120})
+
+	createResp, body := createTrunkRequest(t, inst.baseURL(), map[string]interface{}{
+		"type": "sip_register",
+		"sip_register": map[string]interface{}{
+			"registrar_uri":   fmt.Sprintf("sip:127.0.0.1:%d", reg.port),
+			"aor":             "sip:alice@vb.test",
+			"password":        "secret",
+			"expires_seconds": 600,
+		},
+	})
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST status = %d, body=%s", createResp.StatusCode, body)
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	id, _ := created["id"].(string)
+	waitForTrunkStatus(t, inst.baseURL(), id, "active", 3*time.Second)
+
+	last := reg.lastRegister()
+	if last == nil {
+		t.Fatal("fake registrar did not receive REGISTER")
+	}
+	via := last.Via()
+	if via == nil {
+		t.Fatal("REGISTER has no Via header")
+	}
+	if !via.Params.Has("rport") {
+		t.Errorf("Via %q lacks ;rport", via.Value())
+	}
+}
+
 func TestTrunk_SIPRegister_DigestAuth(t *testing.T) {
 	inst := newTestInstance(t, "trunk-digest")
 	reg := newRawSIPRegistrar(t, rawRegistrarOpts{

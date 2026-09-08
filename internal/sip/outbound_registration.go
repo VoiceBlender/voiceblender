@@ -392,7 +392,8 @@ func (r *OutboundRegistration) registerOnce(ctx context.Context, expires int) er
 		}
 		res, err = r.sendRegister(ctx, expires, authHeaderName, credValue)
 		if err != nil {
-			r.markFailed(res.StatusCode, "digest retry: "+err.Error())
+			// res is nil on a transport/timeout failure — no status to report.
+			r.markFailed(0, "digest retry: "+err.Error())
 			return err
 		}
 	}
