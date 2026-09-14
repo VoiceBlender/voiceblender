@@ -18,17 +18,19 @@
 
 5. **Update API documentation** — If any REST API endpoints, request bodies, response schemas, or webhook events changed, update `API.md`. Include usage examples.
 
-6. **Update README.md** — If new configuration environment variables or features were added, update the relevant tables/sections in `README.md`.
+6. **Update `CONFIGURATION.md`** — If any environment variable was added, removed, renamed, or had its default or behaviour changed in `internal/config/config.go`, update the env var table in `CONFIGURATION.md` in the repo root. That table is the single source of truth for configuration docs — `README.md` only links to it and carries no env var table of its own. Every variable the server reads must have a row with its real default and a description; keep the row next to the related variables rather than appending to the end.
 
-7. **Update `voiceblender.env.example`** — If any environment variable was added, removed, renamed, or had its default changed in `internal/config/config.go`, update `voiceblender.env.example` in the repo root to match. Every env var the server reads must appear in the example file with its real default value; secrets/empty defaults are shown as empty assignments. The example file is committed; the actual `voiceblender.env` is not.
+7. **Update README.md** — If new features were added, update the relevant sections in `README.md`. Do not add environment variable tables back into `README.md` — configuration belongs in `CONFIGURATION.md` (see above).
 
-8. **Unit tests** — Every new feature, package, or extension to an existing package must have unit tests.
+8. **Update `voiceblender.env.example`** — If any environment variable was added, removed, renamed, or had its default changed in `internal/config/config.go`, update `voiceblender.env.example` in the repo root to match. Every env var the server reads must appear in the example file with its real default value; secrets/empty defaults are shown as empty assignments. The example file is committed; the actual `voiceblender.env` is not.
 
-9. **Integration tests** — Every new or updated feature must have integration tests in `tests/integration/`.
+9. **Unit tests** — Every new feature, package, or extension to an existing package must have unit tests.
 
-10. **Update TESTING.md** — If new test commands, test files, test data setup steps, or testing workflows were added, update `TESTING.md` with the relevant instructions and test list entries.
+10. **Integration tests** — Every new or updated feature must have integration tests in `tests/integration/`.
 
-11. **Do not change API unless required** - We should keep API unchanged as much as possible to keep backwards compatibility. 
+11. **Update TESTING.md** — If new test commands, test files, test data setup steps, or testing workflows were added, update `TESTING.md` with the relevant instructions and test list entries.
+
+12. **Do not change API unless required** - We should keep API unchanged as much as possible to keep backwards compatibility. 
 
 ## Git commits
 
