@@ -201,6 +201,11 @@ func TestEngine_AllowHeader(t *testing.T) {
 // Kamailio's dispatcher probes targets with OPTIONS and only treats a 2xx as
 // healthy, so sipgo's default 405 would take the instance out of rotation.
 func TestEngine_OPTIONSReturnsOK(t *testing.T) {
+	if raceEnabled {
+		// See TestEngine_Serve_AcceptsTLSHandshake: upstream emiago/sipgo
+		// ListenAndServe races on its connCloser; not a VoiceBlender bug.
+		t.Skip("skipping under -race: unsynchronized connCloser in emiago/sipgo ListenAndServe")
+	}
 	udpPort := pickFreePort(t, "udp")
 	engine, err := NewEngine(EngineConfig{
 		BindIP:   "127.0.0.1",

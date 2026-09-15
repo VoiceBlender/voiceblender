@@ -1,0 +1,58 @@
+name: ci
+
+# Pull-request and master checks. The release pipeline (docker images,
+# cross-compiled binaries, GitHub releases) lives in build.yml and runs only
+# on pushes to master and tags.
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # The shipped binary is static (CGO_ENABLED=0, see Dockerfile). Guard the
+      # whole module tree — not just ./cmd/voiceblender — so no package silently
+      # introduces a cgo dependency. Opt-in native builds (e.g. -tags silero)
+      # are exempt by construction: they are not part of the default build set.
+      - name: cgo-off build guard
+        run: CGO_ENABLED=0 go build ./...
+
+      # Race detector needs cgo in the test toolchain (ubuntu runners ship gcc);
+      # this is independent of the static shipped binary above.
+      - name: unit tests (race)
+        run: go test -race ./internal/... -count=1 -timeout=180s
+
+  # The loopback integration suite is NOT run here. It has a pre-existing
+  # cross-test flake (VSI/SIP resource accumulation over many sequential engine
+  # create/teardown cycles) that makes it unreliable as a PR gate, so it lives in
+  # integration.yml (manual trigger) until that is fixed — then fold it back in.
