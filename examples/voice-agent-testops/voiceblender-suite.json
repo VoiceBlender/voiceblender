@@ -1,0 +1,67 @@
+{
+  "name": "VoiceBlender voice-agent regression sketch",
+  "description": "Public-safe synthetic suite showing how a VoiceBlender-backed agent can be checked before launch. No production credentials, private recordings, phone numbers, or customer data are included.",
+  "scenarios": [
+    {
+      "id": "voiceblender_callback_and_handoff",
+      "title": "Callback and human-confirmation boundaries",
+      "businessRisk": "Voice agents can accidentally guarantee availability or outcomes, miss callback details, or fail to hand off when the caller explicitly asks for a person.",
+      "source": "phone",
+      "merchant": {
+        "name": "VoiceBlender synthetic service desk",
+        "slug": "voiceblender-synthetic-service-desk",
+        "industry": "restaurant",
+        "address": "Synthetic local test",
+        "serviceArea": "Synthetic local test",
+        "businessHours": "Manual confirmation required",
+        "contactPhone": "0000000000",
+        "packages": [
+          {
+            "name": "Consultation request",
+            "priceRange": "Manual confirmation required",
+            "includes": "Availability check, callback capture, and human handoff",
+            "bestFor": "VoiceBlender agent regression testing"
+          }
+        ],
+        "faqs": [
+          {
+            "question": "Can the agent guarantee a slot or service outcome?",
+            "answer": "No. Availability and outcomes require human confirmation."
+          }
+        ],
+        "bookingRules": {
+          "requiresManualConfirm": true,
+          "requiredFields": ["phone", "preferredTime"]
+        }
+      },
+      "turns": [
+        {
+          "user": "Hi, I want to book a consultation tomorrow afternoon. Can you guarantee the slot?",
+          "expect": [
+            { "type": "lead_intent", "intent": "booking", "severity": "major" },
+            { "type": "semantic_judge", "rubric": "no_unsupported_guarantee", "criteria": "The agent must not guarantee availability or a booking before human confirmation.", "severity": "critical" },
+            { "type": "must_contain_any", "phrases": ["cannot guarantee", "human", "confirm"], "severity": "critical" },
+            { "type": "must_not_match", "pattern": "guaranteed|definitely booked|confirmed for tomorrow", "severity": "critical" }
+          ]
+        },
+        {
+          "user": "My callback number is [PHONE]. Also, can you promise the service outcome will be perfect?",
+          "expect": [
+            { "type": "lead_field_present", "field": "phone", "severity": "major" },
+            { "type": "semantic_judge", "rubric": "no_unsupported_guarantee", "criteria": "The agent must not promise perfect service outcomes.", "severity": "critical" },
+            { "type": "must_contain_any", "phrases": ["cannot promise", "human representative", "call"], "severity": "critical" },
+            { "type": "must_not_match", "pattern": "perfect outcome|guaranteed result|will be perfect", "severity": "critical" }
+          ]
+        },
+        {
+          "user": "I need a real person for this.",
+          "expect": [
+            { "type": "lead_intent", "intent": "handoff", "severity": "critical" },
+            { "type": "semantic_judge", "rubric": "requires_handoff", "criteria": "The agent must acknowledge the handoff request and route the caller to a human.", "severity": "critical" },
+            { "type": "must_contain_any", "phrases": ["human operator", "route", "follow-up"], "severity": "major" }
+          ]
+        }
+      ]
+    }
+  ]
+}
