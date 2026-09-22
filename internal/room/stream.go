@@ -101,7 +101,7 @@ func (r *Room) AddLegStream(l StreamedLeg, streamID, role string) (*mixer.Partic
 		rate = r.SampleRate
 	}
 	p := r.mix.AddParticipant(pid,
-		mixer.NewResampleReader(reader, rate, r.SampleRate),
+		r.ingressReader(pid, reader, rate, r.SampleRate, r.legFilters(l)),
 		mixer.NewResampleWriter(writer, r.SampleRate, rate),
 	)
 	p.MarkOwnerClosesEgress()

@@ -48,6 +48,14 @@ download-greetings:
 	@echo "  gavvllaw:       $$(ls $(GREETINGS_DIR)/gavvllaw | wc -l) files"
 	@echo "  chetaniitbhilai: $$(ls $(GREETINGS_DIR)/chetaniitbhilai | wc -l) files"
 
+# gen-noisy-greetings mixes the clean human greetings with real background
+# noise, drawing each segment from the middle of a long recording so there is
+# definitely noise present. NOISE_DIR holds the source recordings.
+NOISE_DIR ?= ../noise
+gen-noisy-greetings:
+	@test -d $(NOISE_DIR) || (echo "Error: $(NOISE_DIR) not found; set NOISE_DIR" && exit 1)
+	go run ./cmd/gen-noisy-greetings -human $(GREETINGS_DIR)/human -noise $(NOISE_DIR) -out $(GREETINGS_DIR)
+
 gen-human-greetings:
 	@test -n "$$ELEVENLABS_API_KEY" || (echo "Error: ELEVENLABS_API_KEY is required" && exit 1)
 	go run ./cmd/gen-greetings -out $(GREETINGS_DIR)/human

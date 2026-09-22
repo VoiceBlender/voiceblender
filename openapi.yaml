@@ -2565,6 +2565,46 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /legs/{id}/filters:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        put:
+            operationId: setLegFilters
+            summary: Replace a leg's audio filter chain
+            description: Replaces the ingress audio processing running on a live leg. Any chain can be swapped for any other, including enabling or disabling `denoise` — that moves the chain between the leg's own rate and 48 kHz, which is handled by rebuilding it behind a short fade rather than being refused. An empty array stops all processing. The change is staged and lands on the next audio block, so the response reports the requested chain. The leg must be in a room, since the chain lives on its mixer participant.
+            tags:
+                - Legs
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SetLegFiltersRequest'
+            responses:
+                '200':
+                    description: Updated leg view, with the chain now running
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Leg'
+                '400':
+                    description: Invalid JSON, unknown filter, or a parameter out of range
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Leg is not in a room, so it has no audio chain to change
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/{id}/custom-data:
         parameters:
             - $ref: '#/components/parameters/LegId'
@@ -3613,6 +3653,11 @@ components:
                     description: Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time.
                 custom_data:
                     description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
+                    description: The ingress audio filter chain that actually runs for this leg, after applying the server default and dropping any filter whose backing resource is unavailable. Absent when no processing is applied. Compare with the `filters` sent at creation to see what was dropped.
             required:
                 - id
                 - type
@@ -3738,6 +3783,11 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
+                    description: 'Ordered audio processing chain applied to audio arriving from this leg, before it reaches the room mixer and therefore before other legs, recordings and speech-to-text see it. Each entry names a built-in filter and may carry parameters. Omit the field to use the server default (AUDIO_FILTERS env var); send an empty array for no processing. Filters run in the order given, and corrective filters should precede effects. Known filters: denoise (background noise suppression), bandpass (low_hz, high_hz), gain (volume, -8 to 8 in ~3 dB steps). Noise suppression removes background noise, not competing speech.'
                 codec:
                     type: string
                     description: Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.
@@ -3868,6 +3918,11 @@ components:
                 speech_detection:
                     type: boolean
                     description: If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false).
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
+                    description: 'Ordered audio processing chain applied to audio arriving from this leg, before it reaches the room mixer and therefore before other legs, recordings and speech-to-text see it. Each entry names a built-in filter and may carry parameters. Omit the field to use the server default (AUDIO_FILTERS env var); send an empty array for no processing. Filters run in the order given, and corrective filters should precede effects. Known filters: denoise (background noise suppression), bandpass (low_hz, high_hz), gain (volume, -8 to 8 in ~3 dB steps), pitch (shifts the voice up or down in semitones; semitones, mix), robotic (metallic voice effect that keeps speech easy to follow; pitch_hz, depth, mix), vocoder (a stronger, fully synthetic robot voice that is noticeably harder to understand; carrier_hz, bands, mix). Noise suppression removes background noise, not competing speech.'
                 rtt:
                     type: boolean
                     description: 'For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.'
@@ -4263,6 +4318,16 @@ components:
                     description: 'New opaque application JSON for the leg. Any JSON value is accepted (object, array, string, number, boolean). Replaces the existing value outright — there is no merge. Sending null clears it, the same as DELETE. Required: omitting the field is rejected with 400. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).'
             required:
                 - custom_data
+        SetLegFiltersRequest:
+            type: object
+            properties:
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
+                    description: 'The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise: that moves the chain between the leg''s own rate and 48 kHz, which rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block.'
+            required:
+                - filters
         SetLegRoleRequest:
             type: object
             properties:
@@ -4571,6 +4636,26 @@ components:
                 - id
                 - type
                 - status
+        FilterSpec:
+            type: object
+            properties:
+                type:
+                    type: string
+                    description: Filter name.
+                    enum:
+                        - bandpass
+                        - denoise
+                        - gain
+                        - pitch
+                        - robotic
+                        - vocoder
+                params:
+                    type: object
+                    additionalProperties:
+                        type: number
+                    description: Filter parameters as name/value pairs. Unknown names are ignored; out-of-range values are rejected. bandpass takes low_hz (default 300) and high_hz (default 3400); gain takes volume (-8 to 8, ~3 dB per step); pitch takes semitones (-12 to 12, default -5) and mix (0-1, default 1); robotic takes pitch_hz (50-500, default 110), depth (0-0.95, default 0.75) and mix (0-1, default 1); vocoder takes carrier_hz (40-400, default 110), bands (4-32, default 20) and mix (0-1, default 1); denoise takes none.
+            required:
+                - type
         IPIPTrunkSpec:
             type: object
             properties:

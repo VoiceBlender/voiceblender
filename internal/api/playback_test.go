@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"log/slog"
 	"math"
@@ -21,6 +22,7 @@ import (
 // SampleRate and RoomID are settable; the writer reads them on every
 // Write so tests can simulate mid-stream room moves.
 type playbackTestLeg struct {
+	filters     []audiofilter.Spec
 	id          string
 	sampleRate  int
 	mu          sync.Mutex
@@ -59,6 +61,8 @@ func (m *playbackTestLeg) AppID() string                          { return "" }
 func (m *playbackTestLeg) SetAppID(string)                        {}
 func (m *playbackTestLeg) Role() string                           { return "" }
 func (m *playbackTestLeg) SetRole(string)                         {}
+func (m *playbackTestLeg) Filters() []audiofilter.Spec            { return m.filters }
+func (m *playbackTestLeg) SetFilters(f []audiofilter.Spec)        { m.filters = f }
 func (m *playbackTestLeg) IsMuted() bool                          { return false }
 func (m *playbackTestLeg) SetMuted(bool)                          {}
 func (m *playbackTestLeg) IsDeaf() bool                           { return false }

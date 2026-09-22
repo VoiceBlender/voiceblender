@@ -181,6 +181,7 @@ Originate an outbound SIP call.
 | `custom_data` | any | no | Opaque application JSON attached to the leg and repeated on every event for it. Capped by `CUSTOM_DATA_MAX_BYTES` (default 1024). See [Custom data](#custom-data). |
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
+| `filters` | array | no | Ordered ingress audio processing chain for this leg — see [Audio filters](#audio-filters). Omit to use the server default (`AUDIO_FILTERS`); send `[]` for no processing. |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
 | `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
@@ -661,6 +662,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 | Field | Type | Description |
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
+| `filters` | array (optional) | Ordered ingress audio processing chain for this leg — see [Audio filters](#audio-filters). Omit to use the server default (`AUDIO_FILTERS`); send `[]` for no processing. |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
 | `custom_data` | any (optional) | Attach opaque application JSON to this inbound leg. Omit to leave any existing value untouched; send `null` to clear it. See [Custom data](#custom-data). |
 | `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
@@ -4211,6 +4213,30 @@ All event data uses typed structs with consistent field names. Events scoped to 
 >
 > **Opt-in:** Speech detection is **disabled by default**. Enable it globally by setting `SPEECH_DETECTION_ENABLED=true`, or per call by setting `"speech_detection": true` on `POST /v1/legs` (outbound) or `POST /v1/legs/{id}/answer` (inbound). Per-call values override the global default.
 
+Answering-machine detection is fed the same way, with one difference: AMD starts during ringing,
+before the leg joins a room and so before the room's chain exists. It therefore drives a chain of its
+own, and runs **only the corrective filters** from the leg's configuration — `denoise` and
+`bandpass`. An effect such as `robotic` or `pitch` is deliberately excluded: AMD is an energy state
+machine plus a beep detector, and running it on a deliberately altered signal would wreck exactly
+what it scores. AMD never enables filtering of its own accord — it follows whatever the leg is already configured for, including a chain inherited from `AUDIO_FILTERS`, and a leg with no corrective filters gets the plain resampling feed AMD always used. While AMD is analysing a denoised leg it holds a second kernel state alongside the room's, for the few seconds the analysis lasts.
+
+This matters more than it might sound. Measured over 184 human greetings mixed with real city and call-centre noise, AMD classified **1.1%** correctly on the unfiltered audio and **98.4%** with denoise — and it was already failing at 15 dB SNR, where the noise sits well below the speech. AMD is an energy state machine measuring greeting and silence durations, so continuous background noise means the silence it waits for never arrives and almost every human is called a machine. Enabling `denoise` on legs that run AMD over noisy trunks is therefore close to a requirement rather than a refinement. (`make gen-noisy-greetings` builds the corpora; `TestAMD_NoisyAccuracy_Denoised` reports the comparison.)
+
+Speech detection runs on the leg's audio **after** its filter chain. The detector is RMS with
+hysteresis, which a raised noise floor alone will trip, so scoring the audio before `denoise` would
+have a leg report speech while nobody is talking — on a noise-only signal three times the detection
+threshold, 250 of 250 frames read as speech before denoising and 0 of 250 after. Enabling `denoise`
+on a noisy leg therefore improves its `speaking.started` / `speaking.stopped` accuracy as well as
+what the far party hears.
+
+Two consequences worth knowing:
+
+- The detector observes the chain, which lives on the leg's mixer participant, so **a leg outside a
+  room falls back to its own tap**. There is no chain there to run after, so nothing is lost.
+- Because the observation point is the chain rather than a per-leg-type tap, **speech detection now
+  works for every leg type**, including WebSocket, MoQ and LiveKit legs whose `SetSpeakingTap` was a
+  no-op.
+
 | `playback.started` | Playback began | `leg_id` or `room_id`, `playback_id` |
 | `playback.finished` | Playback ended | `leg_id` or `room_id`, `playback_id`, `reason`, `played_ms` |
 | `playback.error` | Playback failed | `leg_id` or `room_id`, `playback_id`, `error` |
@@ -5034,6 +5060,9 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_call_duration_seconds` | Histogram | `type` | Answered call duration (time from answer to hangup). Use `rate(sum)/rate(count)` for ACD |
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
+| `voiceblender_audio_denoise_streams` | Gauge | — | Legs currently running the `denoise` filter. Read from the pool at scrape time |
+| `voiceblender_audio_denoise_instances` | Gauge | — | Pooled WebAssembly instances backing the `denoise` filter. Grows by one per ~24 concurrent denoising legs |
+| `voiceblender_audio_filters_unavailable_total` | Counter | `filter` | Filters dropped from a requested chain because the filter was unavailable. A non-zero rate means calls are running with less processing than was asked for |
 | `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
 | `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
 | `voiceblender_webhook_deliveries_total` | Counter | `outcome` | Total terminal webhook delivery outcomes. `outcome`: `success`, `exhausted` (all 3 attempts failed), `marshal_error`, `request_error` (malformed webhook URL). Closed set, so cardinality is fixed at 4 |
@@ -5098,3 +5127,114 @@ go build -tags pprof ./...
 ```
 go tool pprof http://localhost:8080/debug/pprof/profile
 ```
+
+## Audio filters
+
+An ordered chain of built-in processing stages applied to audio **arriving from a leg**, before it
+reaches the room mixer — so every other leg, every recording, and speech-to-text all see the
+processed audio. Filtering is ingress-only by design: each leg cleans its own contribution, so a
+two-party call has both directions covered without running a speech enhancer over a mix of several
+talkers.
+
+Set the chain per leg with `filters` on `POST /v1/legs` or `POST /v1/legs/{id}/answer`, or set a
+server-wide default with the `AUDIO_FILTERS` env var. Omitting `filters` uses the server default;
+sending `[]` explicitly disables all processing for that leg.
+
+### Available filters
+
+| Filter | Parameters | Purpose |
+|--------|------------|---------|
+| `denoise` | none | Background noise suppression (RNNoise). May appear only once in a chain. |
+| `bandpass` | `low_hz` (default `300`), `high_hz` (default `3400`) | Band-limit the audio. `high_hz` is clamped below Nyquist for the leg's rate. |
+| `gain` | `volume` (`-8` to `8`, ~3 dB per step) | Level adjustment, using the same scale as playback volume. |
+| `pitch` | `semitones` (`-12`–`12`, default `-5`), `mix` (`0`–`1`, default `1`) | Shifts the voice up or down by a musical interval, leaving duration unchanged. Formants move with the pitch, so a downward shift sounds like a physically larger speaker rather than the same speaker talking lower. Accurate to within about ±15 cents; larger shifts (beyond roughly ±7 semitones) start to show a faint warble. |
+| `robotic` | `pitch_hz` (`50`–`500`, default `110`), `depth` (`0`–`0.95`, default `0.75`), `mix` (`0`–`1`, default `1`) | Metallic, mechanical voice colouring. A feedback comb filter resonating at `pitch_hz` and its harmonics; the speech is only filtered, never resynthesised, so it stays about as easy to follow as the untreated audio. `depth` sets how pronounced the ring is. |
+| `vocoder` | `carrier_hz` (`40`–`400`, default `110`), `bands` (`4`–`32`, default `20`), `mix` (`0`–`1`, default `1`) | A full channel vocoder: the voice's spectral envelope drives a synthetic carrier, giving a flat monotone robot voice. Much stronger than `robotic`, and **markedly harder to understand** — it discards the original excitation, so only about 6% of the original waveform survives against 66% for `robotic`. Reach for it when the effect matters more than the words. |
+
+A chain may hold at most 4 filters. Filters run in the order given, and corrective filters should
+come before effects — a speech enhancer placed after an effect will work against it.
+
+`robotic` and `vocoder` are voice *effects*, not voice scrambling: neither obscures identity for privacy purposes. Being effects, they belong last in a chain — putting `denoise` after one makes the enhancer fight what it is handed.
+
+### Examples
+
+Noise suppression on an outbound leg:
+
+```bash
+curl -X POST http://localhost:8080/v1/legs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "sip",
+    "to": "sip:+15551234567@carrier.example.com",
+    "room_id": "support-42",
+    "filters": [{"type": "denoise"}]
+  }'
+```
+
+Band-limit, then denoise, on an inbound leg at answer time:
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/answer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "filters": [
+      {"type": "bandpass", "params": {"low_hz": 300, "high_hz": 3400}},
+      {"type": "denoise"}
+    ]
+  }'
+```
+
+Opt a single leg out when a server-wide default is configured:
+
+```bash
+curl -X POST http://localhost:8080/v1/legs \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "sip", "to": "sip:agent@pbx.local", "filters": []}'
+```
+
+### Changing filters during a call
+
+`PUT /v1/legs/{id}/filters` replaces the chain running on a live leg. It takes effect on the next audio block.
+
+```bash
+curl -X PUT http://localhost:8080/v1/legs/$LEG_ID/filters \
+  -H 'Content-Type: application/json' \
+  -d '{"filters": [{"type": "pitch", "params": {"semitones": 4}}]}'
+```
+
+Send `{"filters": []}` to stop all processing. The VSI equivalent is the `set_leg_filters` command.
+
+One limit, returning `409`: **the leg must be in a room.** The chain lives on the leg's mixer participant, so a leg outside a room has nothing to change.
+
+Everything else is allowed, including enabling and disabling `denoise`. That moves the chain between the leg's own rate and 48 kHz, which resizes the resamplers and the block — handled by rebuilding the chain behind a short fade (about 8 ms each way) so the transition is a soft dip rather than a click. Changes are staged and land on the next audio block, so the response reports the chain you asked for.
+
+Two things worth expecting when you enable `denoise` on a live call:
+
+- **Suppression ramps up over roughly the first second** while the noise estimate converges, so the effect arrives gradually rather than instantly.
+- **A chain whose filters are all unavailable resolves to an empty one**, so requesting `denoise` on a server whose kernel failed to start clears the chain rather than failing.
+
+### What the leg view reports
+
+`GET /v1/legs/{id}` returns `filters` as the chain that **actually runs**, after applying the server
+default and dropping any filter whose backing resource failed to start. Compare it with what you
+sent to see whether anything was dropped:
+
+```json
+{
+  "id": "0b9f...",
+  "state": "connected",
+  "filters": [{"type": "denoise"}]
+}
+```
+
+### Limitations
+
+- **Noise suppression removes background noise, not competing speech.** Separating one talker from
+  another is a different problem, and background conversation will survive.
+- **Suppression deepens over roughly the first second** of a leg's audio while the noise estimate
+  converges, so the opening of a call is cleaner than silence but less clean than the rest.
+- **Filtering adds latency** — about 10–18 ms for a chain containing `denoise`, on a path that
+  already carries a jitter buffer.
+- If the denoise kernel fails to start, legs that requested it run unfiltered rather than failing;
+  the leg view shows the reduced chain.
+

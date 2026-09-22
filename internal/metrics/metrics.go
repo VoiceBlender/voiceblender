@@ -3,6 +3,7 @@ package metrics
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,8 +17,17 @@ type Collector struct {
 	mu      sync.Mutex
 	legType map[string]string // leg_id → "sip_inbound" | "sip_outbound"
 
-	activeLegs  prometheus.Gauge
-	activeRooms prometheus.Gauge
+	activeLegs prometheus.Gauge
+
+	// filtersUnavailable counts filters dropped from a leg's requested chain
+	// because their backing resource was not running. A non-zero rate means
+	// calls are being processed with less than was asked for.
+	filtersUnavailable *prometheus.CounterVec
+
+	// denoiseStats is the pool's own view, read at scrape time so there is no
+	// per-leg bookkeeping to drift out of step with reality.
+	denoiseStats atomic.Value // func() (streams, instances int)
+	activeRooms  prometheus.Gauge
 
 	// legsTotal counts every leg lifecycle transition.
 	// Labels: type ("sip_inbound"|"sip_outbound"|"unknown"), state ("ringing"|"connected"|"disconnected").
@@ -58,6 +68,29 @@ var _ events.MetricsObserver = (*Collector)(nil)
 
 var durationBuckets = []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600}
 
+// SetDenoiseStatsSource supplies the denoise pool's live counts. Without it the
+// gauges read zero, which is correct for a build with no kernel installed.
+func (c *Collector) SetDenoiseStatsSource(fn func() (streams, instances int)) {
+	if fn != nil {
+		c.denoiseStats.Store(fn)
+	}
+}
+
+func (c *Collector) denoise() (int, int) {
+	if fn, ok := c.denoiseStats.Load().(func() (int, int)); ok && fn != nil {
+		return fn()
+	}
+	return 0, 0
+}
+
+// FilterUnavailable records a filter dropped from a requested chain.
+func (c *Collector) FilterUnavailable(name string) {
+	if c == nil {
+		return
+	}
+	c.filtersUnavailable.WithLabelValues(name).Inc()
+}
+
 // New creates a Collector, registers all metrics, subscribes to the bus, and
 // returns the ready-to-use collector.
 func New(bus *events.Bus) *Collector {
@@ -70,6 +103,11 @@ func New(bus *events.Bus) *Collector {
 			Name: "voiceblender_active_legs",
 			Help: "Number of legs currently in any state (ringing, early_media, connected, held).",
 		}),
+
+		filtersUnavailable: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "voiceblender_audio_filters_unavailable_total",
+			Help: "Total filters dropped from a leg's requested chain because the filter was unavailable.",
+		}, []string{"filter"}),
 
 		activeRooms: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "voiceblender_active_rooms",
@@ -130,6 +168,7 @@ func New(bus *events.Bus) *Collector {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		// VoiceBlender metrics.
 		c.activeLegs,
+		c.filtersUnavailable,
 		c.activeRooms,
 		c.legsTotal,
 		c.disconnectReasons,
@@ -140,6 +179,14 @@ func New(bus *events.Bus) *Collector {
 		c.webhookDeliveries,
 		c.vsiEventsDropped,
 		recoveredPanics,
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_denoise_streams",
+			Help: "Legs currently running the denoise filter.",
+		}, func() float64 { n, _ := c.denoise(); return float64(n) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_denoise_instances",
+			Help: "Pooled WebAssembly instances backing the denoise filter.",
+		}, func() float64 { _, n := c.denoise(); return float64(n) }),
 	)
 
 	_ = bus.Subscribe(c.handle)

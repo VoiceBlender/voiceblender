@@ -133,6 +133,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "room_routing_set", Summary: "Replace a room's audio routing matrix", PayloadType: roomRoutingSetPayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{400, 404}},
 		{Name: "room_routing_update", Summary: "Update selected rows of a room's audio routing matrix", PayloadType: roomRoutingUpdatePayload{}, ResultType: RoomRoutingView{}, ErrorCodes: []int{400, 404}},
 		{Name: "set_leg_role", Summary: "Change a leg's routing role (recomputes the room matrix if the leg is in a room)", PayloadType: setLegRolePayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 404}},
+		{Name: "set_leg_filters", Summary: "Replace the audio filter chain running on a live leg", PayloadType: setLegFiltersPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 404, 409}},
 		{Name: "set_leg_custom_data", Summary: "Replace a leg's custom_data (carried on every subsequent event for the leg)", PayloadType: setLegCustomDataPayload{}, ResultType: LegView{}, ErrorCodes: []int{400, 404}},
 		{Name: "delete_leg_custom_data", Summary: "Clear a leg's custom_data", PayloadType: idPayload{}, ResultType: LegView{}, ErrorCodes: []int{404}},
 

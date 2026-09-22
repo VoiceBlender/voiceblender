@@ -2,6 +2,7 @@ package leg
 
 import (
 	"context"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ type mockLeg struct {
 	state          LegState
 	roomID         string
 	role           string
+	filters        []audiofilter.Spec
 	muted          bool
 	deaf           bool
 	acceptDTMF     bool
@@ -49,6 +51,8 @@ func (m *mockLeg) AppID() string                                { return "" }
 func (m *mockLeg) SetAppID(string)                              {}
 func (m *mockLeg) Role() string                                 { return m.role }
 func (m *mockLeg) SetRole(r string)                             { m.role = r }
+func (m *mockLeg) Filters() []audiofilter.Spec                  { return m.filters }
+func (m *mockLeg) SetFilters(f []audiofilter.Spec)              { m.filters = f }
 func (m *mockLeg) IsMuted() bool                                { return m.muted }
 func (m *mockLeg) SetMuted(v bool)                              { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                                 { return m.deaf }

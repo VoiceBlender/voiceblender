@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"math"
 	"net"
@@ -43,7 +44,29 @@ func (s *Server) toLegView(l leg.Leg) LegView {
 		SIPHeaders: l.SIPHeaders(),
 		Headers:    l.Headers(),
 		CustomData: s.Bus.CustomData.Leg(l.ID()),
+		Filters:    fromFilterSpecs(s.effectiveFilters(l)),
 	}
+}
+
+// effectiveFilters is the chain that actually runs for a leg: its own when it
+// chose one, else the server default. Mirrors Room.legFilters, which makes the
+// same decision when the participant is built.
+func (s *Server) effectiveFilters(l leg.Leg) []audiofilter.Spec {
+	if f := l.Filters(); f != nil {
+		return f
+	}
+	return s.RoomMgr.DefaultFilters()
+}
+
+func fromFilterSpecs(in []audiofilter.Spec) []FilterSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]FilterSpec, 0, len(in))
+	for _, f := range in {
+		out = append(out, FilterSpec{Type: f.Type, Params: map[string]float64(f.Params)})
+	}
+	return out
 }
 
 // disconnectData builds the typed event data for a leg.disconnected event,
@@ -137,6 +160,58 @@ func (s *Server) doSetLegCustomData(legID string, req SetLegCustomDataRequest) (
 	}
 	s.applyCustomData(legID, req.CustomData)
 	return s.toLegView(l), nil
+}
+
+// doSetLegFilters replaces a leg's ingress chain while the call is up.
+func (s *Server) doSetLegFilters(legID string, req SetLegFiltersRequest) (LegView, error) {
+	l, ok := s.LegMgr.Get(legID)
+	if !ok {
+		return LegView{}, newAPIError(http.StatusNotFound, "leg not found")
+	}
+	specs, err := s.toFilterSpecs(req.Filters)
+	if err != nil {
+		return LegView{}, err
+	}
+	if specs == nil {
+		specs = []audiofilter.Spec{}
+	}
+
+	// The live chain lives on the mixer participant, so the leg must be in a
+	// room for there to be anything to change.
+	roomID := l.RoomID()
+	if roomID == "" {
+		return LegView{}, newAPIError(http.StatusConflict, "leg is not in a room, so it has no audio chain to change")
+	}
+	rm, ok := s.RoomMgr.Get(roomID)
+	if !ok {
+		return LegView{}, newAPIError(http.StatusConflict, "leg's room not found")
+	}
+	found, err := rm.SetLegFilters(legID, specs)
+	if err != nil {
+		return LegView{}, newAPIError(http.StatusConflict, "%s", err.Error())
+	}
+	if !found {
+		return LegView{}, newAPIError(http.StatusConflict, "leg has no audio chain in its room")
+	}
+
+	// Keep the leg's own record in step, so the view and any later room move
+	// carry the chain that is actually running.
+	l.SetFilters(specs)
+	return s.toLegView(l), nil
+}
+
+func (s *Server) setLegFilters(w http.ResponseWriter, r *http.Request) {
+	var req SetLegFiltersRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	view, err := s.doSetLegFilters(chi.URLParam(r, "id"), req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *Server) doDeleteLegCustomData(legID string) (LegView, error) {
@@ -243,12 +318,15 @@ func (s *Server) getLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.toLegView(l))
 }
 
-func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream, customData events.CustomData) error {
+func (s *Server) doAnswerLeg(id string, speechDetection *bool, codecName string, streams []AnswerLegStream, customData events.CustomData, filters []FilterSpec) error {
 	l, ok := s.LegMgr.Get(id)
 	if !ok {
 		return newAPIError(http.StatusNotFound, "leg not found")
 	}
 	if err := s.validateCustomData(customData); err != nil {
+		return err
+	}
+	if err := s.applyFilters(l, filters); err != nil {
 		return err
 	}
 
@@ -380,7 +458,7 @@ func (s *Server) answerLeg(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams, req.CustomData); err != nil {
+	if err := s.doAnswerLeg(id, req.SpeechDetection, req.Codec, req.Streams, req.CustomData, req.Filters); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -1140,6 +1218,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 
 	l := leg.NewSIPOutboundPendingLeg(s.SIPEngine, codecs, s.Log)
 
+	if err := s.applyFilters(l, req.Filters); err != nil {
+		return LegView{}, err
+	}
+
 	// Apply server-default jitter buffer. No per-request override: jitter
 	// buffer tuning is operator-driven via the SIP_JITTER_BUFFER_MS env var.
 	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
@@ -1667,7 +1749,18 @@ func (d *amdDriver) publishBeep(beep amd.BeepResult) {
 // clearTap stops the leg feeding a finished analysis, reporting whether this
 // driver still owned the tap. False means a later AMD start replaced it. It
 // takes the leg's own lock, so it is never called while holding d.mu.
-func (d *amdDriver) clearTap() bool { return d.l.ClearAMDTapIf(d.tap) }
+// clearTap removes the AMD feed and releases whatever it holds. The feed may
+// be a filter chain, whose denoise state would otherwise stay checked out of
+// the pool for the life of the process.
+func (d *amdDriver) clearTap() bool {
+	cleared := d.l.ClearAMDTapIf(d.tap)
+	if cleared {
+		if c, ok := d.tap.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
+	return cleared
+}
 
 // ownsTap reports whether this driver still owns the leg's tap without clearing
 // it, so a machine verdict can gate its publish on ownership yet keep the tap
@@ -1700,7 +1793,13 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 			// The leg decodes at its native rate; the AMD FSM expects 16 kHz.
 			// Record the writer before installing it, so the driver can prove
 			// ownership of the tap before clearing it or publishing a verdict.
-			w := mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate)
+			//
+			// AMD starts during ringing, before the leg joins a room and so
+			// before the room's chain exists — hence a push-mode chain of its
+			// own. It runs only the leg's *corrective* filters: denoise helps
+			// an energy FSM and a beep detector, while an effect like robotic
+			// would wreck the signal they score.
+			w := s.amdTapWriter(l, d)
 			d.tap = w
 			l.SetAMDTap(w)
 			// One timer covers both windows. FeedBeep's own timeout advances
@@ -1711,6 +1810,27 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 		})
 	}
 	return start, nil
+}
+
+// amdTapWriter builds the AMD feed. With no corrective filters in effect it is
+// the plain resampling writer, exactly as before — AMD does not enable denoise
+// on its own, it only follows what the leg is already configured for.
+//
+// It reads the *effective* chain, not the leg's own field: a leg that inherits
+// AUDIO_FILTERS has nothing set on it, and reading the field alone would leave
+// AMD on raw audio while the room denoised everything else.
+func (s *Server) amdTapWriter(l leg.Leg, d io.Writer) io.Writer {
+	specs := audiofilter.Resolve(audiofilter.Corrective(s.effectiveFilters(l)))
+	if len(specs) == 0 {
+		return mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate)
+	}
+	w, err := audiofilter.NewWriter(d, l.SampleRate(), mixer.DefaultSampleRate, specs)
+	if err != nil {
+		s.Log.Error("AMD filter chain failed to build; detecting on unfiltered audio",
+			"leg_id", l.ID(), "error", err)
+		return mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate)
+	}
+	return w
 }
 
 func (s *Server) doStartAMDLeg(id string, req *AMDParams) error {
@@ -1748,6 +1868,55 @@ func (s *Server) startAMDLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+}
+
+// toFilterSpecs converts and validates a request's filter chain. A nil result
+// means the request did not choose one, so the server default applies; a
+// non-nil empty result means the leg explicitly wants no processing.
+func (s *Server) toFilterSpecs(in []FilterSpec) ([]audiofilter.Spec, error) {
+	if in == nil {
+		return nil, nil
+	}
+	out := make([]audiofilter.Spec, 0, len(in))
+	for _, f := range in {
+		out = append(out, audiofilter.Spec{Type: f.Type, Params: audiofilter.Params(f.Params)})
+	}
+	if err := audiofilter.Validate(out); err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "filters: %v", err)
+	}
+	// Resolve now so the leg records the chain that will actually run rather
+	// than the one that was asked for. Resolve returns nil for an empty result,
+	// but nil means "did not choose" downstream, so an explicit opt-out (and a
+	// chain whose filters were all unavailable) must stay non-nil and empty.
+	resolved := audiofilter.Resolve(out)
+	if resolved == nil {
+		resolved = []audiofilter.Spec{}
+	}
+	if len(resolved) < len(out) {
+		kept := make(map[string]bool, len(resolved))
+		for _, f := range resolved {
+			kept[strings.ToLower(f.Type)] = true
+		}
+		for _, f := range out {
+			if name := strings.ToLower(f.Type); !kept[name] {
+				s.Metrics.FilterUnavailable(name)
+			}
+		}
+	}
+	return resolved, nil
+}
+
+// applyFilters stores a leg's chain. It must run before the leg joins a room,
+// because the chain is built when the mixer participant is created.
+func (s *Server) applyFilters(l leg.Leg, in []FilterSpec) error {
+	specs, err := s.toFilterSpecs(in)
+	if err != nil {
+		return err
+	}
+	if specs != nil {
+		l.SetFilters(specs)
+	}
+	return nil
 }
 
 // resolveSpeechDetection returns the effective speech-detection enable state
@@ -1803,9 +1972,19 @@ func (s *Server) maybeStartSpeakingDetector(l leg.Leg, override *bool) {
 	s.startSpeakingDetector(l)
 }
 
-// startSpeakingDetector creates and starts a speaking detector for a connected leg.
+// startSpeakingDetector creates and starts a speaking detector for a connected
+// leg. The detector observes the leg's audio *after* its filter chain: RMS with
+// hysteresis is exactly the kind of detector a raised noise floor defeats, so
+// scoring the audio before denoise would have it fire on the noise the chain
+// exists to remove. It also means every leg type is covered, including those
+// whose SetSpeakingTap is a no-op.
+//
+// The chain lives on the leg's mixer participant, so a leg outside a room falls
+// back to its own tap — there is no chain there to run after, and no filtering
+// to miss.
 func (s *Server) startSpeakingDetector(l leg.Leg) {
-	det := speaking.New(l.ID(), l.SampleRate(), l.IsMuted, func(e speaking.Event) {
+	rate, attached := s.attachRate(l)
+	det := speaking.New(l.ID(), rate, l.IsMuted, func(e speaking.Event) {
 		typ := events.SpeakingStarted
 		if !e.Speaking {
 			typ = events.SpeakingStopped
@@ -1814,12 +1993,36 @@ func (s *Server) startSpeakingDetector(l leg.Leg) {
 			LegRoomScope: events.LegRoomScope{LegID: e.LegID, RoomID: l.RoomID(), AppID: l.AppID()},
 		})
 	})
-	l.SetSpeakingTap(det)
-	det.Start()
-
+	// Register first: the chain-ready hook reads this map, and on the common
+	// path the leg joins its room moments after this returns.
 	s.speakMu.Lock()
 	s.speakDets[l.ID()] = det
 	s.speakMu.Unlock()
+
+	if attached {
+		// Already in a room: attach to the live chain now, since the hook has
+		// already fired for it.
+		if rm, ok := s.RoomMgr.Get(l.RoomID()); !ok || !rm.SetLegAudioObserver(l.ID(), det) {
+			l.SetSpeakingTap(det)
+		}
+	} else {
+		// Not in a room yet. The leg tap covers the gap until it joins, at
+		// which point the hook moves detection onto the filtered audio.
+		l.SetSpeakingTap(det)
+	}
+	det.Start()
+}
+
+// attachRate reports the rate the detector should run at, and whether the leg
+// has a filter chain to observe. Post-chain audio is at the room's rate, not
+// the leg's.
+func (s *Server) attachRate(l leg.Leg) (rate int, postChain bool) {
+	if roomID := l.RoomID(); roomID != "" {
+		if rm, ok := s.RoomMgr.Get(roomID); ok {
+			return rm.SampleRate, true
+		}
+	}
+	return l.SampleRate(), false
 }
 
 // HasSpeakingDetector reports whether a speaking detector is currently
@@ -1839,7 +2042,16 @@ func (s *Server) stopSpeakingDetector(legID string) {
 		delete(s.speakDets, legID)
 	}
 	s.speakMu.Unlock()
-	if ok {
-		det.Stop()
+	if !ok {
+		return
 	}
+	// Detach first: the chain would otherwise keep writing into a detector
+	// whose goroutine has gone, for the rest of the call.
+	if l, found := s.LegMgr.Get(legID); found {
+		if rm, rok := s.RoomMgr.Get(l.RoomID()); rok {
+			rm.SetLegAudioObserver(legID, nil)
+		}
+		l.ClearSpeakingTap()
+	}
+	det.Stop()
 }

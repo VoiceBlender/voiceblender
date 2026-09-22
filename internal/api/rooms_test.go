@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -19,6 +20,7 @@ type apiMockLeg struct {
 	acceptDTMF     bool
 	roomID         string
 	role           string
+	filters        []audiofilter.Spec
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 }
@@ -40,6 +42,8 @@ func (m *apiMockLeg) AppID() string                          { return "" }
 func (m *apiMockLeg) SetAppID(string)                        {}
 func (m *apiMockLeg) Role() string                           { return m.role }
 func (m *apiMockLeg) SetRole(r string)                       { m.role = r }
+func (m *apiMockLeg) Filters() []audiofilter.Spec            { return m.filters }
+func (m *apiMockLeg) SetFilters(f []audiofilter.Spec)        { m.filters = f }
 func (m *apiMockLeg) IsMuted() bool                          { return m.muted }
 func (m *apiMockLeg) SetMuted(v bool)                        { m.muted = v }
 func (m *apiMockLeg) IsDeaf() bool                           { return m.deaf }

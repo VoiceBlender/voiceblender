@@ -584,3 +584,66 @@ func TestResampleWriter_PassthroughKeepsDestinationClosable(t *testing.T) {
 		t.Errorf("passthrough destination closed %d times, want 1", dst.closes)
 	}
 }
+
+// TestResampleIntoMatchesResampleSamples pins the allocation-free variant to
+// the allocating one: they must be bit-identical, since the audio filter chain
+// uses ResampleInto on the hot path while everything else uses ResampleSamples.
+func TestResampleIntoMatchesResampleSamples(t *testing.T) {
+	for _, rates := range [][2]int{{8000, 16000}, {16000, 8000}, {8000, 48000}, {48000, 16000}} {
+		src, dst := rates[0], rates[1]
+		in := make([]int16, src/50)
+		for i := range in {
+			in[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(i)/float64(src)))
+		}
+
+		a := NewPCMResampler(src, dst)
+		b := NewPCMResampler(src, dst)
+		var reuse []int16
+		for frame := 0; frame < 20; frame++ {
+			want := a.ResampleSamples(in)
+			reuse = b.ResampleInto(reuse, in)
+			if len(reuse) != len(want) {
+				t.Fatalf("%d->%d frame %d: got %d samples, want %d", src, dst, frame, len(reuse), len(want))
+			}
+			for i := range want {
+				if reuse[i] != want[i] {
+					t.Fatalf("%d->%d frame %d sample %d: got %d, want %d", src, dst, frame, i, reuse[i], want[i])
+				}
+			}
+		}
+		t.Logf("%5d -> %-5d Hz: identical over 20 frames (%d samples each)", src, dst, len(reuse))
+	}
+}
+
+// TestResampleIntoReusesBuffer is the point of the method: after the first
+// call the destination must not be reallocated.
+func TestResampleIntoReusesBuffer(t *testing.T) {
+	r := NewPCMResampler(8000, 16000)
+	in := make([]int16, 160)
+	dst := r.ResampleInto(nil, in)
+	first := &dst[0]
+	for i := 0; i < 50; i++ {
+		dst = r.ResampleInto(dst, in)
+	}
+	if &dst[0] != first {
+		t.Error("ResampleInto reallocated a destination that was already large enough")
+	}
+	if allocs := testing.AllocsPerRun(200, func() { dst = r.ResampleInto(dst, in) }); allocs > 0 {
+		t.Errorf("ResampleInto allocates %.2f times per call, want 0", allocs)
+	}
+}
+
+// TestResampleIntoNilReceiver documents the passthrough: a nil resampler
+// returns the input untouched and leaves dst alone.
+func TestResampleIntoNilReceiver(t *testing.T) {
+	var r *PCMResampler
+	in := []int16{1, 2, 3}
+	dst := make([]int16, 0, 8)
+	got := r.ResampleInto(dst, in)
+	if len(got) != len(in) || &got[0] != &in[0] {
+		t.Errorf("nil receiver must return the input slice unchanged")
+	}
+	if r.ResampleInto(dst, nil) != nil {
+		t.Error("empty input should come back empty")
+	}
+}

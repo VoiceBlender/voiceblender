@@ -154,6 +154,10 @@ channels:
                 $ref: '#/components/messages/set_leg_role'
             set_leg_role.result:
                 $ref: '#/components/messages/set_leg_roleResult'
+            set_leg_filters:
+                $ref: '#/components/messages/set_leg_filters'
+            set_leg_filters.result:
+                $ref: '#/components/messages/set_leg_filtersResult'
             set_leg_custom_data:
                 $ref: '#/components/messages/set_leg_custom_data'
             set_leg_custom_data.result:
@@ -1020,6 +1024,19 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/set_leg_role.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_set_leg_filters:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Replace the audio filter chain running on a live leg
+        messages:
+            - $ref: '#/channels/vsi/messages/set_leg_filters'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/set_leg_filters.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_set_leg_custom_data:
         action: receive
@@ -3439,6 +3456,36 @@ components:
                 properties:
                     type:
                         const: set_leg_role.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: openapi.yaml#/components/schemas/Leg
+                required:
+                    - type
+        set_leg_filters:
+            name: set_leg_filters
+            title: Replace the audio filter chain running on a live leg
+            summary: Replace the audio filter chain running on a live leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_filters
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/setLegFiltersPayload'
+                required:
+                    - type
+        set_leg_filtersResult:
+            name: set_leg_filtersResult
+            title: Replace the audio filter chain running on a live leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: set_leg_filters.result
                     request_id:
                         type: string
                     data:
@@ -6086,6 +6133,17 @@ components:
                 - id
                 - type
                 - status
+        FilterSpec:
+            type: object
+            properties:
+                type:
+                    type: string
+                params:
+                    type: object
+                    additionalProperties:
+                        type: number
+            required:
+                - type
         ICECandidateInit:
             type: object
             properties:
@@ -6654,6 +6712,10 @@ components:
                     items:
                         $ref: '#/components/schemas/AnswerLegStream'
                 custom_data: {}
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
             required:
                 - id
         bridgeCreatePayload:
@@ -7090,6 +7152,18 @@ components:
             required:
                 - id
                 - custom_data
+        setLegFiltersPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                filters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FilterSpec'
+            required:
+                - id
+                - filters
         setLegRolePayload:
             type: object
             properties:
