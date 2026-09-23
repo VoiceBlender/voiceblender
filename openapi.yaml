@@ -4707,10 +4707,10 @@ components:
                         - inactive
                 codec:
                     type: string
-                    description: Codec negotiated for this stream. Streams on one leg may use different codecs.
+                    description: Codec the stream's media pipeline is actually running, which after a mid-call re-INVITE is the renegotiated one. Streams on one leg may use different codecs.
                 sample_rate:
                     type: integer
-                    description: Native sample rate of the stream's codec, in Hz.
+                    description: Native sample rate of the codec the stream is running, in Hz. It follows a mid-call codec renegotiation.
                 local_port:
                     type: integer
                     description: Local RTP port. Each stream binds its own port; a shared transport is undefined without BUNDLE (RFC 9143).

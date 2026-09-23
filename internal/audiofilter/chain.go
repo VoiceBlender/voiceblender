@@ -269,6 +269,22 @@ func (r *Reader) SetObserver(key string, w io.Writer) {
 	r.observers[key] = w
 }
 
+// Observers snapshots the attached observers, so a caller that has to rebuild
+// the chain can carry them onto the replacement instead of silently dropping
+// voice activity and answering-machine detection.
+func (r *Reader) Observers() map[string]io.Writer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.observers) == 0 {
+		return nil
+	}
+	out := make(map[string]io.Writer, len(r.observers))
+	for k, w := range r.observers {
+		out[k] = w
+	}
+	return out
+}
+
 // Filters reports the chain currently running.
 func (r *Reader) Filters() []Spec {
 	r.mu.Lock()

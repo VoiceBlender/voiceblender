@@ -244,3 +244,86 @@ func (r *Room) LegStreamIDs() []string {
 	}
 	return out
 }
+
+// RebuildLegStreamMedia re-wires a secondary stream's mixer participant after a
+// mid-call renegotiation moved its sample rate. The leg counterpart of
+// RebuildLegMedia: each stream negotiates its own codec, so each has its own
+// resamplers sized from its own rate.
+//
+// Reports whether this room carries that stream. A false means the stream is
+// not here — the caller should try the leg participant instead.
+func (r *Room) RebuildLegStreamMedia(legID, streamID string) bool {
+	pid := StreamParticipantID(legID, streamID)
+
+	r.mu.Lock()
+	ls, ok := r.legStreams[pid]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+
+	sl, ok := ls.leg.(StreamedLeg)
+	if !ok {
+		return false
+	}
+	sm, ok := sl.StreamMedia(streamID)
+	if !ok {
+		return false
+	}
+	reader, writer := streamEndpoints(sm)
+	if reader == nil && writer == nil {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Re-read under the lock: a detach may have landed while we were asking the
+	// leg for its media.
+	ls, ok = r.legStreams[pid]
+	if !ok {
+		return false
+	}
+	old := r.legFilterReaders[pid]
+	specs := r.legFilters(ls.leg)
+	var observers map[string]io.Writer
+	if old != nil {
+		specs = old.Filters()
+		observers = old.Observers()
+	}
+
+	r.mix.RemoveParticipant(pid)
+	delete(r.legFilterReaders, pid)
+	if old != nil {
+		old.Close()
+	}
+
+	rate := sm.SampleRate
+	if rate <= 0 {
+		rate = r.SampleRate
+	}
+	p := r.mix.AddParticipant(pid,
+		r.ingressReader(pid, reader, rate, r.SampleRate, specs),
+		mixer.NewResampleWriter(writer, r.SampleRate, rate),
+	)
+	p.MarkOwnerClosesEgress()
+	ls.part = p
+	if rd := r.legFilterReaders[pid]; rd != nil {
+		for k, w := range observers {
+			rd.SetObserver(k, w)
+		}
+	}
+	switch sm.Direction {
+	case sipmod.DirSendOnly:
+		r.mix.SetParticipantMuted(pid, true)
+	case sipmod.DirRecvOnly:
+		r.mix.SetParticipantDeaf(pid, true)
+	}
+	r.applyRoutingLocked()
+	r.syncMixerLocked()
+
+	r.log.Info("leg stream media rebuilt for a new sample rate",
+		"room_id", r.ID, "leg_id", legID, "stream_id", streamID,
+		"stream_rate", rate, "room_rate", r.SampleRate)
+	return true
+}

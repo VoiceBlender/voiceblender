@@ -96,9 +96,33 @@ func (r *Room) AddLegWithRole(l leg.Leg, role string) {
 	r.syncMixerLocked()
 }
 
+// mediaRateNotifier is implemented by legs whose media can change sample rate
+// mid-call — today the SIP leg, via codec renegotiation on a re-INVITE. Legs
+// whose rate is fixed for their lifetime simply do not implement it.
+type mediaRateNotifier interface {
+	SetOnMediaRateChange(fn func(streamID string, rate int))
+}
+
+// watchRateChanges asks a leg to report a mid-call rate change so the room can
+// resize what it built for the old rate. The rebuild runs on its own goroutine:
+// the callback fires from the leg's negotiation path, which must not block on
+// the room lock, and the SIP transaction it belongs to must not wait for a
+// mixer rebuild.
+func (r *Room) watchRateChanges(l leg.Leg) {
+	n, ok := l.(mediaRateNotifier)
+	if !ok {
+		return
+	}
+	legID := l.ID()
+	n.SetOnMediaRateChange(func(streamID string, rate int) {
+		go r.rebuildForRateChange(legID, streamID)
+	})
+}
+
 func (r *Room) addLegLocked(l leg.Leg) {
 	r.participants[l.ID()] = l
 	l.SetRoomID(r.ID)
+	r.watchRateChanges(l)
 
 	reader := l.AudioReader()
 	writer := l.AudioWriter()
@@ -126,6 +150,88 @@ func (r *Room) addLegLocked(l leg.Leg) {
 			r.mix.SetParticipantDeaf(l.ID(), true)
 		}
 	}
+}
+
+// rebuildForRateChange routes a stream's rate change to whichever participant
+// carries it. A leg's primary stream is the leg participant; every other stream
+// has one of its own, and the two are sized from different rates.
+func (r *Room) rebuildForRateChange(legID, streamID string) {
+	if r.RebuildLegStreamMedia(legID, streamID) {
+		return
+	}
+	r.RebuildLegMedia(legID)
+}
+
+// RebuildLegMedia re-wires a leg's mixer participant after its media changed
+// shape mid-call, which today means a re-INVITE that renegotiated a codec at a
+// different sample rate. The resamplers and the filter chain were sized for the
+// old rate and would otherwise play the leg back at the wrong speed.
+//
+// What must survive the rebuild: the chain that is actually running (not the
+// leg's configured one, which may differ by a mid-call change), and its
+// observers — voice activity and answering-machine detection read the leg
+// through them, and a silently dropped observer is a detector that never fires
+// again.
+//
+// Reports whether a participant was rebuilt.
+func (r *Room) RebuildLegMedia(legID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	l, ok := r.participants[legID]
+	if !ok {
+		return false
+	}
+	old := r.legFilterReaders[legID]
+	specs := r.legFilters(l)
+	var observers map[string]io.Writer
+	if old != nil {
+		specs = old.Filters()
+		observers = old.Observers()
+	}
+
+	// Drop the old participant first: its read loop holds the chain that is
+	// about to be replaced, and two loops on one leg's reader would race for
+	// frames.
+	r.mix.RemoveParticipant(legID)
+	delete(r.legParts, legID)
+	delete(r.legFilterReaders, legID)
+	if old != nil {
+		// Releases the stages, and with them any denoise kernel state. The
+		// leg's own source is deliberately left open — it is the same reader
+		// the new chain reads from.
+		old.Close()
+	}
+
+	reader, writer := l.AudioReader(), l.AudioWriter()
+	if reader == nil || writer == nil {
+		return false
+	}
+	legRate, mixRate := l.SampleRate(), r.SampleRate
+	p := r.mix.AddParticipant(legID,
+		r.ingressReader(legID, reader, legRate, mixRate, specs),
+		mixer.NewResampleWriter(writer, mixRate, legRate),
+	)
+	p.MarkOwnerClosesEgress()
+	r.legParts[legID] = p
+	if rd := r.legFilterReaders[legID]; rd != nil {
+		for k, w := range observers {
+			rd.SetObserver(k, w)
+		}
+	}
+	if l.IsMuted() {
+		r.mix.SetParticipantMuted(legID, true)
+	}
+	if l.IsDeaf() {
+		r.mix.SetParticipantDeaf(legID, true)
+	}
+	r.applyRoutingLocked()
+	r.syncMixerLocked()
+
+	r.log.Info("leg media rebuilt for a new sample rate",
+		"room_id", r.ID, "leg_id", legID, "leg_rate", legRate, "room_rate", mixRate,
+		"filters", len(specs))
+	return true
 }
 
 // legFilters is the leg's own chain when it chose one, else the room default.
@@ -236,6 +342,11 @@ func (r *Room) RemoveLeg(legID string) {
 
 func (r *Room) removeLegLocked(l leg.Leg) {
 	l.SetRoomID("")
+	// Stop rebuilding for a room the leg has left: the next room installs its
+	// own callback when the leg joins.
+	if n, ok := l.(mediaRateNotifier); ok {
+		n.SetOnMediaRateChange(nil)
+	}
 	delete(r.participants, l.ID())
 	delete(r.legParts, l.ID())
 	r.mix.RemoveParticipant(l.ID())

@@ -7,6 +7,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 ## Features
 
 - **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus, AMR-WB, AMR-NB), digest auth, session timers (RFC 4028)
+- **Mid-call codec renegotiation** -- a peer may re-INVITE onto a different codec or bitrate; the media pipeline, and the room's resamplers and filter chain when the rate moves, follow it in place without dropping the call
 - **SIP over TLS** -- optional TLS transport on a second port alongside UDP, reusable by classic SIP trunks and required by WhatsApp
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction

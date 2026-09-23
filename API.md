@@ -4453,6 +4453,58 @@ shipped to a general-purpose log sink.
 
 ---
 
+## Mid-call codec renegotiation
+
+A peer may re-INVITE (or `UPDATE`) a live call onto a different codec, or the same
+codec at a different bitrate. VoiceBlender renegotiates the media pipeline in place
+rather than only the SDP: the encoder, decoder, framing and jitter-buffer geometry
+all follow the codec that the answer accepted.
+
+What survives the switch, because the call and everything attached to it depends on it:
+
+- **The RTP session and its port** — the peer already has it in the SDP.
+- **The leg ID, its room membership, and its mixer participant identity.**
+- **Recording, SIPREC, transcription and detection taps.**
+- **The leg's audio filter chain**, including a chain set mid-call with
+  `PUT /v1/legs/{id}/filters`, and its observers.
+
+What changes:
+
+- **The codec pipeline**, rebuilt for the newly negotiated codec or bitrate.
+- **The room's resamplers and filter chain** when the *rate* changed, since both were
+  sized for the old one. Each stream is rebuilt independently: a multi-stream leg
+  negotiates every `m=audio` section separately, so a rate change on one leaves the
+  others alone.
+- **Queued audio is dropped** at a rate change — at most ~100 ms. It is PCM at the old
+  rate, and playing it out after the switch would be an audible chirp.
+
+`GET /v1/legs/{id}/streams` reports the codec and `sample_rate` the pipeline is
+**actually running**, not merely what was last negotiated, so it is the place to
+confirm a switch took effect:
+
+```bash
+curl -s localhost:8080/v1/legs/$LEG_ID/streams | jq '.[] | select(.primary) | {codec, sample_rate}'
+```
+```json
+{ "codec": "G722", "sample_rate": 16000 }
+```
+
+Notes and limits:
+
+- A re-offer naming the **same** codec — which is what hold, unhold and most SBC
+  re-anchors send — changes nothing: the pipeline is left alone and the room is not
+  rebuilt.
+- A **bitrate-only** change (an AMR-WB/AMR-NB peer narrowing its `mode-set`) rebuilds
+  the encoder but moves no rates, so nothing downstream is touched.
+- Re-offers **VoiceBlender itself sends** advertise only the codec already running, so a
+  compliant peer cannot switch codecs in its answer to them.
+- A codec the leg did not offer cannot be selected; negotiation is still bounded by the
+  leg's `codecs` list.
+- If the new codec's encoder or decoder cannot be built, the leg keeps running the
+  previous codec rather than losing media, and the failure is logged.
+
+---
+
 ## SIP Session Timers (RFC 4028)
 
 - Accepts session timers requested by the remote UA (inbound and outbound)
