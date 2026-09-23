@@ -14,13 +14,17 @@ import (
 
 // apiMockLeg implements leg.Leg for addLegToRoom tests.
 type apiMockLeg struct {
-	id             string
-	muted          bool
-	deaf           bool
-	acceptDTMF     bool
-	roomID         string
-	role           string
-	filters        []audiofilter.Spec
+	id         string
+	muted      bool
+	deaf       bool
+	acceptDTMF bool
+	roomID     string
+	role       string
+	filters    []audiofilter.Spec
+	// reader/writer let a mock leg carry audio, so tests can exercise the
+	// paths that only exist once a leg has a mixer participant and a chain.
+	reader         io.Reader
+	writer         io.Writer
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 }
@@ -29,8 +33,8 @@ func (m *apiMockLeg) ID() string                             { return m.id }
 func (m *apiMockLeg) Type() leg.LegType                      { return leg.TypeSIPInbound }
 func (m *apiMockLeg) State() leg.LegState                    { return leg.StateConnected }
 func (m *apiMockLeg) SampleRate() int                        { return 8000 }
-func (m *apiMockLeg) AudioReader() io.Reader                 { return nil }
-func (m *apiMockLeg) AudioWriter() io.Writer                 { return nil }
+func (m *apiMockLeg) AudioReader() io.Reader                 { return m.reader }
+func (m *apiMockLeg) AudioWriter() io.Writer                 { return m.writer }
 func (m *apiMockLeg) OnDTMF(func(rune))                      {}
 func (m *apiMockLeg) SendDTMF(context.Context, string) error { return nil }
 func (m *apiMockLeg) Hangup(context.Context) error           { return nil }

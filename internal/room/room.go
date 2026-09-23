@@ -144,10 +144,13 @@ func (r *Room) legFilters(l leg.Leg) []audiofilter.Spec {
 //
 // A chain that fails to build costs filtering, never the leg: audio still flows
 // through the plain resampler.
+//
+// A leg with no filters gets a chain too, empty. It is transparent and costs
+// nothing -- an empty chain benchmarks identical to the plain resampler and
+// allocates less -- and without it a leg that started unfiltered would have
+// nothing for SetLegFilters to change, so filters could never be turned on
+// mid-call for the legs most likely to want them.
 func (r *Room) ingressReader(legID string, src io.Reader, legRate, mixRate int, specs []audiofilter.Spec) io.Reader {
-	if len(specs) == 0 {
-		return mixer.NewResampleReader(src, legRate, mixRate)
-	}
 	rd, err := audiofilter.Build(src, legRate, mixRate, specs)
 	if err != nil {
 		r.log.Error("audio filter chain failed to build; leg runs unfiltered",
@@ -181,14 +184,14 @@ func (r *Room) SetLegFilters(legID string, specs []audiofilter.Spec) (bool, erro
 // filtering — the point voice activity detection wants, since upstream of the
 // chain it would score the noise the chain removes. Returns false when the leg
 // has no chain here.
-func (r *Room) SetLegAudioObserver(legID string, w io.Writer) bool {
+func (r *Room) SetLegAudioObserver(legID, key string, w io.Writer) bool {
 	r.mu.RLock()
 	rd := r.legFilterReaders[legID]
 	r.mu.RUnlock()
 	if rd == nil {
 		return false
 	}
-	rd.SetObserver(w)
+	rd.SetObserver(key, w)
 	return true
 }
 

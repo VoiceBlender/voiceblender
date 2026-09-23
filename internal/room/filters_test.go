@@ -63,10 +63,60 @@ func TestIngressReaderFallsBack(t *testing.T) {
 	}
 	t.Log("unbuildable chain fell back to plain resampling; audio still flows")
 
-	// An empty chain is the plain resampling path, not a filtered one.
+	// An empty chain still gets a real chain, so filters can be turned on later.
 	if r.ingressReader("leg2", src, 16000, 16000, nil) == nil {
 		t.Error("empty chain must still return a reader")
 	}
+	if _, ok := r.LegFilters("leg2"); !ok {
+		t.Error("a leg with no filters must still have a chain to change")
+	}
+}
+
+// TestFiltersCanBeTurnedOnMidCallForAnUnfilteredLeg is the regression: the room
+// used to hand a leg with no chain a plain resampler and register nothing, so
+// SetLegFilters found nothing to change and enabling denoise on a live call
+// failed -- for exactly the legs most likely to want it, the ones that started
+// with no processing configured.
+func TestFiltersCanBeTurnedOnMidCallForAnUnfilteredLeg(t *testing.T) {
+	legMgr := leg.NewManager()
+	mgr := NewManager(legMgr, newTestBus(), newTestLog())
+	r, err := mgr.Create("room-midcall", "", 16000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l := newMockLeg("bare")
+	l.reader = readerOfZeros{}
+	l.writer = io.Discard
+	r.AddLeg(l)
+
+	got, ok := r.LegFilters(l.ID())
+	if !ok {
+		t.Fatal("an unfiltered leg in a room must still expose a chain")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected an empty chain, got %+v", got)
+	}
+
+	found, err := r.SetLegFilters(l.ID(), []audiofilter.Spec{{Type: "bandpass"}})
+	if err != nil {
+		t.Fatalf("SetLegFilters: %v", err)
+	}
+	if !found {
+		t.Fatal("SetLegFilters found no chain on a connected leg that started unfiltered")
+	}
+	if got, _ := r.LegFilters(l.ID()); len(got) != 1 || got[0].Type != "bandpass" {
+		t.Errorf("chain after the change = %+v, want [bandpass]", got)
+	}
+
+	// And back off again.
+	if _, err := r.SetLegFilters(l.ID(), []audiofilter.Spec{}); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if got, _ := r.LegFilters(l.ID()); len(got) != 0 {
+		t.Errorf("chain after clearing = %+v, want none", got)
+	}
+	t.Log("a leg that joined with no filters can have them turned on and off mid-call")
 }
 
 type readerOfZeros struct{}

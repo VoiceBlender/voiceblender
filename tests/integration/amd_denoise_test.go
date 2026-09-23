@@ -24,8 +24,8 @@ import (
 //
 // Reports rather than asserts, like the other accuracy tests.
 func TestAMD_NoisyAccuracy_Denoised(t *testing.T) {
-	if err := denoise.Install(context.Background(), 0); err != nil {
-		t.Skipf("denoise kernel unavailable: %v", err)
+	if err := denoise.Install(); err != nil {
+		t.Skipf("denoise unavailable: %v", err)
 	}
 	t.Cleanup(func() { denoise.Shutdown() })
 
@@ -78,7 +78,7 @@ func TestAMD_NoisyAccuracy_Denoised(t *testing.T) {
 		t.Skip("noisy corpora not found — run 'make gen-noisy-greetings' first")
 	}
 
-	t.Logf("\n=== AMD on noisy human greetings: unfiltered vs denoised ===")
+	t.Log("\n=== AMD on noisy human greetings: unfiltered vs denoised ===")
 	t.Logf("%-26s %10s %10s", "corpus", "as-is", "denoised")
 	var tc, td, tt int
 	for _, r := range rows {

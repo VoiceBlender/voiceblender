@@ -26,7 +26,7 @@ type Collector struct {
 
 	// denoiseStats is the pool's own view, read at scrape time so there is no
 	// per-leg bookkeeping to drift out of step with reality.
-	denoiseStats atomic.Value // func() (streams, instances int)
+	denoiseStats atomic.Value // func() (streams, states int)
 	activeRooms  prometheus.Gauge
 
 	// legsTotal counts every leg lifecycle transition.
@@ -185,7 +185,7 @@ func New(bus *events.Bus) *Collector {
 		}, func() float64 { n, _ := c.denoise(); return float64(n) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "voiceblender_audio_denoise_instances",
-			Help: "Pooled WebAssembly instances backing the denoise filter.",
+			Help: "Per-stream denoise states the kernel holds, live plus pooled.",
 		}, func() float64 { _, n := c.denoise(); return float64(n) }),
 	)
 

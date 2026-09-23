@@ -15,7 +15,7 @@ import (
 // of its own from the write side. It must still get denoised audio: an energy
 // FSM and a beep detector are exactly what a raised noise floor misleads.
 func TestWriterFeedsDetectorsFilteredAudio(t *testing.T) {
-	install(t, 0)
+	install(t)
 	const legRate, amdRate = 8000, 16000
 
 	// Noise-only, as a ringing trunk with a noisy far end would deliver.

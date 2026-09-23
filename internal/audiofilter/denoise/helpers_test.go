@@ -6,6 +6,14 @@ import (
 	"testing"
 )
 
+// Rate and Hop are the reference rate and its 10 ms frame. The filter is not
+// pinned to them -- see TestNativeRates -- but the signal-quality tests fix a
+// rate so their numbers stay comparable.
+const (
+	Rate = ReferenceRate
+	Hop  = ReferenceRate / 100
+)
+
 type sliceReader struct {
 	data []byte
 	n    int

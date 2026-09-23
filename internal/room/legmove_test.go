@@ -1,7 +1,6 @@
 package room
 
 import (
-	"context"
 	"io"
 	"testing"
 
@@ -11,7 +10,7 @@ import (
 )
 
 func TestLegMoveKeepsFiltersAndReleasesState(t *testing.T) {
-	if err := denoise.Install(context.Background(), 0); err != nil {
+	if err := denoise.Install(); err != nil {
 		t.Fatal(err)
 	}
 	defer denoise.Shutdown()

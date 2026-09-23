@@ -74,9 +74,13 @@ func buildChain(srcRate, dstRate int, specs []Spec) (*chain, error) {
 			c.Close()
 			return nil, fmt.Errorf("filter %q: %w", strings.ToLower(s.Type), err)
 		}
+		frame := d.FrameSamples
+		if fs, ok := stage.(FrameSizer); ok {
+			frame = fs.FrameSamples()
+		}
 		c.stages = append(c.stages, stage)
-		c.frames = append(c.frames, d.FrameSamples)
-		c.hop = lcm(c.hop, d.FrameSamples)
+		c.frames = append(c.frames, frame)
+		c.hop = lcm(c.hop, frame)
 	}
 	if c.hop == 0 {
 		c.hop = work / 1000 * defaultBlockMs
@@ -158,11 +162,12 @@ type Reader struct {
 	// over inside the read loop between blocks. A rate change rebuilds the
 	// resamplers and resizes the block, so the swap is wrapped in a short fade
 	// — otherwise it lands as a click mid-sentence.
-	// observer receives a copy of the filtered output. Voice activity detection
-	// hangs off this: run upstream of the chain it would score the noise the
-	// chain exists to remove. The writer must not block — the audio path is on
-	// a real-time budget.
-	observer io.Writer
+	// observers receive a copy of the filtered output, keyed so each can be
+	// removed independently. Detection paths hang off this — voice activity
+	// detection and answering-machine detection both want the filtered audio,
+	// and neither should run a second chain to get it. Writers must not block:
+	// the audio path is on a real-time budget.
+	observers map[string]io.Writer
 
 	pending      *chain
 	pendingSpecs []Spec
@@ -249,12 +254,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 	}
 }
 
-// SetObserver attaches a writer that receives a copy of the filtered output,
-// or nil to detach. Safe to call while audio is flowing.
-func (r *Reader) SetObserver(w io.Writer) {
+// SetObserver attaches a writer under key that receives a copy of the filtered
+// output, or detaches it when w is nil. Safe to call while audio is flowing.
+func (r *Reader) SetObserver(key string, w io.Writer) {
 	r.mu.Lock()
-	r.observer = w
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if w == nil {
+		delete(r.observers, key)
+		return
+	}
+	if r.observers == nil {
+		r.observers = map[string]io.Writer{}
+	}
+	r.observers[key] = w
 }
 
 // Filters reports the chain currently running.
@@ -471,7 +483,7 @@ func (r *Reader) appendOut(s []int16) {
 	for _, v := range s {
 		r.out = binary.LittleEndian.AppendUint16(r.out, uint16(v))
 	}
-	if r.observer != nil {
-		r.observer.Write(r.out[start:])
+	for _, obs := range r.observers {
+		obs.Write(r.out[start:])
 	}
 }

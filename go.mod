@@ -7,6 +7,8 @@ require (
 	cloud.google.com/go/texttospeech v1.16.0
 	github.com/VoiceBlender/goamr-nb v1.0.0
 	github.com/VoiceBlender/goamr-wb v1.1.1
+	github.com/VoiceBlender/rnnoise-go v0.1.0
+	github.com/VoiceBlender/rnnoise-go/model v0.1.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
@@ -32,7 +34,6 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/quic-go/quic-go v0.53.0
 	github.com/quic-go/webtransport-go v0.9.0
-	github.com/tetratelabs/wazero v1.12.0
 	github.com/thesyncim/gopus v0.1.1
 	github.com/zaf/g711 v1.4.0
 	golang.org/x/sync v0.20.0

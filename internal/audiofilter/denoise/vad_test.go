@@ -15,7 +15,7 @@ import (
 // exactly what denoise removes. Scoring the audio upstream of the chain means
 // the leg reports speech while nobody is talking.
 func TestDenoiseStopsVADFiringOnNoise(t *testing.T) {
-	install(t, 0)
+	install(t)
 	const rate = 16000
 
 	// Background noise only — no speech at any point. Band-limited, as every
@@ -77,7 +77,7 @@ func denoiseThrough(t *testing.T, in []int16, rate int) []int16 {
 // TestObserverSeesFilteredAudio pins the wiring: an observer on the chain must
 // receive post-filter audio, or the detector is back to scoring the noise.
 func TestObserverSeesFilteredAudio(t *testing.T) {
-	install(t, 0)
+	install(t)
 	const rate = 16000
 	noisy := bandLimited(rate*4, 5, float64(speaking.Threshold)*3, 3400)
 
@@ -89,7 +89,7 @@ func TestObserverSeesFilteredAudio(t *testing.T) {
 	defer r.Close()
 
 	var seen collector
-	r.SetObserver(&seen)
+	r.SetObserver("test", &seen)
 	out, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)

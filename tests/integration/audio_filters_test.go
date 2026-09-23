@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -184,7 +183,7 @@ func TestAudioFilters_DenoiseDegrades(t *testing.T) {
 // the legs in a room, which is what actually builds the chain: a leg outside a
 // room has a configured chain but no mixer participant to run it.
 func TestAudioFilters_DenoiseActive(t *testing.T) {
-	if err := denoise.Install(context.Background(), 0); err != nil {
+	if err := denoise.Install(); err != nil {
 		t.Fatalf("install denoise: %v", err)
 	}
 	t.Cleanup(func() { denoise.Shutdown() })
@@ -229,11 +228,11 @@ func TestAudioFilters_DenoiseActive(t *testing.T) {
 	if streams == 0 {
 		t.Fatal("a denoising leg in a room should hold a live pool state")
 	}
-	t.Logf("denoise pool while the call is up: %d live stream(s) across %d wasm instance(s)", streams, instances)
+	t.Logf("denoise pool while the call is up: %d live stream(s), %d state(s) built", streams, instances)
 
 	// Let real audio flow through the chain, then tear down and confirm the
-	// pool reclaimed the state — leaked states walk an instance toward a heap
-	// ceiling that nothing clears.
+	// pool reclaimed the state — a leaked state is ~60 KB that no later leg
+	// reuses.
 	time.Sleep(500 * time.Millisecond)
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outbound.ID)).Body.Close()
 
@@ -255,10 +254,9 @@ func TestAudioFilters_DenoiseActive(t *testing.T) {
 // keeps running, the leg view reports the new chain, and a change that would
 // alter the chain's working rate is rejected rather than silently rebuilt.
 func TestAudioFilters_ChangeMidCall(t *testing.T) {
-	// The kernel has to be up for the rate-conflict case to arise at all:
-	// without it denoise is resolved away, leaving an empty chain at the same
-	// working rate, and the change would simply succeed.
-	if err := denoise.Install(context.Background(), 0); err != nil {
+	// The kernel has to be up, or denoise is resolved away and the chain the
+	// test asserts on would silently be an empty one.
+	if err := denoise.Install(); err != nil {
 		t.Fatalf("install denoise: %v", err)
 	}
 	t.Cleanup(func() { denoise.Shutdown() })
@@ -317,8 +315,8 @@ func TestAudioFilters_ChangeMidCall(t *testing.T) {
 	// The call must still be up after all that.
 	waitForLegState(t, instA.baseURL(), lv.ID, "connected", 2*time.Second)
 
-	// Enabling denoise moves the chain to 48 kHz. That rebuilds the resamplers
-	// behind a fade rather than being refused, so the call survives it.
+	// Enabling denoise on a live call is allowed. It runs at the leg's own
+	// rate, so this is a plain chain swap with no resampler rebuild.
 	put = httpPut(t, fmt.Sprintf("%s/v1/legs/%s/filters", instA.baseURL(), lv.ID),
 		map[string]interface{}{"filters": []map[string]interface{}{{"type": "denoise"}}})
 	body, _ := io.ReadAll(put.Body)
@@ -329,7 +327,7 @@ func TestAudioFilters_ChangeMidCall(t *testing.T) {
 	if got := filterNames(fetchFilters(t, instA, lv.ID)); len(got) != 1 || got[0] != "denoise" {
 		t.Errorf("after enabling denoise: %v, want [denoise]", got)
 	}
-	t.Log("denoise enabled mid-call, across a working-rate change")
+	t.Log("denoise enabled mid-call")
 
 	// And off again, back down to the leg's own rate.
 	put = httpPut(t, fmt.Sprintf("%s/v1/legs/%s/filters", instA.baseURL(), lv.ID),
@@ -338,9 +336,61 @@ func TestAudioFilters_ChangeMidCall(t *testing.T) {
 	if got := filterNames(fetchFilters(t, instA, lv.ID)); len(got) != 1 || got[0] != "robotic" {
 		t.Errorf("after disabling denoise: %v, want [robotic]", got)
 	}
-	t.Log("denoise disabled mid-call, back across the rate change")
+	t.Log("denoise disabled mid-call")
 
 	waitForLegState(t, instA.baseURL(), lv.ID, "connected", 2*time.Second)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), lv.ID)).Body.Close()
+}
+
+// TestAudioFilters_EnableOnUnfilteredLeg is the case the PBX console hits: a
+// call placed with no processing at all, then denoise turned on from the
+// live-calls board. The room used to hand an unfiltered leg a plain resampler
+// and register no chain, so there was nothing to change and the request failed
+// for exactly the legs most likely to want filtering.
+func TestAudioFilters_EnableOnUnfilteredLeg(t *testing.T) {
+	if err := denoise.Install(); err != nil {
+		t.Fatalf("install denoise: %v", err)
+	}
+	t.Cleanup(func() { denoise.Shutdown() })
+
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	resp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":    "sip",
+		"uri":     fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs":  []string{"PCMU"},
+		"room_id": "bare-room",
+		"filters": []map[string]interface{}{}, // explicitly no processing
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: status %d", resp.StatusCode)
+	}
+	var lv legView
+	decodeJSON(t, resp, &lv)
+
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+	httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", instB.baseURL(), inbound.ID), nil).Body.Close()
+	waitForLegState(t, instA.baseURL(), lv.ID, "connected", 5*time.Second)
+
+	if got := filterNames(fetchFilters(t, instA, lv.ID)); len(got) != 0 {
+		t.Fatalf("leg should have started unfiltered, got %v", got)
+	}
+
+	put := httpPut(t, fmt.Sprintf("%s/v1/legs/%s/filters", instA.baseURL(), lv.ID),
+		map[string]interface{}{"filters": []map[string]interface{}{{"type": "denoise"}}})
+	body, _ := io.ReadAll(put.Body)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("enabling denoise on an unfiltered leg: status %d (body: %s)",
+			put.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if got := filterNames(fetchFilters(t, instA, lv.ID)); len(got) != 1 || got[0] != "denoise" {
+		t.Errorf("after enabling: %v, want [denoise]", got)
+	}
+	waitForLegState(t, instA.baseURL(), lv.ID, "connected", 2*time.Second)
+	t.Log("denoise turned on mid-call for a leg that joined with no processing")
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), lv.ID)).Body.Close()
 }

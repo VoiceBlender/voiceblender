@@ -49,6 +49,8 @@ type Descriptor struct {
 	// RequiredRate is the sample rate the filter must run at, or 0 for any.
 	RequiredRate int
 	// FrameSamples is the exact frame length the filter needs, or 0 for any.
+	// A filter whose frame length follows the rate leaves this zero and has its
+	// stage implement FrameSizer instead.
 	FrameSamples int
 	// Corrective marks a filter that cleans audio rather than changing its
 	// character, so detection paths can take it and leave the effects.
@@ -69,6 +71,13 @@ type Descriptor struct {
 	// New builds a stage at the chain's resolved working rate. Any per-stream
 	// resource is acquired here and released by the stage's Close.
 	New func(rate int, p Params) (Stage, error)
+}
+
+// FrameSizer is implemented by a stage whose frame length is only known once
+// it has been built at the chain's working rate. The chain asks the stage
+// rather than the descriptor, so there is no second copy of the rule.
+type FrameSizer interface {
+	FrameSamples() int
 }
 
 var registry = map[string]Descriptor{}

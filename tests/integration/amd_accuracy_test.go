@@ -493,35 +493,14 @@ func pcmToBytes(samples []int16) []byte {
 // noisyHumanCorpora are the clean human greetings mixed with real background
 // noise by `make gen-noisy-greetings`. They are all still human, so the
 // expected verdict does not change — what changes is how hard it is to reach.
+//
+// They are deliberately not fed to runAccuracyTest: that enforces a 60%
+// accuracy floor calibrated for the clean corpora, and these score near zero
+// unfiltered by design. TestAMD_NoisyAccuracy_Denoised reports them instead,
+// with the unfiltered and denoised numbers side by side.
 var noisyHumanCorpora = []string{
 	"human-city-15db",
 	"human-city-5db",
 	"human-call_centre-15db",
 	"human-call_centre-5db",
-}
-
-// TestAMD_NoisyAccuracy reports AMD accuracy on human greetings buried in real
-// background noise, one corpus at a time so the clean baseline stays
-// comparable. The clean corpus cannot show whether denoise helps detection —
-// there is nothing in it to remove — which is what these fixtures are for.
-//
-// Like the other accuracy tests this reports rather than asserts: it is a
-// measurement harness, and a threshold here would encode today's numbers as a
-// requirement.
-func TestAMD_NoisyAccuracy(t *testing.T) {
-	var found int
-	for _, name := range noisyHumanCorpora {
-		dir := greetingsDir + "/" + name
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			continue
-		}
-		found++
-		t.Run(name, func(t *testing.T) {
-			runAccuracyTest(t, []testSource{{dir, amd.ResultHuman}})
-		})
-	}
-	if found == 0 {
-		t.Skip("noisy corpora not found — run 'make gen-noisy-greetings' first")
-	}
-	t.Logf("compare against TestAMD_FalsePositives, which runs the same greetings clean")
 }

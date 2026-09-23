@@ -4213,14 +4213,19 @@ All event data uses typed structs with consistent field names. Events scoped to 
 >
 > **Opt-in:** Speech detection is **disabled by default**. Enable it globally by setting `SPEECH_DETECTION_ENABLED=true`, or per call by setting `"speech_detection": true` on `POST /v1/legs` (outbound) or `POST /v1/legs/{id}/answer` (inbound). Per-call values override the global default.
 
-Answering-machine detection is fed the same way, with one difference: AMD starts during ringing,
-before the leg joins a room and so before the room's chain exists. It therefore drives a chain of its
-own, and runs **only the corrective filters** from the leg's configuration — `denoise` and
-`bandpass`. An effect such as `robotic` or `pitch` is deliberately excluded: AMD is an energy state
-machine plus a beep detector, and running it on a deliberately altered signal would wreck exactly
-what it scores. AMD never enables filtering of its own accord — it follows whatever the leg is already configured for, including a chain inherited from `AUDIO_FILTERS`, and a leg with no corrective filters gets the plain resampling feed AMD always used. While AMD is analysing a denoised leg it holds a second kernel state alongside the room's, for the few seconds the analysis lasts.
+Answering-machine detection observes the same chain. A leg in a room is already being denoised for
+the mixer, recordings and speech-to-text, so AMD reads that output rather than filtering the same
+samples a second time.
 
-This matters more than it might sound. Measured over 184 human greetings mixed with real city and call-centre noise, AMD classified **1.1%** correctly on the unfiltered audio and **98.4%** with denoise — and it was already failing at 15 dB SNR, where the noise sits well below the speech. AMD is an energy state machine measuring greeting and silence durations, so continuous background noise means the silence it waits for never arrives and almost every human is called a machine. Enabling `denoise` on legs that run AMD over noisy trunks is therefore close to a requirement rather than a refinement. (`make gen-noisy-greetings` builds the corpora; `TestAMD_NoisyAccuracy_Denoised` reports the comparison.)
+A leg with **no** room has no chain to share, so AMD runs a small one of its own off the leg's tap.
+Either way it takes **only the corrective filters** from the leg's effective configuration —
+`denoise` and `bandpass`, never `robotic`, `pitch` or `vocoder`. AMD is an energy state machine plus
+a beep detector, and scoring a deliberately altered signal would wreck exactly what it measures. AMD
+never enables filtering of its own accord: it follows what the leg is already configured for,
+including a chain inherited from `AUDIO_FILTERS`, and a leg with no corrective filters gets the plain
+resampling feed AMD always used. Only the roomless path costs a second kernel state.
+
+This matters more than it might sound. Measured over 184 human greetings mixed with real city and call-centre noise, AMD classified **1.1%** correctly on the unfiltered audio and **99.5%** with denoise — and it was already failing at 15 dB SNR, where the noise sits well below the speech. AMD is an energy state machine measuring greeting and silence durations, so continuous background noise means the silence it waits for never arrives and almost every human is called a machine. Enabling `denoise` on legs that run AMD over noisy trunks is therefore close to a requirement rather than a refinement. (`make gen-noisy-greetings` builds the corpora; `TestAMD_NoisyAccuracy_Denoised` reports the comparison.)
 
 Speech detection runs on the leg's audio **after** its filter chain. The detector is RMS with
 hysteresis, which a raised noise floor alone will trip, so scoring the audio before `denoise` would
@@ -5061,7 +5066,7 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
 | `voiceblender_audio_denoise_streams` | Gauge | — | Legs currently running the `denoise` filter. Read from the pool at scrape time |
-| `voiceblender_audio_denoise_instances` | Gauge | — | Pooled WebAssembly instances backing the `denoise` filter. Grows by one per ~24 concurrent denoising legs |
+| `voiceblender_audio_denoise_instances` | Gauge | — | Per-stream denoise states the kernel holds, live plus pooled. One per denoising leg, retained after the leg ends so the next one reuses it |
 | `voiceblender_audio_filters_unavailable_total` | Counter | `filter` | Filters dropped from a requested chain because the filter was unavailable. A non-zero rate means calls are running with less processing than was asked for |
 | `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
 | `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
@@ -5144,7 +5149,7 @@ sending `[]` explicitly disables all processing for that leg.
 
 | Filter | Parameters | Purpose |
 |--------|------------|---------|
-| `denoise` | none | Background noise suppression (RNNoise). May appear only once in a chain. |
+| `denoise` | none | Background noise suppression (RNNoise). Runs at whatever rate the leg and room already agreed on — 8, 16 or 48 kHz — so it adds no resampling. May appear only once in a chain. A room below 8 kHz is outside the model's range and the filter is dropped. |
 | `bandpass` | `low_hz` (default `300`), `high_hz` (default `3400`) | Band-limit the audio. `high_hz` is clamped below Nyquist for the leg's rate. |
 | `gain` | `volume` (`-8` to `8`, ~3 dB per step) | Level adjustment, using the same scale as playback volume. |
 | `pitch` | `semitones` (`-12`–`12`, default `-5`), `mix` (`0`–`1`, default `1`) | Shifts the voice up or down by a musical interval, leaving duration unchanged. Formants move with the pitch, so a downward shift sounds like a physically larger speaker rather than the same speaker talking lower. Accurate to within about ±15 cents; larger shifts (beyond roughly ±7 semitones) start to show a faint warble. |
@@ -5206,7 +5211,7 @@ Send `{"filters": []}` to stop all processing. The VSI equivalent is the `set_le
 
 One limit, returning `409`: **the leg must be in a room.** The chain lives on the leg's mixer participant, so a leg outside a room has nothing to change.
 
-Everything else is allowed, including enabling and disabling `denoise`. That moves the chain between the leg's own rate and 48 kHz, which resizes the resamplers and the block — handled by rebuilding the chain behind a short fade (about 8 ms each way) so the transition is a soft dip rather than a click. Changes are staged and land on the next audio block, so the response reports the chain you asked for.
+Everything else is allowed, including enabling and disabling `denoise`. A change that alters the chain's working rate rebuilds the resamplers and the block behind a short fade (about 8 ms each way) so the transition is a soft dip rather than a click; none of the built-in filters demands a rate, so in practice the rate stays put. Changes are staged and land on the next audio block, so the response reports the chain you asked for.
 
 Two things worth expecting when you enable `denoise` on a live call:
 
@@ -5233,8 +5238,9 @@ sent to see whether anything was dropped:
   another is a different problem, and background conversation will survive.
 - **Suppression deepens over roughly the first second** of a leg's audio while the noise estimate
   converges, so the opening of a call is cleaner than silence but less clean than the rest.
-- **Filtering adds latency** — about 10–18 ms for a chain containing `denoise`, on a path that
-  already carries a jitter buffer.
+- **Filtering adds latency** — about 10 ms for a chain containing `denoise` (the model's own 10 ms
+  frame), on a path that already carries a jitter buffer. `denoise` runs at the leg's own rate, so
+  it adds no sample-rate conversion of its own.
 - If the denoise kernel fails to start, legs that requested it run unfiltered rather than failing;
   the leg view shows the reduced chain.
 

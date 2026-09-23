@@ -1,7 +1,6 @@
 package denoise
 
 import (
-	"context"
 	"math"
 	"math/rand"
 	"sync"
@@ -10,9 +9,9 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 )
 
-func install(t *testing.T, perInstance int) {
+func install(t *testing.T) {
 	t.Helper()
-	if err := Install(context.Background(), perInstance); err != nil {
+	if err := Install(); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	t.Cleanup(func() { Shutdown() })
@@ -50,7 +49,7 @@ func TestLifecycle(t *testing.T) {
 	if Available() {
 		t.Fatal("filter should be unavailable before Install")
 	}
-	install(t, 0)
+	install(t)
 	if !Available() {
 		t.Fatal("filter should be available after Install")
 	}
@@ -113,7 +112,7 @@ func bandLimitedRaw(n int, seed int64, amp, fc float64) []int16 {
 	return out
 }
 
-func runHops(t *testing.T, s *state, in []int16) []int16 {
+func runHops(t *testing.T, s *stream, in []int16) []int16 {
 	t.Helper()
 	buf := append([]int16(nil), in...)
 	for off := 0; off+Hop <= len(buf); off += Hop {
@@ -129,7 +128,7 @@ func runHops(t *testing.T, s *state, in []int16) []int16 {
 // converge (see TestConvergenceRamp), so the first second is warm-up and the
 // measurement window follows it.
 func TestSuppressesNoise(t *testing.T) {
-	install(t, 0)
+	install(t)
 	const warmHops, measureHops = 100, 100
 	for _, c := range []struct {
 		name  string
@@ -139,7 +138,7 @@ func TestSuppressesNoise(t *testing.T) {
 		{"speech band (3.4 kHz)", 3400, -10},
 		{"rumble (300 Hz)", 300, -25},
 	} {
-		st, err := current().acquire()
+		st, err := current().acquire(Rate)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,8 +159,8 @@ func TestSuppressesNoise(t *testing.T) {
 // visible: the opening of a call is suppressed noticeably less than the rest
 // while the noise estimate converges.
 func TestConvergenceRamp(t *testing.T) {
-	install(t, 0)
-	st, err := current().acquire()
+	install(t)
+	st, err := current().acquire(Rate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +179,15 @@ func TestConvergenceRamp(t *testing.T) {
 	}
 }
 
-// TestFullBandNoiseIsBarelyTouched pins a real characteristic rather than a
-// defect: RNNoise scores 22 Bark bands spanning 0-20 kHz, so noise with equal
-// energy in every band — including bands speech never occupies — keeps moderate
-// gains. No source on this path produces such a signal, but the behaviour is
-// surprising enough that it should fail loudly if it ever changes.
-func TestFullBandNoiseIsBarelyTouched(t *testing.T) {
-	install(t, 0)
-	st, err := current().acquire()
+// TestFullBandNoise pins how the model treats noise with equal energy in every
+// band. The window is wide on purpose: it is a regression guard on the kernel
+// and its wiring, not a quality target.
+func TestFullBandNoise(t *testing.T) {
+	// Strong, but a near-total kill would suggest the gate had latched rather
+	// than the model having decided.
+	const minDB, maxDB = -70.0, -20.0
+	install(t)
+	st, err := current().acquire(Rate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,20 +197,25 @@ func TestFullBandNoiseIsBarelyTouched(t *testing.T) {
 	out := runHops(t, st, in)
 	before, after := rms(in[Hop*20:]), rms(out[Hop*20:])
 	change := 20 * math.Log10(after/before)
-	t.Logf("full-band white noise: RMS %.1f -> %.1f (%+.1f dB) -- expected to be weakly suppressed",
-		before, after, change)
+	t.Logf("full-band white noise: RMS %.1f -> %.1f (%+.1f dB), expected window [%.0f, %.0f] dB",
+		before, after, change, minDB, maxDB)
+
 	if change > 0 {
 		t.Errorf("full-band noise should never be amplified, got %+.1f dB", change)
 	}
-	if change < -15 {
-		t.Errorf("full-band suppression of %.1f dB is far stronger than measured behaviour; "+
-			"the kernel or its wiring changed", change)
+	if change > maxDB {
+		t.Errorf("%+.1f dB is weaker than the measured behaviour (expected at most %+.0f dB); "+
+			"the kernel or its wiring changed", change, maxDB)
+	}
+	if change < minDB {
+		t.Errorf("%+.1f dB is far stronger than the measured behaviour (expected at least %+.0f dB); "+
+			"the kernel or its wiring changed", change, minDB)
 	}
 }
 
 func TestRejectsWrongFrameSize(t *testing.T) {
-	install(t, 0)
-	st, err := current().acquire()
+	install(t)
+	st, err := current().acquire(Rate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,55 +228,14 @@ func TestRejectsWrongFrameSize(t *testing.T) {
 	}
 }
 
-// TestPoolPacksInstances checks states are packed to the configured density
-// and that releasing frees capacity rather than leaking it.
-func TestPoolPacksInstances(t *testing.T) {
-	const per = 4
-	install(t, per)
-	k := current()
-
-	var states []*state
-	for i := 0; i < per*3; i++ {
-		s, err := k.acquire()
-		if err != nil {
-			t.Fatalf("acquire %d: %v", i, err)
-		}
-		states = append(states, s)
-	}
-	if got := k.Instances(); got != 3 {
-		t.Errorf("%d states at %d per instance: got %d instances, want 3", len(states), per, got)
-	}
-	t.Logf("%d states packed into %d instances (%d per instance)", len(states), k.Instances(), per)
-
-	// Every state must be independently usable.
-	for i, s := range states {
-		if err := s.process(make([]int16, Hop)); err != nil {
-			t.Fatalf("state %d: %v", i, err)
-		}
-	}
-	for _, s := range states {
-		s.release()
-	}
-	// Released capacity is reused: no new instance should be needed.
-	s, err := k.acquire()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.release()
-	if got := k.Instances(); got != 3 {
-		t.Errorf("after release, acquire should reuse an instance; got %d instances", got)
-	}
-	t.Logf("after releasing all, reacquire reused an existing instance (%d total)", k.Instances())
-}
-
 // TestStatesAreIndependent guards against states sharing recurrent history,
 // which would make one call's audio depend on another's.
 func TestStatesAreIndependent(t *testing.T) {
-	install(t, 8)
+	install(t)
 	k := current()
 
 	in := noise(Hop*20, 11, 3000)
-	run := func(s *state) []int16 {
+	run := func(s *stream) []int16 {
 		buf := append([]int16(nil), in...)
 		for off := 0; off+Hop <= len(buf); off += Hop {
 			if err := s.process(buf[off : off+Hop]); err != nil {
@@ -281,12 +245,12 @@ func TestStatesAreIndependent(t *testing.T) {
 		return buf
 	}
 
-	a, err := k.acquire()
+	a, err := k.acquire(Rate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.release()
-	b, err := k.acquire()
+	b, err := k.acquire(Rate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,13 +282,13 @@ func TestStatesAreIndependent(t *testing.T) {
 // TestConcurrentStates exercises the per-instance lock: states sharing an
 // instance are driven from separate goroutines, as separate legs would.
 func TestConcurrentStates(t *testing.T) {
-	install(t, 8)
+	install(t)
 	k := current()
 
 	const n = 16
-	states := make([]*state, n)
+	states := make([]*stream, n)
 	for i := range states {
-		s, err := k.acquire()
+		s, err := k.acquire(Rate)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -336,7 +300,7 @@ func TestConcurrentStates(t *testing.T) {
 	errs := make(chan error, n)
 	for i, s := range states {
 		wg.Add(1)
-		go func(i int, s *state) {
+		go func(i int, s *stream) {
 			defer wg.Done()
 			frame := make([]int16, Hop)
 			buf := noise(Hop, int64(i), 3000)
@@ -354,20 +318,23 @@ func TestConcurrentStates(t *testing.T) {
 	for err := range errs {
 		t.Fatalf("concurrent process: %v", err)
 	}
-	t.Logf("%d states across %d instances processed concurrently", n, k.Instances())
+	live, built := k.Stats()
+	t.Logf("%d states driven concurrently (%d live, %d built)", n, live, built)
 }
 
 // TestThroughChain wires denoise through the real filter chain at the room
 // rate, which is the shape production uses.
 func TestThroughChain(t *testing.T) {
-	install(t, 0)
+	install(t)
 	const legRate = 16000
 	specs := audiofilter.Resolve([]audiofilter.Spec{{Type: "denoise"}})
 	if len(specs) != 1 {
 		t.Fatal("denoise should be available here")
 	}
-	if got := audiofilter.ResolveWorkRate(specs, legRate); got != Rate {
-		t.Fatalf("denoise must pull the chain to %d Hz, got %d", Rate, got)
+	// Denoise must not move the chain's working rate. If it did, every
+	// narrowband leg would be resampled up and back down for the filter alone.
+	if got := audiofilter.ResolveWorkRate(specs, legRate); got != legRate {
+		t.Fatalf("denoise pulled the chain to %d Hz; it should run at the leg's %d Hz", got, legRate)
 	}
 
 	in := noise(legRate*2, 13, 2000)
@@ -390,9 +357,88 @@ func TestThroughChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Close must have returned the state to the pool.
-	if s, err := current().acquire(); err != nil {
+	if s, err := current().acquire(legRate); err != nil {
 		t.Fatalf("pool should have capacity after Close: %v", err)
 	} else {
 		s.release()
 	}
+}
+
+// TestKernelRecyclesStates checks a state returned to the pool is reusable and
+// carries none of the previous call's recurrent history into a different voice.
+func TestKernelRecyclesStates(t *testing.T) {
+	install(t)
+	k := current()
+
+	// Take several streams, then return them.
+	const n = 6
+	var streams []*stream
+	for i := 0; i < n; i++ {
+		s, err := k.acquire(Rate)
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		streams = append(streams, s)
+	}
+	live, pooled := k.Stats()
+	if live != n {
+		t.Errorf("%d streams acquired, Stats reports %d live", n, live)
+	}
+	for _, s := range streams {
+		s.release()
+	}
+	if live, _ := k.Stats(); live != 0 {
+		t.Errorf("after releasing everything, %d streams still counted live", live)
+	}
+
+	// Reacquiring must reuse rather than allocate afresh.
+	before := pooled
+	s, err := k.acquire(Rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.release()
+	if _, after := k.Stats(); after > before {
+		t.Errorf("reacquire built a new state (%d -> %d) instead of reusing a pooled one",
+			before, after)
+	}
+
+	// A recycled state must behave exactly like a fresh one. Warm one up on
+	// loud noise, release it, then compare its output against a never-used
+	// state on the same input.
+	warm, err := k.acquire(Rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty := noise(Hop*40, 11, 6000)
+	runHops(t, warm, dirty)
+	warm.release()
+
+	probe := bandLimited(Hop*40, 7, 2000, 3400)
+
+	recycled, err := k.acquire(Rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRecycled := runHops(t, recycled, probe)
+	recycled.release()
+
+	// A second kernel gives a guaranteed-fresh state for comparison.
+	if err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := current().acquire(Rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotFresh := runHops(t, fresh, probe)
+	fresh.release()
+
+	for i := range gotFresh {
+		if gotRecycled[i] != gotFresh[i] {
+			t.Fatalf("a recycled state diverged from a fresh one at sample %d (%d vs %d); "+
+				"Reset is not clearing the recurrent history", i, gotRecycled[i], gotFresh[i])
+		}
+	}
+	t.Logf("recycled state reproduced a fresh state exactly over %d samples", len(gotFresh))
 }

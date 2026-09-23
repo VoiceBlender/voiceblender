@@ -1,7 +1,10 @@
+// Package denoise provides the "denoise" audio filter: RNNoise noise
+// suppression, as a pure-Go port of upstream's current model
+// (github.com/VoiceBlender/rnnoise-go). It needs no cgo, so the static
+// CGO_ENABLED=0 build is preserved.
 package denoise
 
 import (
-	"context"
 	"sync"
 
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
@@ -13,32 +16,36 @@ import (
 // the filter unavailable, which audiofilter.Resolve turns into a passthrough
 // rather than a failed call.
 func init() {
+	// No RequiredRate: the model runs natively at any rate from MinRate up, so
+	// a leg is denoised at the rate its chain already resolved to. Pinning the
+	// filter to 48 kHz would have every narrowband call resampled up and back
+	// down for the filter's sake alone, which costs latency and CPU and
+	// recovers nothing -- there is no content above the leg's own Nyquist to
+	// recover. The stage reports its own frame length, which follows the rate.
 	audiofilter.Register("denoise", audiofilter.Descriptor{
-		RequiredRate: Rate,
-		FrameSamples: Hop,
-		Unique:       true,
-		Corrective:   true,
-		Available:    Available,
-		New:          newStage,
+		Unique:     true,
+		Corrective: true,
+		Available:  Available,
+		New:        newStage,
 	})
 }
 
 var (
-	mu     sync.RWMutex
-	kernel *Kernel
+	mu sync.RWMutex
+	k  *kernel
 )
 
-// Install compiles the kernel and makes the filter available. A non-nil error
+// Install starts the kernel and makes the filter available. A non-nil error
 // must not abort startup: log it and leave denoising off, because refusing to
 // place calls over an unavailable filter is worse than placing them unfiltered.
-func Install(ctx context.Context, statesPerInstance int) error {
-	k, err := NewKernel(ctx, statesPerInstance)
+func Install() error {
+	nk, err := newKernel()
 	if err != nil {
 		return err
 	}
 	mu.Lock()
-	old := kernel
-	kernel = k
+	old := k
+	k = nk
 	mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -49,55 +56,56 @@ func Install(ctx context.Context, statesPerInstance int) error {
 // Shutdown releases the kernel and marks the filter unavailable.
 func Shutdown() error {
 	mu.Lock()
-	k := kernel
-	kernel = nil
+	old := k
+	k = nil
 	mu.Unlock()
-	if k == nil {
+	if old == nil {
 		return nil
 	}
-	return k.Close()
+	return old.Close()
 }
 
-// Stats reports live denoise streams and pooled wasm instances. Zero when no
-// kernel is installed.
-func Stats() (streams, instances int) {
-	k := current()
-	if k == nil {
-		return 0, 0
+// Stats reports live denoise streams and the per-stream states the kernel
+// keeps. Zero when no kernel is installed.
+func Stats() (streams, states int) {
+	if cur := current(); cur != nil {
+		return cur.Stats()
 	}
-	return k.Stats()
+	return 0, 0
 }
 
 // Available reports whether Install has succeeded.
-func Available() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	return kernel != nil
-}
+func Available() bool { return current() != nil }
 
-func current() *Kernel {
+func current() *kernel {
 	mu.RLock()
 	defer mu.RUnlock()
-	return kernel
+	return k
 }
 
 type stage struct {
-	st *state
+	st *stream
 }
 
 func newStage(rate int, _ audiofilter.Params) (audiofilter.Stage, error) {
-	k := current()
-	if k == nil {
+	cur := current()
+	if cur == nil {
 		return nil, errUnavailable{}
 	}
-	if rate != Rate {
-		return nil, errRate{got: rate}
-	}
-	st, err := k.acquire()
+	st, err := cur.acquire(rate)
 	if err != nil {
 		return nil, err
 	}
 	return &stage{st: st}, nil
+}
+
+// FrameSamples is the 10 ms frame the denoiser consumes at the rate this stage
+// was built for. The chain reads it to size its block.
+func (s *stage) FrameSamples() int {
+	if s.st == nil {
+		return 0
+	}
+	return s.st.frame
 }
 
 // Process leaves the frame untouched on error rather than emitting silence: a
@@ -124,7 +132,7 @@ func (errUnavailable) Error() string { return "denoise kernel is not installed" 
 type errRate struct{ got int }
 
 func (e errRate) Error() string {
-	return "denoise requires 48000 Hz, chain resolved to " + itoa(e.got)
+	return "denoise requires at least " + itoa(MinRate) + " Hz, chain resolved to " + itoa(e.got)
 }
 
 func itoa(n int) string {

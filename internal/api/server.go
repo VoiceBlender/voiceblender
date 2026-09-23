@@ -148,7 +148,7 @@ func NewServer(
 		if det == nil {
 			return
 		}
-		obs.SetObserver(det)
+		obs.SetObserver(observerVAD, det)
 		// Drop the pre-chain fallback, or the detector scores every frame
 		// twice — once raw, once filtered.
 		if l, ok := s.LegMgr.Get(legID); ok {

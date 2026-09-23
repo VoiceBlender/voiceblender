@@ -69,6 +69,13 @@ func fromFilterSpecs(in []audiofilter.Spec) []FilterSpec {
 	return out
 }
 
+// Observer keys on a leg's filter chain. Each detection path attaches under
+// its own key so they coexist and detach independently.
+const (
+	observerVAD = "vad"
+	observerAMD = "amd"
+)
+
 // disconnectData builds the typed event data for a leg.disconnected event,
 // including CDR (reason, timing) and optional quality metrics.
 func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
@@ -1393,9 +1400,12 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
 			LegType:  string(l.Type()),
 		})
+		// Join first: AMD and voice activity detection both want the leg's
+		// filtered audio, and once the chain exists they can share it rather
+		// than each running a denoise pass of their own.
+		addToRoom()
 		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
 		startAMD()
-		addToRoom()
 		s.attachOfferedStreamRooms(l, req.Streams)
 
 		// Monitor for remote hangup or max duration.
@@ -1584,7 +1594,11 @@ type amdDriver struct {
 	// tap is the writer this driver installed on the leg. It is written before
 	// the tap is published to the leg and never mutated after, so the
 	// SetAMDTap/go-watch statements that follow supply the happens-before.
-	tap io.Writer
+	//
+	// It is nil when the leg is in a room: the driver observes the room's
+	// filter chain instead, and detachObserver removes it.
+	tap            io.Writer
+	detachObserver func()
 
 	mu      sync.Mutex
 	beeping bool // classified as machine; now waiting for the voicemail beep
@@ -1753,6 +1767,15 @@ func (d *amdDriver) publishBeep(beep amd.BeepResult) {
 // be a filter chain, whose denoise state would otherwise stay checked out of
 // the pool for the life of the process.
 func (d *amdDriver) clearTap() bool {
+	if d.tap == nil {
+		// Observing the room's chain; there is no leg tap to claim.
+		if d.detachObserver != nil {
+			d.detachObserver()
+			d.detachObserver = nil
+			return true
+		}
+		return false
+	}
 	cleared := d.l.ClearAMDTapIf(d.tap)
 	if cleared {
 		if c, ok := d.tap.(io.Closer); ok {
@@ -1766,7 +1789,12 @@ func (d *amdDriver) clearTap() bool {
 // it, so a machine verdict can gate its publish on ownership yet keep the tap
 // installed for the beep window. It takes the leg's own lock, so it is never
 // called while holding d.mu.
-func (d *amdDriver) ownsTap() bool { return d.l.OwnsAMDTap(d.tap) }
+func (d *amdDriver) ownsTap() bool {
+	if d.tap == nil {
+		return d.detachObserver != nil
+	}
+	return d.l.OwnsAMDTap(d.tap)
+}
 
 // prepareAMD creates an AMD analyzer and returns a function that, when called,
 // installs the tap and starts the deadline goroutine. The returned function is
@@ -1799,9 +1827,12 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 			// own. It runs only the leg's *corrective* filters: denoise helps
 			// an energy FSM and a beep detector, while an effect like robotic
 			// would wreck the signal they score.
-			w := s.amdTapWriter(l, d)
-			d.tap = w
-			l.SetAMDTap(w)
+			tap, detach := s.amdFeed(l, d)
+			d.detachObserver = detach
+			if tap != nil {
+				d.tap = tap
+				l.SetAMDTap(tap)
+			}
 			// One timer covers both windows. FeedBeep's own timeout advances
 			// only as frames arrive, so an RTP stall during the beep window
 			// would otherwise leave the tap installed with no timer to remove
@@ -1831,6 +1862,26 @@ func (s *Server) amdTapWriter(l leg.Leg, d io.Writer) io.Writer {
 		return mixer.NewResampleWriter(d, l.SampleRate(), mixer.DefaultSampleRate)
 	}
 	return w
+}
+
+// amdFeed wires the AMD analyser to filtered audio. When the leg is in a room
+// its chain is already denoising for everyone else, so AMD observes that
+// rather than running a second pass over the same samples — which is what it
+// did before, at the cost of a duplicate kernel state for the whole analysis.
+//
+// Returns a detach func; the private-chain path returns its own closer.
+func (s *Server) amdFeed(l leg.Leg, d io.Writer) (io.Writer, func()) {
+	if rm, ok := s.RoomMgr.Get(l.RoomID()); ok {
+		// The chain emits at the room's rate; the AMD FSM wants 16 kHz.
+		w := mixer.NewResampleWriter(d, rm.SampleRate, mixer.DefaultSampleRate)
+		if rm.SetLegAudioObserver(l.ID(), observerAMD, w) {
+			legID := l.ID()
+			return nil, func() { rm.SetLegAudioObserver(legID, observerAMD, nil) }
+		}
+	}
+	// No room, so no shared chain: AMD runs one of its own off the leg tap.
+	w := s.amdTapWriter(l, d)
+	return w, nil
 }
 
 func (s *Server) doStartAMDLeg(id string, req *AMDParams) error {
@@ -2002,7 +2053,7 @@ func (s *Server) startSpeakingDetector(l leg.Leg) {
 	if attached {
 		// Already in a room: attach to the live chain now, since the hook has
 		// already fired for it.
-		if rm, ok := s.RoomMgr.Get(l.RoomID()); !ok || !rm.SetLegAudioObserver(l.ID(), det) {
+		if rm, ok := s.RoomMgr.Get(l.RoomID()); !ok || !rm.SetLegAudioObserver(l.ID(), observerVAD, det) {
 			l.SetSpeakingTap(det)
 		}
 	} else {
@@ -2049,7 +2100,7 @@ func (s *Server) stopSpeakingDetector(legID string) {
 	// whose goroutine has gone, for the rest of the call.
 	if l, found := s.LegMgr.Get(legID); found {
 		if rm, rok := s.RoomMgr.Get(l.RoomID()); rok {
-			rm.SetLegAudioObserver(legID, nil)
+			rm.SetLegAudioObserver(legID, observerVAD, nil)
 		}
 		l.ClearSpeakingTap()
 	}

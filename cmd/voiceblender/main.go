@@ -77,8 +77,10 @@ func main() {
 	// A kernel that will not start must not stop the server or refuse calls:
 	// legs simply run without the filters that depend on it, and the leg view
 	// reports the chain that actually runs.
-	if err := denoise.Install(context.Background(), 0); err != nil {
+	if err := denoise.Install(); err != nil {
 		log.Error("audio denoise unavailable; legs requesting it will run unfiltered", "error", err)
+	} else {
+		log.Info("audio denoise ready")
 	}
 
 	log.Info("mixer audio",

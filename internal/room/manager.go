@@ -155,7 +155,7 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 // non-responsive peer.
 // ChainObserver is the slice of a leg's live filter chain that observers need.
 type ChainObserver interface {
-	SetObserver(w io.Writer)
+	SetObserver(key string, w io.Writer)
 }
 
 // SetOnLegChainReady registers the hook. Set it before any room exists.
