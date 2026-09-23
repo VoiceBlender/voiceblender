@@ -687,7 +687,7 @@ type SetLegFiltersRequest struct {
 }
 
 var setLegFiltersRequestFields = map[string]FieldEnrichment{
-	"filters": {Description: "The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise: that moves the chain between the leg's own rate and 48 kHz, which rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block."},
+	"filters": {Description: "The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise, which runs at the rate the leg and room already agreed on and so adds no resampling. A change that did alter the chain's working rate rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block."},
 }
 
 // FilterSpec is one entry in a leg's audio filter chain.

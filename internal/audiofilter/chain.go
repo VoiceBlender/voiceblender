@@ -285,11 +285,10 @@ func (r *Reader) Filters() []Spec {
 // releasing whatever they hold — a denoise stage returns its kernel state to
 // the pool here.
 //
-// The working rate must not change, because the resamplers and block size are
-// sized for it: swapping `robotic` for `pitch` is fine, but adding or removing
-// `denoise` moves the chain to 48 kHz and needs a rebuild rather than a swap.
-// That is reported rather than done silently, since a rebuild drops the
-// accumulated samples and would click.
+// A change that moves the working rate needs a rebuild rather than a swap,
+// because the resamplers and block size are sized for it. None of the built-in
+// filters demands a rate, so in practice every swap keeps it; a filter that did
+// would take the staged-rebuild path below, which fades rather than clicking.
 func (r *Reader) SetFilters(specs []Spec) error {
 	if err := Validate(specs); err != nil {
 		return err

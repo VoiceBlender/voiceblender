@@ -71,9 +71,10 @@ func TestSetFiltersWhileStreaming(t *testing.T) {
 	t.Log("cleared to an empty chain; audio still flows")
 }
 
-// TestSetFiltersAcrossWorkRates covers the case that used to be refused:
-// denoise pulls the chain to 48 kHz while the others run at the leg's rate, so
-// enabling or disabling it resizes the resamplers and the block. The swap is
+// TestSetFiltersAcrossWorkRates covers a swap that moves the chain's working
+// rate, which resizes the resamplers and the block. No built-in filter demands
+// a rate, so the case is driven by a synthetic one -- but the path must keep
+// working, and it is what any future rate-pinned filter would take. The swap is
 // staged and wrapped in a short fade, so it lands as a soft dip rather than a
 // click, and the audio keeps flowing either way.
 func TestSetFiltersAcrossWorkRates(t *testing.T) {

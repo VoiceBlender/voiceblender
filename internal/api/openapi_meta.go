@@ -1329,11 +1329,12 @@ func RoutesMetadata() []RouteMeta {
 			Method: "PUT", Path: "/legs/{id}/filters", OperationID: "setLegFilters",
 			Summary: "Replace a leg's audio filter chain",
 			Description: "Replaces the ingress audio processing running on a live leg. Any chain can be " +
-				"swapped for any other, including enabling or disabling `denoise` — that moves the chain " +
-				"between the leg's own rate and 48 kHz, which is handled by rebuilding it behind a short " +
-				"fade rather than being refused. An empty array stops all processing. The change is staged " +
-				"and lands on the next audio block, so the response reports the requested chain. The leg " +
-				"must be in a room, since the chain lives on its mixer participant.",
+				"swapped for any other, including enabling or disabling `denoise`, which runs at the rate " +
+				"the leg and room already agreed on and so adds no resampling. A change that did alter the " +
+				"chain's working rate is handled by rebuilding it behind a short fade rather than being " +
+				"refused. An empty array stops all processing. The change is staged and lands on the next " +
+				"audio block, so the response reports the requested chain. The leg must be in a room, " +
+				"since the chain lives on its mixer participant.",
 			Tags:        []string{"Legs"},
 			RequestType: SetLegFiltersRequest{},
 			Responses: map[int]ResponseMeta{
