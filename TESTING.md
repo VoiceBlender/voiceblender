@@ -12,8 +12,9 @@ go test -tags integration -timeout 60s ./tests/integration/
 # Everything
 go test ./internal/... && go test -tags integration -timeout 60s ./tests/integration/
 
-# Build noisy AMD fixtures (mixes tests/data/greetings/human with ../noise)
-make gen-noisy-greetings          # NOISE_DIR=... to point elsewhere
+# Build noisy AMD fixtures (mixes tests/data/greetings/human with tests/data/noise,
+# whose recordings are from pixabay.com — see tests/data/noise/README.md)
+make gen-noisy-greetings          # NOISE_DIR=... to point elsewhere; .wav or .mp3
 
 # Benchmark (scaling + audio latency)
 go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
@@ -318,8 +319,8 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestSpeechDetection_EnabledGlobally` | `SPEECH_DETECTION_ENABLED=true` attaches the detector on every leg |
 | `TestSpeechDetection_PerCallOutboundOverride` | `speech_detection: true` on `POST /v1/legs` overrides a disabled default |
 | `TestSpeechDetection_PerCallAnswerOverride` | `speech_detection: false` on `POST /v1/legs/{id}/answer` overrides an enabled default |
-| `TestAMD_NoisyAccuracy` | AMD accuracy on human greetings mixed with real city and call-centre noise at 15 dB and 5 dB SNR, one corpus at a time so the clean baseline stays comparable. Reports rather than asserts — a threshold would freeze today's numbers as a requirement |
-| `TestAMD_NoisyAccuracy_Denoised` | The same corpora scored twice, unfiltered and through the push-mode chain the live AMD feed uses. Measured 1.1% correct as-is against 99.5% denoised, over 184 files, with AMD already failing at 15 dB SNR — the evidence that AMD needs denoised audio on noisy trunks |
+| `TestAMD_NoisyAccuracy_Denoised` | The clean human greetings mixed with real busy-street and office noise at 15 dB and 5 dB SNR, scored twice: unfiltered, and through the push-mode chain the live AMD feed uses. Measured 1.6% correct as-is against 100% denoised over 184 files, with AMD already failing at 15 dB SNR — the evidence that AMD needs denoised audio on noisy trunks. Reports rather than asserts; a threshold would freeze today's numbers as a requirement. Build the corpora with `make gen-noisy-greetings` |
+| `TestAMD_SNRSweep` | AMD accuracy against SNR, to locate the point where detection starts failing rather than guess it. Skipped unless `SWEEP_DIR` names a corpus tree built by `cmd/gen-noisy-greetings` with an `-snr` list. Measured: unfiltered AMD is intact at 28 dB and above, loses its first calls around 26–24 dB, is at half accuracy by 20 dB and effectively dead at 15 dB and below — the failure being *human read as machine*. Denoised it holds 100% down to 0 dB and only gives out below that (−10 dB: 72% busy-street, 33% office), so denoise is worth roughly 25 dB of headroom |
 | `TestAMD_Human` | AMD classifies short tone burst as `human` |
 | `TestAMD_Machine` | AMD classifies continuous tone as `machine` |
 | `TestAMD_NoSpeech` | AMD returns `no_speech` when no audio is played |

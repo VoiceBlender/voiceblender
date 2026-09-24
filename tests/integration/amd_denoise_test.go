@@ -19,8 +19,8 @@ import (
 // TestAMD_NoisyAccuracy_Denoised answers the question the clean corpus cannot:
 // how much of AMD's accuracy does denoise recover on noisy audio? Each file is
 // pushed through the same push-mode chain the live AMD feed uses, then scored
-// by the same analyzer, so the only difference from TestAMD_NoisyAccuracy is
-// the filtering.
+// by the same analyzer, so the only difference between the two columns it
+// reports is the filtering.
 //
 // Reports rather than asserts, like the other accuracy tests.
 func TestAMD_NoisyAccuracy_Denoised(t *testing.T) {

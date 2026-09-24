@@ -499,8 +499,8 @@ func pcmToBytes(samples []int16) []byte {
 // unfiltered by design. TestAMD_NoisyAccuracy_Denoised reports them instead,
 // with the unfiltered and denoised numbers side by side.
 var noisyHumanCorpora = []string{
-	"human-city-15db",
-	"human-city-5db",
-	"human-call_centre-15db",
-	"human-call_centre-5db",
+	"human-busy-city-15db",
+	"human-busy-city-5db",
+	"human-office-15db",
+	"human-office-5db",
 }

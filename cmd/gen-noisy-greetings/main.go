@@ -7,13 +7,14 @@
 //
 // Usage:
 //
-//	go run ./cmd/gen-noisy-greetings -noise ../noise
+//	go run ./cmd/gen-noisy-greetings -noise tests/data/noise
 package main
 
 import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -21,6 +22,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	mp3 "github.com/hajimehoshi/go-mp3"
 )
 
 const (
@@ -28,11 +32,15 @@ const (
 	bitsPerSample = 16
 	numChannels   = 1
 
-	// Noise recordings often open and close quietly — a room settling, a fade.
-	// Segments are drawn from the middle so there is definitely noise present,
-	// which is the whole point of the fixture.
-	usableStart = 0.2
-	usableEnd   = 0.8
+	// Noise recordings often open and close quietly — a room settling, a fade —
+	// so a margin at each end is skipped and segments are drawn from the middle,
+	// which is the whole point of the fixture. The margin is capped in seconds
+	// rather than taken as a fraction throughout: on a recording of a minute or
+	// less, discarding a fifth of each end leaves too little to draw varied
+	// segments from, and the level guard below is what actually keeps a segment
+	// off a quiet patch.
+	edgeMarginFrac = 0.2
+	maxEdgeMargin  = 3 * sampleRate
 
 	// A segment whose level is far below the file's own average is a gap in
 	// the recording; redraw rather than mix near-silence and call it noise.
@@ -42,7 +50,7 @@ const (
 
 func main() {
 	humanDir := flag.String("human", "tests/data/greetings/human", "directory of clean human greetings")
-	noiseDir := flag.String("noise", "../noise", "directory of long background-noise WAVs")
+	noiseDir := flag.String("noise", "tests/data/noise", "directory of background-noise recordings (.wav or .mp3)")
 	outRoot := flag.String("out", "tests/data/greetings", "root to write the noisy corpora under")
 	snrList := flag.String("snr", "15,5", "comma-separated SNRs in dB, relative to speech level")
 	seed := flag.Int64("seed", 1, "random seed, so a corpus can be reproduced")
@@ -59,23 +67,23 @@ func main() {
 	if len(humans) == 0 {
 		log.Fatalf("no .wav files in %s — run 'make gen-human-greetings' first", *humanDir)
 	}
-	noises, err := wavsIn(*noiseDir)
+	noises, err := noiseFilesIn(*noiseDir)
 	if err != nil {
 		log.Fatalf("noise: %v", err)
 	}
 	if len(noises) == 0 {
-		log.Fatalf("no .wav files in %s", *noiseDir)
+		log.Fatalf("no .wav or .mp3 files in %s", *noiseDir)
 	}
 
 	rng := rand.New(rand.NewSource(*seed))
 	for _, noisePath := range noises {
-		nf, err := openWAV(noisePath)
+		nf, err := openNoise(noisePath)
 		if err != nil {
 			log.Fatalf("%s: %v", noisePath, err)
 		}
 		label := strings.TrimSuffix(filepath.Base(noisePath), filepath.Ext(noisePath))
-		log.Printf("noise %-14s %.0f min @ %d Hz, overall RMS %.0f",
-			label, nf.Duration().Minutes(), nf.rate, nf.overallRMS)
+		log.Printf("noise %-14s %.0f s @ %d Hz, overall RMS %.0f",
+			label, nf.Duration().Seconds(), nf.rate, nf.overallRMS)
 
 		for _, snr := range snrs {
 			outDir := filepath.Join(*outRoot, fmt.Sprintf("human-%s-%gdb", label, snr))
@@ -126,34 +134,51 @@ func mixOne(humanPath string, nf *wavFile, snrDB float64, outDir string, rng *ra
 	return writeWAV(filepath.Join(outDir, name), out, rate)
 }
 
-// wavFile reads 16-bit mono PCM by seeking, so an hour-long noise recording
-// does not have to be held in memory.
+// wavFile is one background recording, read as 16-bit mono PCM at the working
+// rate. A WAV that already matches is read by seeking, so an hour-long
+// recording does not have to be held in memory; anything needing conversion
+// (MP3, stereo, another rate) is decoded once into pcm instead.
 type wavFile struct {
 	f          *os.File
+	pcm        []int16 // non-nil when the recording is held in memory
 	rate       int
 	dataOff    int64
 	dataLen    int64
 	overallRMS float64
 }
 
-func (w *wavFile) Close() error { return w.f.Close() }
+func (w *wavFile) Close() error {
+	if w.f == nil {
+		return nil
+	}
+	return w.f.Close()
+}
 
-func (w *wavFile) Duration() interface{ Minutes() float64 } {
+func (w *wavFile) Duration() duration {
 	return duration(float64(w.samples()) / float64(w.rate))
 }
 
 type duration float64
 
-func (d duration) Minutes() float64 { return float64(d) / 60 }
+func (d duration) Seconds() float64 { return float64(d) }
 
-func (w *wavFile) samples() int64 { return w.dataLen / 2 }
+func (w *wavFile) samples() int64 {
+	if w.pcm != nil {
+		return int64(len(w.pcm))
+	}
+	return w.dataLen / 2
+}
 
 // drawSegment picks n samples from the middle of the recording, retrying until
 // the segment actually carries noise rather than landing in a quiet gap.
 func (w *wavFile) drawSegment(n int, rng *rand.Rand) ([]int16, int64, error) {
 	total := w.samples()
-	lo := int64(float64(total) * usableStart)
-	hi := int64(float64(total)*usableEnd) - int64(n)
+	margin := int64(float64(total) * edgeMarginFrac)
+	if margin > maxEdgeMargin {
+		margin = maxEdgeMargin
+	}
+	lo := margin
+	hi := total - margin - int64(n)
 	if hi <= lo {
 		return nil, 0, fmt.Errorf("noise file is too short for a %d-sample segment", n)
 	}
@@ -171,6 +196,12 @@ func (w *wavFile) drawSegment(n int, rng *rand.Rand) ([]int16, int64, error) {
 }
 
 func (w *wavFile) readAt(sampleOff int64, n int) ([]int16, error) {
+	if w.pcm != nil {
+		if sampleOff < 0 || sampleOff+int64(n) > int64(len(w.pcm)) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return w.pcm[sampleOff : sampleOff+int64(n)], nil
+	}
 	buf := make([]byte, n*2)
 	if _, err := w.f.ReadAt(buf, w.dataOff+sampleOff*2); err != nil {
 		return nil, err
@@ -180,6 +211,75 @@ func (w *wavFile) readAt(sampleOff int64, n int) ([]int16, error) {
 		out[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
 	}
 	return out, nil
+}
+
+// openNoise loads a background recording as 16-bit mono PCM at the working
+// rate. A WAV already in that shape keeps the seek-backed path; everything else
+// is decoded, downmixed and resampled once into memory.
+func openNoise(path string) (*wavFile, error) {
+	if strings.ToLower(filepath.Ext(path)) == ".mp3" {
+		return openMP3(path)
+	}
+	w, err := openWAV(path)
+	if err != nil {
+		return nil, err
+	}
+	if w.rate == sampleRate {
+		return w, nil
+	}
+	// A WAV at another rate cannot be read by seeking into 16 kHz samples, so
+	// it is converted the same way an MP3 is.
+	defer w.Close()
+	pcm, err := w.readAt(0, int(w.samples()))
+	if err != nil {
+		return nil, err
+	}
+	return inMemoryNoise(resampleTo(pcm, w.rate, sampleRate)), nil
+}
+
+// openMP3 decodes an MP3 to mono PCM at the working rate. go-mp3 always emits
+// 16-bit stereo, so the channels are averaged rather than one being dropped:
+// background recordings are rarely identical across the pair, and taking one
+// side alone throws away half the noise.
+func openMP3(path string) (*wavFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	dec, err := mp3.NewDecoder(f)
+	if err != nil {
+		return nil, fmt.Errorf("mp3 decode: %w", err)
+	}
+	raw, err := io.ReadAll(dec)
+	if err != nil {
+		return nil, fmt.Errorf("read mp3: %w", err)
+	}
+	const bytesPerStereoFrame = 4
+	mono := make([]int16, len(raw)/bytesPerStereoFrame)
+	for i := range mono {
+		l := int16(binary.LittleEndian.Uint16(raw[i*bytesPerStereoFrame:]))
+		r := int16(binary.LittleEndian.Uint16(raw[i*bytesPerStereoFrame+2:]))
+		mono[i] = int16((int32(l) + int32(r)) / 2)
+	}
+	if len(mono) == 0 {
+		return nil, fmt.Errorf("decoded to no audio")
+	}
+	return inMemoryNoise(resampleTo(mono, dec.SampleRate(), sampleRate)), nil
+}
+
+func inMemoryNoise(pcm []int16) *wavFile {
+	w := &wavFile{pcm: pcm, rate: sampleRate}
+	w.overallRMS = w.sampleRMS()
+	return w
+}
+
+func resampleTo(pcm []int16, srcRate, dstRate int) []int16 {
+	if srcRate == dstRate {
+		return pcm
+	}
+	return mixer.NewPCMResampler(srcRate, dstRate).ResampleSamples(pcm)
 }
 
 func openWAV(path string) (*wavFile, error) {
@@ -302,17 +402,30 @@ func clamp(v float64) int16 {
 	return int16(math.Round(v))
 }
 
-func wavsIn(dir string) ([]string, error) {
+func wavsIn(dir string) ([]string, error) { return filesIn(dir, ".wav") }
+
+// noiseFilesIn lists the background recordings. MP3 is accepted alongside WAV
+// because that is the form most usable field recordings arrive in, and
+// converting them by hand is a step that gets skipped.
+func noiseFilesIn(dir string) ([]string, error) { return filesIn(dir, ".wav", ".mp3") }
+
+func filesIn(dir string, exts ...string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() || strings.ToLower(filepath.Ext(e.Name())) != ".wav" {
+		if e.IsDir() {
 			continue
 		}
-		out = append(out, filepath.Join(dir, e.Name()))
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		for _, want := range exts {
+			if ext == want {
+				out = append(out, filepath.Join(dir, e.Name()))
+				break
+			}
+		}
 	}
 	return out, nil
 }
