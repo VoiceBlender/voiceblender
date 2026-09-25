@@ -4,6 +4,15 @@ Base URL: `http://localhost:8080/v1`
 
 All responses are `Content-Type: application/json`.
 
+> **Authentication.** The HTTP surface — REST, the `/v1/vsi` event WebSocket,
+> `/v1/legs/websocket`, the `/v1/legs/moq` WebTransport endpoint, `/metrics`, and
+> pprof — has **no built-in credential authentication** (no API key, bearer
+> token, or session). Access is gated **solely** by the `ALLOWED_IPS` allowlist
+> and your network placement. Do not expose it to untrusted networks; front it
+> with a reverse proxy or gateway that enforces auth if you need per-caller
+> credentials. This is distinct from SIP-layer auth (digest challenge of inbound
+> INVITE/REGISTER) and outbound webhook signing (`WEBHOOK_SECRET`).
+
 ## Asynchronous endpoints
 
 Every endpoint that triggers a SIP request or response (e.g. INVITE, BYE, re-INVITE for hold/unhold, REFER for transfer, 100/180/183/200 for inbound calls) is **asynchronous**. The HTTP handler validates inputs synchronously (returning 4xx if anything fails up front) then queues the SIP work on a goroutine and returns **`202 Accepted`** with a progressive-form status string (e.g. `holding`, `unholding`, `hanging_up`, `early_media`, `ringing`, `answering`).
@@ -245,7 +254,7 @@ When the lead is enabled the buffer also compensates for clock drift. The produc
 
 VoiceBlender terminates calls to and from WhatsApp's SIP calling service. The signalling layer is SIP over TLS with HTTP Digest auth; the media layer is Opus over ICE + DTLS-SRTP (pion). Meta mandates both and does **not** support `re-INVITE`, so these operations return **409** for WhatsApp legs: `hold`, `unhold`, `transfer`.
 
-**Server prerequisites** (see README env var table):
+**Server prerequisites** (see [CONFIGURATION.md](CONFIGURATION.md)):
 - `SIP_TLS_PORT=5061`
 - `SIP_TLS_CERT` / `SIP_TLS_KEY` pointing at a **CA-signed** certificate (Meta rejects self-signed) whose SAN matches the public FQDN you registered with Meta.
 - Operator-side: the SIP endpoint must be registered via Meta's Graph API (`POST /{phone-number-id}/settings`). VoiceBlender does not perform this registration itself.
@@ -306,6 +315,82 @@ The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `
 - `POST /v1/legs/{id}/hold`
 - `DELETE /v1/legs/{id}/hold`
 - `POST /v1/legs/{id}/transfer`
+
+#### Limitations
+
+- **No re-INVITE.** Meta's SIP gateway rejects re-INVITE entirely, so `hold` / `unhold` / `transfer` return `409 Conflict` on WhatsApp legs. There is no workaround at the protocol level.
+- **No outbound DTMF.** `POST /v1/legs/{id}/dtmf` on a WhatsApp leg currently returns an error. Inbound (caller pressing keys) works.
+- **No early media.** Meta does not send `183 Session Progress` with SDP — outbound calls go straight from `ringing` to `connected`. Pre-answer audio (custom ringback) is not available.
+- **No session timers** (RFC 4028) and no AMD support — Meta's consumer call flow doesn't apply.
+- **TLS cert must be CA-signed.** Meta rejects self-signed certs. The cert's SAN must match the public FQDN you register with Meta and the value of `SIP_DOMAIN`.
+- **Public reachability required.** Meta's gateway needs to reach your `SIP_TLS_PORT` (default 5061) over TCP/TLS and your ICE candidates over UDP. NAT/firewalls must forward both.
+- **One business number per leg.** The `from` field carries the business phone, and Meta validates it server-side against the registered SIP server for that exact number.
+- **Codec is fixed to Opus 48 kHz mono.** No PCMU/PCMA fallback path.
+
+#### Provisioning a number on Meta
+
+Before any call works, the business phone number must be onboarded to WhatsApp Business Calling and your VoiceBlender host must be registered as its SIP server. VoiceBlender does not manage this — it is a one-time operator step performed via Meta's [Graph API](https://developers.facebook.com/docs/graph-api/).
+
+Prerequisites:
+
+1. A WhatsApp Business Account with the phone number already added and verified. The number must be enabled for Business Calling (currently a closed beta; enrolment via your Meta business representative).
+2. A long-lived Graph API access token with `whatsapp_business_management` permission.
+3. The phone number's **Phone Number ID** (visible in the Meta Business Manager UI or via `GET /me/phone_numbers`).
+4. A public FQDN that resolves to your VoiceBlender host and a CA-signed TLS certificate whose SAN matches it.
+
+Register VoiceBlender as the SIP server for the number:
+
+```sh
+curl -X POST "https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/settings" \
+  -H "Authorization: Bearer $META_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "calling": {
+      "status": "ENABLED",
+      "call_routing": {
+        "default": "SIP",
+        "fallback": "VOICEMAIL"
+      },
+      "sip": {
+        "status": "ENABLED",
+        "servers": [
+          { "hostname": "voiceblender.your-domain.example" }
+        ]
+      }
+    }
+  }'
+```
+
+Meta returns a **digest password** in the response; this is the secret you pass as `auth.password` on `POST /v1/legs`. Each phone number gets its own password — the digest username is the E.164 number with the leading `+` stripped.
+
+Verify the configuration was accepted:
+
+```sh
+curl -s "https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/settings?fields=calling" \
+  -H "Authorization: Bearer $META_TOKEN" | jq .
+```
+
+The response should show your hostname under `calling.sip.servers[]` and `calling.status: "ENABLED"`. Then set `SIP_TLS_PORT`, `SIP_TLS_CERT`, `SIP_TLS_KEY` and `SIP_DOMAIN` (the FQDN registered with Meta) and place a test call:
+
+```sh
+curl -X POST http://localhost:8080/v1/legs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "whatsapp",
+    "to": "+447900000000",
+    "from": "+441300000000",
+    "auth": { "password": "<meta-issued-digest-password>" },
+    "room_id": "wa-test"
+  }'
+```
+
+#### Troubleshooting
+
+- `403 SIP server X.X.X.X from INVITE does not match any SIP server configured for phone number ...` — `SIP_DOMAIN` doesn't match what's registered with Meta. Set it to the FQDN, not the IP, and confirm via the `GET /settings` query above.
+- `404 Not Found` on outbound — usually means the recipient phone number isn't a valid WhatsApp user, or the destination URI is malformed. Confirm the digits in `to` are the actual user's E.164 number.
+- Call connects but Meta sends BYE after 20 s with `Reason: ... not receiving any media for a long time` — your audio path (RTP/UDP egress) is being dropped before reaching Meta. Check firewall rules for outbound UDP from the `RTP_PORT_MIN`–`RTP_PORT_MAX` range and that ICE-srflx candidates are correct.
+- DTLS handshake stalls — Meta's offer is `setup:actpass` + `ice-lite`, and they don't initiate DTLS. VoiceBlender forces `setup:active` automatically; if you see `pcmedia: DTLS state state=connecting` for >5 s, run with `LOG_LEVEL=debug` and inspect pion's DTLS scope for the actual error.
+- Set `SIP_DEBUG=true` to log the full RFC 3261 wire form of every SIP message, including the auth-bearing retry after the 401/407 challenge — that's the most useful diagnostic for any signalling-layer issue.
 
 ---
 
@@ -4761,6 +4846,23 @@ in the API schema and returns `501 Not Implemented` when requested.
   registrar peer (full host:port, or host-only as a fallback for ephemeral
   source ports) is tagged with `trunk_id` on the `leg.ringing` event.
   No filtering — calls from unknown peers still ring as before.
+
+Trunk-matched outbound calls send `From` and `P-Asserted-Identity` in the
+trunk's AOR realm rather than `SIP_DOMAIN`, so the call claims the identity the
+registrar actually authenticated. An AOR port, if configured, is not carried
+into the From — `sip:alice@pbx.example.com:5070` yields a From host of
+`pbx.example.com`.
+
+> **Changed outcome.** This can flip how an upstream responds to calls that
+> previously went out under `SIP_DOMAIN`. A registrar that accepted them
+> un-challenged may now challenge them — which resolves on its own for a
+> correctly provisioned trunk, since the digest credentials are already
+> attached, but surfaces as a `401`/`407` failure for one with stale
+> credentials. It can flip the other way too: a registrar that rejected an
+> unknown From domain may now accept the call. There is no toggle. The only
+> way to keep `SIP_DOMAIN` on the From is to use a `from` that matches no
+> trunk AOR and no trunk AOR user-part, which also drops the trunk's
+> credentials and Route.
 
 ### POST /v1/sip/trunks
 
