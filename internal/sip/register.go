@@ -30,6 +30,9 @@ type RegisterDecision struct {
 	// MaxExpires), still subject to the 60s floor. 0 leaves the registrar's normal
 	// clamp in force.
 	MaxExpires int
+	// AppID, when set on an admitting decision, claims the binding for that
+	// application; its registration events and calls are scoped to it.
+	AppID string
 }
 
 // RegisterAttempt describes an inbound REGISTER surfaced to the decision
@@ -44,6 +47,9 @@ type RegisterAttempt struct {
 	UserAgent string
 	CallID    string
 	HasAuth   bool
+	// AppID is the app that already owns this AOR's binding, "" on first
+	// registration.
+	AppID string
 }
 
 // handleRegister processes inbound SIP REGISTER per RFC 3261 §10.3. A REGISTER
@@ -105,9 +111,9 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Authentication gate: verify a credentialed retry, or consult the client
 	// for a challenge/accept/reject decision. A 401/403 is sent inside when the
-	// REGISTER is not authorized to proceed. maxExpires (>0) caps the granted
-	// binding TTL for this REGISTER when the admitting decision requested it.
-	proceed, maxExpires := e.authorizeRegister(req, tx, aor)
+	// REGISTER is not authorized to proceed. grant carries the admitting
+	// decision's TTL cap and owning app_id.
+	proceed, grant := e.authorizeRegister(req, tx, aor)
 	if !proceed {
 		return
 	}
@@ -143,8 +149,8 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 			continue
 		}
 		granted := e.registrar.ClampExpires(expires)
-		if maxExpires > 0 && maxExpires < granted {
-			granted = maxExpires
+		if grant.MaxExpires > 0 && grant.MaxExpires < granted {
+			granted = grant.MaxExpires
 		}
 		if granted < 60 { // the 60s floor holds even against an explicit cap
 			granted = 60
@@ -156,6 +162,7 @@ func (e *Engine) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 			Transport:      transport,
 			UserAgent:      userAgent,
 			CallID:         callID,
+			AppID:          grant.AppID,
 			ExpiresAt:      now.Add(time.Duration(granted) * time.Second),
 			GrantedExpires: granted,
 		})
@@ -191,31 +198,37 @@ func (e *Engine) respondRegister(tx sip.ServerTransaction, req *sip.Request, sta
 
 // authorizeRegister applies the inbound-REGISTER auth gate. proceed is true
 // when the REGISTER may bind; otherwise it has already sent the appropriate 401
-// (challenge) or 4xx (reject/forbidden) response. maxExpires (>0) is the TTL cap
+// (challenge) or 4xx (reject/forbidden) response. grant (TTL cap, app_id) is
 // carried by the admitting decision — recovered from the pending challenge on a
 // credentialed retry, or taken directly from an accept decision. A credentialed
 // retry is verified against the issued challenge first; absent valid
 // credentials, the OnRegisterAttempt callback is consulted.
-func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, aor string) (proceed bool, maxExpires int) {
+func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, aor string) (proceed bool, grant AuthGrant) {
 	hasAuth := req.GetHeader("Authorization") != nil
 	if hasAuth {
-		switch res, _, override := e.VerifyInboundAuth(req, sip.REGISTER.String()); res {
+		switch res, _, g := e.VerifyInboundAuth(req, sip.REGISTER.String()); res {
 		case AuthValid:
-			return true, override
+			return true, g
 		case AuthInvalid:
 			e.respondRegister(tx, req, sip.StatusForbidden, "Forbidden", nil, nil)
-			return false, 0
+			return false, AuthGrant{}
 		}
 		// AuthNone (no live challenge matched) falls through to a fresh consult.
 	}
 
 	if e.onRegisterAttempt == nil {
-		return true, 0
+		return true, AuthGrant{}
 	}
 
 	contact := ""
+	ownerAppID := ""
 	if c := req.GetHeader("Contact"); c != nil {
 		contact = c.Value()
+		contactURI := ""
+		if uri, _, err := parseContactHeader(c); err == nil {
+			contactURI = uri.String()
+		}
+		ownerAppID = e.registrar.AppIDFor(aor, contactURI)
 	}
 	userAgent := ""
 	if ua := req.GetHeader("User-Agent"); ua != nil {
@@ -230,14 +243,16 @@ func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, a
 		UserAgent: userAgent,
 		CallID:    callIDOf(req),
 		HasAuth:   hasAuth,
+		AppID:     ownerAppID,
 	})
 
+	grant = AuthGrant{MaxExpires: decision.MaxExpires, AppID: decision.AppID}
 	switch decision.Kind {
 	case RegisterChallenge:
-		val := e.recordChallenge(callIDOf(req), decision.Challenge, decision.MaxExpires)
+		val := e.recordChallenge(callIDOf(req), decision.Challenge, grant)
 		e.respondRegister(tx, req, sip.StatusUnauthorized, "Unauthorized", nil,
 			[]sip.Header{sip.NewHeader("WWW-Authenticate", val)})
-		return false, 0
+		return false, AuthGrant{}
 	case RegisterReject:
 		code := decision.RejectCode
 		if code == 0 {
@@ -248,9 +263,9 @@ func (e *Engine) authorizeRegister(req *sip.Request, tx sip.ServerTransaction, a
 			reason = "Forbidden"
 		}
 		e.respondRegister(tx, req, code, reason, nil, nil)
-		return false, 0
+		return false, AuthGrant{}
 	default:
-		return true, decision.MaxExpires
+		return true, grant
 	}
 }
 

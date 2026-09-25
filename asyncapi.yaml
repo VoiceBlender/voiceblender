@@ -6597,6 +6597,8 @@ components:
                     type: string
                 max_expires:
                     type: integer
+                app_id:
+                    type: string
             required:
                 - id
         acceptTransferPayload:
@@ -6783,6 +6785,8 @@ components:
                         type: string
                 max_expires:
                     type: integer
+                app_id:
+                    type: string
             required:
                 - id
                 - realm
@@ -6807,6 +6811,8 @@ components:
                         type: string
                 max_expires:
                     type: integer
+                app_id:
+                    type: string
             required:
                 - id
                 - realm

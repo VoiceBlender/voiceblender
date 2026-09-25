@@ -240,6 +240,49 @@ func (r *Registrar) LookupAll(aor string) []Binding {
 	return out
 }
 
+// AppIDFor returns the app that owns the binding for aor+contact, falling back
+// to the app shared by every binding under aor. "" when unclaimed or mixed.
+func (r *Registrar) AppIDFor(aor, contact string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := r.aors[aor]
+	if contact != "" {
+		id := canonicalContactID(contact)
+		for _, b := range list {
+			if canonicalContactID(b.Contact) == id {
+				return b.AppID
+			}
+		}
+	}
+	shared := ""
+	for i, b := range list {
+		if i > 0 && b.AppID != shared {
+			return ""
+		}
+		shared = b.AppID
+	}
+	return shared
+}
+
+// LookupBySocket returns every binding whose REGISTER arrived from socket
+// (host:port). Order is not specified.
+func (r *Registrar) LookupBySocket(socket string) []Binding {
+	if socket == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []Binding
+	for _, list := range r.aors {
+		for _, b := range list {
+			if b.Socket == socket {
+				out = append(out, *b)
+			}
+		}
+	}
+	return out
+}
+
 // List returns every binding across all AORs. Order is not specified.
 func (r *Registrar) List() []Binding {
 	r.mu.RLock()

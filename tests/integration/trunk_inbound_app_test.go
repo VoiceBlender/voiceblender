@@ -38,9 +38,9 @@ func createActiveTrunk(t *testing.T, baseURL string, regPort int, aor, appID str
 	return id
 }
 
-// sendTrunkInvite sends an INVITE addressed to the given registered Contact
-// user from a 127.0.0.1 socket, which matches the fake registrar's host.
-func sendTrunkInvite(t *testing.T, cli *rawSIPClient, sipPort int, user string, extra ...sip.Header) {
+// sendRawInvite sends an INVITE addressed to user from cli's socket
+// (127.0.0.1, which also matches the fake registrar's host).
+func sendRawInvite(t *testing.T, cli *rawSIPClient, sipPort int, user string, extra ...sip.Header) {
 	t.Helper()
 	offerSDP := []byte(strings.Join([]string{
 		"v=0",
@@ -98,7 +98,7 @@ func TestTrunk_SIPRegister_InboundInheritsAppID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.user, func(t *testing.T) {
-			sendTrunkInvite(t, cli, inst.sipPort, tc.user, sip.NewHeader("X-App-ID", "spoofed"))
+			sendRawInvite(t, cli, inst.sipPort, tc.user, sip.NewHeader("X-App-ID", "spoofed"))
 
 			ev := inst.collector.waitForMatch(t, events.LegRinging, func(e events.Event) bool {
 				d, ok := e.Data.(*events.LegRingingData)

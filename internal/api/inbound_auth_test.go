@@ -101,7 +101,7 @@ func TestHandleRegisterAttempt_ChallengeDecision(t *testing.T) {
 
 	select {
 	case id := <-gotID:
-		if err := s.doChallengeRegistration(id, ChallengeRequest{Realm: "vb", Password: "pw", MaxExpires: 30}); err != nil {
+		if err := s.doChallengeRegistration(id, ChallengeRequest{Realm: "vb", Password: "pw", MaxExpires: 30, AppID: "acme"}); err != nil {
 			t.Fatalf("doChallengeRegistration: %v", err)
 		}
 	case <-time.After(time.Second):
@@ -118,6 +118,9 @@ func TestHandleRegisterAttempt_ChallengeDecision(t *testing.T) {
 		}
 		if r.d.MaxExpires != 30 {
 			t.Errorf("MaxExpires = %d, want 30", r.d.MaxExpires)
+		}
+		if r.d.AppID != "acme" {
+			t.Errorf("AppID = %q, want acme", r.d.AppID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("HandleRegisterAttempt did not return after decision")
@@ -139,7 +142,7 @@ func TestHandleRegisterAttempt_AcceptCarriesMaxExpires(t *testing.T) {
 
 	select {
 	case id := <-gotID:
-		if err := s.doAcceptRegistration(id, RegistrationAcceptRequest{MaxExpires: 45}); err != nil {
+		if err := s.doAcceptRegistration(id, RegistrationAcceptRequest{MaxExpires: 45, AppID: "acme"}); err != nil {
 			t.Fatalf("doAcceptRegistration: %v", err)
 		}
 	case <-time.After(time.Second):
@@ -153,6 +156,9 @@ func TestHandleRegisterAttempt_AcceptCarriesMaxExpires(t *testing.T) {
 		}
 		if d.MaxExpires != 45 {
 			t.Errorf("MaxExpires = %d, want 45", d.MaxExpires)
+		}
+		if d.AppID != "acme" {
+			t.Errorf("AppID = %q, want acme", d.AppID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("HandleRegisterAttempt did not return after decision")
@@ -194,5 +200,50 @@ func TestChallengeRequest_Validate(t *testing.T) {
 				t.Error("validate() = nil, want error")
 			}
 		})
+	}
+}
+
+// A REGISTER for a binding an app already owns is surfaced only to that app.
+func TestHandleRegisterAttempt_ScopedToOwner(t *testing.T) {
+	s := newAuthTestServer(50)
+	got := make(chan string, 1)
+	s.Bus.Subscribe(func(e events.Event) {
+		if e.Type == events.SIPRegistrationAttempt {
+			got <- e.Data.GetAppID()
+		}
+	})
+	a := sampleAttempt()
+	a.AppID = "acme"
+	s.HandleRegisterAttempt(a)
+	select {
+	case app := <-got:
+		if app != "acme" {
+			t.Errorf("attempt app_id = %q, want acme", app)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no registration_attempt event published")
+	}
+}
+
+func TestSharedAppID(t *testing.T) {
+	b := func(app string) sipmod.Binding { return sipmod.Binding{AppID: app} }
+	cases := []struct {
+		name     string
+		bindings []sipmod.Binding
+		want     string
+		wantOK   bool
+	}{
+		{"none", nil, "", false},
+		{"single", []sipmod.Binding{b("acme")}, "acme", true},
+		{"agreeing", []sipmod.Binding{b("acme"), b("acme")}, "acme", true},
+		{"disagreeing", []sipmod.Binding{b("acme"), b("other")}, "", false},
+		{"claimed and unclaimed", []sipmod.Binding{b("acme"), b("")}, "", false},
+		{"all unclaimed", []sipmod.Binding{b(""), b("")}, "", true},
+	}
+	for _, c := range cases {
+		got, ok := sharedAppID(c.bindings)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("%s: sharedAppID = (%q, %v), want (%q, %v)", c.name, got, ok, c.want, c.wantOK)
+		}
 	}
 }
