@@ -84,8 +84,6 @@ func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager
 	}
 }
 
-// SetComfortNoiseEnabled toggles mixer comfort-noise injection for rooms
-// created after this call. Set it once at startup, before serving.
 // SetDefaultFilters sets the server-default ingress filter chain. A leg that
 // specified its own chain (including an explicitly empty one) is unaffected.
 func (m *Manager) SetDefaultFilters(specs []audiofilter.Spec) {
@@ -101,6 +99,8 @@ func (m *Manager) DefaultFilters() []audiofilter.Spec {
 	return m.defaultFilters
 }
 
+// SetComfortNoiseEnabled toggles mixer comfort-noise injection for rooms
+// created after this call. Set it once at startup, before serving.
 func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,17 +109,30 @@ func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
 
 // applyRoomDefaults stamps manager-wide mixer settings onto a fresh room.
 // Call it before the room is reachable, and never under m.mu.
-func (m *Manager) applyRoomDefaults(r *Room) {
+func (m *Manager) applyRoomDefaults(r *Room, opts CreateOptions) {
 	m.mu.RLock()
 	enabled := m.comfortNoiseEnabled
 	filters := m.defaultFilters
 	m.mu.RUnlock()
+	if opts.ComfortNoise != nil {
+		enabled = *opts.ComfortNoise
+	}
 	r.mix.SetComfortNoise(enabled)
 	r.defaultFilters = filters
 	r.onChainReady = m.chainReadyHook()
 }
 
+// CreateOptions carries per-room overrides of manager-wide defaults.
+type CreateOptions struct {
+	// ComfortNoise overrides the manager default when non-nil.
+	ComfortNoise *bool
+}
+
 func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
+	return m.CreateWithOptions(id, appID, sampleRate, CreateOptions{})
+}
+
+func (m *Manager) CreateWithOptions(id, appID string, sampleRate int, opts CreateOptions) (*Room, error) {
 	if id == "" {
 		id = uuid.New().String()
 	}
@@ -128,7 +141,7 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 	// so the room is never reachable without its panic hook. A candidate that
 	// loses the exists-check below costs only an allocation.
 	r := NewRoom(id, appID, sampleRate, m.log)
-	m.applyRoomDefaults(r)
+	m.applyRoomDefaults(r, opts)
 	m.wireMixerPanicHook(r)
 
 	m.mu.Lock()
@@ -599,7 +612,7 @@ func (m *Manager) MoveLeg(fromRoomID, toRoomID, legID string) error {
 	created := false
 	if !ok {
 		candidate := NewRoom(toRoomID, "", fromRoom.SampleRate, m.log)
-		m.applyRoomDefaults(candidate)
+		m.applyRoomDefaults(candidate, CreateOptions{})
 		m.wireMixerPanicHook(candidate)
 
 		m.mu.Lock()

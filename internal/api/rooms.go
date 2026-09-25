@@ -9,6 +9,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
+	"github.com/VoiceBlender/voiceblender/internal/room"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -20,14 +21,14 @@ func (s *Server) doCreateRoom(req CreateRoomRequest) (RoomView, error) {
 	if !mixer.ValidSampleRate(rate) {
 		return RoomView{}, newAPIError(http.StatusBadRequest, "invalid sample_rate: must be 8000, 16000, or 48000")
 	}
-	room, err := s.RoomMgr.Create(req.ID, req.AppID, rate)
+	rm, err := s.RoomMgr.CreateWithOptions(req.ID, req.AppID, rate, room.CreateOptions{ComfortNoise: req.ComfortNoise})
 	if err != nil {
 		return RoomView{}, newAPIError(http.StatusConflict, "%s", err.Error())
 	}
 	if req.WebhookURL != "" {
-		s.Webhooks.SetRoomWebhook(room.ID, req.WebhookURL, req.WebhookSecret)
+		s.Webhooks.SetRoomWebhook(rm.ID, req.WebhookURL, req.WebhookSecret)
 	}
-	return RoomView{ID: room.ID, AppID: room.AppID, SampleRate: room.SampleRate, Participants: []LegView{}}, nil
+	return RoomView{ID: rm.ID, AppID: rm.AppID, SampleRate: rm.SampleRate, Participants: []LegView{}}, nil
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {

@@ -229,7 +229,7 @@ When the lead is enabled the buffer also compensates for clock drift. The produc
 
 **Sizing the lead.** Drift and jitter are separate problems and only one of them needs buffer. Drift is corrected during pauses, so it is absorbed at any lead down to a single frame — it does not need to be *stored*. Jitter does: a transport that goes quiet for N ms needs a lead of at least N ms, because there is nothing else to play. So size `WS_JITTER_BUFFER_MS` to the worst-case stall you expect from the transport and nothing more; the lead is added one-way latency on every call, which matters far more for a voice agent than for a recording.
 
-**Comfort noise:** `COMFORT_NOISE_ENABLED` (default `true`) injects low-level noise (~−75 dBFS) into otherwise silent mixer frames, so a quiet room does not sound like a dead line. Set it to `false` when downstream processing needs digital silence to stay digital.
+**Comfort noise:** `COMFORT_NOISE_ENABLED` (default `true`) injects low-level noise (~−75 dBFS) into otherwise silent mixer frames, so a quiet room does not sound like a dead line. Set it to `false` when downstream processing needs digital silence to stay digital, or override it for a single room with `comfort_noise` on `POST /v1/rooms`.
 
 **Response:** `201 Created` — Leg object (initially in `ringing` state)
 
@@ -2064,6 +2064,13 @@ Create a room.
 | `sample_rate` | integer | no | Mixer sample rate in Hz. Allowed values: `8000`, `16000`, `48000`. Default: `16000`. Higher rates preserve more audio fidelity but use proportionally more CPU and memory. |
 | `webhook_url` | string | no | Per-room webhook URL. Events for this room are routed exclusively to this URL instead of global webhooks. |
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-room webhook. |
+| `comfort_noise` | boolean | no | Inject low-level comfort noise (~−75 dBFS) into otherwise silent mixer frames for this room. Omit to use the server default (`COMFORT_NOISE_ENABLED`). Fixed for the room's lifetime. |
+
+Create a room that keeps digital silence silent, regardless of the server default:
+
+```json
+{ "id": "asr-room", "comfort_noise": false }
+```
 
 **Response:** `201 Created` — Room object (empty participants)
 

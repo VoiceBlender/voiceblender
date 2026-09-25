@@ -323,6 +323,7 @@ type CreateRoomRequest struct {
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 	AppID         string `json:"app_id,omitempty"`
 	SampleRate    int    `json:"sample_rate,omitempty"`
+	ComfortNoise  *bool  `json:"comfort_noise,omitempty"`
 }
 
 var createRoomRequestFields = map[string]FieldEnrichment{
@@ -331,6 +332,7 @@ var createRoomRequestFields = map[string]FieldEnrichment{
 	"webhook_secret": {Description: "HMAC-SHA256 signing secret for the per-room webhook."},
 	"app_id":         {Description: "Application identifier. Carried through to all events for this room. Use to filter the WebSocket event stream by app."},
 	"sample_rate":    {Description: "Mixer sample rate in Hz. Allowed values: 8000, 16000, 48000. Default: 16000.", Enum: []string{"8000", "16000", "48000"}, Default: 16000},
+	"comfort_noise":  {Description: "Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames for this room. Omit to use the server default (`COMFORT_NOISE_ENABLED`)."},
 }
 
 // RoomView is the JSON representation of a room.
