@@ -55,8 +55,9 @@ type LegRingingData struct {
 	OfferedCodecs []OfferedCodec    `json:"offered_codecs,omitempty"`
 	// TrunkID identifies the trunk (outbound SIP registration) that delivered
 	// the call. Set on inbound INVITEs whose source socket matches a known
-	// trunk's registrar; populated on outbound legs whose From matches a
-	// registered AOR. Empty otherwise.
+	// trunk's registrar (narrowed by Request-URI user and To when several
+	// share it); populated on outbound legs whose From matches a registered
+	// AOR. Empty otherwise.
 	TrunkID string `json:"trunk_id,omitempty"`
 	// SourceAddress is the host:port the INVITE actually arrived on
 	// (inbound legs only). Useful for diagnostics when the peer's Via /

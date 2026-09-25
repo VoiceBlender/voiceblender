@@ -3474,7 +3474,7 @@ The full machine-readable contract for the VSI WebSocket — every command, ever
 |-------|------|-------------|
 | `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
 
-Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a registered trunk inherit the trunk's `app_id`, which takes precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
 
 Events from untagged legs carry an empty `app_id` and are dropped by any non-empty filter — tag every leg an app cares about, or it will silently miss its own events.
 
@@ -4845,7 +4845,25 @@ in the API schema and returns `501 Not Implemented` when requested.
 - **Inbound**: any INVITE whose source socket matches a trunk's upstream
   registrar peer (full host:port, or host-only as a fallback for ephemeral
   source ports) is tagged with `trunk_id` on the `leg.ringing` event.
+  When several trunks share that peer, the Request-URI user (the trunk's
+  `contact_user`) and then the `To` URI (the trunk's AOR) pick between them.
+  If exactly one trunk matches and it has an `app_id`, the leg inherits it —
+  overriding any `X-App-ID` header — so `leg.ringing` and every later event
+  for the leg reach only that app's filtered event stream.
   No filtering — calls from unknown peers still ring as before.
+
+  ```json
+  {
+    "type": "leg.ringing",
+    "leg_id": "3a1c9e2b-5d4f-4c1a-9e2b-7a6c5d4f3e21",
+    "app_id": "acme",
+    "leg_type": "sip_inbound",
+    "from": "+15551230000",
+    "to": "alice",
+    "trunk_id": "7f5d39c6-2987-4643-9822-5c7ced9080e7",
+    "source_address": "203.0.113.10:5060"
+  }
+  ```
 
 Trunk-matched outbound calls send `From` and `P-Asserted-Identity` in the
 trunk's AOR realm rather than `SIP_DOMAIN`, so the call claims the identity the
@@ -5078,10 +5096,11 @@ endpoints. A malformed `outbound_proxy` is a `400`; a malformed
 `SIP_OUTBOUND_PROXY` fails startup.
 
 > **Inbound tagging caveat.** Inbound INVITEs are matched back to a trunk by the
-> peer socket they arrive on, which is the proxy once one is configured. Several
-> trunks behind the same proxy therefore cannot be told apart, and `trunk_id` on
-> `leg.ringing` may name any one of them. The tag is informational and gates
-> nothing.
+> peer socket they arrive on, which is the proxy once one is configured. Trunks
+> behind the same proxy are told apart by the Request-URI user and the `To` URI;
+> give each a distinct `contact_user` or AOR. When those still leave more than
+> one candidate, `trunk_id` on `leg.ringing` may name any one of them and the
+> leg does not inherit a trunk `app_id`.
 
 ### GET /v1/sip/trunks
 
