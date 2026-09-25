@@ -4011,6 +4011,9 @@ components:
                         - "16000"
                         - "48000"
                     default: 16000
+                comfort_noise:
+                    type: boolean
+                    description: Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames for this room. Omit to use the server default (`COMFORT_NOISE_ENABLED`).
             required:
                 - id
         CreateTrunkRequest:
