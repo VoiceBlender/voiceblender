@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 // fakeTrunk is a minimal Trunk implementation for manager tests.
@@ -14,6 +16,8 @@ type fakeTrunk struct {
 	host      string
 	port      int
 	transport string
+	contact   string
+	appID     string
 	stops     int
 	stopMu    sync.Mutex
 }
@@ -22,7 +26,8 @@ func (f *fakeTrunk) ID() string                        { return f.id }
 func (f *fakeTrunk) Type() TrunkType                   { return f.typ }
 func (f *fakeTrunk) AOR() string                       { return f.aor }
 func (f *fakeTrunk) PeerSocket() (string, int, string) { return f.host, f.port, f.transport }
-func (f *fakeTrunk) AppID() string                     { return "" }
+func (f *fakeTrunk) ContactUser() string               { return f.contact }
+func (f *fakeTrunk) AppID() string                     { return f.appID }
 func (f *fakeTrunk) Snapshot() TrunkView               { return TrunkView{ID: f.id, Type: f.typ} }
 func (f *fakeTrunk) Start(context.Context)             {}
 func (f *fakeTrunk) Stop(context.Context) error {
@@ -132,15 +137,9 @@ func TestTrunkManager_RefreshIndexAfterPeerSocketChange(t *testing.T) {
 	}
 }
 
-// TestTrunkManager_SharedPeerSocketIsAmbiguous documents a known limitation
-// rather than a desired behaviour: bySocket holds one trunk per socket, so two
-// trunks sharing a next hop — which is what a single SIP_OUTBOUND_PROXY across
-// several trunks produces — collapse to one entry. Inbound INVITEs from that
-// socket are then tagged with an arbitrary one of them.
-//
-// trunk_id on inbound legs is informational, never a gate, so this degrades
-// attribution and nothing else. Discriminating correctly needs AOR-based
-// matching on the request's To/Request-URI, which is not what this index does.
+// TestTrunkManager_SharedPeerSocketIsAmbiguous pins that the socket index
+// alone cannot tell apart trunks sharing a next hop; inbound attribution uses
+// LookupInbound instead.
 func TestTrunkManager_SharedPeerSocketIsAmbiguous(t *testing.T) {
 	m := NewTrunkManager()
 	a := &fakeTrunk{id: "t1", typ: TrunkTypeSIPRegister, aor: "sip:alice@vb.test", host: "10.0.0.9", port: 5060}
@@ -163,4 +162,72 @@ func TestTrunkManager_SharedPeerSocketIsAmbiguous(t *testing.T) {
 	if m.LookupByFromAOR("sip:alice@vb.test") != a {
 		t.Error("a shared peer socket must not affect lookups by AOR")
 	}
+}
+
+func TestTrunkManager_LookupInbound(t *testing.T) {
+	alice := &fakeTrunk{id: "t1", typ: TrunkTypeSIPRegister, aor: "sip:alice@vb.test", contact: "alice", host: "10.0.0.9", port: 5060, appID: "app-a"}
+	bob := &fakeTrunk{id: "t2", typ: TrunkTypeSIPRegister, aor: "sip:bob@vb.test", contact: "bob-c", host: "10.0.0.9", port: 5060, appID: "app-b"}
+	carol := &fakeTrunk{id: "t3", typ: TrunkTypeSIPRegister, aor: "sip:carol@other.test", contact: "carol", host: "10.0.0.20", port: 5060}
+
+	m := NewTrunkManager()
+	m.Add(alice)
+	m.Add(bob)
+	m.Add(carol)
+
+	tests := []struct {
+		name       string
+		host       string
+		port       int
+		reqUser    string
+		to         sip.Uri
+		want       Trunk
+		wantUnique bool
+	}{
+		{"single trunk on socket", "10.0.0.20", 5060, "", sip.Uri{}, carol, true},
+		{"single trunk host-only fallback", "10.0.0.20", 40000, "", sip.Uri{}, carol, true},
+		{"shared socket by request user", "10.0.0.9", 5060, "bob-c", sip.Uri{User: "someone", Host: "x.test"}, bob, true},
+		{"shared socket by To AOR", "10.0.0.9", 5060, "unknown", sip.Uri{Scheme: "sip", User: "alice", Host: "VB.test"}, alice, true},
+		{"shared socket by To user", "10.0.0.9", 5060, "", sip.Uri{User: "bob", Host: "carrier.test"}, bob, true},
+		{"shared socket host-only fallback", "10.0.0.9", 41000, "alice", sip.Uri{}, alice, true},
+		{"unknown host", "10.0.0.99", 5060, "alice", sip.Uri{}, nil, false},
+		{"empty host", "", 5060, "alice", sip.Uri{}, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, unique := m.LookupInbound(tc.host, tc.port, tc.reqUser, tc.to)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			if unique != tc.wantUnique {
+				t.Fatalf("unique = %v, want %v", unique, tc.wantUnique)
+			}
+		})
+	}
+
+	t.Run("shared socket without discriminator is not unique", func(t *testing.T) {
+		got, unique := m.LookupInbound("10.0.0.9", 5060, "nobody", sip.Uri{User: "nobody", Host: "x.test"})
+		if got != alice && got != bob {
+			t.Fatalf("got %v, want one of the shared trunks", got)
+		}
+		if unique {
+			t.Fatal("unique = true for an undecidable shared socket")
+		}
+	})
+
+	t.Run("exact port beats host-only", func(t *testing.T) {
+		m := NewTrunkManager()
+		a := &fakeTrunk{id: "a", aor: "sip:a@vb.test", host: "10.0.0.30", port: 5060}
+		b := &fakeTrunk{id: "b", aor: "sip:b@vb.test", host: "10.0.0.30", port: 5080}
+		m.Add(a)
+		m.Add(b)
+		if got, unique := m.LookupInbound("10.0.0.30", 5080, "", sip.Uri{}); got != b || !unique {
+			t.Fatalf("got %v unique=%v, want %v unique=true", got, unique, b)
+		}
+	})
 }

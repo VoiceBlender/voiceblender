@@ -258,6 +258,9 @@ func (r *OutboundRegistration) Type() TrunkType { return TrunkTypeSIPRegister }
 func (r *OutboundRegistration) AOR() string     { return CanonicalizeAOR(r.aor) }
 func (r *OutboundRegistration) AppID() string   { return r.appID }
 
+// ContactUser reads lock-free: contactUser is assigned once in the constructor.
+func (r *OutboundRegistration) ContactUser() string { return r.contactUser }
+
 func (r *OutboundRegistration) PeerSocket() (host string, port int, transport string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

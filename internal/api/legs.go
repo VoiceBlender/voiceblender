@@ -1481,10 +1481,35 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		}
 	}
 
+	// Tag the call with a trunk_id when the INVITE's source socket matches
+	// a known outbound trunk's registrar.
+	var trunkID, trunkAppID string
+	sourceAddr := call.Request.Source()
+	if sourceAddr != "" {
+		host, portStr, err := net.SplitHostPort(sourceAddr)
+		if err == nil {
+			port, _ := strconv.Atoi(portStr)
+			var to sip.Uri
+			if h := call.Request.To(); h != nil {
+				to = h.Address
+			}
+			if t, unique := s.SIPEngine.Trunks().LookupInbound(host, port, call.Request.Recipient.User, to); t != nil {
+				trunkID = t.ID()
+				// The trunk's app_id overrides X-App-ID, which the upstream controls.
+				if unique {
+					trunkAppID = t.AppID()
+				}
+			}
+		}
+	}
+
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
-	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
+	if trunkAppID != "" {
+		l.SetAppID(trunkAppID)
+	} else if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
 		l.SetAppID(appID)
 	}
+	l.SetTrunkID(trunkID)
 	s.LegMgr.Add(l)
 
 	// Apply server-default jitter buffer to inbound legs. No per-call
@@ -1493,21 +1518,6 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	l.SetJitterBuffer(s.Config.SIPJitterBufferMs, s.Config.SIPJitterBufferMaxMs)
 
 	s.applyLegWebhook(l, call)
-
-	// Tag the call with a trunk_id when the INVITE's source socket matches
-	// a known outbound trunk's registrar — informational, not a gate.
-	var trunkID string
-	sourceAddr := call.Request.Source()
-	if sourceAddr != "" {
-		host, portStr, err := net.SplitHostPort(sourceAddr)
-		if err == nil {
-			port, _ := strconv.Atoi(portStr)
-			if t := s.SIPEngine.Trunks().LookupByPeerSocket(host, port); t != nil {
-				trunkID = t.ID()
-			}
-		}
-	}
-	l.SetTrunkID(trunkID)
 
 	s.Bus.Publish(events.LegRinging, &events.LegRingingData{
 		LegScope:      events.LegScope{LegID: l.ID(), AppID: l.AppID()},

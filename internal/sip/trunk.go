@@ -42,6 +42,9 @@ type Trunk interface {
 	// inbound INVITEs delivered by this trunk. Returns empty host with port 0
 	// when not yet known.
 	PeerSocket() (host string, port int, transport string)
+	// ContactUser is the user part of the Contact this trunk registers; the
+	// upstream addresses inbound INVITEs to it. Empty when not applicable.
+	ContactUser() string
 	AppID() string
 	Snapshot() TrunkView
 	// Start launches the background lifecycle (REGISTER + refresh for

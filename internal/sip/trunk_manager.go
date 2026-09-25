@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 // TrunkManager is the concurrent registry of all SIP trunks (sip_register
@@ -149,6 +151,67 @@ func (m *TrunkManager) LookupByPeerSocket(host string, port int) Trunk {
 		}
 	}
 	return nil
+}
+
+// LookupInbound resolves the trunk that delivered an inbound INVITE. Trunks
+// whose peer socket matches host:port (or host alone, for ephemeral source
+// ports) are narrowed by the Request-URI user against each trunk's Contact
+// user, then by the To URI against each trunk's AOR. unique is false when
+// more than one trunk survives; the returned trunk is then arbitrary.
+func (m *TrunkManager) LookupInbound(host string, port int, requestUser string, to sip.Uri) (t Trunk, unique bool) {
+	if host == "" {
+		return nil, false
+	}
+	m.mu.RLock()
+	var exact, hostOnly []Trunk
+	for _, cand := range m.byID {
+		h, p, _ := cand.PeerSocket()
+		if h == "" || !strings.EqualFold(h, host) {
+			continue
+		}
+		if p == port {
+			exact = append(exact, cand)
+		} else {
+			hostOnly = append(hostOnly, cand)
+		}
+	}
+	m.mu.RUnlock()
+
+	cands := exact
+	if len(cands) == 0 {
+		cands = hostOnly
+	}
+	if len(cands) == 0 {
+		return nil, false
+	}
+	if requestUser != "" {
+		cands = narrowTrunks(cands, func(c Trunk) bool { return c.ContactUser() == requestUser })
+	}
+	if aor := CanonicalizeAOR(to); aor != "" {
+		cands = narrowTrunks(cands, func(c Trunk) bool { return c.AOR() == aor })
+	}
+	if to.User != "" {
+		cands = narrowTrunks(cands, func(c Trunk) bool { return aorUser(c.AOR()) == to.User })
+	}
+	return cands[0], len(cands) == 1
+}
+
+// narrowTrunks keeps the trunks matching keep, or returns cands unchanged when
+// none match so a weaker signal never discards every candidate.
+func narrowTrunks(cands []Trunk, keep func(Trunk) bool) []Trunk {
+	if len(cands) < 2 {
+		return cands
+	}
+	var out []Trunk
+	for _, c := range cands {
+		if keep(c) {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return cands
+	}
+	return out
 }
 
 // RefreshIndex re-indexes the trunk under its current AOR and peer socket.
