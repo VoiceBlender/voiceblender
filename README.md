@@ -123,19 +123,18 @@ curl -X DELETE $API/legs/$LEG
 Watch the call progress (`leg.ringing`, `leg.connected`, `tts.finished`, `leg.disconnected`, ...)
 by setting `WEBHOOK_URL` or connecting a WebSocket client to `ws://localhost:8080/v1/vsi`.
 
-## Networking
+## Noise Suppression
 
-| Port | Protocol | Purpose | Setting |
-|------|----------|---------|---------|
-| 8080 | TCP | REST API, VSI and WebSocket legs | `HTTP_ADDR` |
-| 5060 | UDP (+TCP) | SIP | `SIP_PORT`, `SIP_TCP_ENABLED` |
-| 5061 | TCP | SIP over TLS, required for WhatsApp (when set) | `SIP_TLS_PORT` |
-| 10000-20000 | UDP | RTP media | `RTP_PORT_MIN`, `RTP_PORT_MAX` |
-| 8443 | UDP | MoQ / WebTransport (when enabled) | `MOQ_LISTEN_ADDR` |
+Every leg can run built-in noise suppression (`denoise`), so a caller in a car, a café or on a
+noisy trunk reaches everyone else, the recording, STT and the AI agent already cleaned up.
 
-SIP binds to `127.0.0.1` by default -- set `SIP_BIND_IP` to a reachable address. Behind NAT or
-in Docker, set `SIP_EXTERNAL_IP` (SIP/RTP) and `WEBRTC_EXTERNAL_IPS` (WebRTC ICE) to the public
-address. See [CONFIGURATION.md](CONFIGURATION.md).
+- **RNNoise model, pure Go** -- via [rnnoise-go](https://github.com/VoiceBlender/rnnoise-go); no cgo, no external service, no per-minute cost
+- **Native rate** -- runs at the call's own 8, 16 or 48 kHz, with no extra resampling
+- **Per leg or server-wide** -- set `filters` on a leg, or `AUDIO_FILTERS=denoise` as the default
+- **Live toggle** -- switch it on or off mid-call; suppression ramps in over about a second
+
+Denoise can be chained with `bandpass`, `gain` and voice effects -- see
+[Audio filters](API.md#audio-filters).
 
 ## Typical Workflow
 
