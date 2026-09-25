@@ -21,6 +21,10 @@
 6. **Update `CONFIGURATION.md`** — If any environment variable was added, removed, renamed, or had its default or behaviour changed in `internal/config/config.go`, update the env var table in `CONFIGURATION.md` in the repo root. That table is the single source of truth for configuration docs — `README.md` only links to it and carries no env var table of its own. Every variable the server reads must have a row with its real default and a description; keep the row next to the related variables rather than appending to the end.
 
 7. **Update README.md** — If new features were added, update the relevant sections in `README.md`. Do not add environment variable tables back into `README.md` — configuration belongs in `CONFIGURATION.md` (see above).
+   - `README.md` is a landing page, not a reference. Keep it between **200 and 300 lines**; check with `wc -l README.md` after editing.
+   - A new feature gets **one line** in the Features list — no env var names, endpoint paths, RFC details or caveats. Those belong in `API.md` / `CONFIGURATION.md`, linked from the README if needed.
+   - Do not add per-endpoint route listings, request/response bodies, provisioning guides or troubleshooting to the README. If a README change would push it past 300 lines, move detail into `API.md` instead.
+   - The architecture diagram is `docs/images/architecture.png`, with its editable source in `docs/images/architecture.svg`. Update both together when legs, core components or integrations change.
 
 8. **Update `voiceblender.env.example`** — If any environment variable was added, removed, renamed, or had its default changed in `internal/config/config.go`, update `voiceblender.env.example` in the repo root to match. Every env var the server reads must appear in the example file with its real default value; secrets/empty defaults are shown as empty assignments. The example file is committed; the actual `voiceblender.env` is not.
 
