@@ -1,6 +1,8 @@
 package room
 
 import (
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
+	"io"
 	"log/slog"
 	"sync"
 
@@ -28,6 +30,20 @@ type Room struct {
 	// by mixer participant ID ("<legID>#<streamID>"). A stream's leg need not
 	// itself be a participant here. Guarded by r.mu.
 	legStreams map[string]*legStream
+
+	// legFilterReaders[legID] is the live filter chain on that leg's ingress,
+	// kept so the chain can be changed mid-call. Guarded by r.mu, in step with
+	// legParts.
+	legFilterReaders map[string]*audiofilter.Reader
+
+	// onChainReady fires when a leg's chain is built, so observers can attach
+	// at the only moment that is correct for both a join and a move.
+	onChainReady func(legID string, obs ChainObserver)
+
+	// defaultFilters is the ingress chain for legs that did not choose their
+	// own. A leg distinguishes "unset" (nil) from "explicitly none" (empty),
+	// so an empty chain is honoured rather than replaced by this default.
+	defaultFilters []audiofilter.Spec
 
 	bridgeRefs   int  // synthetic bridge participants keeping the mixer alive
 	mixerRunning bool // tracks whether r.mix is currently started
@@ -80,9 +96,33 @@ func (r *Room) AddLegWithRole(l leg.Leg, role string) {
 	r.syncMixerLocked()
 }
 
+// mediaRateNotifier is implemented by legs whose media can change sample rate
+// mid-call — today the SIP leg, via codec renegotiation on a re-INVITE. Legs
+// whose rate is fixed for their lifetime simply do not implement it.
+type mediaRateNotifier interface {
+	SetOnMediaRateChange(fn func(streamID string, rate int))
+}
+
+// watchRateChanges asks a leg to report a mid-call rate change so the room can
+// resize what it built for the old rate. The rebuild runs on its own goroutine:
+// the callback fires from the leg's negotiation path, which must not block on
+// the room lock, and the SIP transaction it belongs to must not wait for a
+// mixer rebuild.
+func (r *Room) watchRateChanges(l leg.Leg) {
+	n, ok := l.(mediaRateNotifier)
+	if !ok {
+		return
+	}
+	legID := l.ID()
+	n.SetOnMediaRateChange(func(streamID string, rate int) {
+		go r.rebuildForRateChange(legID, streamID)
+	})
+}
+
 func (r *Room) addLegLocked(l leg.Leg) {
 	r.participants[l.ID()] = l
 	l.SetRoomID(r.ID)
+	r.watchRateChanges(l)
 
 	reader := l.AudioReader()
 	writer := l.AudioWriter()
@@ -94,7 +134,7 @@ func (r *Room) addLegLocked(l leg.Leg) {
 		legRate := l.SampleRate()
 		mixRate := r.SampleRate
 		p := r.mix.AddParticipant(l.ID(),
-			mixer.NewResampleReader(reader, legRate, mixRate),
+			r.ingressReader(l.ID(), reader, legRate, mixRate, r.legFilters(l)),
 			mixer.NewResampleWriter(writer, mixRate, legRate),
 		)
 		// The leg's egress pipe survives a MoveLeg, so a stale loop's recover
@@ -110,6 +150,166 @@ func (r *Room) addLegLocked(l leg.Leg) {
 			r.mix.SetParticipantDeaf(l.ID(), true)
 		}
 	}
+}
+
+// rebuildForRateChange routes a stream's rate change to whichever participant
+// carries it. A leg's primary stream is the leg participant; every other stream
+// has one of its own, and the two are sized from different rates.
+func (r *Room) rebuildForRateChange(legID, streamID string) {
+	if r.RebuildLegStreamMedia(legID, streamID) {
+		return
+	}
+	r.RebuildLegMedia(legID)
+}
+
+// RebuildLegMedia re-wires a leg's mixer participant after its media changed
+// shape mid-call, which today means a re-INVITE that renegotiated a codec at a
+// different sample rate. The resamplers and the filter chain were sized for the
+// old rate and would otherwise play the leg back at the wrong speed.
+//
+// What must survive the rebuild: the chain that is actually running (not the
+// leg's configured one, which may differ by a mid-call change), and its
+// observers — voice activity and answering-machine detection read the leg
+// through them, and a silently dropped observer is a detector that never fires
+// again.
+//
+// Reports whether a participant was rebuilt.
+func (r *Room) RebuildLegMedia(legID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	l, ok := r.participants[legID]
+	if !ok {
+		return false
+	}
+	old := r.legFilterReaders[legID]
+	specs := r.legFilters(l)
+	var observers map[string]io.Writer
+	if old != nil {
+		specs = old.Filters()
+		observers = old.Observers()
+	}
+
+	// Drop the old participant first: its read loop holds the chain that is
+	// about to be replaced, and two loops on one leg's reader would race for
+	// frames.
+	r.mix.RemoveParticipant(legID)
+	delete(r.legParts, legID)
+	delete(r.legFilterReaders, legID)
+	if old != nil {
+		// Releases the stages, and with them any denoise kernel state. The
+		// leg's own source is deliberately left open — it is the same reader
+		// the new chain reads from.
+		old.Close()
+	}
+
+	reader, writer := l.AudioReader(), l.AudioWriter()
+	if reader == nil || writer == nil {
+		return false
+	}
+	legRate, mixRate := l.SampleRate(), r.SampleRate
+	p := r.mix.AddParticipant(legID,
+		r.ingressReader(legID, reader, legRate, mixRate, specs),
+		mixer.NewResampleWriter(writer, mixRate, legRate),
+	)
+	p.MarkOwnerClosesEgress()
+	r.legParts[legID] = p
+	if rd := r.legFilterReaders[legID]; rd != nil {
+		for k, w := range observers {
+			rd.SetObserver(k, w)
+		}
+	}
+	if l.IsMuted() {
+		r.mix.SetParticipantMuted(legID, true)
+	}
+	if l.IsDeaf() {
+		r.mix.SetParticipantDeaf(legID, true)
+	}
+	r.applyRoutingLocked()
+	r.syncMixerLocked()
+
+	r.log.Info("leg media rebuilt for a new sample rate",
+		"room_id", r.ID, "leg_id", legID, "leg_rate", legRate, "room_rate", mixRate,
+		"filters", len(specs))
+	return true
+}
+
+// legFilters is the leg's own chain when it chose one, else the room default.
+// nil means "did not choose"; a non-nil empty slice means "explicitly none".
+func (r *Room) legFilters(l leg.Leg) []audiofilter.Spec {
+	if f := l.Filters(); f != nil {
+		return f
+	}
+	return r.defaultFilters
+}
+
+// ingressReader wraps a leg's audio with its filter chain, which also performs
+// the leg-to-room rate conversion. Filtering is ingress-only: every leg cleans
+// its own contribution, so a call has both directions covered without running a
+// speech enhancer over a mix of several talkers.
+//
+// A chain that fails to build costs filtering, never the leg: audio still flows
+// through the plain resampler.
+//
+// A leg with no filters gets a chain too, empty. It is transparent and costs
+// nothing -- an empty chain benchmarks identical to the plain resampler and
+// allocates less -- and without it a leg that started unfiltered would have
+// nothing for SetLegFilters to change, so filters could never be turned on
+// mid-call for the legs most likely to want them.
+func (r *Room) ingressReader(legID string, src io.Reader, legRate, mixRate int, specs []audiofilter.Spec) io.Reader {
+	rd, err := audiofilter.Build(src, legRate, mixRate, specs)
+	if err != nil {
+		r.log.Error("audio filter chain failed to build; leg runs unfiltered",
+			"leg_id", legID, "error", err)
+		return mixer.NewResampleReader(src, legRate, mixRate)
+	}
+	if r.legFilterReaders == nil {
+		r.legFilterReaders = map[string]*audiofilter.Reader{}
+	}
+	r.legFilterReaders[legID] = rd
+	if r.onChainReady != nil {
+		r.onChainReady(legID, rd)
+	}
+	return rd
+}
+
+// SetLegFilters replaces a leg's ingress chain while the call is up. Returns
+// false when the leg has no chain here — it is not in this room, or its audio
+// never reached the mixer.
+func (r *Room) SetLegFilters(legID string, specs []audiofilter.Spec) (bool, error) {
+	r.mu.RLock()
+	rd := r.legFilterReaders[legID]
+	r.mu.RUnlock()
+	if rd == nil {
+		return false, nil
+	}
+	return true, rd.SetFilters(specs)
+}
+
+// SetLegAudioObserver attaches a writer that receives the leg's audio after
+// filtering — the point voice activity detection wants, since upstream of the
+// chain it would score the noise the chain removes. Returns false when the leg
+// has no chain here.
+func (r *Room) SetLegAudioObserver(legID, key string, w io.Writer) bool {
+	r.mu.RLock()
+	rd := r.legFilterReaders[legID]
+	r.mu.RUnlock()
+	if rd == nil {
+		return false
+	}
+	rd.SetObserver(key, w)
+	return true
+}
+
+// LegFilters reports the chain currently running for a leg in this room.
+func (r *Room) LegFilters(legID string) ([]audiofilter.Spec, bool) {
+	r.mu.RLock()
+	rd := r.legFilterReaders[legID]
+	r.mu.RUnlock()
+	if rd == nil {
+		return nil, false
+	}
+	return rd.Filters(), true
 }
 
 // DetachLeg removes a leg from the room and returns it.
@@ -142,9 +342,15 @@ func (r *Room) RemoveLeg(legID string) {
 
 func (r *Room) removeLegLocked(l leg.Leg) {
 	l.SetRoomID("")
+	// Stop rebuilding for a room the leg has left: the next room installs its
+	// own callback when the leg joins.
+	if n, ok := l.(mediaRateNotifier); ok {
+		n.SetOnMediaRateChange(nil)
+	}
 	delete(r.participants, l.ID())
 	delete(r.legParts, l.ID())
 	r.mix.RemoveParticipant(l.ID())
+	delete(r.legFilterReaders, l.ID())
 	// Streams of this leg that are mixed here go with it. Streams it parked in
 	// another room are that room's business and are left alone.
 	for pid, ls := range r.legStreams {

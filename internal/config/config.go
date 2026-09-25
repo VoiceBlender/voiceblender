@@ -121,9 +121,15 @@ type Config struct {
 	// SIPOutboundProxy is the default next hop for outbound REGISTERs and
 	// INVITEs, overridden per-trunk and per-leg by `outbound_proxy`. Validated
 	// at startup; stored raw because this package does not import sipgo.
-	SIPOutboundProxy       string
-	VSIEventBufferSize     int
-	DefaultSampleRate      int
+	SIPOutboundProxy   string
+	VSIEventBufferSize int
+	DefaultSampleRate  int
+
+	// AudioFilters is the server-default ingress filter chain for new legs,
+	// as an ordered list ("bandpass:low_hz=300,denoise"). Kept raw here and
+	// parsed at startup, where an unusable value can be reported rather than
+	// silently dropped. A per-leg `filters` field overrides it.
+	AudioFilters           string
 	SpeechDetectionEnabled bool
 
 	// Codecs is the engine's supported codec list, ordered by preference. Used
@@ -247,6 +253,7 @@ func Load() Config {
 		SIPOutboundProxy:       os.Getenv("SIP_OUTBOUND_PROXY"),
 		VSIEventBufferSize:     vsiBufferSize(envInt("VSI_EVENT_BUFFER_SIZE", 256)),
 		DefaultSampleRate:      defaultRate,
+		AudioFilters:           os.Getenv("AUDIO_FILTERS"),
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
 
 		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),

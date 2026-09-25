@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"net/http"
 	"strings"
@@ -108,6 +109,8 @@ func (l *panicLeg) IsDeaf() bool                           { return false }
 func (l *panicLeg) SetDeaf(bool)                           {}
 func (l *panicLeg) Role() string                           { return "" }
 func (l *panicLeg) SetRole(string)                         {}
+func (l *panicLeg) Filters() []audiofilter.Spec            { return nil }
+func (l *panicLeg) SetFilters([]audiofilter.Spec)          {}
 func (l *panicLeg) SetSpeakingTap(io.Writer)               {}
 func (l *panicLeg) ClearSpeakingTap()                      {}
 func (l *panicLeg) IsHeld() bool                           { return false }

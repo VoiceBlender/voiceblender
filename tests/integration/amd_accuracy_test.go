@@ -489,3 +489,18 @@ func pcmToBytes(samples []int16) []byte {
 	}
 	return out
 }
+
+// noisyHumanCorpora are the clean human greetings mixed with real background
+// noise by `make gen-noisy-greetings`. They are all still human, so the
+// expected verdict does not change — what changes is how hard it is to reach.
+//
+// They are deliberately not fed to runAccuracyTest: that enforces a 60%
+// accuracy floor calibrated for the clean corpora, and these score near zero
+// unfiltered by design. TestAMD_NoisyAccuracy_Denoised reports them instead,
+// with the unfiltered and denoised numbers side by side.
+var noisyHumanCorpora = []string{
+	"human-busy-city-15db",
+	"human-busy-city-5db",
+	"human-office-15db",
+	"human-office-5db",
+}

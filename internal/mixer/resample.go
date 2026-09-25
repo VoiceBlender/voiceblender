@@ -89,6 +89,32 @@ func (r *PCMResampler) ResampleSamples(in []int16) []int16 {
 	return out
 }
 
+// ResampleInto is ResampleSamples without the per-call allocation: the result
+// is written into dst, which is grown only when it is too small. Callers must
+// assign the result back, since dst may be reallocated.
+//
+// A nil receiver returns in unchanged and leaves dst alone, so the returned
+// slice may alias in; callers that keep dst in a reusable field must not store
+// the result of a passthrough call there.
+func (r *PCMResampler) ResampleInto(dst, in []int16) []int16 {
+	if r == nil || len(in) == 0 {
+		return in
+	}
+	fin := r.scratchIn(len(in))
+	for i, s := range in {
+		fin[i] = float64(s) / 32768.0
+	}
+	fout := r.process(fin)
+	if cap(dst) < len(fout) {
+		dst = make([]int16, len(fout))
+	}
+	dst = dst[:len(fout)]
+	for i, s := range fout {
+		dst[i] = clampToInt16(s)
+	}
+	return dst
+}
+
 // ResampleBytes converts a mono 16-bit little-endian PCM buffer to the
 // destination rate, returning a new buffer. The input must hold a whole number
 // of samples; a trailing odd byte is dropped. A nil receiver returns p

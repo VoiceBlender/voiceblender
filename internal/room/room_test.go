@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -19,11 +20,13 @@ type mockLeg struct {
 	state          leg.LegState
 	roomID         string
 	role           string
+	filters        []audiofilter.Spec
 	muted          bool
 	deaf           bool
 	acceptDTMF     bool
 	reader         io.Reader
 	writer         io.Writer
+	sampleRate     int // 0 = the 16 kHz default
 	createdAt      time.Time
 	disconnectDone atomic.Bool
 	panicOnHangup  bool
@@ -41,10 +44,15 @@ func newMockLeg(id string) *mockLeg {
 	}
 }
 
-func (m *mockLeg) ID() string                                   { return m.id }
-func (m *mockLeg) Type() leg.LegType                            { return m.legType }
-func (m *mockLeg) State() leg.LegState                          { return m.state }
-func (m *mockLeg) SampleRate() int                              { return 16000 }
+func (m *mockLeg) ID() string          { return m.id }
+func (m *mockLeg) Type() leg.LegType   { return m.legType }
+func (m *mockLeg) State() leg.LegState { return m.state }
+func (m *mockLeg) SampleRate() int {
+	if m.sampleRate != 0 {
+		return m.sampleRate
+	}
+	return 16000
+}
 func (m *mockLeg) AudioReader() io.Reader                       { return m.reader }
 func (m *mockLeg) AudioWriter() io.Writer                       { return m.writer }
 func (m *mockLeg) OnDTMF(func(digit rune))                      {}
@@ -65,6 +73,8 @@ func (m *mockLeg) AppID() string                          { return "" }
 func (m *mockLeg) SetAppID(string)                        {}
 func (m *mockLeg) Role() string                           { return m.role }
 func (m *mockLeg) SetRole(r string)                       { m.role = r }
+func (m *mockLeg) Filters() []audiofilter.Spec            { return m.filters }
+func (m *mockLeg) SetFilters(f []audiofilter.Spec)        { m.filters = f }
 func (m *mockLeg) IsMuted() bool                          { return m.muted }
 func (m *mockLeg) SetMuted(v bool)                        { m.muted = v }
 func (m *mockLeg) IsDeaf() bool                           { return m.deaf }

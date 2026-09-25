@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/jitter"
@@ -73,10 +74,13 @@ type mediaStream struct {
 	amrnbMode         int
 	amrnbModeSet      string
 
-	encoder   codec.Encoder
-	decoder   codec.Decoder
 	inFrames  chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
+
+	// liveCodec is what the media loops actually run on. It is replaced as one
+	// value when a re-INVITE renegotiates the codec, so the loops never read a
+	// half-applied change. See renegotiate.go.
+	liveCodec atomic.Pointer[liveCodec]
 
 	// Optional ingress jitter buffer. When non-nil, readLoop pushes decoded PCM
 	// into jb keyed by RTP sequence number, and popLoop drains jb at a fixed
@@ -642,14 +646,33 @@ func (l *SIPLeg) closeAllStreams() {
 	}
 }
 
-// startAcceptedStreams brings up the media pipeline for every stream that the
-// answer accepted and that is not already running.
+// startAcceptedStreams brings up the media pipeline for every stream the answer
+// accepted. A stream that is already running is re-pointed at whatever the
+// latest offer/answer settled on rather than skipped: a re-INVITE may change
+// the codec or its bitrate, and leaving the old encoder in place would mean
+// answering "yes, G.722" while still sending PCMU.
 func (l *SIPLeg) startAcceptedStreams() {
+	type moved struct {
+		streamID string
+		rate     int
+	}
+	var rateChanges []moved
 	for _, s := range l.audioStreams() {
-		if s.rtpSess == nil || s.encoder != nil || s.decoder != nil {
+		if s.rtpSess == nil {
 			continue
 		}
-		l.setupStreamMedia(s)
+		if s.live() == nil {
+			l.setupStreamMedia(s)
+			continue
+		}
+		if rate, changed := l.renegotiateStreamMedia(s); changed {
+			rateChanges = append(rateChanges, moved{s.id, rate})
+		}
+	}
+	// Outside the stream walk, and with no lock held: the room rebuilds its
+	// resamplers and filter chain from here.
+	for _, m := range rateChanges {
+		l.notifyRateChange(m.streamID, m.rate)
 	}
 }
 

@@ -236,14 +236,14 @@ func TestDoAnswerLeg_RejectedRequestStoresNothing(t *testing.T) {
 	// apiMockLeg is neither a SIP nor a WhatsApp leg, so answering it fails.
 	s.LegMgr.Add(&apiMockLeg{id: "leg-1", createdAt: time.Now()})
 
-	if err := s.doAnswerLeg("leg-1", nil, "", nil, events.CustomData(`{"order":"A-1"}`)); err == nil {
+	if err := s.doAnswerLeg("leg-1", nil, "", nil, events.CustomData(`{"order":"A-1"}`), nil); err == nil {
 		t.Fatal("unanswerable leg accepted")
 	}
 	if got := s.Bus.CustomData.Leg("leg-1"); got != nil {
 		t.Fatalf("stored on a failed precondition: %s", got)
 	}
 
-	if err := s.doAnswerLeg("missing", nil, "", nil, events.CustomData(`{"a":1}`)); err == nil {
+	if err := s.doAnswerLeg("missing", nil, "", nil, events.CustomData(`{"a":1}`), nil); err == nil {
 		t.Fatal("unknown leg accepted")
 	}
 	if got := s.Bus.CustomData.Leg("missing"); got != nil {
@@ -252,7 +252,7 @@ func TestDoAnswerLeg_RejectedRequestStoresNothing(t *testing.T) {
 
 	// Oversize is rejected before anything else runs.
 	s.Config.CustomDataMaxBytes = 4
-	err := s.doAnswerLeg("leg-1", nil, "", nil, events.CustomData(`{"a":1}`))
+	err := s.doAnswerLeg("leg-1", nil, "", nil, events.CustomData(`{"a":1}`), nil)
 	if ae, ok := err.(*apiError); !ok || ae.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %#v", err)
 	}

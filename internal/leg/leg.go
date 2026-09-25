@@ -3,6 +3,7 @@ package leg
 import (
 	"context"
 	"errors"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"math"
 	"sync"
@@ -101,6 +102,11 @@ type Leg interface {
 	// Empty string means unroled (full mesh).
 	Role() string
 	SetRole(role string)
+	// Filters is the leg's audio filter chain, applied to audio arriving from
+	// this leg before it reaches the room mixer. SetFilters must be called
+	// before the leg joins a room.
+	Filters() []audiofilter.Spec
+	SetFilters(f []audiofilter.Spec)
 	SetSpeakingTap(w io.Writer)
 	ClearSpeakingTap()
 	IsHeld() bool

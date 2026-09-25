@@ -103,6 +103,7 @@ var routeToVSICommand = map[string]string{
 	"Post /legs/{id}/early-media":                     "leg_early_media",
 	"Post /legs/{id}/ring":                            "leg_ring",
 	"Post /legs/{id}/challenge":                       "challenge_leg",
+	"Put /legs/{id}/filters":                          "set_leg_filters",
 	"Put /legs/{id}/custom-data":                      "set_leg_custom_data",
 	"Delete /legs/{id}/custom-data":                   "delete_leg_custom_data",
 	"Post /legs/{id}/mute":                            "mute_leg",

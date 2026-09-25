@@ -4,6 +4,10 @@
 package api
 
 import (
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
+	// Registers the "denoise" filter so its name is known to request
+	// validation even before the kernel is installed.
+	_ "github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -129,8 +133,47 @@ func NewServer(
 		s.publishDisconnect(l, reason)
 	})
 
+	// Wired here rather than in main so that every construction path — the
+	// server binary, tests, an embedder — applies the configured default.
+	roomMgr.SetDefaultFilters(parseDefaultFilters(cfg.AudioFilters, log))
+
+	// Voice activity detection observes a leg's audio after its filter chain.
+	// Attaching here rather than when the detector starts is what makes that
+	// hold: the detector is created before the leg joins a room, and a room
+	// move builds a new chain that would otherwise have no observer.
+	roomMgr.SetOnLegChainReady(func(legID string, obs room.ChainObserver) {
+		s.speakMu.Lock()
+		det := s.speakDets[legID]
+		s.speakMu.Unlock()
+		if det == nil {
+			return
+		}
+		obs.SetObserver(observerVAD, det)
+		// Drop the pre-chain fallback, or the detector scores every frame
+		// twice — once raw, once filtered.
+		if l, ok := s.LegMgr.Get(legID); ok {
+			l.ClearSpeakingTap()
+		}
+	})
+
 	s.routes()
 	return s
+}
+
+// parseDefaultFilters reads AUDIO_FILTERS. A bad value must not stop the
+// server, but it is reported rather than silently dropped: running unfiltered
+// because of a typo is otherwise invisible.
+func parseDefaultFilters(raw string, log *slog.Logger) []audiofilter.Spec {
+	specs, err := audiofilter.Parse(raw)
+	if err != nil {
+		log.Error("AUDIO_FILTERS is not usable; no default audio filtering will be applied",
+			"value", raw, "error", err, "known_filters", audiofilter.Names())
+		return nil
+	}
+	if len(specs) > 0 {
+		log.Info("default audio filter chain configured", "filters", audiofilter.Format(specs))
+	}
+	return audiofilter.Resolve(specs)
 }
 
 func (s *Server) routes() {
@@ -226,6 +269,7 @@ func (s *Server) routes() {
 		r.Put("/rooms/{id}/routing", s.setRoomRouting)
 		r.Patch("/rooms/{id}/routing", s.updateRoomRouting)
 		r.Patch("/legs/{id}/role", s.setLegRole)
+		r.Put("/legs/{id}/filters", s.setLegFilters)
 		r.Put("/legs/{id}/custom-data", s.setLegCustomData)
 		r.Delete("/legs/{id}/custom-data", s.deleteLegCustomData)
 

@@ -53,6 +53,7 @@ type CreateLegRequest struct {
 	AcceptDTMF      *bool             `json:"accept_dtmf,omitempty"`      // if false, leg will not receive DTMF broadcast from other legs in the same room
 	AppID           string            `json:"app_id,omitempty"`           // application identifier for event stream filtering
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	Filters         []FilterSpec      `json:"filters,omitempty"`          // ingress audio processing chain; omit for the server default, send [] for none
 	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
 
 	// CustomData is opaque application JSON echoed on the leg view and in
@@ -138,6 +139,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"accept_dtmf":      {Description: "If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.", Default: true},
 	"app_id":           {Description: "Application identifier. Carried through to all events for this leg. Use to filter the WebSocket event stream by app."},
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"filters":          {Description: "Ordered audio processing chain applied to audio arriving from this leg, before it reaches the room mixer and therefore before other legs, recordings and speech-to-text see it. Each entry names a built-in filter and may carry parameters. Omit the field to use the server default (AUDIO_FILTERS env var); send an empty array for no processing. Filters run in the order given, and corrective filters should precede effects. Known filters: denoise (background noise suppression), bandpass (low_hz, high_hz), gain (volume, -8 to 8 in ~3 dB steps), pitch (shifts the voice up or down in semitones; semitones, mix), robotic (metallic voice effect that keeps speech easy to follow; pitch_hz, depth, mix), vocoder (a stronger, fully synthetic robot voice that is noticeably harder to understand; carrier_hz, bands, mix). Noise suppression removes background noise, not competing speech."},
 	"custom_data":      {Description: customDataDescription},
 	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
 	"streams":          {Description: "SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead."},
@@ -150,8 +152,9 @@ var createLegRequestFields = map[string]FieldEnrichment{
 
 // AnswerLegRequest is the optional request body for POST /v1/legs/{id}/answer.
 type AnswerLegRequest struct {
-	SpeechDetection *bool  `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
-	Codec           string `json:"codec,omitempty"`            // explicit codec to use (must be in the remote offer)
+	SpeechDetection *bool        `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
+	Filters         []FilterSpec `json:"filters,omitempty"`          // ingress audio processing chain; omit for the server default, send [] for none
+	Codec           string       `json:"codec,omitempty"`            // explicit codec to use (must be in the remote offer)
 
 	// Streams routes the caller's additional audio streams to rooms once the
 	// answer is negotiated. Positional: entry i addresses the i-th accepted
@@ -175,6 +178,7 @@ var answerLegStreamFields = map[string]FieldEnrichment{
 
 var answerLegRequestFields = map[string]FieldEnrichment{
 	"speech_detection": {Description: "If true, emit speaking.started and speaking.stopped events for this leg. If false, suppress them. Omit to use the server default (SPEECH_DETECTION_ENABLED env var, default false)."},
+	"filters":          {Description: "Ordered audio processing chain applied to audio arriving from this leg, before it reaches the room mixer and therefore before other legs, recordings and speech-to-text see it. Each entry names a built-in filter and may carry parameters. Omit the field to use the server default (AUDIO_FILTERS env var); send an empty array for no processing. Filters run in the order given, and corrective filters should precede effects. Known filters: denoise (background noise suppression), bandpass (low_hz, high_hz), gain (volume, -8 to 8 in ~3 dB steps). Noise suppression removes background noise, not competing speech."},
 	"codec":            {Description: "Explicit codec for the answer SDP. Must appear in the remote offer's offered_codecs list. Omit to use the server's default preference order.", Enum: CodecsItemEnum},
 	"custom_data":      {Description: customDataMutableDescription},
 	"streams":          {Description: "Rooms for the caller's additional audio streams, applied once the answer is negotiated. Positional: entry i addresses the i-th accepted stream beyond the primary, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. Use POST /v1/legs/{id}/streams/{streamId}/room to re-route a stream later."},
@@ -292,6 +296,7 @@ type LegView struct {
 	SIPHeaders map[string]string `json:"sip_headers,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	CustomData events.CustomData `json:"custom_data,omitempty"`
+	Filters    []FilterSpec      `json:"filters,omitempty"`
 }
 
 var legViewFields = map[string]FieldEnrichment{
@@ -308,6 +313,7 @@ var legViewFields = map[string]FieldEnrichment{
 	"sip_headers": {Description: "Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
 	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time."},
 	"custom_data": {Description: customDataDescription},
+	"filters":     {Description: "The ingress audio filter chain that actually runs for this leg, after applying the server default and dropping any filter whose backing resource is unavailable. Absent when no processing is applied. Compare with the `filters` sent at creation to see what was dropped."},
 }
 
 // CreateRoomRequest is the request body for POST /v1/rooms.
@@ -405,8 +411,8 @@ var legStreamViewFields = map[string]FieldEnrichment{
 	"state":             {Description: "Negotiation state.", Enum: []string{"pending", "active", "removed"}},
 	"direction":         {Description: "Negotiated media direction from this server's point of view.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}},
 	"desired_direction": {Description: "Direction requested by the application. Survives hold/unhold, unlike the negotiated direction.", Enum: []string{"sendrecv", "sendonly", "recvonly", "inactive"}},
-	"codec":             {Description: "Codec negotiated for this stream. Streams on one leg may use different codecs."},
-	"sample_rate":       {Description: "Native sample rate of the stream's codec, in Hz."},
+	"codec":             {Description: "Codec the stream's media pipeline is actually running, which after a mid-call re-INVITE is the renegotiated one. Streams on one leg may use different codecs."},
+	"sample_rate":       {Description: "Native sample rate of the codec the stream is running, in Hz. It follows a mid-call codec renegotiation."},
 	"local_port":        {Description: "Local RTP port. Each stream binds its own port; a shared transport is undefined without BUNDLE (RFC 9143)."},
 	"remote_addr":       {Description: "Remote RTP address media is currently sent to."},
 	"label":             {Description: "The stream's a=label value (RFC 4574), for correlating it with external metadata."},
@@ -673,6 +679,26 @@ var playbackRequestFields = map[string]FieldEnrichment{
 	"mime_type": {Description: "MIME type (e.g. audio/wav). Required when using url."},
 	"repeat":    {Description: "Number of times to repeat playback (url only)", Default: 0},
 	"volume":    {Description: "Volume adjustment in dB (-8 to 8)", Minimum: intPtr(-8), Maximum: intPtr(8), Default: 0},
+}
+
+// SetLegFiltersRequest is the request body for PUT /v1/legs/{id}/filters.
+type SetLegFiltersRequest struct {
+	Filters []FilterSpec `json:"filters"`
+}
+
+var setLegFiltersRequestFields = map[string]FieldEnrichment{
+	"filters": {Description: "The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise, which runs at the rate the leg and room already agreed on and so adds no resampling. A change that did alter the chain's working rate rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block."},
+}
+
+// FilterSpec is one entry in a leg's audio filter chain.
+type FilterSpec struct {
+	Type   string             `json:"type"`
+	Params map[string]float64 `json:"params,omitempty"`
+}
+
+var filterSpecFields = map[string]FieldEnrichment{
+	"type":   {Description: "Filter name.", Enum: []string{"bandpass", "denoise", "gain", "pitch", "robotic", "vocoder"}},
+	"params": {Description: "Filter parameters as name/value pairs. Unknown names are ignored; out-of-range values are rejected. bandpass takes low_hz (default 300) and high_hz (default 3400); gain takes volume (-8 to 8, ~3 dB per step); pitch takes semitones (-12 to 12, default -5) and mix (0-1, default 1); robotic takes pitch_hz (50-500, default 110), depth (0-0.95, default 0.75) and mix (0-1, default 1); vocoder takes carrier_hz (40-400, default 110), bands (4-32, default 20) and mix (0-1, default 1); denoise takes none."},
 }
 
 // VolumeRequest is the request body for PATCH /v1/legs/{id}/play/{playbackID}.
@@ -949,6 +975,8 @@ func SchemaEnrichments() map[string]FieldEnrichment {
 	collect("DeleteLegRequest", deleteLegRequestFields)
 	collect("SIPAuth", sipAuthFields)
 	collect("AMDParams", amdParamsFields)
+	collect("FilterSpec", filterSpecFields)
+	collect("SetLegFiltersRequest", setLegFiltersRequestFields)
 	collect("LiveKitParams", liveKitParamsFields)
 	collect("LiveKitPermissions", liveKitPermissionsFields)
 	collect("TransferRequest", transferRequestFields)

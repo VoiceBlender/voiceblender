@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
 	"log/slog"
 	"net/http"
 	"os"
@@ -72,6 +73,16 @@ func main() {
 	legMgr := leg.NewManager()
 	roomMgr := room.NewManager(legMgr, bus, log)
 	roomMgr.SetComfortNoiseEnabled(cfg.ComfortNoiseEnabled)
+
+	// A kernel that will not start must not stop the server or refuse calls:
+	// legs simply run without the filters that depend on it, and the leg view
+	// reports the chain that actually runs.
+	if err := denoise.Install(); err != nil {
+		log.Error("audio denoise unavailable; legs requesting it will run unfiltered", "error", err)
+	} else {
+		log.Info("audio denoise ready")
+	}
+
 	log.Info("mixer audio",
 		"comfort_noise", cfg.ComfortNoiseEnabled,
 		"ws_jitter_buffer_ms", cfg.WSJitterBufferMs,
@@ -231,6 +242,7 @@ func main() {
 
 	// Prometheus metrics collector
 	metricsCollector := metrics.New(bus)
+	metricsCollector.SetDenoiseStatsSource(denoise.Stats)
 	webhookReg.SetMetricsObserver(metricsCollector)
 
 	// HTTP API server

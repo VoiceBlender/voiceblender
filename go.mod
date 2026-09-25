@@ -7,6 +7,7 @@ require (
 	cloud.google.com/go/texttospeech v1.16.0
 	github.com/VoiceBlender/goamr-nb v1.0.0
 	github.com/VoiceBlender/goamr-wb v1.1.1
+	github.com/VoiceBlender/rnnoise-go v0.3.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
@@ -137,7 +138,7 @@ require (
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect

@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs clean vet test test-integration test-all download-greetings gen-human-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -47,6 +47,15 @@ download-greetings:
 	@echo "  frankj-dob:     $$(ls $(GREETINGS_DIR)/frankj-dob | wc -l) files"
 	@echo "  gavvllaw:       $$(ls $(GREETINGS_DIR)/gavvllaw | wc -l) files"
 	@echo "  chetaniitbhilai: $$(ls $(GREETINGS_DIR)/chetaniitbhilai | wc -l) files"
+
+# gen-noisy-greetings mixes the clean human greetings with real background
+# noise, drawing each segment from the middle of a recording so there is
+# definitely noise present. NOISE_DIR holds the source recordings (.wav or
+# .mp3); anything not already 16 kHz mono is converted on load.
+NOISE_DIR ?= tests/data/noise
+gen-noisy-greetings:
+	@test -d $(NOISE_DIR) || (echo "Error: $(NOISE_DIR) not found; set NOISE_DIR" && exit 1)
+	go run ./cmd/gen-noisy-greetings -human $(GREETINGS_DIR)/human -noise $(NOISE_DIR) -out $(GREETINGS_DIR)
 
 gen-human-greetings:
 	@test -n "$$ELEVENLABS_API_KEY" || (echo "Error: ELEVENLABS_API_KEY is required" && exit 1)

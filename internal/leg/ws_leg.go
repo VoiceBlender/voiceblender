@@ -3,6 +3,7 @@ package leg
 import (
 	"context"
 	"fmt"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"log/slog"
 	"sync"
@@ -31,6 +32,7 @@ type WebSocketLeg struct {
 	roomID     string
 	appID      string
 	role       string
+	filters    []audiofilter.Spec
 	muted      atomic.Bool
 	deaf       atomic.Bool
 	acceptDTMF atomic.Bool
@@ -173,6 +175,22 @@ func (l *WebSocketLeg) SetRole(r string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.role = r
+}
+
+// Filters is the leg's resolved audio filter chain, applied to audio arriving
+// from this leg before it reaches the room mixer.
+func (l *WebSocketLeg) Filters() []audiofilter.Spec {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.filters
+}
+
+// SetFilters must be called before the leg joins a room: the chain is built
+// when the mixer participant is created.
+func (l *WebSocketLeg) SetFilters(f []audiofilter.Spec) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.filters = f
 }
 
 func (l *WebSocketLeg) IsMuted() bool        { return l.muted.Load() }

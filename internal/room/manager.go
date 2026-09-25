@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
+	"io"
 	"log/slog"
 	"runtime/debug"
 	"sync"
@@ -29,10 +31,21 @@ type Manager struct {
 	// SetComfortNoiseEnabled before any room exists.
 	comfortNoiseEnabled bool
 
+	// defaultFilters is the ingress audio filter chain applied to legs that
+	// did not choose their own. Set it before any room exists.
+	defaultFilters []audiofilter.Spec
+
 	// hookMu guards onLegPanicTeardown alone — never take it and m.mu together,
 	// and never call the hook under either.
 	hookMu             sync.Mutex
 	onLegPanicTeardown func(l leg.Leg, roomID, reason string)
+
+	// onLegChainReady fires whenever a leg's filter chain is built — on join
+	// and again on every room move. Anything that observes a leg's filtered
+	// audio must attach here rather than once at setup, or it attaches before
+	// the chain exists (the detector is started before the leg joins) and goes
+	// deaf after a move (the new room builds a new chain).
+	onLegChainReady func(legID string, obs ChainObserver)
 }
 
 // legPanicReason reaches the wire as cdr.reason on leg.disconnected, so it is
@@ -73,6 +86,21 @@ func NewManager(legMgr *leg.Manager, bus *events.Bus, log *slog.Logger) *Manager
 
 // SetComfortNoiseEnabled toggles mixer comfort-noise injection for rooms
 // created after this call. Set it once at startup, before serving.
+// SetDefaultFilters sets the server-default ingress filter chain. A leg that
+// specified its own chain (including an explicitly empty one) is unaffected.
+func (m *Manager) SetDefaultFilters(specs []audiofilter.Spec) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultFilters = specs
+}
+
+// DefaultFilters returns the server-default ingress chain.
+func (m *Manager) DefaultFilters() []audiofilter.Spec {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.defaultFilters
+}
+
 func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -84,8 +112,11 @@ func (m *Manager) SetComfortNoiseEnabled(enabled bool) {
 func (m *Manager) applyRoomDefaults(r *Room) {
 	m.mu.RLock()
 	enabled := m.comfortNoiseEnabled
+	filters := m.defaultFilters
 	m.mu.RUnlock()
 	r.mix.SetComfortNoise(enabled)
+	r.defaultFilters = filters
+	r.onChainReady = m.chainReadyHook()
 }
 
 func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
@@ -122,6 +153,24 @@ func (m *Manager) Create(id, appID string, sampleRate int) (*Room, error) {
 // Teardown is dispatched to its own goroutine because the hook fires inline on
 // the panicking mixer goroutine, and WhatsAppLeg.Hangup can block on a
 // non-responsive peer.
+// ChainObserver is the slice of a leg's live filter chain that observers need.
+type ChainObserver interface {
+	SetObserver(key string, w io.Writer)
+}
+
+// SetOnLegChainReady registers the hook. Set it before any room exists.
+func (m *Manager) SetOnLegChainReady(fn func(legID string, obs ChainObserver)) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	m.onLegChainReady = fn
+}
+
+func (m *Manager) chainReadyHook() func(string, ChainObserver) {
+	m.hookMu.Lock()
+	defer m.hookMu.Unlock()
+	return m.onLegChainReady
+}
+
 func (m *Manager) wireMixerPanicHook(r *Room) {
 	roomID := r.ID
 	r.Mixer().SetOnParticipantPanic(func(p *mixer.Participant, loop string) {

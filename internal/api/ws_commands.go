@@ -34,6 +34,12 @@ type earlyMediaPayload struct {
 }
 
 // setLegCustomDataPayload carries the inputs for set_leg_custom_data.
+// setLegFiltersPayload carries the inputs for set_leg_filters.
+type setLegFiltersPayload struct {
+	ID      string       `json:"id"`
+	Filters []FilterSpec `json:"filters"`
+}
+
 type setLegCustomDataPayload struct {
 	ID         string            `json:"id"`
 	CustomData events.CustomData `json:"custom_data"`
@@ -101,6 +107,7 @@ type answerLegPayload struct {
 	Codec           string            `json:"codec,omitempty"`
 	Streams         []AnswerLegStream `json:"streams,omitempty"`
 	CustomData      events.CustomData `json:"custom_data,omitempty"`
+	Filters         []FilterSpec      `json:"filters,omitempty"`
 }
 
 // deleteLegPayload carries the inputs for delete_leg.
@@ -352,7 +359,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		if !s.wsParsePayload(lw, msg, &p) {
 			return
 		}
-		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams, p.CustomData); err != nil {
+		if err := s.doAnswerLeg(p.ID, p.SpeechDetection, p.Codec, p.Streams, p.CustomData, p.Filters); err != nil {
 			s.wsCommandError(lw, msg, err)
 			return
 		}
@@ -662,6 +669,18 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		view, err := s.doUpdateRoomRouting(p.RoomID, RoomRoutingUpdateRequest{Updates: p.Updates})
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, view)
+
+	case "set_leg_filters":
+		var p setLegFiltersPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		view, err := s.doSetLegFilters(p.ID, SetLegFiltersRequest{Filters: p.Filters})
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

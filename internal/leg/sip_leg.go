@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"io"
 	"log/slog"
 	"math"
@@ -49,6 +50,7 @@ type SIPLeg struct {
 	roomID        string
 	appID         string
 	role          string
+	filters       []audiofilter.Spec
 	muted         atomic.Bool
 	deaf          atomic.Bool
 	acceptDTMF    atomic.Bool
@@ -59,8 +61,12 @@ type SIPLeg struct {
 	connectedOnce sync.Once     // ensures connectedCh is closed exactly once
 	onDTMF        func(digit rune)
 	onRTPTimeout  func() // called when no RTP received within timeout
-	onHold        func() // called when leg is put on hold
-	onUnhold      func() // called when leg is taken off hold
+	// onMediaRateChange fires when a mid-call renegotiation changes the rate of
+	// the leg's primary audio, so the room can resize what it built for the old
+	// one. See renegotiate.go.
+	onMediaRateChange func(streamID string, rate int)
+	onHold            func() // called when leg is put on hold
+	onUnhold          func() // called when leg is taken off hold
 
 	callID    string      // SIP Call-ID for re-INVITE matching
 	held      bool        // true when call is on hold
@@ -490,6 +496,22 @@ func (l *SIPLeg) SetRole(r string) {
 	l.role = r
 }
 
+// Filters is the leg's resolved audio filter chain, applied to audio arriving
+// from this leg before it reaches the room mixer.
+func (l *SIPLeg) Filters() []audiofilter.Spec {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.filters
+}
+
+// SetFilters must be called before the leg joins a room: the chain is built
+// when the mixer participant is created.
+func (l *SIPLeg) SetFilters(f []audiofilter.Spec) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.filters = f
+}
+
 func (l *SIPLeg) IsMuted() bool             { return l.muted.Load() }
 func (l *SIPLeg) SetMuted(m bool)           { l.muted.Store(m) }
 func (l *SIPLeg) AcceptDTMF() bool          { return l.acceptDTMF.Load() }
@@ -908,33 +930,15 @@ func (l *SIPLeg) configureDTMF(s *mediaStream, remoteSDP *sipmod.SDPMedia) {
 }
 
 func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
-	var err error
-	if s.codecType == codec.CodecAMRWB {
-		s.encoder, err = codec.NewAMRWBEncoder(s.amrwbMode, s.amrwbOctetAligned)
-		if err != nil {
-			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
-			return
-		}
-		s.decoder = codec.NewAMRWBDecoder(s.amrwbOctetAligned)
-	} else if s.codecType == codec.CodecAMRNB {
-		s.encoder, err = codec.NewAMRNBEncoder(s.amrnbMode, s.amrnbOctetAligned)
-		if err != nil {
-			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
-			return
-		}
-		s.decoder = codec.NewAMRNBDecoder(s.amrnbOctetAligned)
-	} else {
-		s.encoder, err = codec.NewEncoder(s.codecType)
-		if err != nil {
-			l.log.Error("create encoder failed", "codec", s.codecType, "error", err)
-			return
-		}
-		s.decoder, err = codec.NewDecoder(s.codecType)
-		if err != nil {
-			l.log.Error("create decoder failed", "codec", s.codecType, "error", err)
-			return
-		}
+	enc, dec, err := l.buildCodecPair(s)
+	if err != nil {
+		l.log.Error("create codec failed", "codec", s.codecType, "error", err)
+		return
 	}
+	// Publish what the loops will run on before they start. The codec lives
+	// only here: a second copy on the stream would drift from it the first time
+	// a re-INVITE renegotiated.
+	s.liveCodec.Store(snapshotCodec(s, enc, dec))
 
 	s.inFrames = make(chan []byte, 5)
 	s.outFrames = make(chan []byte, 5)
@@ -1147,9 +1151,17 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 			continue
 		}
 
+		// The live configuration is re-read per packet so a mid-call codec
+		// renegotiation takes effect on the very next packet, and so the PT
+		// test and the decode below always come from the same value.
+		lc := s.live()
+		if lc == nil {
+			continue
+		}
+
 		// Skip packets that don't match the negotiated codec PT (e.g.
 		// comfort noise, keep-alive, or other non-audio PTs).
-		if pkt.PayloadType != s.rtpPT {
+		if pkt.PayloadType != lc.rtpPT {
 			continue
 		}
 
@@ -1163,14 +1175,14 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		l.updateRTPJitter(s, pkt)
 
 		// Decode audio payload
-		samples, err := s.decoder.Decode(pkt.Payload)
+		samples, err := lc.decoder.Decode(pkt.Payload)
 		if err != nil {
 			head := pkt.Payload
 			if len(head) > 8 {
 				head = head[:8]
 			}
 			l.log.Debug("readLoop: decode error", "error", err,
-				"pt", pkt.PayloadType, "expected_pt", s.rtpPT,
+				"pt", pkt.PayloadType, "expected_pt", lc.rtpPT,
 				"payload_len", len(pkt.Payload), "payload_head", fmt.Sprintf("%x", head),
 				"seq", pkt.SequenceNumber)
 			continue
@@ -1290,40 +1302,36 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 
 	const ptime = 20 * time.Millisecond
 
-	// PCM frame size at codec's native sample rate: samples per 20ms × 2 bytes
-	pcmFrameBytes := s.codecType.SampleRate() / 50 * 2
-
-	// RTP timestamp increment is codec-dependent: clockRate * 20ms
-	samplesPerFrame := uint32(s.codecType.ClockRate() / 50)
-
-	// DTMF (RFC 4733) send PT and per-packet duration units, at the negotiated
-	// telephone-event clock rate (16kHz for AMR-WB, else 8kHz).
-	telephoneEventPT := s.dtmfSendPT
-	if telephoneEventPT == 0 {
-		telephoneEventPT = 101
-	}
-	dtmfSamplesPerPkt := uint16(s.dtmfClockRate / 50)
-	if dtmfSamplesPerPkt == 0 {
-		dtmfSamplesPerPkt = 160
-	}
-
 	ticker := time.NewTicker(ptime)
 	defer ticker.Stop()
 
 	ssrc := rand.Uint32()
 	var seqNum uint16
 	var timestamp uint32
-	silenceFrame := make([]byte, pcmFrameBytes)
-	pt := s.rtpPT
-	if s.rtpSendPT != 0 {
-		pt = s.rtpSendPT
-	}
+	// silenceFrame is rebuilt whenever the frame size changes, which a
+	// renegotiation to a different rate does.
+	var silenceFrame []byte
 
 	for {
 		select {
 		case <-l.ctx.Done():
 			return
 		case <-ticker.C:
+		}
+
+		// Everything codec-shaped is re-read per tick: a re-INVITE can change
+		// the encoder, the payload type and the framing under a running loop.
+		lc := s.live()
+		if lc == nil {
+			continue
+		}
+		pcmFrameBytes := lc.pcmFrameBytes
+		samplesPerFrame := lc.samplesPerFrame
+		telephoneEventPT := lc.dtmfSendPT
+		dtmfSamplesPerPkt := lc.dtmfSamplesPerPkt
+		pt := lc.sendPT
+		if len(silenceFrame) != pcmFrameBytes {
+			silenceFrame = make([]byte, pcmFrameBytes)
 		}
 
 		// When held, stop sending RTP — the remote is not listening.
@@ -1379,6 +1387,12 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 		default:
 			frame = silenceFrame
 		}
+		// A frame sized for the previous codec is one the room queued before it
+		// learned the rate changed. Encoding it would emit a burst at the wrong
+		// speed, so it is dropped in favour of a beat of silence.
+		if len(frame) != pcmFrameBytes {
+			frame = silenceFrame
+		}
 
 		// Write to outgoing tap (for recording) before encoding.
 		l.mu.RLock()
@@ -1395,7 +1409,7 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 		// Parse PCM bytes to int16 samples (already at native rate)
 		samples := bytesToSamples(frame)
 
-		encoded, err := s.encoder.Encode(samples)
+		encoded, err := lc.encoder.Encode(samples)
 		if err != nil {
 			l.log.Error("writeLoop: encode failed", "error", err)
 			return

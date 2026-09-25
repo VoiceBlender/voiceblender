@@ -7,6 +7,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 ## Features
 
 - **SIP inbound & outbound** -- receive and originate SIP calls with codec negotiation (PCMU, PCMA, G.722, Opus, AMR-WB, AMR-NB), digest auth, session timers (RFC 4028)
+- **Mid-call codec renegotiation** -- a peer may re-INVITE onto a different codec or bitrate; the media pipeline, and the room's resamplers and filter chain when the rate moves, follow it in place without dropping the call
 - **SIP over TLS** -- optional TLS transport on a second port alongside UDP, reusable by classic SIP trunks and required by WhatsApp
 - **Early media** -- SIP 183 Session Progress with SDP for pre-answer audio (custom ringback, IVR)
 - **Hold/unhold** -- SIP re-INVITE with sendonly/sendrecv direction
@@ -22,6 +23,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **WebSocket room access** -- join rooms from any client over a WebSocket with base64 PCM frames
 - **DTMF** -- send and receive RFC 4733 telephone-events
 - **Real-Time Text (RTT)** -- ITU-T T.140 over RTP per RFC 4103 with RFC 2198 redundancy;
+- **Audio filters** -- per-leg ingress processing chain applied before audio reaches the mixer, so other legs, recordings and STT all see the cleaned audio. Built-in filters: `denoise` (background noise suppression, a pure-Go RNNoise port -- no cgo), `bandpass` and `gain`. Configure per leg with `filters` on `POST /v1/legs` or `/answer`, or set a default with `AUDIO_FILTERS`. Off by default. See [API.md](API.md#audio-filters).
 - **Recording** -- stereo WAV recording per-leg or per-room, multi-channel per-participant tracks, pause/resume (writes silence to preserve timeline while sensitive data is exchanged), optional S3 or Google Cloud Storage upload
 - **Playback** -- stream WAV/MP3 audio or built-in telephone tones into legs or rooms
 - **TTS** -- text-to-speech into legs or rooms (ElevenLabs, Google Cloud, AWS Polly, Deepgram, Azure), with optional **preflight staging**: synthesize a speculative reply off the critical path, then commit it for instant playback or discard it

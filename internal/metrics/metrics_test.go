@@ -170,3 +170,63 @@ func getMetrics(t *testing.T, c *Collector) string {
 	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	return rec.Body.String()
 }
+
+// TestAudioFilterMetrics covers the two filter signals: a counter for filters
+// dropped from a requested chain, and gauges that read the denoise pool at
+// scrape time rather than tracking leg lifecycle separately.
+func TestAudioFilterMetrics(t *testing.T) {
+	c := New(events.NewBus("test"))
+
+	// The gauges report zero at rest. The counter is a CounterVec, so it
+	// carries no series until a label combination is first used.
+	body := scrape(t, c)
+	for _, want := range []string{
+		"voiceblender_audio_denoise_streams 0",
+		"voiceblender_audio_denoise_instances 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metric %q missing from a fresh collector", want)
+		}
+	}
+	if strings.Contains(body, "voiceblender_audio_filters_unavailable_total{") {
+		t.Error("the drop counter should carry no series before anything is dropped")
+	}
+	t.Log("denoise gauges zero at rest; drop counter has no series yet")
+
+	c.FilterUnavailable("denoise")
+	c.FilterUnavailable("denoise")
+	c.FilterUnavailable("bandpass")
+	body = scrape(t, c)
+	if !strings.Contains(body, `voiceblender_audio_filters_unavailable_total{filter="denoise"} 2`) {
+		t.Errorf("denoise drop count not recorded:\n%s", filterLines(body, "unavailable"))
+	}
+	if !strings.Contains(body, `voiceblender_audio_filters_unavailable_total{filter="bandpass"} 1`) {
+		t.Errorf("bandpass drop count not recorded:\n%s", filterLines(body, "unavailable"))
+	}
+	t.Log(filterLines(body, "unavailable"))
+
+	// The gauges read whatever source is installed, at scrape time.
+	c.SetDenoiseStatsSource(func() (int, int) { return 7, 2 })
+	body = scrape(t, c)
+	if !strings.Contains(body, "voiceblender_audio_denoise_streams 7") ||
+		!strings.Contains(body, "voiceblender_audio_denoise_instances 2") {
+		t.Errorf("gauges did not follow the installed source:\n%s", filterLines(body, "denoise"))
+	}
+	t.Log(filterLines(body, "denoise"))
+
+	// A nil source must not clear a working one.
+	c.SetDenoiseStatsSource(nil)
+	if !strings.Contains(scrape(t, c), "voiceblender_audio_denoise_streams 7") {
+		t.Error("a nil source should be ignored, not installed")
+	}
+}
+
+func filterLines(body, substr string) string {
+	var out []string
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.Contains(ln, substr) && !strings.HasPrefix(ln, "#") {
+			out = append(out, ln)
+		}
+	}
+	return strings.Join(out, "\n")
+}

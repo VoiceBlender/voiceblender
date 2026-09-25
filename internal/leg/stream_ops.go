@@ -87,9 +87,16 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 	if info.Direction == "" {
 		info.Direction = sipmod.DirSendRecv
 	}
-	if s.codecType != codec.CodecUnknown {
-		info.Codec = s.codecType.String()
-		info.SampleRate = s.codecType.SampleRate()
+	// Report the codec the media pipeline is actually running, which after a
+	// mid-call renegotiation is the one that matters. Before media starts there
+	// is nothing running yet, so the negotiated value is the honest answer.
+	running := s.codecType
+	if lc := s.live(); lc != nil {
+		running = lc.codecType
+	}
+	if running != codec.CodecUnknown {
+		info.Codec = running.String()
+		info.SampleRate = running.SampleRate()
 	}
 	if s.rtpSess != nil {
 		info.LocalPort = s.rtpSess.LocalPort()
