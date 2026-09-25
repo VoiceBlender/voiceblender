@@ -88,6 +88,55 @@ responses and events.
 > `ALLOWED_IPS` allowlist and network placement -- put an authenticating reverse proxy in
 > front of it before exposing it to untrusted networks.
 
+## Use Cases
+
+- **Voice AI agents** -- put an AI agent on inbound or outbound phone, WhatsApp or browser calls
+- **Contact center** -- conferencing, transfers, supervisor whisper / barge-in, recording with PCI pause
+- **Outbound dialing** -- answering machine detection, TTS announcements, DTMF menus
+- **Call recording & analytics** -- SIPREC recording server with live transcription
+- **Live translation** -- separate rooms for the original and translated audio of one call
+- **Protocol gateway** -- bridge SIP, WebRTC, WhatsApp, LiveKit and WebSocket participants in one room
+
+## Your First Call
+
+With VoiceBlender running and a SIP endpoint to call, dial it into a room, speak to it,
+record it and hang up:
+
+```bash
+API=http://localhost:8080/v1
+JSON='Content-Type: application/json'
+
+# Create a room and start recording it
+curl -X POST $API/rooms -H "$JSON" -d '{"id":"demo"}'
+curl -X POST $API/rooms/demo/record -H "$JSON" -d '{}'
+
+# Dial a SIP phone; it joins the room once answered
+LEG=$(curl -s -X POST $API/legs -H "$JSON" \
+  -d '{"type":"sip","to":"sip:alice@192.168.1.100:5060","room_id":"demo"}' | jq -r .id)
+
+# After it answers, say something (needs ELEVENLABS_API_KEY), then hang up
+curl -X POST $API/legs/$LEG/tts -H "$JSON" \
+  -d '{"text":"Hello from VoiceBlender","voice":"Rachel","provider":"elevenlabs"}'
+curl -X DELETE $API/legs/$LEG
+```
+
+Watch the call progress (`leg.ringing`, `leg.connected`, `tts.finished`, `leg.disconnected`, ...)
+by setting `WEBHOOK_URL` or connecting a WebSocket client to `ws://localhost:8080/v1/vsi`.
+
+## Networking
+
+| Port | Protocol | Purpose | Setting |
+|------|----------|---------|---------|
+| 8080 | TCP | REST API, VSI and WebSocket legs | `HTTP_ADDR` |
+| 5060 | UDP (+TCP) | SIP | `SIP_PORT`, `SIP_TCP_ENABLED` |
+| 5061 | TCP | SIP over TLS, required for WhatsApp (when set) | `SIP_TLS_PORT` |
+| 10000-20000 | UDP | RTP media | `RTP_PORT_MIN`, `RTP_PORT_MAX` |
+| 8443 | UDP | MoQ / WebTransport (when enabled) | `MOQ_LISTEN_ADDR` |
+
+SIP binds to `127.0.0.1` by default -- set `SIP_BIND_IP` to a reachable address. Behind NAT or
+in Docker, set `SIP_EXTERNAL_IP` (SIP/RTP) and `WEBRTC_EXTERNAL_IPS` (WebRTC ICE) to the public
+address. See [CONFIGURATION.md](CONFIGURATION.md).
+
 ## Typical Workflow
 
 ```
@@ -119,31 +168,6 @@ responses and events.
 | [`examples/moq-web/`](examples/moq-web/) | Browser MoQ (WebTransport) client |
 | [`examples/gen_test_wav.py`](examples/gen_test_wav.py) | Generate test WAV files for playback testing |
 
-## Project Structure
-
-```
-cmd/voiceblender/       Entry point
-cmd/openapi-gen/        OpenAPI spec generator
-cmd/asyncapi-gen/       AsyncAPI spec generator
-internal/
-  api/                  REST API, VSI WebSocket
-  sip/                  SIP engine (sipgo)
-  siprec/               SIPREC metadata
-  leg/                  Leg types (SIP, WebRTC, WhatsApp, WebSocket, ...)
-  room/                 Rooms and room manager
-  mixer/                Multi-party mixer (mixed-minus-self)
-  bridge/               Room-to-room bridges
-  codec/                Codec adapters
-  audiofilter/          Per-leg audio filters
-  playback/ recording/  Playback and recording
-  tts/ stt/ agent/      Speech and AI agent providers
-  amd/                  Answering machine detection
-  events/               Event bus and webhook delivery
-  storage/              S3 / GCS upload
-  config/               Environment variable config
-tests/integration/      Integration and benchmark tests
-```
-
 ## Testing
 
 ```bash
@@ -152,26 +176,6 @@ go test -tags integration -v -timeout 60s ./tests/integration/      # integratio
 ```
 
 See [TESTING.md](TESTING.md) for setup and benchmarks.
-
-## Dependencies
-
-| Library | Description | Notes |
-|---------|-------------|-------|
-| [sipgo](https://github.com/emiago/sipgo) | SIP stack | Excellent SIP stack in go |
-| [pion/webrtc](https://github.com/pion/webrtc) | WebRTC | Nothing is better than Pion |
-| [go-chi](https://github.com/go-chi/chi) | HTTP router | |
-| [zaf/g711](https://github.com/zaf/g711) | G.711 codec | |
-| [gobwas/ws](https://github.com/gobwas/ws) | WebSocket | |
-| [go-audio/wav](https://github.com/go-audio/wav) | WAV encoding | |
-| [gopus](https://github.com/thesyncim/gopus) | Opus codec | Thanks Marcelo! (Claude and Codex too!) |
-| [go-mp3](https://github.com/hajimehoshi/go-mp3) | MP3 decoder | Pure Go |
-| [go-audio/audio](https://github.com/go-audio/audio) | Audio buffer types | |
-| [google/uuid](https://github.com/google/uuid) | UUID generation | |
-| [prometheus/client_golang](https://github.com/prometheus/client_golang) | Prometheus metrics | |
-| [aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2) | AWS SDK (S3, Polly) | |
-| [cloud.google.com/go/texttospeech](https://cloud.google.com/go/docs/reference/cloud.google.com/go/texttospeech/latest) | Google Cloud TTS | |
-| [protobuf](https://github.com/protocolbuffers/protobuf-go) | Protocol Buffers | Pipecat agent |
-| [x/sync](https://pkg.go.dev/golang.org/x/sync) | Concurrency utilities | |
 
 ## Contributing
 
