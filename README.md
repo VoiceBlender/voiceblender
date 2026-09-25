@@ -159,13 +159,16 @@ Denoise can be chained with `bandpass`, `gain` and voice effects -- see
 
 ## Examples
 
-| Example | Description |
-|---------|-------------|
-| [`examples/call_handler.py`](examples/call_handler.py) | Python webhook listener for inbound SIP calls with room conferencing |
-| [`examples/webrtc-client/`](examples/webrtc-client/) | Browser-based WebRTC voice client with room management and DTMF |
-| [`examples/pipecat-agent/`](examples/pipecat-agent/) | SIP call connected to a self-hosted Pipecat voice bot |
-| [`examples/moq-web/`](examples/moq-web/) | Browser MoQ (WebTransport) client |
-| [`examples/gen_test_wav.py`](examples/gen_test_wav.py) | Generate test WAV files for playback testing |
+Complete reference applications built on VoiceBlender live in
+[VoiceBlender/example-applications](https://github.com/VoiceBlender/example-applications):
+
+| Application | Description |
+|-------------|-------------|
+| [contact-centre](https://github.com/VoiceBlender/example-applications/tree/main/cmd/contact-centre) | Inbound contact centre with queues, agent and supervisor dashboards, whisper and monitor |
+| [ivr](https://github.com/VoiceBlender/example-applications/tree/main/cmd/ivr) | Multi-department DTMF IVR with hold music and an AI voice agent fallback |
+| [pbx](https://github.com/VoiceBlender/example-applications/tree/main/cmd/pbx) | Multi-tenant SIP PBX with trunks, dial-plan editor and browser softphones |
+| [ptt](https://github.com/VoiceBlender/example-applications/tree/main/cmd/ptt) | Browser push-to-talk walkie-talkie over WebRTC |
+| [interpreter](https://github.com/VoiceBlender/example-applications/tree/main/cmd/interpreter) | Live two-way speech translation with captions |
 
 ## Testing
 
