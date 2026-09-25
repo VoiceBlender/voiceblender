@@ -3835,6 +3835,8 @@ components:
                         type: string
                 max_expires:
                     type: integer
+                app_id:
+                    type: string
             required:
                 - realm
         CreateLegRequest:
@@ -4225,6 +4227,8 @@ components:
             properties:
                 max_expires:
                     type: integer
+                app_id:
+                    type: string
         RegistrationRejectRequest:
             type: object
             properties:

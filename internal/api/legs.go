@@ -856,6 +856,47 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.LegMgr.Remove(l.ID())
 }
 
+// registeredAppID returns the app owning the registration bound to the
+// INVITE's source socket, narrowed by the From AOR when a device registers
+// several AORs claimed by different apps. "" when unclaimed or ambiguous.
+func (s *Server) registeredAppID(source string, from *sip.FromHeader) string {
+	reg := s.SIPEngine.Registrar()
+	if reg == nil {
+		return ""
+	}
+	bindings := reg.LookupBySocket(source)
+	if app, ok := sharedAppID(bindings); ok {
+		return app
+	}
+	if from == nil {
+		return ""
+	}
+	fromAOR := sipmod.CanonicalizeAOR(from.Address)
+	var matched []sipmod.Binding
+	for _, b := range bindings {
+		if b.AOR == fromAOR {
+			matched = append(matched, b)
+		}
+	}
+	app, _ := sharedAppID(matched)
+	return app
+}
+
+// sharedAppID reports the single app_id every binding carries; ok is false
+// when bindings is empty or they disagree.
+func sharedAppID(bindings []sipmod.Binding) (string, bool) {
+	if len(bindings) == 0 {
+		return "", false
+	}
+	app := bindings[0].AppID
+	for _, b := range bindings[1:] {
+		if b.AppID != app {
+			return "", false
+		}
+	}
+	return app, true
+}
+
 // applyLegWebhook routes this leg's events to the per-leg webhook named by the
 // INVITE's X-Webhook-URL header, falling back to the configured default.
 func (s *Server) applyLegWebhook(l leg.Leg, call *sipmod.InboundCall) {
@@ -1483,7 +1524,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 
 	// Tag the call with a trunk_id when the INVITE's source socket matches
 	// a known outbound trunk's registrar.
-	var trunkID, trunkAppID string
+	var trunkID, ownerAppID string
 	sourceAddr := call.Request.Source()
 	if sourceAddr != "" {
 		host, portStr, err := net.SplitHostPort(sourceAddr)
@@ -1495,17 +1536,20 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 			}
 			if t, unique := s.SIPEngine.Trunks().LookupInbound(host, port, call.Request.Recipient.User, to); t != nil {
 				trunkID = t.ID()
-				// The trunk's app_id overrides X-App-ID, which the upstream controls.
 				if unique {
-					trunkAppID = t.AppID()
+					ownerAppID = t.AppID()
 				}
 			}
 		}
 	}
+	if trunkID == "" {
+		ownerAppID = s.registeredAppID(sourceAddr, call.Request.From())
+	}
 
 	l := leg.NewSIPInboundLeg(call, s.SIPEngine, s.Log)
-	if trunkAppID != "" {
-		l.SetAppID(trunkAppID)
+	// A trunk's or registration's app_id overrides X-App-ID, which the peer controls.
+	if ownerAppID != "" {
+		l.SetAppID(ownerAppID)
 	} else if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
 		l.SetAppID(appID)
 	}

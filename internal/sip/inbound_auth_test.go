@@ -43,7 +43,7 @@ func authRequest(t *testing.T, method sip.RequestMethod, callID, challengeVal, u
 
 func TestRecordChallenge_HeaderShape(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("call-1", ChallengeParams{Realm: "vb.example", Password: "s3cret"}, 0)
+	val := e.recordChallenge("call-1", ChallengeParams{Realm: "vb.example", Password: "s3cret"}, AuthGrant{})
 	chal, err := digest.ParseChallenge(val)
 	if err != nil {
 		t.Fatalf("challenge not parseable: %v (%q)", err, val)
@@ -63,7 +63,7 @@ func TestRecordChallenge_NonceUnique(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		val := e.recordChallenge("call", ChallengeParams{Realm: "r"}, 0)
+		val := e.recordChallenge("call", ChallengeParams{Realm: "r"}, AuthGrant{})
 		chal, _ := digest.ParseChallenge(val)
 		if seen[chal.Nonce] {
 			t.Fatalf("duplicate nonce %q", chal.Nonce)
@@ -76,7 +76,7 @@ func TestVerifyInboundAuth_ValidPassword(t *testing.T) {
 	for _, alg := range []string{"MD5", "SHA-256"} {
 		t.Run(alg, func(t *testing.T) {
 			e := newAuthTestEngine(time.Minute)
-			val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw", Algorithm: alg}, 0)
+			val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw", Algorithm: alg}, AuthGrant{})
 			req := authRequest(t, sip.INVITE, "c1", val, "alice", "pw", "", "sip:vb@vb.example")
 			res, user, _ := e.VerifyInboundAuth(req, "INVITE")
 			if res != AuthValid {
@@ -89,16 +89,19 @@ func TestVerifyInboundAuth_ValidPassword(t *testing.T) {
 	}
 }
 
-func TestVerifyInboundAuth_CarriesMaxExpires(t *testing.T) {
+func TestVerifyInboundAuth_CarriesGrant(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, 30)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, AuthGrant{MaxExpires: 30, AppID: "acme"})
 	req := authRequest(t, sip.REGISTER, "c1", val, "alice", "pw", "", "sip:vb.example")
-	res, _, maxExpires := e.VerifyInboundAuth(req, "REGISTER")
+	res, _, grant := e.VerifyInboundAuth(req, "REGISTER")
 	if res != AuthValid {
 		t.Fatalf("result = %v, want AuthValid", res)
 	}
-	if maxExpires != 30 {
-		t.Errorf("maxExpires = %d, want 30", maxExpires)
+	if grant.MaxExpires != 30 {
+		t.Errorf("MaxExpires = %d, want 30", grant.MaxExpires)
+	}
+	if grant.AppID != "acme" {
+		t.Errorf("AppID = %q, want acme", grant.AppID)
 	}
 }
 
@@ -106,7 +109,7 @@ func TestVerifyInboundAuth_ValidHA1(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
 	sum := md5.Sum([]byte("alice:vb:pw"))
 	ha1 := hex.EncodeToString(sum[:])
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", HA1: ha1}, 0)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", HA1: ha1}, AuthGrant{})
 	req := authRequest(t, sip.REGISTER, "c1", val, "alice", "", ha1, "sip:vb.example")
 	if res, _, _ := e.VerifyInboundAuth(req, "REGISTER"); res != AuthValid {
 		t.Fatalf("result = %v, want AuthValid", res)
@@ -115,7 +118,7 @@ func TestVerifyInboundAuth_ValidHA1(t *testing.T) {
 
 func TestVerifyInboundAuth_WrongPassword(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "right"}, 0)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "right"}, AuthGrant{})
 	// Client signs with the wrong password.
 	req := authRequest(t, sip.INVITE, "c1", val, "alice", "wrong", "", "sip:vb@vb.example")
 	if res, _, _ := e.VerifyInboundAuth(req, "INVITE"); res != AuthInvalid {
@@ -125,7 +128,7 @@ func TestVerifyInboundAuth_WrongPassword(t *testing.T) {
 
 func TestVerifyInboundAuth_WrongUsername(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, 0)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, AuthGrant{})
 	// A correctly-computed response, but for a different username than expected.
 	req := authRequest(t, sip.INVITE, "c1", val, "mallory", "pw", "", "sip:vb@vb.example")
 	if res, _, _ := e.VerifyInboundAuth(req, "INVITE"); res != AuthInvalid {
@@ -137,7 +140,7 @@ func TestVerifyInboundAuth_NoChallengeRecorded(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
 	// Build a request whose Authorization references a nonce we never issued.
 	other := newAuthTestEngine(time.Minute)
-	val := other.recordChallenge("c1", ChallengeParams{Realm: "vb", Password: "pw"}, 0)
+	val := other.recordChallenge("c1", ChallengeParams{Realm: "vb", Password: "pw"}, AuthGrant{})
 	req := authRequest(t, sip.INVITE, "c1", val, "alice", "pw", "", "sip:vb@vb.example")
 	if res, _, _ := e.VerifyInboundAuth(req, "INVITE"); res != AuthNone {
 		t.Fatalf("result = %v, want AuthNone", res)
@@ -154,7 +157,7 @@ func TestVerifyInboundAuth_NoAuthHeader(t *testing.T) {
 
 func TestVerifyInboundAuth_ExpiredNonce(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, 0)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, AuthGrant{})
 	// Force the stored entry to be already expired.
 	pc := e.pendingAuth.byCall["c1"]
 	pc.expiresAt = time.Now().Add(-time.Second)
@@ -167,7 +170,7 @@ func TestVerifyInboundAuth_ExpiredNonce(t *testing.T) {
 
 func TestVerifyInboundAuth_SingleUse(t *testing.T) {
 	e := newAuthTestEngine(time.Minute)
-	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, 0)
+	val := e.recordChallenge("c1", ChallengeParams{Realm: "vb", Username: "alice", Password: "pw"}, AuthGrant{})
 	req := authRequest(t, sip.INVITE, "c1", val, "alice", "pw", "", "sip:vb@vb.example")
 	if res, _, _ := e.VerifyInboundAuth(req, "INVITE"); res != AuthValid {
 		t.Fatalf("first verify = %v, want AuthValid", res)

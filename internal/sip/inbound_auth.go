@@ -46,12 +46,19 @@ const (
 	AuthInvalid
 )
 
+// AuthGrant is what an admitting REGISTER decision carries to the binding,
+// either directly (accept) or via the pending challenge (credentialed retry).
+type AuthGrant struct {
+	MaxExpires int    // TTL cap in seconds; 0 = none
+	AppID      string // owning application; "" = unclaimed
+}
+
 type pendingChallenge struct {
-	nonce      string
-	opaque     string
-	params     ChallengeParams
-	maxExpires int // REGISTER TTL cap carried to the credentialed retry; 0 = none
-	expiresAt  time.Time
+	nonce     string
+	opaque    string
+	params    ChallengeParams
+	grant     AuthGrant // REGISTER only
+	expiresAt time.Time
 }
 
 // pendingAuthStore holds issued-but-unverified challenges keyed by Call-ID. A
@@ -97,10 +104,10 @@ func callIDOf(req *sip.Request) string {
 
 // recordChallenge generates a fresh nonce, stores the pending challenge keyed
 // by callID, and returns the WWW-Authenticate header value (including the
-// "Digest " prefix) the caller should attach to a 401 response. maxExpires
-// (>0), relevant only to REGISTER, is carried on the pending challenge so the
-// credentialed retry binds with the capped TTL; pass 0 for INVITE challenges.
-func (e *Engine) recordChallenge(callID string, p ChallengeParams, maxExpires int) string {
+// "Digest " prefix) the caller should attach to a 401 response. grant,
+// relevant only to REGISTER, is carried on the pending challenge so the
+// credentialed retry binds with it; pass the zero value for INVITE challenges.
+func (e *Engine) recordChallenge(callID string, p ChallengeParams, grant AuthGrant) string {
 	p = p.withDefaults()
 	nonce := sip.GenerateTagN(16)
 	opaque := sip.GenerateTagN(8)
@@ -112,11 +119,11 @@ func (e *Engine) recordChallenge(callID string, p ChallengeParams, maxExpires in
 		QOP:       p.QOP,
 	}
 	e.pendingAuth.put(callID, pendingChallenge{
-		nonce:      nonce,
-		opaque:     opaque,
-		params:     p,
-		maxExpires: maxExpires,
-		expiresAt:  time.Now().Add(e.pendingAuth.ttl),
+		nonce:     nonce,
+		opaque:    opaque,
+		params:    p,
+		grant:     grant,
+		expiresAt: time.Now().Add(e.pendingAuth.ttl),
 	})
 	return chal.String()
 }
@@ -124,21 +131,21 @@ func (e *Engine) recordChallenge(callID string, p ChallengeParams, maxExpires in
 // VerifyInboundAuth validates the Authorization header of an inbound request
 // against the challenge previously issued for its Call-ID. method is the SIP
 // method ("INVITE" / "REGISTER") signed by the digest. On AuthValid the second
-// return value is the authenticated username and the third is the TTL cap
-// (seconds, 0 = none) recorded with the challenge — meaningful only for
-// REGISTER. Non-valid results return "" and 0.
-func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult, string, int) {
+// return value is the authenticated username and the third is the grant
+// recorded with the challenge — meaningful only for REGISTER. Non-valid
+// results return "" and the zero grant.
+func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult, string, AuthGrant) {
 	authHdr := req.GetHeader("Authorization")
 	if authHdr == nil {
-		return AuthNone, "", 0
+		return AuthNone, "", AuthGrant{}
 	}
 	pc, ok := e.pendingAuth.take(callIDOf(req))
 	if !ok || time.Now().After(pc.expiresAt) {
-		return AuthNone, "", 0
+		return AuthNone, "", AuthGrant{}
 	}
 	cred, err := digest.ParseCredentials(authHdr.Value())
 	if err != nil || cred.Nonce != pc.nonce {
-		return AuthNone, "", 0
+		return AuthNone, "", AuthGrant{}
 	}
 
 	chal := &digest.Challenge{
@@ -162,13 +169,13 @@ func (e *Engine) VerifyInboundAuth(req *sip.Request, method string) (AuthResult,
 	}
 	expected, err := digest.Digest(chal, opts)
 	if err != nil {
-		return AuthInvalid, "", 0
+		return AuthInvalid, "", AuthGrant{}
 	}
 	if subtle.ConstantTimeCompare([]byte(expected.Response), []byte(cred.Response)) != 1 {
-		return AuthInvalid, "", 0
+		return AuthInvalid, "", AuthGrant{}
 	}
 	if pc.params.Username != "" && !strings.EqualFold(pc.params.Username, cred.Username) {
-		return AuthInvalid, "", 0
+		return AuthInvalid, "", AuthGrant{}
 	}
-	return AuthValid, cred.Username, pc.maxExpires
+	return AuthValid, cred.Username, pc.grant
 }

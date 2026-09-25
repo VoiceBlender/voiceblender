@@ -3474,7 +3474,7 @@ The full machine-readable contract for the VSI WebSocket — every command, ever
 |-------|------|-------------|
 | `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
 
-Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a registered trunk inherit the trunk's `app_id`, which takes precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a registered trunk inherit the trunk's `app_id`, and calls from a SIP device registered here inherit the `app_id` its registration was claimed with; both take precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring) and [claiming a registration](#inbound-register-authentication-digest-challenge)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
 
 Events from untagged legs carry an empty `app_id` and are dropped by any non-empty filter — tag every leg an app cares about, or it will silently miss its own events.
 
@@ -4764,7 +4764,7 @@ appropriate when a front proxy enforces auth).
 
 ```
 POST /v1/sip/registrations/attempts/{id}/challenge   # body: ChallengeRequest (see POST /v1/legs/{id}/challenge)
-POST /v1/sip/registrations/attempts/{id}/accept       # optional body: { "max_expires": 30 }
+POST /v1/sip/registrations/attempts/{id}/accept       # optional body: { "max_expires": 30, "app_id": "acme" }
 POST /v1/sip/registrations/attempts/{id}/reject       # optional body: { "code": 403, "reason": "Forbidden" }
 ```
 
@@ -4798,6 +4798,40 @@ POST /v1/sip/registrations/attempts/{attempt_id}/challenge
 // Accept immediately but cap the binding at 60 s (the minimum)
 POST /v1/sip/registrations/attempts/{attempt_id}/accept
 { "max_expires": 60 }
+```
+
+**Claiming a registration for an app (`app_id`).** A REGISTER cannot be tied
+to an application before it is decided — nobody owns the AOR yet — so the
+first `sip.registration_attempt` for an AOR carries no `app_id` and reaches
+every event stream, filtered or not. The app that decides it claims the binding
+by passing `app_id` on the **accept** or **challenge** body (on a challenge it
+is remembered and applied when the credentialed re-REGISTER binds). From then
+on:
+
+- `sip.registration_active` / `sip.registration_expired` for that binding carry
+  the `app_id`;
+- later `sip.registration_attempt` events for the AOR (refreshes, re-auth)
+  carry it too, so only the owning app's filtered stream sees them. A refresh
+  accepted without `app_id` keeps the existing owner;
+- inbound INVITEs arriving from the registered socket inherit it on the leg,
+  overriding any `X-App-ID` header. When one socket holds bindings owned by
+  different apps, the INVITE's `From` AOR picks between them; if it cannot,
+  no app is inherited;
+- `GET /v1/sip/registrations` shows it per binding.
+
+`app_id` is ignored on `POST /v1/legs/{id}/challenge`, which shares the
+`ChallengeRequest` body.
+
+```jsonc
+// First REGISTER for alice → claim it for "acme"
+POST /v1/sip/registrations/attempts/{attempt_id}/accept
+{ "app_id": "acme" }
+
+// Refresh attempt, now scoped to acme
+{ "type": "sip.registration_attempt", "app_id": "acme", "attempt_id": "…", "aor": "sip:alice@vb.example", … }
+
+// Call from alice's phone
+{ "type": "leg.ringing", "app_id": "acme", "leg_type": "sip_inbound", "from": "alice", "to": "bob", … }
 ```
 
 ### Configuration

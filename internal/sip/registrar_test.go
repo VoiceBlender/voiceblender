@@ -214,3 +214,75 @@ func TestCanonicalizeAOR(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistrar_RefreshKeepsAppID(t *testing.T) {
+	r, bus := newTestRegistrar(t, RegistrarConfig{AllowMultipleContacts: true})
+
+	b := makeBinding("sip:alice@vb.test", "sip:alice@10.0.0.5:5060", "10.0.0.5:5060", time.Hour)
+	b.AppID = "acme"
+	r.Bind(b)
+	r.Bind(makeBinding("sip:alice@vb.test", "sip:alice@10.0.0.5:5060", "10.0.0.5:5060", time.Hour))
+
+	got, _ := r.Lookup("sip:alice@vb.test")
+	if got.AppID != "acme" {
+		t.Errorf("AppID after unclaimed refresh = %q, want acme", got.AppID)
+	}
+	for i, e := range bus.byType(events.SIPRegistrationActive) {
+		if app := e.Data.GetAppID(); app != "acme" {
+			t.Errorf("active event %d app_id = %q, want acme", i, app)
+		}
+	}
+}
+
+func TestRegistrar_AppIDFor(t *testing.T) {
+	r, _ := newTestRegistrar(t, RegistrarConfig{AllowMultipleContacts: true})
+
+	a1 := makeBinding("sip:alice@vb.test", "sip:alice@10.0.0.5:5060", "10.0.0.5:5060", time.Hour)
+	a1.AppID = "acme"
+	a2 := makeBinding("sip:alice@vb.test", "sip:alice@10.0.0.6:5060", "10.0.0.6:5060", time.Hour)
+	a2.AppID = "acme"
+	b1 := makeBinding("sip:bob@vb.test", "sip:bob@10.0.0.7:5060", "10.0.0.7:5060", time.Hour)
+	b1.AppID = "one"
+	b2 := makeBinding("sip:bob@vb.test", "sip:bob@10.0.0.8:5060", "10.0.0.8:5060", time.Hour)
+	b2.AppID = "two"
+	for _, b := range []Binding{a1, a2, b1, b2} {
+		r.Bind(b)
+	}
+
+	cases := []struct {
+		aor, contact, want string
+	}{
+		{"sip:alice@vb.test", "sip:alice@10.0.0.5:5060", "acme"},
+		{"sip:alice@vb.test", "sip:alice@10.0.0.99:5060", "acme"},
+		{"sip:alice@vb.test", "", "acme"},
+		{"sip:bob@vb.test", "sip:bob@10.0.0.8:5060", "two"},
+		{"sip:bob@vb.test", "sip:bob@10.0.0.99:5060", ""},
+		{"sip:carol@vb.test", "sip:carol@10.0.0.9:5060", ""},
+	}
+	for _, c := range cases {
+		if got := r.AppIDFor(c.aor, c.contact); got != c.want {
+			t.Errorf("AppIDFor(%q, %q) = %q, want %q", c.aor, c.contact, got, c.want)
+		}
+	}
+}
+
+func TestRegistrar_LookupBySocket(t *testing.T) {
+	r, _ := newTestRegistrar(t, RegistrarConfig{AllowMultipleContacts: true})
+
+	r.Bind(makeBinding("sip:alice@vb.test", "sip:alice@10.0.0.5:5060", "10.0.0.5:5060", time.Hour))
+	r.Bind(makeBinding("sip:bob@vb.test", "sip:bob@10.0.0.5:5060", "10.0.0.5:5060", time.Hour))
+	r.Bind(makeBinding("sip:carol@vb.test", "sip:carol@10.0.0.6:5060", "10.0.0.6:5060", time.Hour))
+
+	if got := r.LookupBySocket("10.0.0.5:5060"); len(got) != 2 {
+		t.Errorf("shared socket bindings = %d, want 2", len(got))
+	}
+	if got := r.LookupBySocket("10.0.0.6:5060"); len(got) != 1 || got[0].AOR != "sip:carol@vb.test" {
+		t.Errorf("single socket bindings = %+v", got)
+	}
+	if got := r.LookupBySocket("10.0.0.5:5070"); len(got) != 0 {
+		t.Errorf("other port bindings = %d, want 0", len(got))
+	}
+	if got := r.LookupBySocket(""); got != nil {
+		t.Errorf("empty socket = %+v, want nil", got)
+	}
+}

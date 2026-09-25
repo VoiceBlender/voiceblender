@@ -32,6 +32,9 @@ type ChallengeRequest struct {
 	// at the registrar's 60s minimum. Omit or 0 to leave the registrar's
 	// SIP_REGISTRATION_MAX_EXPIRES_SECONDS clamp in force.
 	MaxExpires int `json:"max_expires,omitempty"`
+	// AppID (REGISTER only; ignored for INVITE leg challenges) claims the
+	// binding created by the credentialed re-REGISTER for this application.
+	AppID string `json:"app_id,omitempty"`
 }
 
 func (r ChallengeRequest) toParams() sipmod.ChallengeParams {
@@ -70,6 +73,9 @@ type RegistrationRejectRequest struct {
 // challenge; omit or 0 to bind with the registrar's normal clamp.
 type RegistrationAcceptRequest struct {
 	MaxExpires int `json:"max_expires,omitempty"`
+	// AppID claims the binding for this application: its registration events
+	// and inbound calls from the registered contact are scoped to it.
+	AppID string `json:"app_id,omitempty"`
 }
 
 func (r RegistrationAcceptRequest) validate() error {
@@ -189,14 +195,15 @@ func (s *Server) HandleRegisterAttempt(a *sipmod.RegisterAttempt) sipmod.Registe
 	defer s.regAttempts.delete(attemptID)
 
 	s.Bus.Publish(events.SIPRegistrationAttempt, &events.SIPRegistrationAttemptData{
-		AttemptID:        attemptID,
-		AOR:              a.AOR,
-		Contact:          a.Contact,
-		SourceAddress:    a.Source,
-		Transport:        a.Transport,
-		UserAgent:        a.UserAgent,
-		CallID:           a.CallID,
-		HasAuthorization: a.HasAuth,
+		SIPRegistrationScope: events.SIPRegistrationScope{AppID: a.AppID},
+		AttemptID:            attemptID,
+		AOR:                  a.AOR,
+		Contact:              a.Contact,
+		SourceAddress:        a.Source,
+		Transport:            a.Transport,
+		UserAgent:            a.UserAgent,
+		CallID:               a.CallID,
+		HasAuthorization:     a.HasAuth,
 	})
 
 	timeout := time.Duration(s.Config.SIPInboundAuthConsultTimeoutMs) * time.Millisecond
@@ -231,6 +238,7 @@ func (s *Server) doChallengeRegistration(id string, req ChallengeRequest) error 
 		Kind:       sipmod.RegisterChallenge,
 		Challenge:  req.toParams(),
 		MaxExpires: req.MaxExpires,
+		AppID:      req.AppID,
 	})
 }
 
@@ -241,6 +249,7 @@ func (s *Server) doAcceptRegistration(id string, req RegistrationAcceptRequest) 
 	return s.decideRegisterAttempt(id, sipmod.RegisterDecision{
 		Kind:       sipmod.RegisterAccept,
 		MaxExpires: req.MaxExpires,
+		AppID:      req.AppID,
 	})
 }
 
