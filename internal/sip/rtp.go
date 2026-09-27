@@ -30,6 +30,7 @@ type RTPSession struct {
 	allocator  *PortAllocator // non-nil when port was allocated from a pool
 	closeOnce  sync.Once
 	closeErr   error
+	readBuf    []byte // ReadRTPInto's buffer, owned by the single reader
 }
 
 // NewRTPSession creates a new RTP session listening on a random UDP port.
@@ -121,12 +122,31 @@ func (s *RTPSession) SetRemote(ip string, port int) error {
 
 // ReadRTP reads and unmarshals an RTP packet from the UDP socket. Blocks
 // until data arrives. Implements symmetric RTP: the remote address is
-// latched to the source IP:port of each incoming RTP packet.
+// latched to the source IP:port of each incoming RTP packet. The returned
+// packet owns its memory.
 func (s *RTPSession) ReadRTP() (*rtp.Packet, error) {
 	buf := make([]byte, rtpBufSize)
-	n, srcAddr, err := s.conn.ReadFromUDP(buf)
-	if err != nil {
+	pkt := &rtp.Packet{}
+	if err := s.readInto(pkt, buf); err != nil {
 		return nil, err
+	}
+	return pkt, nil
+}
+
+// ReadRTPInto is ReadRTP without per-packet allocation: pkt is overwritten and
+// its payload aliases a session buffer that is only valid until the next call.
+// At most one goroutine may call it per session.
+func (s *RTPSession) ReadRTPInto(pkt *rtp.Packet) error {
+	if s.readBuf == nil {
+		s.readBuf = make([]byte, rtpBufSize)
+	}
+	return s.readInto(pkt, s.readBuf)
+}
+
+func (s *RTPSession) readInto(pkt *rtp.Packet, buf []byte) error {
+	n, src, err := s.conn.ReadFromUDPAddrPort(buf)
+	if err != nil {
+		return err
 	}
 
 	// RFC 5761 §4: drop RTCP frames muxed on the RTP port (PT byte in
@@ -135,21 +155,19 @@ func (s *RTPSession) ReadRTP() (*rtp.Packet, error) {
 	if n >= 2 {
 		pt2 := buf[1]
 		if pt2 >= 192 && pt2 <= 223 {
-			return nil, fmt.Errorf("%w: rtcp-on-rtp-port", ErrNotRTP)
+			return fmt.Errorf("%w: rtcp-on-rtp-port", ErrNotRTP)
 		}
 	}
 
-	pkt := &rtp.Packet{}
 	if err := pkt.Unmarshal(buf[:n]); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNotRTP, err)
+		return fmt.Errorf("%w: %v", ErrNotRTP, err)
 	}
 
 	// Symmetric RTP: latch remote address to the source of incoming RTP.
-	if srcAddr != nil {
-		s.setRemote(srcAddr)
+	if cur := s.getRemote(); cur == nil || cur.AddrPort() != src {
+		s.setRemote(net.UDPAddrFromAddrPort(src))
 	}
-
-	return pkt, nil
+	return nil
 }
 
 // WriteRTP marshals and sends an RTP packet to the remote address.
@@ -164,6 +182,25 @@ func (s *RTPSession) WriteRTP(pkt *rtp.Packet) error {
 	}
 	_, err = s.conn.WriteToUDP(data, addr)
 	return err
+}
+
+// WriteRTPBuf is WriteRTP marshalling into buf, which is grown only when too
+// small. It returns the buffer for the caller to reuse on the next packet.
+func (s *RTPSession) WriteRTPBuf(pkt *rtp.Packet, buf []byte) ([]byte, error) {
+	addr := s.getRemote()
+	if addr == nil {
+		return buf, fmt.Errorf("remote address not set")
+	}
+	n := pkt.MarshalSize()
+	if cap(buf) < n {
+		buf = make([]byte, n)
+	}
+	buf = buf[:n]
+	if _, err := pkt.MarshalTo(buf); err != nil {
+		return buf, fmt.Errorf("rtp marshal: %w", err)
+	}
+	_, err := s.conn.WriteToUDP(buf, addr)
+	return buf, err
 }
 
 // SendKeepalive sends a small burst of silence RTP packets to the remote

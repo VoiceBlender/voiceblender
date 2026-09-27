@@ -3,7 +3,6 @@ package mixer
 import (
 	"encoding/binary"
 	"io"
-	"math"
 
 	"github.com/VoiceBlender/voiceblender/internal/resampler"
 )
@@ -123,16 +122,29 @@ func (r *PCMResampler) ResampleBytes(p []byte) []byte {
 	if r == nil || len(p) < 2 {
 		return p
 	}
+	return r.ResampleBytesInto(nil, p)
+}
+
+// ResampleBytesInto is ResampleBytes writing into dst, which is grown only when
+// too small. Unlike ResampleBytes, a nil receiver still returns p itself.
+func (r *PCMResampler) ResampleBytesInto(dst, p []byte) []byte {
+	if r == nil || len(p) < 2 {
+		return p
+	}
 	fin := r.scratchIn(len(p) / 2)
 	for i := range fin {
 		fin[i] = float64(int16(binary.LittleEndian.Uint16(p[i*2:]))) / 32768.0
 	}
 	fout := r.process(fin)
-	out := make([]byte, len(fout)*2)
-	for i, s := range fout {
-		binary.LittleEndian.PutUint16(out[i*2:], uint16(clampToInt16(s)))
+	n := len(fout) * 2
+	if cap(dst) < n {
+		dst = make([]byte, n)
 	}
-	return out
+	dst = dst[:n]
+	for i, s := range fout {
+		binary.LittleEndian.PutUint16(dst[i*2:], uint16(clampToInt16(s)))
+	}
+	return dst
 }
 
 func (r *PCMResampler) scratchIn(n int) []float64 {
@@ -158,7 +170,14 @@ func (r *PCMResampler) process(in []float64) []float64 {
 // filter overshoot can push a full-scale sample past int16 range, which would
 // otherwise wrap into loud noise.
 func clampToInt16(s float64) int16 {
-	return int16(math.Max(math.Min(s*32768.0, 32767), -32768))
+	v := s * 32768.0
+	if v >= 32767 {
+		return 32767
+	}
+	if v <= -32768 {
+		return -32768
+	}
+	return int16(v)
 }
 
 // NewResampleReader wraps src to produce PCM at dstRate from srcRate input.
@@ -198,6 +217,8 @@ type resampleReader struct {
 	dstRate int
 	rs      *PCMResampler
 	buf     []byte // leftover output bytes not yet consumed
+	srcBuf  []byte
+	outBuf  []byte // backs buf; only refilled once buf is drained
 }
 
 func (r *resampleReader) Read(p []byte) (int, error) {
@@ -217,7 +238,10 @@ func (r *resampleReader) Read(p []byte) (int, error) {
 	}
 	srcSize = (srcSize / 2) * 2
 
-	srcBuf := make([]byte, srcSize)
+	if cap(r.srcBuf) < srcSize {
+		r.srcBuf = make([]byte, srcSize)
+	}
+	srcBuf := r.srcBuf[:srcSize]
 	n, err := r.src.Read(srcBuf)
 	if n < 2 {
 		if err != nil {
@@ -227,7 +251,8 @@ func (r *resampleReader) Read(p []byte) (int, error) {
 	}
 	n = (n / 2) * 2
 
-	out := r.rs.ResampleBytes(srcBuf[:n])
+	r.outBuf = r.rs.ResampleBytesInto(r.outBuf, srcBuf[:n])
+	out := r.outBuf
 
 	copied := copy(p, out)
 	if copied < len(out) {
@@ -245,6 +270,7 @@ type resampleWriter struct {
 	outputRate int
 	rs         *PCMResampler
 	buf        []byte // accumulate partial samples
+	out        []byte // reused output; destinations must not retain it
 }
 
 // Close propagates to the wrapped writer so the decorator does not swallow it.
@@ -275,7 +301,8 @@ func (w *resampleWriter) Write(p []byte) (int, error) {
 	}
 
 	remainder := data[usable:]
-	out := w.rs.ResampleBytes(data[:usable])
+	w.out = w.rs.ResampleBytesInto(w.out, data[:usable])
+	out := w.out
 
 	if len(remainder) > 0 {
 		w.buf = append(w.buf, remainder...)

@@ -102,3 +102,31 @@ func TestOutputWithinAmplitudeRange(t *testing.T) {
 		t.Fatalf("RMS = %.2f, exceeds amplitude %d", rms, amp)
 	}
 }
+
+func TestGeneratorIsZeroMeanNoise(t *testing.T) {
+	g := NewGeneratorWithAmplitude(maxAmplitude)
+	samples := g.Generate(48000)
+	var sum, sq float64
+	distinct := map[int16]bool{}
+	for _, s := range samples {
+		sum += float64(s)
+		sq += float64(s) * float64(s)
+		distinct[s] = true
+	}
+	mean := sum / float64(len(samples))
+	rms := math.Sqrt(sq / float64(len(samples)))
+	if math.Abs(mean) > rms/4 {
+		t.Fatalf("noise not zero-mean: mean=%.2f rms=%.2f", mean, rms)
+	}
+	if len(distinct) < 20 {
+		t.Fatalf("noise has only %d distinct values", len(distinct))
+	}
+}
+
+func TestGenerateIntoDoesNotAllocate(t *testing.T) {
+	g := NewGenerator()
+	buf := make([]int16, 320)
+	if allocs := testing.AllocsPerRun(50, func() { g.GenerateInto(buf) }); allocs > 0 {
+		t.Fatalf("GenerateInto allocated %.1f times", allocs)
+	}
+}

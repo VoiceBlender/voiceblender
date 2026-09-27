@@ -2,7 +2,7 @@ package comfortnoise
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 )
 
@@ -20,7 +20,7 @@ type Generator struct {
 	mu           sync.Mutex
 	amplitude    int16
 	enabled      bool
-	rng          *rand.Rand
+	rng          uint64 // xorshift64* state; never zero
 	filterState  float64
 	filterState2 float64
 }
@@ -42,7 +42,7 @@ func NewGeneratorWithAmplitude(amplitude int16) *Generator {
 	g := &Generator{
 		amplitude: amplitude,
 		enabled:   true,
-		rng:       rand.New(rand.NewSource(rand.Int63())),
+		rng:       rand.Uint64() | 1,
 	}
 	// Pre-warm the IIR filter so output is stable from the first real frame.
 	for i := 0; i < warmupSamples; i++ {
@@ -59,7 +59,10 @@ func NewGeneratorWithAmplitude(amplitude int16) *Generator {
 // so filterCompensation rescales the output so peaks land near ±amplitude.
 func (g *Generator) nextSample() int16 {
 	const filterCompensation = 3.5 // compensates two-stage IIR attenuation (RMS ≈ 0.094 for unit input)
-	raw := g.rng.Float64()*2 - 1
+	g.rng ^= g.rng >> 12
+	g.rng ^= g.rng << 25
+	g.rng ^= g.rng >> 27
+	raw := float64((g.rng*0x2545F4914F6CDD1D)>>11)*(2.0/(1<<53)) - 1
 	g.filterState = g.filterState*(1-filterAlpha) + raw*filterAlpha
 	g.filterState2 = g.filterState2*(1-filterAlpha) + g.filterState*filterAlpha
 	return int16(g.filterState2 * float64(g.amplitude) * filterCompensation)
