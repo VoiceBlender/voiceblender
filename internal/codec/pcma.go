@@ -7,7 +7,11 @@ import "github.com/zaf/g711"
 type PCMAEncoder struct{}
 
 func (e *PCMAEncoder) Encode(samples []int16) ([]byte, error) {
-	out := make([]byte, len(samples))
+	return e.EncodeInto(nil, samples)
+}
+
+func (e *PCMAEncoder) EncodeInto(dst []byte, samples []int16) ([]byte, error) {
+	out := growBytes(dst, len(samples))
 	for i, s := range samples {
 		out[i] = g711.EncodeAlawFrame(s)
 	}
@@ -21,7 +25,11 @@ func (e *PCMAEncoder) Reset() {}
 type PCMADecoder struct{}
 
 func (d *PCMADecoder) Decode(data []byte) ([]int16, error) {
-	out := make([]int16, len(data))
+	return d.DecodeInto(nil, data)
+}
+
+func (d *PCMADecoder) DecodeInto(dst []int16, data []byte) ([]int16, error) {
+	out := growInt16(dst, len(data))
 	for i, b := range data {
 		out[i] = g711.DecodeAlawFrame(b)
 	}

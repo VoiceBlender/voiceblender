@@ -146,6 +146,48 @@ type Decoder interface {
 	Reset()
 }
 
+// IntoEncoder is implemented by encoders that can write into a caller-owned
+// buffer, growing it only when it is too small.
+type IntoEncoder interface {
+	EncodeInto(dst []byte, samples []int16) ([]byte, error)
+}
+
+// IntoDecoder is the decoding counterpart of IntoEncoder.
+type IntoDecoder interface {
+	DecodeInto(dst []int16, data []byte) ([]int16, error)
+}
+
+// EncodeInto encodes through enc's EncodeInto when it has one and falls back
+// to an allocating Encode otherwise. The result may alias dst.
+func EncodeInto(enc Encoder, dst []byte, samples []int16) ([]byte, error) {
+	if ie, ok := enc.(IntoEncoder); ok {
+		return ie.EncodeInto(dst, samples)
+	}
+	return enc.Encode(samples)
+}
+
+// DecodeInto is the decoding counterpart of EncodeInto.
+func DecodeInto(dec Decoder, dst []int16, data []byte) ([]int16, error) {
+	if id, ok := dec.(IntoDecoder); ok {
+		return id.DecodeInto(dst, data)
+	}
+	return dec.Decode(data)
+}
+
+func growBytes(b []byte, n int) []byte {
+	if cap(b) < n {
+		return make([]byte, n)
+	}
+	return b[:n]
+}
+
+func growInt16(b []int16, n int) []int16 {
+	if cap(b) < n {
+		return make([]int16, n)
+	}
+	return b[:n]
+}
+
 // NewEncoder creates an Encoder for the given codec type.
 func NewEncoder(ct CodecType) (Encoder, error) {
 	switch ct {

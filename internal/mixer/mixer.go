@@ -164,6 +164,9 @@ type Mixer struct {
 	tickPanicLastLog atomic.Int64
 
 	comfortNoise *comfortnoise.Generator
+
+	tickMu  sync.Mutex
+	scratch mixScratch
 }
 
 // SetOnParticipantPanic registers a callback invoked once per participant whose
@@ -826,13 +829,36 @@ func (m *Mixer) safeMixTick() {
 // must stay outside the locked sections. The locks are taken without defer, so
 // a panic under one would leave the mixer wedged and safeMixTick's recover
 // would keep the room ticking on a mutex nobody can acquire.
+// mixScratch holds mixTick's per-tick working buffers. Nothing in it escapes a
+// tick: buffers handed to taps or channels are still allocated fresh.
+type mixScratch struct {
+	parts      []*Participant
+	taps       []io.Writer
+	outTaps    []io.Writer
+	recordTaps []io.Writer
+	hearsList  []map[string]struct{}
+	frames     [][]int16
+	decoded    [][]int16
+	globalSum  []int32
+	sum        []int32
+	inject     []int16
+	cn         []int16
+	cnReady    bool
+}
+
 func (m *Mixer) mixTick() {
+	// A mix loop winding down from a previous run can overlap the new one.
+	m.tickMu.Lock()
+	defer m.tickMu.Unlock()
+	sc := &m.scratch
+	sc.cnReady = false
+
 	m.mu.Lock()
-	parts := make([]*Participant, 0, len(m.participants))
-	taps := make([]io.Writer, 0, len(m.participants))
-	outTaps := make([]io.Writer, 0, len(m.participants))
-	recordTaps := make([]io.Writer, 0, len(m.participants))
-	hearsList := make([]map[string]struct{}, 0, len(m.participants))
+	parts := sc.parts[:0]
+	taps := sc.taps[:0]
+	outTaps := sc.outTaps[:0]
+	recordTaps := sc.recordTaps[:0]
+	hearsList := sc.hearsList[:0]
 	for _, p := range m.participants {
 		parts = append(parts, p)
 		taps = append(taps, p.tap)
@@ -841,16 +867,27 @@ func (m *Mixer) mixTick() {
 		hearsList = append(hearsList, p.Hears)
 	}
 	m.mu.Unlock()
+	sc.parts, sc.taps, sc.outTaps, sc.recordTaps, sc.hearsList = parts, taps, outTaps, recordTaps, hearsList
+	defer clear(sc.parts)
+	defer clear(sc.taps)
+	defer clear(sc.outTaps)
+	defer clear(sc.recordTaps)
+	defer clear(sc.hearsList)
 
 	if len(parts) == 0 {
 		return
 	}
 
-	// Collect latest frames from each participant (non-blocking)
-	frames := make([][]int16, len(parts))
-	muted := make([]bool, len(parts))
+	numSamples := m.samplesPerFrame
+	for len(sc.decoded) < len(parts) {
+		sc.decoded = append(sc.decoded, nil)
+	}
+	if cap(sc.frames) < len(parts) {
+		sc.frames = make([][]int16, len(parts))
+	}
+	// A nil frame is silence and contributes nothing to any mix.
+	frames := sc.frames[:len(parts)]
 	for i, p := range parts {
-		muted[i] = p.Muted.Load()
 		var raw []byte
 		select {
 		case raw = <-p.incoming:
@@ -867,55 +904,51 @@ func (m *Mixer) mixTick() {
 		if recordTaps[i] != nil {
 			recordTaps[i].Write(raw)
 		}
-		if muted[i] {
-			frames[i] = make([]int16, m.samplesPerFrame) // silence — don't contribute to mix
+		if p.Muted.Load() {
+			frames[i] = nil
 		} else {
-			frames[i] = bytesToSamples(raw)
+			sc.decoded[i] = decodeSamples(sc.decoded[i], raw)
+			frames[i] = sc.decoded[i]
 		}
 	}
 
-	numSamples := m.samplesPerFrame
-
-	// Room-level full-mix tap is independent of per-listener routing: it
-	// captures everything happening in the room. Compute the global sum
-	// only when the tap is actually attached.
 	m.tapMu.Lock()
 	tap := m.tapOut
 	m.tapMu.Unlock()
 	cnEnabled := m.comfortNoise.IsEnabled()
-	if tap != nil {
-		globalSum := make([]int32, numSamples)
-		for _, f := range frames {
-			for j := 0; j < numSamples && j < len(f); j++ {
-				globalSum[j] += int32(f[j])
-			}
+
+	// Full-mesh listeners hear everyone but themselves, so their mix is the
+	// global sum minus their own frame rather than a fresh N-1 source sum.
+	needGlobal := tap != nil
+	for i, p := range parts {
+		if hearsList[i] == nil && !p.WriteOnly && p.Writer != nil {
+			needGlobal = true
+			break
 		}
+	}
+	globalSum := growInt32(&sc.globalSum, numSamples)
+	if needGlobal {
+		clear(globalSum)
+		for _, f := range frames {
+			addSamples(globalSum, f)
+		}
+	}
+
+	// Room-level full-mix tap is independent of per-listener routing: it
+	// captures everything happening in the room.
+	if tap != nil {
+		mix := growInt32(&sc.sum, numSamples)
+		copy(mix, globalSum)
 		if cnEnabled {
-			hasAudio := false
-			for j := 0; j < numSamples; j++ {
-				if globalSum[j] != 0 {
-					hasAudio = true
-					break
-				}
-			}
-			if !hasAudio {
-				cnFrame := m.comfortNoise.Generate(numSamples)
-				for j := 0; j < numSamples; j++ {
-					globalSum[j] += int32(cnFrame[j])
-				}
-			}
+			m.addComfortNoiseIfSilent(mix)
 		}
 		fullMix := make([]byte, numSamples*2)
-		for j := 0; j < numSamples; j++ {
-			s := clamp16(globalSum[j])
-			binary.LittleEndian.PutUint16(fullMix[j*2:], uint16(s))
-		}
+		encodeSamples(fullMix, mix)
 		tap.Write(fullMix)
 	}
 
-	// Per-listener filtered mix. Self is excluded by skipping k == i, so no
-	// separate "minus-self" subtraction is needed. The routing matrix is
-	// applied by checking each listener's Hears whitelist; nil whitelist
+	// Per-listener filtered mix. Self is excluded, the routing matrix is
+	// applied by checking each listener's Hears whitelist, and nil whitelist
 	// means full mesh (legacy behavior). Sources with BypassRouting (room
 	// playback, inter-room bridges) are always heard regardless of the
 	// whitelist.
@@ -924,41 +957,27 @@ func (m *Mixer) mixTick() {
 			continue
 		}
 		hears := hearsList[i]
-		listenerSum := make([]int32, numSamples)
-		for k, src := range parts {
-			if k == i {
-				continue
-			}
-			if hears != nil && !src.BypassRouting {
-				if _, ok := hears[src.ID]; !ok {
+		listenerSum := growInt32(&sc.sum, numSamples)
+		if hears == nil {
+			copy(listenerSum, globalSum)
+			subSamples(listenerSum, frames[i])
+		} else {
+			clear(listenerSum)
+			for k, src := range parts {
+				if k == i {
 					continue
 				}
-			}
-			f := frames[k]
-			for j := 0; j < numSamples && j < len(f); j++ {
-				listenerSum[j] += int32(f[j])
+				if !src.BypassRouting {
+					if _, ok := hears[src.ID]; !ok {
+						continue
+					}
+				}
+				addSamples(listenerSum, frames[k])
 			}
 		}
 		// Comfort noise per listener when their personal mix is silent.
 		if cnEnabled {
-			hasAudio := false
-			for j := 0; j < numSamples; j++ {
-				if listenerSum[j] != 0 {
-					hasAudio = true
-					break
-				}
-			}
-			if !hasAudio {
-				cnFrame := m.comfortNoise.Generate(numSamples)
-				for j := 0; j < numSamples; j++ {
-					listenerSum[j] += int32(cnFrame[j])
-				}
-			}
-		}
-		out := make([]byte, numSamples*2)
-		for j := 0; j < numSamples; j++ {
-			s := clamp16(listenerSum[j])
-			binary.LittleEndian.PutUint16(out[j*2:], uint16(s))
+			m.addComfortNoiseIfSilent(listenerSum)
 		}
 		// Mix in any privately-injected audio (per-leg playback).
 		var injRaw []byte
@@ -966,11 +985,13 @@ func (m *Mixer) mixTick() {
 		case injRaw = <-p.inject:
 		default:
 		}
+		out := make([]byte, numSamples*2)
+		encodeSamples(out, listenerSum)
 		if injRaw != nil {
-			injSamples := bytesToSamples(injRaw)
-			for j := 0; j < numSamples && j < len(injSamples); j++ {
+			sc.inject = decodeSamples(sc.inject, injRaw)
+			for j := 0; j < numSamples && j < len(sc.inject); j++ {
 				cur := int16(binary.LittleEndian.Uint16(out[j*2:]))
-				mixed := clamp16(int32(cur) + int32(injSamples[j]))
+				mixed := clamp16(int32(cur) + int32(sc.inject[j]))
 				binary.LittleEndian.PutUint16(out[j*2:], uint16(mixed))
 			}
 		}
@@ -988,16 +1009,71 @@ func (m *Mixer) mixTick() {
 			m.log.Debug("write buffer full, dropping frame", "id", p.ID)
 		}
 	}
-
 }
 
-func bytesToSamples(b []byte) []int16 {
-	n := len(b) / 2
-	out := make([]int16, n)
-	for i := 0; i < n; i++ {
-		out[i] = int16(binary.LittleEndian.Uint16(b[i*2:]))
+// addComfortNoiseIfSilent fills an all-zero mix with this tick's noise frame,
+// generated once and shared: each listener hears only their own mix.
+func (m *Mixer) addComfortNoiseIfSilent(sum []int32) {
+	for _, s := range sum {
+		if s != 0 {
+			return
+		}
 	}
-	return out
+	sc := &m.scratch
+	if !sc.cnReady {
+		if cap(sc.cn) < len(sum) {
+			sc.cn = make([]int16, len(sum))
+		}
+		sc.cn = sc.cn[:len(sum)]
+		m.comfortNoise.GenerateInto(sc.cn)
+		sc.cnReady = true
+	}
+	for j := range sum {
+		sum[j] = int32(sc.cn[j])
+	}
+}
+
+func growInt32(buf *[]int32, n int) []int32 {
+	if cap(*buf) < n {
+		*buf = make([]int32, n)
+	}
+	return (*buf)[:n]
+}
+
+// addSamples adds f into sum over their common length; a nil f is silence.
+func addSamples(sum []int32, f []int16) {
+	n := min(len(sum), len(f))
+	sum, f = sum[:n], f[:n]
+	for j := range f {
+		sum[j] += int32(f[j])
+	}
+}
+
+func subSamples(sum []int32, f []int16) {
+	n := min(len(sum), len(f))
+	sum, f = sum[:n], f[:n]
+	for j := range f {
+		sum[j] -= int32(f[j])
+	}
+}
+
+func encodeSamples(dst []byte, sum []int32) {
+	for j, s := range sum {
+		binary.LittleEndian.PutUint16(dst[j*2:], uint16(clamp16(s)))
+	}
+}
+
+// decodeSamples decodes little-endian PCM into dst, reusing its storage.
+func decodeSamples(dst []int16, b []byte) []int16 {
+	n := len(b) / 2
+	if cap(dst) < n {
+		dst = make([]int16, n)
+	}
+	dst = dst[:n]
+	for i := range dst {
+		dst[i] = int16(binary.LittleEndian.Uint16(b[i*2:]))
+	}
+	return dst
 }
 
 func clamp16(s int32) int16 {

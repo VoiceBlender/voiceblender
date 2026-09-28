@@ -1077,6 +1077,10 @@ func (l *SIPLeg) closeStream(s *mediaStream) {
 // native-rate PCM frames into inFrames.
 func (l *SIPLeg) readLoop(s *mediaStream) {
 	defer l.recoverStreamLoop(s, "readLoop")
+	// Reused across packets: nothing below keeps the packet, its payload or
+	// the decoded samples.
+	pkt := &rtp.Packet{}
+	var decoded []int16
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -1090,8 +1094,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 			s.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
 		}
 
-		pkt, err := s.rtpSess.ReadRTP()
-		if err != nil {
+		if err := s.rtpSess.ReadRTPInto(pkt); err != nil {
 			select {
 			case <-l.ctx.Done():
 				return
@@ -1175,7 +1178,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		l.updateRTPJitter(s, pkt)
 
 		// Decode audio payload
-		samples, err := lc.decoder.Decode(pkt.Payload)
+		samples, err := codec.DecodeInto(lc.decoder, decoded, pkt.Payload)
 		if err != nil {
 			head := pkt.Payload
 			if len(head) > 8 {
@@ -1187,6 +1190,8 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 				"seq", pkt.SequenceNumber)
 			continue
 		}
+
+		decoded = samples
 
 		// Convert decoded samples at native rate to PCM bytes
 		pcm := samplesToBytes(samples)
@@ -1311,6 +1316,12 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 	// silenceFrame is rebuilt whenever the frame size changes, which a
 	// renegotiation to a different rate does.
 	var silenceFrame []byte
+	var (
+		samples []int16
+		encoded []byte
+		wire    []byte
+		pkt     rtp.Packet
+	)
 
 	for {
 		select {
@@ -1407,15 +1418,16 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 		}
 
 		// Parse PCM bytes to int16 samples (already at native rate)
-		samples := bytesToSamples(frame)
+		samples = bytesToSamplesInto(samples, frame)
 
-		encoded, err := lc.encoder.Encode(samples)
+		out, err := codec.EncodeInto(lc.encoder, encoded, samples)
 		if err != nil {
 			l.log.Error("writeLoop: encode failed", "error", err)
 			return
 		}
+		encoded = out
 
-		pkt := &rtp.Packet{
+		pkt = rtp.Packet{
 			Header: rtp.Header{
 				Version:        2,
 				PayloadType:    pt,
@@ -1425,7 +1437,7 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 			},
 			Payload: encoded,
 		}
-		if err := s.rtpSess.WriteRTP(pkt); err != nil {
+		if wire, err = s.rtpSess.WriteRTPBuf(&pkt, wire); err != nil {
 			l.log.Error("writeLoop: WriteRTP failed", "error", err)
 			return
 		}
@@ -2432,10 +2444,18 @@ func samplesToBytes(samples []int16) []byte {
 
 // bytesToSamples converts 16-bit LE PCM bytes to int16 samples.
 func bytesToSamples(pcm []byte) []int16 {
+	return bytesToSamplesInto(nil, pcm)
+}
+
+// bytesToSamplesInto is bytesToSamples reusing dst's storage when it fits.
+func bytesToSamplesInto(dst []int16, pcm []byte) []int16 {
 	n := len(pcm) / 2
-	out := make([]int16, n)
-	for i := 0; i < n; i++ {
-		out[i] = int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+	if cap(dst) < n {
+		dst = make([]int16, n)
 	}
-	return out
+	dst = dst[:n]
+	for i := range dst {
+		dst[i] = int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+	}
+	return dst
 }

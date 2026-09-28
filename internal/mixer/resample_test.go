@@ -647,3 +647,49 @@ func TestResampleIntoNilReceiver(t *testing.T) {
 		t.Error("empty input should come back empty")
 	}
 }
+
+func TestResampleBytesIntoMatchesResampleBytes(t *testing.T) {
+	for _, rates := range [][2]int{{8000, 16000}, {16000, 8000}, {44100, 8000}} {
+		src, dst := rates[0], rates[1]
+		in := make([]byte, src/50*2)
+		for i := 0; i < len(in)/2; i++ {
+			v := int16(8000 * math.Sin(2*math.Pi*440*float64(i)/float64(src)))
+			binary.LittleEndian.PutUint16(in[i*2:], uint16(v))
+		}
+		a := NewPCMResampler(src, dst)
+		b := NewPCMResampler(src, dst)
+		var reuse []byte
+		for frame := 0; frame < 10; frame++ {
+			want := a.ResampleBytes(in)
+			reuse = b.ResampleBytesInto(reuse, in)
+			if !bytes.Equal(reuse, want) {
+				t.Fatalf("%d->%d frame %d: ResampleBytesInto differs", src, dst, frame)
+			}
+		}
+		if allocs := testing.AllocsPerRun(50, func() { reuse = b.ResampleBytesInto(reuse, in) }); allocs > 0 {
+			t.Errorf("%d->%d: ResampleBytesInto allocates %.2f times per call", src, dst, allocs)
+		}
+	}
+}
+
+// The writer reuses its output buffer, so a destination that honours the
+// io.Writer contract (copy, don't retain) must see the same stream as before.
+func TestResampleWriter_ReusedBufferKeepsStream(t *testing.T) {
+	in := make([]byte, 320)
+	for i := 0; i < 160; i++ {
+		binary.LittleEndian.PutUint16(in[i*2:], uint16(int16(i*100)))
+	}
+	var got bytes.Buffer
+	w := NewResampleWriter(&got, 8000, 16000)
+	ref := NewPCMResampler(8000, 16000)
+	var want []byte
+	for frame := 0; frame < 5; frame++ {
+		if _, err := w.Write(in); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, ref.ResampleBytes(in)...)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatal("resampleWriter output differs from the allocating resampler")
+	}
+}

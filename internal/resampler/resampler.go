@@ -332,13 +332,7 @@ func (r *Resampler) resamplerBasicDirect(channelIndex int, in []float64, out []f
 	denRate := r.denRate
 
 	for lastSample < len(in) && outSample < len(out) {
-		sinct := sincTable[sampFracNum*n : sampFracNum*n+n]
-		var sum float64
-		for j, s := range in[lastSample : lastSample+n] {
-			sum += sinct[j] * s
-		}
-
-		out[outSample] = sum
+		out[outSample] = dotF64(sincTable[sampFracNum*n:sampFracNum*n+n], in[lastSample:lastSample+n])
 		outSample++
 		lastSample += intAdvance
 		sampFracNum += fracAdvance

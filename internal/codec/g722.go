@@ -286,7 +286,11 @@ func NewG722Decoder() *G722Decoder {
 // Decode decodes G.722 data to 16kHz PCM samples.
 // Each input byte produces 2 output samples.
 func (d *G722Decoder) Decode(data []byte) ([]int16, error) {
-	samples := make([]int16, len(data)*2)
+	return d.DecodeInto(nil, data)
+}
+
+func (d *G722Decoder) DecodeInto(dst []int16, data []byte) ([]int16, error) {
+	samples := growInt16(dst, len(data)*2)
 
 	for i, code := range data {
 		ilow := int(code & 0x3F)
@@ -400,8 +404,12 @@ func NewG722Encoder() *G722Encoder {
 // Encode encodes 16kHz PCM samples to G.722 data.
 // Input samples must be in pairs (2 samples per encoded byte).
 func (e *G722Encoder) Encode(samples []int16) ([]byte, error) {
+	return e.EncodeInto(nil, samples)
+}
+
+func (e *G722Encoder) EncodeInto(dst []byte, samples []int16) ([]byte, error) {
 	numPairs := len(samples) / 2
-	data := make([]byte, numPairs)
+	data := growBytes(dst, numPairs)
 
 	for i := 0; i < numPairs*2; i += 2 {
 		// QMF analysis filter
