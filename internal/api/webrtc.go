@@ -24,6 +24,16 @@ type WebRTCCandidatesResult struct {
 	Done       bool                      `json:"done"`
 }
 
+// pcDisconnectReason maps a PCMedia OnDisconnect cause to a leg.disconnected
+// reason. ICE state causes keep the leg type's existing iceReason.
+func pcDisconnectReason(cause, iceReason string) string {
+	switch cause {
+	case leg.PCPeerClosed, leg.PCDTLSFailed:
+		return cause
+	}
+	return iceReason
+}
+
 func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, error) {
 	if err := s.validateCustomData(req.CustomData); err != nil {
 		return nil, err
@@ -39,7 +49,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 		OnDisconnect: func(reason string) {
 			if l != nil {
 				s.cleanupLeg(l)
-				s.publishDisconnect(l, "ice_failure")
+				s.publishDisconnect(l, pcDisconnectReason(reason, "ice_failure"))
 			}
 		},
 		OnConnected: func() {

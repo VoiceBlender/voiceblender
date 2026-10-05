@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -36,6 +37,8 @@ type PCMediaConfig struct {
 	// from the remote peer.
 	ExternalIPs []string
 
+	// OnDisconnect fires when the media path is lost: with the ICE state
+	// name ("failed", "disconnected"), or with PCPeerClosed / PCDTLSFailed.
 	OnDisconnect func(reason string)
 	// OnConnected fires once when the peer connection reaches the
 	// Connected state. Subsequent state transitions don't re-fire.
@@ -56,6 +59,13 @@ type PCMediaConfig struct {
 	// carries STUN but drops the DTLS handshake.
 	LoopbackICE bool
 }
+
+// OnDisconnect reasons that are not ICE connection state names. Both reach
+// the wire as cdr.reason on leg.disconnected.
+const (
+	PCPeerClosed = "peer_closed"
+	PCDTLSFailed = "dtls_failed"
+)
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
 // at the codec's native sample rate. Inbound RTP is decoded to PCM on a
@@ -88,6 +98,7 @@ type PCMedia struct {
 	lastDTMFTS  uint32
 
 	started bool
+	closing atomic.Bool
 	log     *slog.Logger
 }
 
@@ -257,14 +268,27 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	var connectedOnce sync.Once
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		m.log.Debug("pcmedia: peer connection state", "state", state.String())
-		if state == webrtc.PeerConnectionStateConnected && cfg.OnConnected != nil {
-			connectedOnce.Do(cfg.OnConnected)
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			if cfg.OnConnected != nil {
+				connectedOnce.Do(cfg.OnConnected)
+			}
+		case webrtc.PeerConnectionStateClosed:
+			// pion closes the peer connection itself on the peer's DTLS
+			// close_notify, which skips the ICE failed/disconnected states.
+			if cfg.OnDisconnect != nil && !m.closing.Load() {
+				cfg.OnDisconnect(PCPeerClosed)
+			}
 		}
 	})
 
 	if dtls := sender.Transport(); dtls != nil {
 		dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
 			m.log.Debug("pcmedia: DTLS state", "state", state.String())
+			if state == webrtc.DTLSTransportStateFailed && cfg.OnDisconnect != nil && !m.closing.Load() {
+				// pion holds the transport lock here; tearing down inline deadlocks.
+				go cfg.OnDisconnect(PCDTLSFailed)
+			}
 		})
 	}
 
@@ -288,6 +312,7 @@ func (m *PCMedia) Start() {
 }
 
 func (m *PCMedia) Close() error {
+	m.closing.Store(true)
 	m.cancel()
 	return m.pc.Close()
 }

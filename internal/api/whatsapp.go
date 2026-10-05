@@ -40,12 +40,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		// Meta is ice-lite + setup:actpass; we must drive DTLS.
 		AnsweringDTLSRole:    webrtc.DTLSRoleClient,
 		EnableTelephoneEvent: true,
-		OnDisconnect: func(reason string) {
-			if legPtr != nil && legPtr.State() != leg.StateHungUp {
-				s.cleanupLeg(legPtr)
-				s.publishDisconnect(legPtr, "ice_"+reason)
-			}
-		},
+		OnDisconnect:         func(reason string) { s.whatsAppMediaLost(legPtr, reason) },
 	})
 	if err != nil {
 		s.Log.Error("whatsapp inbound: create PCMedia", "call_id", callID, "error", err)
@@ -172,6 +167,29 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	}
 }
 
+// whatsAppByeGrace is how long a peer DTLS close waits for the BYE that
+// normally accompanies it, so the leg still reports remote_bye.
+const whatsAppByeGrace = time.Second
+
+// whatsAppMediaLost tears down a leg whose media path is gone without the
+// SIP dialog ending.
+func (s *Server) whatsAppMediaLost(l *leg.WhatsAppLeg, cause string) {
+	if l == nil {
+		return
+	}
+	if cause == leg.PCPeerClosed {
+		select {
+		case <-l.Context().Done():
+		case <-time.After(whatsAppByeGrace):
+		}
+	}
+	if l.State() == leg.StateHungUp {
+		return
+	}
+	s.cleanupLeg(l)
+	s.publishDisconnect(l, pcDisconnectReason(cause, "ice_"+cause))
+}
+
 func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
 	view, err := s.doCreateWhatsAppOutboundLeg(req)
 	if err != nil {
@@ -206,13 +224,15 @@ func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, err
 		}
 	}
 
+	var l *leg.WhatsAppLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
-		Codec:       codec.CodecOpus,
-		ICEServers:  s.Config.ICEServers,
-		ExternalIPs: s.Config.WebRTCExternalIPs,
-		RTPPortMin:  uint16(s.Config.RTPPortMin),
-		RTPPortMax:  uint16(s.Config.RTPPortMax),
-		Log:         s.Log,
+		Codec:        codec.CodecOpus,
+		ICEServers:   s.Config.ICEServers,
+		ExternalIPs:  s.Config.WebRTCExternalIPs,
+		RTPPortMin:   uint16(s.Config.RTPPortMin),
+		RTPPortMax:   uint16(s.Config.RTPPortMax),
+		Log:          s.Log,
+		OnDisconnect: func(reason string) { s.whatsAppMediaLost(l, reason) },
 	})
 	if err != nil {
 		return LegView{}, newAPIError(http.StatusInternalServerError, "failed to create PCMedia")
@@ -230,7 +250,7 @@ func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, err
 		return LegView{}, newAPIError(http.StatusInternalServerError, "failed to set local description")
 	}
 
-	l := leg.NewWhatsAppOutboundPendingLeg(media, req.From, req.To, s.Log)
+	l = leg.NewWhatsAppOutboundPendingLeg(media, req.From, req.To, s.Log)
 	if req.AppID != "" {
 		l.SetAppID(req.AppID)
 	}

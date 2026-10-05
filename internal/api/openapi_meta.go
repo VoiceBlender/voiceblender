@@ -281,8 +281,8 @@ var KnownDisconnectReasons = []string{
 	"hangup", "peer_slow", "connection_reset", "ws_error", "ws_dial_failed",
 	// MoQ legs.
 	"moq_error",
-	// WebRTC/ICE.
-	"ice_failure", "ice_failed", "ice_disconnected",
+	// WebRTC and WhatsApp media path loss.
+	"ice_failure", "ice_failed", "ice_disconnected", "peer_closed", "dtls_failed",
 	// LiveKit legs (lkmedia leaveReasonString and signal close paths).
 	"livekit_client_initiated", "livekit_duplicate_identity",
 	"livekit_server_shutdown", "livekit_kicked", "livekit_room_deleted",

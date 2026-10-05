@@ -27,6 +27,8 @@ var reasonProducers = map[string]bool{
 // through a callback, which likewise hides them from the call sites.
 var reasonConsts = map[string]bool{
 	"legPanicReason": true,
+	"PCPeerClosed":   true,
+	"PCDTLSFailed":   true,
 }
 
 // reasonSinks map a function name to the index of its argument that becomes
