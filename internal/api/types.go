@@ -689,7 +689,7 @@ type SetLegFiltersRequest struct {
 }
 
 var setLegFiltersRequestFields = map[string]FieldEnrichment{
-	"filters": {Description: "The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise, which runs at the rate the leg and room already agreed on and so adds no resampling. A change that did alter the chain's working rate rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block."},
+	"filters": {Description: "The chain to run from now on, replacing whatever is running. Send an empty array to stop all processing. Any change is allowed, including enabling or disabling denoise, which runs at the rate the leg and room already agreed on and so adds no resampling. denoise_gtcrn runs only at 8, 12 or 16 kHz, so in a 48 kHz room it moves the chain to 16 kHz and band-limits the leg to 8 kHz. A change that did alter the chain's working rate rebuilds the resamplers behind a short fade instead of being refused. The change is staged and takes effect on the next audio block."},
 }
 
 // FilterSpec is one entry in a leg's audio filter chain.
@@ -699,8 +699,8 @@ type FilterSpec struct {
 }
 
 var filterSpecFields = map[string]FieldEnrichment{
-	"type":   {Description: "Filter name.", Enum: []string{"bandpass", "denoise", "gain", "pitch", "robotic", "vocoder"}},
-	"params": {Description: "Filter parameters as name/value pairs. Unknown names are ignored; out-of-range values are rejected. bandpass takes low_hz (default 300) and high_hz (default 3400); gain takes volume (-8 to 8, ~3 dB per step); pitch takes semitones (-12 to 12, default -5) and mix (0-1, default 1); robotic takes pitch_hz (50-500, default 110), depth (0-0.95, default 0.75) and mix (0-1, default 1); vocoder takes carrier_hz (40-400, default 110), bands (4-32, default 20) and mix (0-1, default 1); denoise takes none."},
+	"type":   {Description: "Filter name.", Enum: []string{"bandpass", "denoise", "denoise_gtcrn", "gain", "pitch", "robotic", "vocoder"}},
+	"params": {Description: "Filter parameters as name/value pairs. Unknown names are ignored; out-of-range values are rejected. bandpass takes low_hz (default 300) and high_hz (default 3400); gain takes volume (-8 to 8, ~3 dB per step); pitch takes semitones (-12 to 12, default -5) and mix (0-1, default 1); robotic takes pitch_hz (50-500, default 110), depth (0-0.95, default 0.75) and mix (0-1, default 1); vocoder takes carrier_hz (40-400, default 110), bands (4-32, default 20) and mix (0-1, default 1); denoise and denoise_gtcrn take none."},
 }
 
 // VolumeRequest is the request body for PATCH /v1/legs/{id}/play/{playbackID}.

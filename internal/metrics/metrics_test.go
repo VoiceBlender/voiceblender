@@ -183,6 +183,8 @@ func TestAudioFilterMetrics(t *testing.T) {
 	for _, want := range []string{
 		"voiceblender_audio_denoise_streams 0",
 		"voiceblender_audio_denoise_instances 0",
+		"voiceblender_audio_denoise_gtcrn_streams 0",
+		"voiceblender_audio_denoise_gtcrn_instances 0",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metric %q missing from a fresh collector", want)
@@ -218,6 +220,17 @@ func TestAudioFilterMetrics(t *testing.T) {
 	c.SetDenoiseStatsSource(nil)
 	if !strings.Contains(scrape(t, c), "voiceblender_audio_denoise_streams 7") {
 		t.Error("a nil source should be ignored, not installed")
+	}
+
+	// The gtcrn pool has its own source and gauges, independent of rnnoise's.
+	c.SetDenoiseGTCRNStatsSource(func() (int, int) { return 3, 5 })
+	body = scrape(t, c)
+	if !strings.Contains(body, "voiceblender_audio_denoise_gtcrn_streams 3") ||
+		!strings.Contains(body, "voiceblender_audio_denoise_gtcrn_instances 5") {
+		t.Errorf("gtcrn gauges did not follow their source:\n%s", filterLines(body, "gtcrn"))
+	}
+	if !strings.Contains(body, "voiceblender_audio_denoise_streams 7") {
+		t.Error("installing the gtcrn source must not affect the rnnoise gauges")
 	}
 }
 

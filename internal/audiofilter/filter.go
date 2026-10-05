@@ -48,6 +48,13 @@ type Spec struct {
 type Descriptor struct {
 	// RequiredRate is the sample rate the filter must run at, or 0 for any.
 	RequiredRate int
+	// Rates lists the sample rates the filter runs at natively, or nil for
+	// any. A chain whose working rate is not listed runs at the closest listed
+	// rate instead; see ResolveWorkRate.
+	Rates []int
+	// Group makes filters mutually exclusive: a chain may name at most one
+	// filter from each non-empty group.
+	Group string
 	// FrameSamples is the exact frame length the filter needs, or 0 for any.
 	// A filter whose frame length follows the rate leaves this zero and has its
 	// stage implement FrameSizer instead.
@@ -122,6 +129,9 @@ func Validate(specs []Spec) error {
 		return fmt.Errorf("filter chain has %d entries, maximum is %d", len(specs), MaxChainLength)
 	}
 	seen := map[string]bool{}
+	groups := map[string]string{}
+	required := 0
+	var rateSets [][]int
 	for _, s := range specs {
 		name := strings.ToLower(s.Type)
 		d, ok := lookup(name)
@@ -131,6 +141,18 @@ func Validate(specs []Spec) error {
 		if d.Unique && seen[name] {
 			return fmt.Errorf("filter %q may appear only once in a chain", name)
 		}
+		if d.Group != "" {
+			if other, ok := groups[d.Group]; ok && other != name {
+				return fmt.Errorf("filters %q and %q cannot both be in a chain", other, name)
+			}
+			groups[d.Group] = name
+		}
+		if d.RequiredRate > required {
+			required = d.RequiredRate
+		}
+		if d.Rates != nil {
+			rateSets = append(rateSets, d.Rates)
+		}
 		if d.ValidateParams != nil {
 			if err := d.ValidateParams(s.Params); err != nil {
 				return fmt.Errorf("filter %q: %w", name, err)
@@ -138,7 +160,59 @@ func Validate(specs []Spec) error {
 		}
 		seen[name] = true
 	}
+	if rateSets != nil {
+		rates := intersectRates(rateSets)
+		if len(rates) == 0 {
+			return fmt.Errorf("filter chain has no sample rate every filter supports")
+		}
+		if required != 0 && !containsRate(rates, required) {
+			return fmt.Errorf("filter chain requires %d Hz, which not every filter supports", required)
+		}
+	}
 	return nil
+}
+
+// intersectRates returns the rates present in every set, in ascending order.
+func intersectRates(sets [][]int) []int {
+	var out []int
+	for _, r := range sets[0] {
+		in := true
+		for _, set := range sets[1:] {
+			if !containsRate(set, r) {
+				in = false
+				break
+			}
+		}
+		if in {
+			out = append(out, r)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+func containsRate(rates []int, r int) bool {
+	for _, x := range rates {
+		if x == r {
+			return true
+		}
+	}
+	return false
+}
+
+// fitRate returns work when rates allows it, else the lowest allowed rate
+// above work, else the highest allowed. Rounding up keeps every sample the
+// chain was given; rounding down is only taken when nothing higher exists.
+func fitRate(work int, rates []int) int {
+	if len(rates) == 0 || containsRate(rates, work) {
+		return work
+	}
+	for _, r := range rates {
+		if r > work {
+			return r
+		}
+	}
+	return rates[len(rates)-1]
 }
 
 // Corrective returns only the filters that clean audio, dropping effects.

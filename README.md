@@ -128,8 +128,8 @@ by setting `WEBHOOK_URL` or connecting a WebSocket client to `ws://localhost:808
 Every leg can run built-in noise suppression (`denoise`), so a caller in a car, a café or on a
 noisy trunk reaches everyone else, the recording, STT and the AI agent already cleaned up.
 
-- **RNNoise model, pure Go** -- via [rnnoise-go](https://github.com/VoiceBlender/rnnoise-go); no cgo, no external service, no per-minute cost
-- **Native rate** -- runs at the call's own 8, 16 or 48 kHz, with no extra resampling
+- **Two models, pure Go** -- RNNoise via [rnnoise-go](https://github.com/VoiceBlender/rnnoise-go), or GTCRN (`denoise_gtcrn`, lower CPU) via [gtcrn-go](https://github.com/VoiceBlender/gtcrn-go); no cgo, no external service, no per-minute cost
+- **Native rate** -- `denoise` runs at the call's own 8, 16 or 48 kHz, with no extra resampling
 - **Per leg or server-wide** -- set `filters` on a leg, or `AUDIO_FILTERS=denoise` as the default
 - **Live toggle** -- switch it on or off mid-call; suppression ramps in over about a second
 

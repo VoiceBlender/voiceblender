@@ -26,8 +26,9 @@ type Collector struct {
 
 	// denoiseStats is the pool's own view, read at scrape time so there is no
 	// per-leg bookkeeping to drift out of step with reality.
-	denoiseStats atomic.Value // func() (streams, states int)
-	activeRooms  prometheus.Gauge
+	denoiseStats      atomic.Value // func() (streams, states int)
+	denoiseGTCRNStats atomic.Value // func() (streams, states int)
+	activeRooms       prometheus.Gauge
 
 	// legsTotal counts every leg lifecycle transition.
 	// Labels: type ("sip_inbound"|"sip_outbound"|"unknown"), state ("ringing"|"connected"|"disconnected").
@@ -76,8 +77,20 @@ func (c *Collector) SetDenoiseStatsSource(fn func() (streams, instances int)) {
 	}
 }
 
-func (c *Collector) denoise() (int, int) {
-	if fn, ok := c.denoiseStats.Load().(func() (int, int)); ok && fn != nil {
+// SetDenoiseGTCRNStatsSource is SetDenoiseStatsSource for the denoise_gtcrn
+// filter's pool.
+func (c *Collector) SetDenoiseGTCRNStatsSource(fn func() (streams, instances int)) {
+	if fn != nil {
+		c.denoiseGTCRNStats.Store(fn)
+	}
+}
+
+func (c *Collector) denoise() (int, int) { return loadStats(&c.denoiseStats) }
+
+func (c *Collector) denoiseGTCRN() (int, int) { return loadStats(&c.denoiseGTCRNStats) }
+
+func loadStats(v *atomic.Value) (int, int) {
+	if fn, ok := v.Load().(func() (int, int)); ok && fn != nil {
 		return fn()
 	}
 	return 0, 0
@@ -187,6 +200,14 @@ func New(bus *events.Bus) *Collector {
 			Name: "voiceblender_audio_denoise_instances",
 			Help: "Per-stream denoise states the kernel holds, live plus pooled.",
 		}, func() float64 { _, n := c.denoise(); return float64(n) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_denoise_gtcrn_streams",
+			Help: "Legs currently running the denoise_gtcrn filter.",
+		}, func() float64 { n, _ := c.denoiseGTCRN(); return float64(n) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_denoise_gtcrn_instances",
+			Help: "Per-stream denoise_gtcrn states the kernel holds, live plus pooled.",
+		}, func() float64 { _, n := c.denoiseGTCRN(); return float64(n) }),
 	)
 
 	_ = bus.Subscribe(c.handle)

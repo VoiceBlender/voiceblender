@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoisegtcrn"
 	"log/slog"
 	"net/http"
 	"os"
@@ -81,6 +82,11 @@ func main() {
 		log.Error("audio denoise unavailable; legs requesting it will run unfiltered", "error", err)
 	} else {
 		log.Info("audio denoise ready")
+	}
+	if err := denoisegtcrn.Install(); err != nil {
+		log.Error("audio denoise_gtcrn unavailable; legs requesting it will run unfiltered", "error", err)
+	} else {
+		log.Info("audio denoise_gtcrn ready")
 	}
 
 	log.Info("mixer audio",
@@ -243,6 +249,7 @@ func main() {
 	// Prometheus metrics collector
 	metricsCollector := metrics.New(bus)
 	metricsCollector.SetDenoiseStatsSource(denoise.Stats)
+	metricsCollector.SetDenoiseGTCRNStatsSource(denoisegtcrn.Stats)
 	webhookReg.SetMetricsObserver(metricsCollector)
 
 	// HTTP API server
