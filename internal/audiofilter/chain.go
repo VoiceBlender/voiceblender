@@ -19,17 +19,29 @@ const defaultBlockMs = 20
 const fadeMs = 8
 
 // ResolveWorkRate reports the rate a chain will run at: the highest any filter
-// demands, or dstRate when none of them care. A chain of rate-agnostic filters
-// therefore adds no resampling beyond the leg/room conversion already required.
+// demands, or dstRate when none of them care, moved to the closest rate every
+// rate-limited filter supports. A chain of rate-agnostic filters therefore adds
+// no resampling beyond the leg/room conversion already required.
 func ResolveWorkRate(specs []Spec, dstRate int) int {
 	work := 0
+	var rateSets [][]int
 	for _, s := range specs {
-		if d, ok := lookup(s.Type); ok && d.RequiredRate > work {
+		d, ok := lookup(s.Type)
+		if !ok {
+			continue
+		}
+		if d.RequiredRate > work {
 			work = d.RequiredRate
+		}
+		if d.Rates != nil {
+			rateSets = append(rateSets, d.Rates)
 		}
 	}
 	if work == 0 {
-		return dstRate
+		work = dstRate
+	}
+	if rateSets != nil {
+		work = fitRate(work, intersectRates(rateSets))
 	}
 	return work
 }

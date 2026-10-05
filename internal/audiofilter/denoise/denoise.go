@@ -25,6 +25,7 @@ func init() {
 	audiofilter.Register("denoise", audiofilter.Descriptor{
 		Unique:     true,
 		Corrective: true,
+		Group:      "denoise",
 		Available:  Available,
 		New:        newStage,
 	})

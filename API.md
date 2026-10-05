@@ -5283,6 +5283,8 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
 | `voiceblender_audio_denoise_streams` | Gauge | — | Legs currently running the `denoise` filter. Read from the pool at scrape time |
 | `voiceblender_audio_denoise_instances` | Gauge | — | Per-stream denoise states the kernel holds, live plus pooled. One per denoising leg, retained after the leg ends so the next one reuses it |
+| `voiceblender_audio_denoise_gtcrn_streams` | Gauge | — | Legs currently running the `denoise_gtcrn` filter |
+| `voiceblender_audio_denoise_gtcrn_instances` | Gauge | — | Per-stream `denoise_gtcrn` states the kernel holds, live plus pooled |
 | `voiceblender_audio_filters_unavailable_total` | Counter | `filter` | Filters dropped from a requested chain because the filter was unavailable. A non-zero rate means calls are running with less processing than was asked for |
 | `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
 | `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
@@ -5365,7 +5367,8 @@ sending `[]` explicitly disables all processing for that leg.
 
 | Filter | Parameters | Purpose |
 |--------|------------|---------|
-| `denoise` | none | Background noise suppression (RNNoise). Runs at whatever rate the leg and room already agreed on — 8, 16 or 48 kHz — so it adds no resampling. May appear only once in a chain. A room below 8 kHz is outside the model's range and the filter is dropped. |
+| `denoise` | none | Background noise suppression (RNNoise). Runs at the room's rate — 8, 16 or 48 kHz — so it adds no resampling. May appear only once in a chain. A room below 8 kHz is outside the model's range and the filter is dropped. |
+| `denoise_gtcrn` | none | Background noise suppression (GTCRN), an alternative to `denoise`: about half the CPU and deeper suppression, but it runs only at 8, 12 or 16 kHz — see [Choosing a denoiser](#choosing-a-denoiser). May appear only once in a chain and cannot be combined with `denoise`. |
 | `bandpass` | `low_hz` (default `300`), `high_hz` (default `3400`) | Band-limit the audio. `high_hz` is clamped below Nyquist for the leg's rate. |
 | `gain` | `volume` (`-8` to `8`, ~3 dB per step) | Level adjustment, using the same scale as playback volume. |
 | `pitch` | `semitones` (`-12`–`12`, default `-5`), `mix` (`0`–`1`, default `1`) | Shifts the voice up or down by a musical interval, leaving duration unchanged. Formants move with the pitch, so a downward shift sounds like a physically larger speaker rather than the same speaker talking lower. Accurate to within about ±15 cents; larger shifts (beyond roughly ±7 semitones) start to show a faint warble. |
@@ -5376,6 +5379,33 @@ A chain may hold at most 4 filters. Filters run in the order given, and correcti
 come before effects — a speech enhancer placed after an effect will work against it.
 
 `robotic` and `vocoder` are voice *effects*, not voice scrambling: neither obscures identity for privacy purposes. Being effects, they belong last in a chain — putting `denoise` after one makes the enhancer fight what it is handed.
+
+### Choosing a denoiser
+
+`denoise` (RNNoise) and `denoise_gtcrn` (GTCRN) do the same job; pick one per leg. A chain naming
+both is rejected with `400`.
+
+| | `denoise` | `denoise_gtcrn` |
+|---|---|---|
+| CPU per leg | ~60 µs per 10 ms of audio | ~28 µs per 10 ms of audio |
+| Model delay | 20 ms | 16 ms |
+| Sample rates | any rate from 8 kHz | 8, 12 or 16 kHz only |
+| 48 kHz room | runs at 48 kHz, full band kept | runs at 16 kHz, leg band-limited to 8 kHz |
+
+`denoise_gtcrn` runs at the room's rate when the model supports it. Otherwise the chain moves to
+the closest rate it does support and resamples once each way around the whole chain:
+
+| Room rate | `denoise_gtcrn` runs at | Effect |
+|---|---|---|
+| 8000, 16000 | same | No extra resampling |
+| 48000 | 16000 | Leg audio is converted to 16 kHz, filtered, and converted back to 48 kHz. Content above 8 kHz is removed |
+
+In a 48 kHz room that band limit costs nothing for narrowband and wideband sources (G.711, G.722,
+AMR), which have no content above 8 kHz, but it removes the 8–24 kHz "air" from fullband sources
+such as Opus, WebRTC, LiveKit or 48 kHz WebSocket legs. Speech stays fully intelligible; use
+`denoise` where fullband fidelity matters. Other filters in the same chain run at 16 kHz too.
+
+Answering-machine detection runs its denoised copy at 16 kHz, so both filters run there natively.
 
 ### Examples
 
@@ -5405,6 +5435,14 @@ curl -X POST http://localhost:8080/v1/legs/$LEG_ID/answer \
   }'
 ```
 
+GTCRN noise suppression instead of RNNoise:
+
+```bash
+curl -X PUT http://localhost:8080/v1/legs/$LEG_ID/filters \
+  -H 'Content-Type: application/json' \
+  -d '{"filters": [{"type": "denoise_gtcrn"}]}'
+```
+
 Opt a single leg out when a server-wide default is configured:
 
 ```bash
@@ -5427,7 +5465,7 @@ Send `{"filters": []}` to stop all processing. The VSI equivalent is the `set_le
 
 One limit, returning `409`: **the leg must be in a room.** The chain lives on the leg's mixer participant, so a leg outside a room has nothing to change.
 
-Everything else is allowed, including enabling and disabling `denoise`. A change that alters the chain's working rate rebuilds the resamplers and the block behind a short fade (about 8 ms each way) so the transition is a soft dip rather than a click; none of the built-in filters demands a rate, so in practice the rate stays put. Changes are staged and land on the next audio block, so the response reports the chain you asked for.
+Everything else is allowed, including enabling, disabling or switching between `denoise` and `denoise_gtcrn`. A change that alters the chain's working rate — such as enabling `denoise_gtcrn` in a 48 kHz room — rebuilds the resamplers and the block behind a short fade (about 8 ms each way) so the transition is a soft dip rather than a click. Changes are staged and land on the next audio block, so the response reports the chain you asked for.
 
 Two things worth expecting when you enable `denoise` on a live call:
 
@@ -5455,8 +5493,9 @@ sent to see whether anything was dropped:
 - **Suppression deepens over roughly the first second** of a leg's audio while the noise estimate
   converges, so the opening of a call is cleaner than silence but less clean than the rest.
 - **Filtering adds latency** — about 10 ms for a chain containing `denoise` (the model's own 10 ms
-  frame), on a path that already carries a jitter buffer. `denoise` runs at the leg's own rate, so
-  it adds no sample-rate conversion of its own.
+  frame), and up to about 16 ms for `denoise_gtcrn` (its 16 ms frame), on a path that already
+  carries a jitter buffer. `denoise` runs at the room's rate, so it adds no sample-rate conversion
+  of its own; `denoise_gtcrn` adds one only in a 48 kHz room.
 - If the denoise kernel fails to start, legs that requested it run unfiltered rather than failing;
   the leg view shows the reduced chain.
 
