@@ -853,6 +853,7 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 	s.stopLegRecording(l.ID())
 	s.cleanupSIPRECSession(l)
 	s.cleanupSIPRECSRC(l)
+	s.pendingRooms.clear(l.ID())
 	s.LegMgr.Remove(l.ID())
 }
 
@@ -1285,19 +1286,18 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	s.setupHoldCallbacks(l)
 
 	// addToRoom adds the leg to the requested room at most once (on early
-	// media or on connect, whichever comes first).
+	// media or on connect, whichever comes first). It reports false when the
+	// room was deleted meanwhile and the leg has been hung up as a result.
 	var roomJoinOnce sync.Once
-	addToRoom := func() {
+	roomJoined := true
+	addToRoom := func() bool {
 		if req.RoomID == "" {
-			return
+			return true
 		}
 		roomJoinOnce.Do(func() {
-			if err := s.RoomMgr.AddLeg(req.RoomID, l.ID()); err != nil {
-				s.Log.Warn("auto-add leg to room failed", "leg_id", l.ID(), "room_id", req.RoomID, "error", err)
-				return
-			}
-			s.onLegJoinedRoom(req.RoomID, l.ID())
+			roomJoined = s.joinPendingRoom(l, req.RoomID)
 		})
+		return roomJoined
 	}
 
 	// Prepare AMD if requested.
@@ -1386,6 +1386,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	}
 
 	s.LegMgr.Add(l)
+	if req.RoomID != "" {
+		s.pendingRooms.set(l.ID(), req.RoomID)
+	}
 	if req.WebhookURL != "" {
 		s.Webhooks.SetLegWebhook(l.ID(), req.WebhookURL, req.WebhookSecret)
 	}
@@ -1403,9 +1406,10 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		// Derive invite context from the leg's context so that
 		// Hangup (via DELETE) cancels the INVITE and sends CANCEL.
 		ctx := l.Context()
-		if req.RingTimeout > 0 {
+		ringTimeout := s.ringTimeout(req)
+		if ringTimeout > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(req.RingTimeout)*time.Second)
+			ctx, cancel = context.WithTimeout(ctx, ringTimeout)
 			defer cancel()
 		}
 
@@ -1413,7 +1417,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		if err != nil {
 			s.Log.Info("outbound invite failed", "leg_id", l.ID(), "error", err)
 			if l.State() != leg.StateHungUp { // not already deleted via API
-				reason := inviteFailureReason(err, req.RingTimeout > 0, ctx)
+				reason := inviteFailureReason(err, ringTimeout > 0, ctx)
 				s.cleanupLeg(l)
 				s.publishDisconnect(l, reason)
 			}
@@ -1444,7 +1448,9 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 		// Join first: AMD and voice activity detection both want the leg's
 		// filtered audio, and once the chain exists they can share it rather
 		// than each running a denoise pass of their own.
-		addToRoom()
+		if !addToRoom() {
+			return
+		}
 		s.maybeStartSpeakingDetector(l, req.SpeechDetection)
 		startAMD()
 		s.attachOfferedStreamRooms(l, req.Streams)

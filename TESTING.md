@@ -302,6 +302,9 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestMultiStream_RESTAddAttachRemove` | Drives the whole per-leg stream API over HTTP: `POST /v1/legs/{id}/streams` adds a `sendonly` translated stream to a live call via re-INVITE (own RTP port, `a=content:alt`, `a=lang:es`), attaches it to its own room with a role, the peer materializes the matching stream, and `DELETE` removes it leaving only the primary |
 | `TestMultiStream_TranslationTopology` | A two-stream leg's original audio is mixed in one room while its translated stream is mixed in another; the leg's own `RoomID` is unaffected, the stream's participant is `<legID>#<streamID>`, and tearing the leg down detaches the cross-room stream (which removing the leg from its own room would never reach) |
 | `TestOutboundInbound_RingTimeout` | Ring timeout expires, call fails |
+| `TestRingTimeout_Default` | A leg created without `ring_timeout` is ended by the default ring timeout with reason `ring_timeout` (the 60 s default is shortened for the test) |
+| `TestRingTimeout_ExplicitZeroDisablesDefault` | `ring_timeout: 0` still means no timeout — the leg keeps ringing past the default |
+| `TestRoomDelete_CancelsPendingOutboundLeg` | `DELETE /v1/rooms/{id}` cancels an outbound leg created with that `room_id` that is still ringing: reason `room_deleted`, exactly one `leg.disconnected`, and the CANCEL reaches the far end |
 | `TestRecording_StandaloneSIPLeg` | Stereo recording of standalone SIP leg (left=in, right=out) |
 | `TestRecording_InRoomLeg` | Stereo recording of leg in a room (left=participant, right=mix) |
 | `TestRecording_Room` | Mono room mix recording |

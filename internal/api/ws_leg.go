@@ -186,9 +186,9 @@ func (s *Server) runWSOutboundDial(l *leg.WebSocketLeg, req CreateLegRequest, cf
 	}
 
 	ctx := l.Context()
-	if req.RingTimeout > 0 {
+	if d := s.ringTimeout(req); d > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.RingTimeout)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, d)
 		defer cancel()
 	}
 

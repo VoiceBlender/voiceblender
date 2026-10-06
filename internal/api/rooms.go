@@ -78,10 +78,11 @@ func (s *Server) doDeleteRoom(id string) error {
 	// Snapshot participants before tearing the room down so we can publish
 	// leg.disconnected per leg afterwards. RoomMgr.Delete hangs the legs up
 	// (sends BYE) but does not surface them as disconnect events on its own.
-	var participants []leg.Leg
+	var participants, pending []leg.Leg
 	appID := ""
 	if rm, ok := s.RoomMgr.Get(id); ok {
 		participants = rm.Participants()
+		pending = s.pendingRoomLegs(id)
 		appID = rm.AppID
 	}
 
@@ -103,6 +104,12 @@ func (s *Server) doDeleteRoom(id string) error {
 	// ClaimDisconnect gate in publishDisconnect deduplicates against any
 	// concurrent termination path (e.g. a racing DELETE /legs/{id}).
 	for _, l := range participants {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "room_deleted")
+	}
+	// Outbound legs still ringing towards this room are not participants yet,
+	// so RoomMgr.Delete never saw them; cleanupLeg is what cancels them.
+	for _, l := range pending {
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, "room_deleted")
 	}
