@@ -179,7 +179,7 @@ Originate an outbound SIP call.
 | `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
 | `outbound_proxy` | string | no | SIP legs only. Next hop for this INVITE, attached as a loose `Route` header with the Request-URI left unchanged (e.g. `"sip:edge.acme.net:5060;transport=tcp"`). Outranks the matched trunk's `outbound_proxy` and `SIP_OUTBOUND_PROXY`; ignored when `to` resolves to an AOR registered here. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
-| `ring_timeout` | integer | no | Seconds to wait for answer; 0 = no timeout |
+| `ring_timeout` | integer | no | Seconds to wait for answer before the leg is ended with `leg.disconnected` reason `ring_timeout`. Defaults to 60 when omitted; `0` = no timeout, the leg rings until it is answered, refused or deleted. |
 | `max_duration` | integer | no | Maximum call duration in seconds after connect. The call is automatically hung up when reached. 0 or omitted = no limit. |
 | `codecs` | string[] | no | Codec preference order. Supported: `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Defaults to engine config. |
 | `headers` | object | no | Custom SIP headers to include in the outbound INVITE (e.g. `X-Correlation-ID`). Keys are header names, values are header values. |
@@ -447,7 +447,7 @@ Inbound text triggers a `rtt.received` event; outbound text is sent via `POST /v
 | `headers` | object | no | Headers sent on the upgrade request (e.g. `Authorization`, `X-*`, `P-*`). |
 | `room_id` | string | no | Room to auto-add the leg to once connected. |
 | `rtt` | boolean | no | Enable bidi text channel. Default false. |
-| `ring_timeout` | int | no | Seconds to wait for the WS handshake to complete. Default unbounded. |
+| `ring_timeout` | int | no | Seconds to wait for the WS handshake to complete. Defaults to 60 when omitted; `0` = unbounded. |
 | `app_id`, `webhook_url`, `webhook_secret`, `max_duration`, `accept_dtmf`, `speech_detection` | — | no | Same semantics as SIP legs. |
 
 **Response:** `201 Created` — Leg object in `ringing` state with `type: "websocket_out"`. The dial completes asynchronously: `leg.connected` (success) or `leg.disconnected` (one of `ring_timeout`, `service_unavailable`, `unauthorized`, `forbidden`, `not_found`, `ws_dial_failed`).
@@ -2185,7 +2185,16 @@ Get a room with its participants.
 
 ### DELETE /v1/rooms/{id}
 
-Delete a room. All participants are hung up.
+Delete a room. All participants are hung up, and each emits `leg.disconnected` with reason `room_deleted`.
+
+Outbound SIP legs created with this room's `room_id` that have not joined yet — still `ringing`, with no early media — are ended too: the INVITE is cancelled and the leg emits `leg.disconnected` with reason `room_deleted`. Such a leg is not listed in the room's `participants`, so it is easy to miss:
+
+```bash
+# Dial into a room, then give up on the whole call before anyone answers.
+curl -X POST http://localhost:8080/v1/legs \
+  -d '{"type":"sip","to":"sip:102@pbx.example.com","room_id":"room-123"}'
+curl -X DELETE http://localhost:8080/v1/rooms/room-123   # also cancels the ringing leg
+```
 
 **Response:** `200 OK`
 
@@ -4474,7 +4483,7 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `api_hangup` | Hung up via `DELETE /v1/legs/{id}` |
 | `remote_bye` | Remote party sent BYE |
 | `caller_cancel` | Inbound caller hung up before answer |
-| `ring_timeout` | Outbound `ring_timeout` expired before answer |
+| `ring_timeout` | Outbound `ring_timeout` (60 seconds unless the request set one) expired before answer |
 | `max_duration` | Outbound `max_duration` reached after connect |
 | `busy` | Remote returned 486 Busy Here |
 | `unavailable` | Remote returned 480 Temporarily Unavailable |
@@ -4495,7 +4504,7 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `ice_failed`, `ice_disconnected` | WhatsApp leg lost its ICE connection |
 | `peer_closed` | WebRTC or WhatsApp peer closed its media connection (DTLS close) without any other teardown signal. A WhatsApp leg waits one second for the accompanying BYE first, and reports `remote_bye` if it arrives |
 | `dtls_failed` | WebRTC or WhatsApp DTLS handshake failed, so no media could flow |
-| `room_deleted` | Leg was in a room that was deleted via `DELETE /v1/rooms/{id}` |
+| `room_deleted` | Leg was in a room that was deleted via `DELETE /v1/rooms/{id}`, or was an outbound SIP leg still ringing towards that room |
 | `transfer_completed` | Leg ended because a transfer it initiated reached terminal 2xx |
 | `rejected` | Inbound leg rejected by API via `DELETE /v1/legs/{id}` with `reason` (also see other reason values from the rejection mapping table) |
 | `mixer_panic` | The leg's audio path failed inside the mixer and the leg was torn down. The leg had already left its room (`leg.left_room`); it is deaf and mute at this point, so it is hung up rather than left connected. Its room, and any other legs in it, are unaffected |

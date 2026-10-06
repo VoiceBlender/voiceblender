@@ -99,3 +99,61 @@ func TestRoomDelete_RaceWithLegDelete(t *testing.T) {
 		t.Errorf("leg.disconnected count = %d, want 1 (dedup must prevent duplicate from racing room/leg DELETEs)", got)
 	}
 }
+
+// TestRoomDelete_CancelsPendingOutboundLeg verifies that DELETE /v1/rooms/{id}
+// also ends an outbound leg created with that room_id which is still ringing,
+// and therefore not a participant yet: the INVITE is CANCELled and the leg
+// disconnects with reason "room_deleted".
+func TestRoomDelete_CancelsPendingOutboundLeg(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+
+	roomResp := httpPost(t, instA.baseURL()+"/v1/rooms", map[string]interface{}{})
+	var rm roomView
+	decodeJSON(t, roomResp, &rm)
+
+	createResp := httpPost(t, instA.baseURL()+"/v1/legs", map[string]interface{}{
+		"type":    "sip",
+		"uri":     fmt.Sprintf("sip:test@127.0.0.1:%d", instB.sipPort),
+		"codecs":  []string{"PCMU"},
+		"room_id": rm.ID,
+	})
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create leg: unexpected status %d", createResp.StatusCode)
+	}
+	var outbound legView
+	decodeJSON(t, createResp, &outbound)
+
+	// B never answers, so the leg stays ringing and outside the room.
+	inbound := waitForInboundLeg(t, instB.baseURL(), 5*time.Second)
+
+	delResp := httpDelete(t, fmt.Sprintf("%s/v1/rooms/%s", instA.baseURL(), rm.ID))
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete room: status %d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	disc := instA.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == outbound.ID
+	}, 5*time.Second)
+	if got := disc.Data.(*events.LegDisconnectedData).CDR.Reason; got != "room_deleted" {
+		t.Errorf("cdr.reason = %q, want room_deleted", got)
+	}
+
+	// The CANCEL must reach B, or the far end keeps ringing.
+	instB.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == inbound.ID
+	}, 5*time.Second)
+
+	time.Sleep(300 * time.Millisecond) // settle window for any racing duplicate
+	if got := len(instA.collector.matchAll(events.LegDisconnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == outbound.ID
+	})); got != 1 {
+		t.Errorf("leg.disconnected count = %d, want 1", got)
+	}
+	getResp := httpGet(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outbound.ID))
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET leg after room delete: status %d, want 404", getResp.StatusCode)
+	}
+}

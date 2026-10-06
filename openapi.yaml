@@ -1884,6 +1884,7 @@ paths:
         delete:
             operationId: deleteRoom
             summary: Delete a room
+            description: Hangs up every participant. Outbound SIP legs created with this room's `room_id` that are still ringing, and so not participants yet, are cancelled too. Each affected leg emits `leg.disconnected` with reason `room_deleted`.
             tags:
                 - Rooms
             responses:
@@ -3867,8 +3868,8 @@ components:
                     description: SIP Privacy header value (e.g. "id", "none")
                 ring_timeout:
                     type: integer
-                    description: Seconds to wait for answer; 0 = no timeout
-                    default: 0
+                    description: Seconds to wait for answer (sip) or for the handshake (websocket) before the leg is ended with reason ring_timeout. Defaults to 60 when omitted; 0 = no timeout.
+                    default: 60
                 max_duration:
                     type: integer
                     description: Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.

@@ -1029,7 +1029,10 @@ func RoutesMetadata() []RouteMeta {
 		{
 			Method: "DELETE", Path: "/rooms/{id}", OperationID: "deleteRoom",
 			Summary: "Delete a room",
-			Tags:    []string{"Rooms"},
+			Description: "Hangs up every participant. Outbound SIP legs created with this room's " +
+				"`room_id` that are still ringing, and so not participants yet, are cancelled too. " +
+				"Each affected leg emits `leg.disconnected` with reason `room_deleted`.",
+			Tags: []string{"Rooms"},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Room deleted"},
 				404: {Description: "Room not found"},

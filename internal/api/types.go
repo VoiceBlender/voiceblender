@@ -41,7 +41,7 @@ type CreateLegRequest struct {
 	From            string            `json:"from,omitempty"`             // caller ID — a bare user-part ("+15551234567") or a full SIP URI ("sip:alice@pbx.example.com")
 	OutboundProxy   string            `json:"outbound_proxy,omitempty"`   // next-hop SIP proxy for this INVITE; overrides the matched trunk's and the global default
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
-	RingTimeout     int               `json:"ring_timeout,omitempty"`     // seconds; 0 = no timeout
+	RingTimeout     *int              `json:"ring_timeout,omitempty"`     // seconds; omitted = 60, 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
 	Codecs          []string          `json:"codecs,omitempty"`           // codec preference order, e.g. ["PCMU","PCMA","G722","opus"]
 	Headers         map[string]string `json:"headers,omitempty"`          // custom SIP/WS headers for outbound INVITE or WS handshake
@@ -127,7 +127,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
 	"outbound_proxy":   {Description: `Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
-	"ring_timeout":     {Description: "Seconds to wait for answer; 0 = no timeout", Default: 0},
+	"ring_timeout":     {Description: "Seconds to wait for answer (sip) or for the handshake (websocket) before the leg is ended with reason ring_timeout. Defaults to 60 when omitted; 0 = no timeout.", Default: 60},
 	"max_duration":     {Description: "Maximum call duration in seconds after connect. Automatically hung up when reached. 0 or omitted = no limit.", Default: 0},
 	"codecs":           {Description: "Codec preference order (sip legs only)"},
 	"headers":          {Description: "Custom headers to include in the outbound INVITE (sip/whatsapp) or the WebSocket upgrade request (websocket)"},

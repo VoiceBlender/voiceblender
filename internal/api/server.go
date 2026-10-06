@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
@@ -43,6 +44,10 @@ type Server struct {
 	Config     config.Config
 	AllowedIPs []netip.Prefix
 	Log        *slog.Logger
+
+	// DefaultRingTimeout bounds an outbound leg's ringing when the request
+	// omits ring_timeout.
+	DefaultRingTimeout time.Duration
 
 	// MoQWebTransport is set by main.go when MoQ is enabled. The MoQ leg
 	// handler (s.moqLeg) returns 503 if this is nil.
@@ -78,6 +83,10 @@ type Server struct {
 
 	// regAttempts tracks inbound REGISTERs parked awaiting a client decision.
 	regAttempts *registerAttemptStore
+
+	// pendingRooms tracks outbound legs created with a room_id that have not
+	// joined it yet, so deleting the room can cancel them.
+	pendingRooms pendingRoomJoins
 }
 
 func NewServer(
@@ -96,28 +105,29 @@ func NewServer(
 ) *Server {
 	instanceID = cfg.InstanceID
 	s := &Server{
-		Router:           chi.NewRouter(),
-		LegMgr:           legMgr,
-		RoomMgr:          roomMgr,
-		SIPEngine:        engine,
-		Bus:              bus,
-		Webhooks:         webhooks,
-		TTS:              ttsProvider,
-		TTSCache:         ttsCache,
-		S3:               s3Backend,
-		Metrics:          metricsCollector,
-		Config:           cfg,
-		AllowedIPs:       allowedIPs,
-		Log:              log,
-		speakDets:        make(map[string]*speaking.Detector),
-		speechOverride:   make(map[string]*bool),
-		streamRooms:      make(map[string][]AnswerLegStream),
-		siprecSessions:   make(map[string]*siprecSession),
-		siprecRecordings: make(map[string]*siprecRecording),
-		siprecSRCs:       make(map[string]*siprecSRC),
-		transfers:        newTransferStore(),
-		pendingRefers:    newPendingReferStore(),
-		regAttempts:      newRegisterAttemptStore(),
+		Router:             chi.NewRouter(),
+		LegMgr:             legMgr,
+		RoomMgr:            roomMgr,
+		SIPEngine:          engine,
+		Bus:                bus,
+		Webhooks:           webhooks,
+		TTS:                ttsProvider,
+		TTSCache:           ttsCache,
+		S3:                 s3Backend,
+		Metrics:            metricsCollector,
+		Config:             cfg,
+		AllowedIPs:         allowedIPs,
+		Log:                log,
+		DefaultRingTimeout: defaultRingTimeout,
+		speakDets:          make(map[string]*speaking.Detector),
+		speechOverride:     make(map[string]*bool),
+		streamRooms:        make(map[string][]AnswerLegStream),
+		siprecSessions:     make(map[string]*siprecSession),
+		siprecRecordings:   make(map[string]*siprecRecording),
+		siprecSRCs:         make(map[string]*siprecSRC),
+		transfers:          newTransferStore(),
+		pendingRefers:      newPendingReferStore(),
+		regAttempts:        newRegisterAttemptStore(),
 	}
 	// The room layer tears down a mixer-panicked leg but cannot finish the job:
 	// the CDR, the span, the webhook and the LegMgr entry are API-layer state.
