@@ -65,6 +65,7 @@ Full documentation, guides and API reference: <https://voiceblender.org/docs/>
 | `AUDIO_FILTERS` | *(empty)* | Default ingress audio processing chain for new legs, applied to audio arriving from a leg before it reaches the room mixer. Ordered, comma-separated, with optional `:name=value` parameters — e.g. `denoise` or `bandpass:low_hz=300:high_hz=3400,denoise`. Available filters: `denoise` (background noise suppression, RNNoise), `denoise_gtcrn` (alternative GTCRN noise suppression, lower CPU; runs at 8/12/16 kHz, so in a 48 kHz room it band-limits the leg to 8 kHz; cannot be combined with `denoise`), `bandpass` (`low_hz` default 300, `high_hz` default 3400), `gain` (`volume` −8 to 8, ~3 dB per step), `pitch` (shift the voice by semitones; `semitones`, `mix`), `robotic` (metallic voice effect; `pitch_hz`, `depth`, `mix`), `vocoder` (fully synthetic robot voice, harder to understand; `carrier_hz`, `bands`, `mix`). Empty means no processing. A per-leg `filters` field on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this; send `[]` there for no processing. An unparseable value is logged and ignored rather than failing startup. |
 | `SIP_SDP_STRICT_MLINE_ANSWER` | `false` | Emit a port-0 placeholder for every offered `m=` section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP **single-stream** calls emit whenever a peer offers a section we don't handle, such as video. |
 | `SIP_EXTERNAL_IP` | *(empty)* | Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the auto-detected or bind IP. IPv6 has no equivalent: set `SIP_BIND_IPV6` directly to the address you want advertised. |
+| `SIP_LOCAL_NETS` | *(empty)* | Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT, e.g. `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`. A SIP peer inside one of them is advertised `SIP_BIND_IP` (or the auto-detected address) in Contact and in SDP `c=`, where every other peer gets `SIP_EXTERNAL_IP` and `SIP_DOMAIN`. This is what lets one instance serve a carrier that needs the public address and LAN phones that cannot reach it. Matched against the address a call is actually sent to or received from. Empty = every peer is advertised the same address. See [Docker and NAT](#docker-and-nat). |
 | `DEFAULT_SAMPLE_RATE` | `16000` | Default mixer sample rate (Hz) for new rooms when `sample_rate` is not specified. Allowed: `8000`, `16000`, `48000`. |
 | `SIP_CODECS` | `PCMU,PCMA` | Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs **and** accepts on inbound INVITEs (a codec absent from this list cannot be negotiated in either direction). Recognized names (case-insensitive): `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB` (the bare token `AMR` also resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently; if the parsed list ends up empty the default is used. Example: `SIP_CODECS=opus,G722,PCMU,PCMA,AMR-WB,AMR-NB` enables every supported codec, ranked Opus-first. |
 | `SIP_REFER_AUTO_DIAL` | `false` | When `true`, the server accepts an incoming SIP REFER (202) and **dials the target itself**. When `false` (default), the REFER is parked and surfaced as `leg.transfer_requested` for the app to drive via the transfer commands (`accept`/`progress`/`complete`/`decline`); an undecided REFER auto-declines (603, **default-deny** — toll-fraud risk). Outbound transfers via the REST API are unaffected. |
@@ -115,6 +116,40 @@ Full documentation, guides and API reference: <https://voiceblender.org/docs/>
 Verbatim transcript text, DTMF digits and full event payloads appear only at
 `LOG_LEVEL=debug`. Debug output is therefore PII-bearing and should not be
 shipped to a general-purpose log sink.
+
+## Docker and NAT
+
+A SIP peer sends its in-dialog requests (ACK, BYE, hold) to the address VoiceBlender
+put in its `Contact` header, and its audio to the address in the SDP `c=` line.
+If that address is one the peer cannot reach, the call still sets up, because
+replies follow the path the request took, but the peer's hangup never arrives:
+the leg stays `connected` and no `leg.disconnected` is published.
+
+This is the default outcome in a Docker bridge network. With `SIP_BIND_IP=0.0.0.0`
+the advertised address is auto-detected from inside the container, and that is
+the container's own address (`172.x.x.x`), which nothing outside the Docker host
+can route to. Run with `LOG_LEVEL=debug` to see the addresses chosen at startup
+(`SIP advertised addresses`).
+
+Pick one:
+
+- **Host networking** (`network_mode: host`, Linux only). The auto-detected
+  address is then the host's own, and no further setting is needed.
+- **Bridge networking, one kind of peer.** Set `SIP_EXTERNAL_IP` to the address
+  peers use to reach the host: its LAN address for phones on the LAN, its public
+  address for a carrier.
+- **Bridge networking, carrier and LAN phones together.** Advertise the public
+  address by default and the LAN address to local networks:
+
+  ```bash
+  SIP_LISTEN_IP=0.0.0.0        # socket bind inside the container
+  SIP_BIND_IP=10.100.1.26      # the host's LAN address, advertised to SIP_LOCAL_NETS
+  SIP_EXTERNAL_IP=198.51.100.7 # the public address, advertised to everyone else
+  SIP_LOCAL_NETS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+  ```
+
+The same three settings apply outside Docker, on any host behind NAT that also
+serves peers on its own network.
 
 ## S3 bucket preflight
 

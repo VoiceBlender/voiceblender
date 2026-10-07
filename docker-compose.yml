@@ -4,6 +4,11 @@ services:
     env_file: voiceblender.env
     environment:
       SIP_BIND_IP: "0.0.0.0"
+      # In this bridge network the auto-detected SIP address is the container's
+      # own, which peers cannot reach: their BYE never arrives. Set
+      # SIP_EXTERNAL_IP to the address peers use to reach this host. See
+      # "Docker and NAT" in CONFIGURATION.md.
+      # SIP_EXTERNAL_IP: "203.0.113.10"
       HTTP_ADDR: ":8080"
     ports:
       - "8080:8080"

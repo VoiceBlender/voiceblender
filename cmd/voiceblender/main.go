@@ -140,6 +140,12 @@ func main() {
 	})
 	registrar.Start(ctx)
 
+	sipLocalNets, err := sipmod.ParseLocalNets(cfg.SIPLocalNets)
+	if err != nil {
+		log.Error("invalid SIP_LOCAL_NETS", "error", err)
+		os.Exit(1)
+	}
+
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:      cfg.SIPBindIP,
@@ -147,6 +153,7 @@ func main() {
 		ListenIP:    cfg.SIPListenIP,
 		ListenIPV6:  cfg.SIPListenIPV6,
 		ExternalIP:  cfg.SIPExternalIP,
+		LocalNets:   sipLocalNets,
 		PublicHost:  cfg.SIPDomain,
 		BindPort:    sipPort,
 		TLSBindPort: sipTLSPort,

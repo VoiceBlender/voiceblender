@@ -31,6 +31,9 @@ info:
         - name: SIP_EXTERNAL_IP
           default: ""
           description: Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised.
+        - name: SIP_LOCAL_NETS
+          default: ""
+          description: Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT. A SIP peer inside one of them is advertised SIP_BIND_IP (or the auto-detected address) in Contact and SDP c=, where every other peer gets SIP_EXTERNAL_IP and SIP_DOMAIN. Empty = every peer is advertised the same address.
         - name: SIP_PORT
           default: "5060"
           description: SIP listen port

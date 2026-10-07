@@ -413,6 +413,7 @@ func configVars() *seq {
 		{Name: "SIP_BIND_IPV6", Default: "(empty = v4-only)", Description: "IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments"},
 		{Name: "SIP_LISTEN_IPV6", Default: "(same as SIP_BIND_IPV6)", Description: "Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)"},
 		{Name: "SIP_EXTERNAL_IP", Default: "", Description: "Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised."},
+		{Name: "SIP_LOCAL_NETS", Default: "", Description: "Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT. A SIP peer inside one of them is advertised SIP_BIND_IP (or the auto-detected address) in Contact and SDP c=, where every other peer gets SIP_EXTERNAL_IP and SIP_DOMAIN. Empty = every peer is advertised the same address."},
 		{Name: "SIP_PORT", Default: "5060", Description: "SIP listen port"},
 		{Name: "SIP_TLS_PORT", Default: "(disabled)", Description: "SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration."},
 		{Name: "SIP_TLS_CERT", Default: "", Description: "Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN."},
