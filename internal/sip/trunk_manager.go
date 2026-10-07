@@ -3,6 +3,7 @@ package sip
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,9 +11,9 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// TrunkManager is the concurrent registry of all SIP trunks (sip_register
-// today; ip_ip etc. in the future). Lookups are type-agnostic and indexed by
-// id, canonical AOR, and upstream peer socket.
+// TrunkManager is the concurrent registry of all SIP trunks (sip_register and
+// ip_ip). Lookups are type-agnostic and indexed by id, canonical AOR, and
+// upstream peer socket.
 type TrunkManager struct {
 	mu       sync.RWMutex
 	byID     map[string]Trunk
@@ -153,33 +154,56 @@ func (m *TrunkManager) LookupByPeerSocket(host string, port int) Trunk {
 	return nil
 }
 
-// LookupInbound resolves the trunk that delivered an inbound INVITE. Trunks
-// whose peer socket matches host:port (or host alone, for ephemeral source
-// ports) are narrowed by the Request-URI user against each trunk's Contact
-// user, then by the To URI against each trunk's AOR. unique is false when
-// more than one trunk survives; the returned trunk is then arbitrary.
+// LookupInbound resolves the trunk that delivered an inbound INVITE. A trunk
+// is a candidate when its peer socket matches host:port (or host alone, for
+// ephemeral source ports) or, for an InboundSourceMatcher, when its source
+// list contains host. Exact socket matches win, then the longest matching
+// prefix. Survivors are narrowed by the Request-URI user against each trunk's
+// Contact user, then by the To URI against each trunk's AOR. unique is false
+// when more than one trunk survives; the returned trunk is then arbitrary.
 func (m *TrunkManager) LookupInbound(host string, port int, requestUser string, to sip.Uri) (t Trunk, unique bool) {
 	if host == "" {
 		return nil, false
 	}
+	addr, isIP := parsePeerAddr(host)
+	addr = addr.WithZone("")
+
 	m.mu.RLock()
-	var exact, hostOnly []Trunk
+	var exact, loose []Trunk
+	looseBits := -1
 	for _, cand := range m.byID {
-		h, p, _ := cand.PeerSocket()
-		if h == "" || !strings.EqualFold(h, host) {
-			continue
-		}
-		if p == port {
-			exact = append(exact, cand)
+		var bits int
+		var isExact bool
+		if sm, ok := cand.(InboundSourceMatcher); ok {
+			if !isIP {
+				continue
+			}
+			var matched bool
+			bits, isExact, matched = sm.MatchInboundSource(netip.AddrPortFrom(addr, uint16(port)))
+			if !matched {
+				continue
+			}
 		} else {
-			hostOnly = append(hostOnly, cand)
+			h, p, _ := cand.PeerSocket()
+			if h == "" || !strings.EqualFold(h, host) {
+				continue
+			}
+			bits, isExact = addr.BitLen(), p == port
+		}
+		switch {
+		case isExact:
+			exact = append(exact, cand)
+		case bits > looseBits:
+			loose, looseBits = []Trunk{cand}, bits
+		case bits == looseBits:
+			loose = append(loose, cand)
 		}
 	}
 	m.mu.RUnlock()
 
 	cands := exact
 	if len(cands) == 0 {
-		cands = hostOnly
+		cands = loose
 	}
 	if len(cands) == 0 {
 		return nil, false

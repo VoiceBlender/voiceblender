@@ -1134,26 +1134,51 @@ func splitFromIdentity(from string) (user, host string) {
 	return from, ""
 }
 
-// applyFromIdentity resolves a caller-supplied `from` into opts.FromUser /
-// opts.FromHost and, when it matches a registered outbound trunk's AOR (either
-// as a full URI or just a user-part), auto-attaches that trunk's digest
-// credentials, routes the INVITE through its upstream proxy, and places the
-// From / P-Asserted-Identity in its AOR realm. Credentials already on opts
+// applyFromIdentity resolves the identity and upstream of an outbound INVITE.
+// The trunk is t when the caller named one, else the trunk whose AOR matches
+// `from` (as a full URI or just a user-part). A trunk attaches its digest
+// credentials, routes the INVITE at its upstream, and places the From /
+// P-Asserted-Identity in its realm. Credentials already on opts
 // (caller-supplied auth) win.
 //
-// Returns the matched trunk ID, or "" when nothing matched.
+// Returns the trunk ID, or "" when no trunk applies.
 //
 // Shared by POST /v1/legs and the REFER originate path so a transferred call
 // claims the same identity — and reaches the same upstream — as one the app
 // dialled itself.
 //
 // Also applies SIP_OUTBOUND_PROXY when nothing more specific chose a next hop.
-func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) string {
-	trunkID := s.applyTrunkIdentity(from, opts)
-	// The global default must not displace a matched trunk's registrar route:
-	// setting the env var would otherwise silently redirect calls on every
-	// already-working trunk.
-	if opts.RouteURI == nil && opts.ProxyURI == nil && s.Config.SIPOutboundProxy != "" {
+func (s *Server) applyFromIdentity(t sipmod.Trunk, from string, recipient sip.Uri, opts *sipmod.InviteOptions) string {
+	if t == nil {
+		t = s.trunkForFrom(from)
+	} else if from == "" {
+		// An upstream that authenticated an identity rejects any other From.
+		from = t.AOR()
+	}
+	opts.FromUser, opts.FromHost = splitFromIdentity(from)
+
+	trunkID := ""
+	if t != nil {
+		route := t.OutboundRoute(recipient)
+		if opts.AuthUsername == "" && opts.AuthPassword == "" {
+			opts.AuthUsername, opts.AuthPassword = route.AuthUsername, route.AuthPassword
+		}
+		opts.RouteURI = route.RouteURI
+		// The trunk already carries its own proxy or the global default,
+		// resolved at create time.
+		if route.ProxyURI != nil {
+			opts.ProxyURI = route.ProxyURI
+		}
+		if opts.FromHost == "" {
+			opts.FromHost = route.FromHost
+		}
+		trunkID = t.ID()
+	}
+
+	// The global default must not displace a trunk's own route: setting the
+	// env var would otherwise silently redirect calls on every already-working
+	// trunk.
+	if t == nil && opts.ProxyURI == nil && s.Config.SIPOutboundProxy != "" {
 		u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
 		if err != nil {
 			s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; ignoring", "error", err)
@@ -1164,47 +1189,19 @@ func (s *Server) applyFromIdentity(from string, opts *sipmod.InviteOptions) stri
 	return trunkID
 }
 
-// applyTrunkIdentity is the trunk-matching half of applyFromIdentity.
-func (s *Server) applyTrunkIdentity(from string, opts *sipmod.InviteOptions) string {
-	opts.FromUser, opts.FromHost = splitFromIdentity(from)
+// trunkForFrom returns the trunk whose AOR matches `from`, or nil.
+func (s *Server) trunkForFrom(from string) sipmod.Trunk {
 	if from == "" {
-		return ""
+		return nil
 	}
-
-	var matchedTrunk sipmod.Trunk
-	// Full-URI match first.
 	fromURI := sip.Uri{}
 	if err := sip.ParseUri(from, &fromURI); err == nil && fromURI.User != "" && fromURI.Host != "" {
-		matchedTrunk = s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI))
+		if t := s.SIPEngine.Trunks().LookupByFromAOR(sipmod.CanonicalizeAOR(fromURI)); t != nil {
+			return t
+		}
 	}
 	// User-only fallback (POST /v1/legs with `from: "alice"`).
-	if matchedTrunk == nil {
-		matchedTrunk = s.SIPEngine.Trunks().LookupByAORUser(from)
-	}
-	if matchedTrunk == nil || matchedTrunk.Type() != sipmod.TrunkTypeSIPRegister {
-		return ""
-	}
-	reg, ok := matchedTrunk.(*sipmod.OutboundRegistration)
-	if !ok {
-		return ""
-	}
-
-	if opts.AuthUsername == "" && opts.AuthPassword == "" {
-		opts.AuthUsername, opts.AuthPassword = reg.Credentials()
-	}
-	regURI := reg.RegistrarURI()
-	opts.RouteURI = &regURI
-	// The trunk already carries its own proxy or the global default, resolved
-	// at create time.
-	if p := reg.OutboundProxy(); p != nil {
-		opts.ProxyURI = p
-	}
-	// The registrar authenticated us under the AOR realm; claim that identity
-	// on the wire unless the caller named a host explicitly.
-	if opts.FromHost == "" {
-		opts.FromHost = reg.FromHost()
-	}
-	return reg.ID()
+	return s.SIPEngine.Trunks().LookupByAORUser(from)
 }
 
 // doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
@@ -1227,6 +1224,13 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			return LegView{}, newAPIError(http.StatusBadRequest, "invalid outbound_proxy: %v", err)
 		}
 		legProxy = &u
+	}
+
+	var trunk sipmod.Trunk
+	if req.TrunkID != "" {
+		if trunk = s.SIPEngine.Trunks().Get(req.TrunkID); trunk == nil {
+			return LegView{}, newAPIError(http.StatusNotFound, "trunk not found")
+		}
 	}
 
 	// Reject a malformed multi-stream offer up front: letting it through would
@@ -1321,7 +1325,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	if req.RTT {
 		inviteOpts.RTTEnabled = true
 	}
-	trunkIDForLeg := s.applyFromIdentity(req.From, &inviteOpts)
+	trunkIDForLeg := s.applyFromIdentity(trunk, req.From, recipient, &inviteOpts)
 	if legProxy != nil {
 		inviteOpts.ProxyURI = legProxy
 	}
@@ -1528,8 +1532,8 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		}
 	}
 
-	// Tag the call with a trunk_id when the INVITE's source socket matches
-	// a known outbound trunk's registrar.
+	// Tag the call with a trunk_id when the INVITE's source matches a known
+	// trunk's upstream.
 	var trunkID, ownerAppID string
 	sourceAddr := call.Request.Source()
 	if sourceAddr != "" {

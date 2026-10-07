@@ -53,11 +53,11 @@ type LegRingingData struct {
 	To            string            `json:"to,omitempty"`
 	SIPHeaders    map[string]string `json:"sip_headers,omitempty"`
 	OfferedCodecs []OfferedCodec    `json:"offered_codecs,omitempty"`
-	// TrunkID identifies the trunk (outbound SIP registration) that delivered
-	// the call. Set on inbound INVITEs whose source socket matches a known
-	// trunk's registrar (narrowed by Request-URI user and To when several
-	// share it); populated on outbound legs whose From matches a registered
-	// AOR. Empty otherwise.
+	// TrunkID identifies the SIP trunk carrying the call. Set on inbound
+	// INVITEs whose source matches a trunk's upstream (narrowed by Request-URI
+	// user and To when several share it), and on outbound legs placed through
+	// a trunk, selected by trunk_id or by a From matching its AOR. Empty
+	// otherwise.
 	TrunkID string `json:"trunk_id,omitempty"`
 	// SourceAddress is the host:port the INVITE actually arrived on
 	// (inbound legs only). Useful for diagnostics when the peer's Via /
@@ -651,6 +651,29 @@ type SIPOutboundRegistrationExpiredData struct {
 	AOR       string `json:"aor"`
 	Registrar string `json:"registrar"`
 	Reason    string `json:"reason"`
+}
+
+// --- SIP trunk health ---
+
+// SIPTrunkScope embeds in trunk events that are not registration-specific.
+type SIPTrunkScope struct {
+	AppID string `json:"app_id,omitempty"`
+}
+
+func (s SIPTrunkScope) GetLegID() string  { return "" }
+func (s SIPTrunkScope) GetRoomID() string { return "" }
+func (s SIPTrunkScope) GetAppID() string  { return s.AppID }
+
+// SIPTrunkStatusData is shared by sip.trunk_up and sip.trunk_down, which fire
+// when a trunk's OPTIONS health check changes outcome. StatusCode is 0 when no
+// response arrived; Reason is then "timeout" or the transport error.
+type SIPTrunkStatusData struct {
+	SIPTrunkScope
+	TrunkID    string `json:"trunk_id"`
+	TrunkType  string `json:"trunk_type"`
+	PeerURI    string `json:"peer_uri"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // LiveKit (Model B): no special event types. Remote LK participants

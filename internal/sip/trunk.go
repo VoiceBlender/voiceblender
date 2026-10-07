@@ -1,10 +1,13 @@
 package sip
 
-import "context"
+import (
+	"context"
+	"net/netip"
+
+	"github.com/emiago/sipgo/sip"
+)
 
 // TrunkType discriminates the upstream connection style of a SIP trunk.
-// Only TrunkTypeSIPRegister is implemented today; other values are reserved
-// for the OpenAPI/AsyncAPI contract and rejected at request time.
 type TrunkType string
 
 const (
@@ -13,8 +16,9 @@ const (
 	// flow through that registered identity.
 	TrunkTypeSIPRegister TrunkType = "sip_register"
 
-	// TrunkTypeIPIP: reserved for static-IP peering (no REGISTER). Not yet
-	// implemented; the trunks handler returns 501 when requested.
+	// TrunkTypeIPIP: static peering with a fixed upstream, no REGISTER.
+	// Outbound calls are routed at the peer; inbound calls are recognised by
+	// their source address.
 	TrunkTypeIPIP TrunkType = "ip_ip"
 )
 
@@ -29,9 +33,31 @@ const (
 	TrunkStatusExpired       TrunkStatus = "expired"
 )
 
+// OutboundRoute is what a trunk contributes to an outbound INVITE placed
+// through it.
+type OutboundRoute struct {
+	// RouteURI is the trunk's upstream as a loose-route hop. nil when the
+	// Request-URI already reaches it.
+	RouteURI *sip.Uri
+	// ProxyURI is the trunk's outbound proxy; it outranks RouteURI.
+	ProxyURI *sip.Uri
+	// FromHost is the realm for From / P-Asserted-Identity. Empty leaves the
+	// engine's public host.
+	FromHost     string
+	AuthUsername string
+	AuthPassword string
+}
+
+// InboundSourceMatcher is implemented by trunks that claim inbound INVITEs by
+// a static source list rather than by PeerSocket. bits is the length of the
+// longest matching prefix; exact reports a full host:port match.
+type InboundSourceMatcher interface {
+	MatchInboundSource(src netip.AddrPort) (bits int, exact bool, ok bool)
+}
+
 // Trunk is the abstract resource managed by the TrunkManager. Each concrete
-// type (sip_register, future ip_ip, ...) implements this interface; lookups
-// over the manager are type-agnostic.
+// type (sip_register, ip_ip) implements this interface; lookups over the
+// manager are type-agnostic.
 type Trunk interface {
 	ID() string
 	Type() TrunkType
@@ -46,9 +72,12 @@ type Trunk interface {
 	// upstream addresses inbound INVITEs to it. Empty when not applicable.
 	ContactUser() string
 	AppID() string
+	// OutboundRoute returns the routing, identity and credentials for an
+	// outbound INVITE to recipient placed through this trunk.
+	OutboundRoute(recipient sip.Uri) OutboundRoute
 	Snapshot() TrunkView
 	// Start launches the background lifecycle (REGISTER + refresh for
-	// sip_register). Returns immediately.
+	// sip_register, the OPTIONS health check for ip_ip). Returns immediately.
 	Start(ctx context.Context)
 	// Stop tears the trunk down (de-register for sip_register). Best-effort;
 	// honours ctx for timeout.
@@ -97,7 +126,21 @@ type SIPRegisterTrunkView struct {
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
-// IPIPTrunkView is the placeholder shape for the unimplemented ip_ip type.
+// IPIPTrunkView holds the ip_ip-specific fields. Credentials (password) are
+// never exposed.
 type IPIPTrunkView struct {
-	PeerURI string `json:"peer_uri,omitempty"`
+	PeerURI       string `json:"peer_uri"`
+	OutboundProxy string `json:"outbound_proxy,omitempty"`
+	AOR           string `json:"aor,omitempty"`
+	Username      string `json:"username,omitempty"`
+	// InboundSources is the effective source list inbound INVITEs are matched
+	// against, in canonical CIDR form: the configured entries plus the
+	// peer_uri host when that is an IP literal.
+	InboundSources             []string `json:"inbound_sources"`
+	OptionsPingIntervalSeconds int      `json:"options_ping_interval_seconds,omitempty"`
+	LastPingAt                 string   `json:"last_ping_at,omitempty"`
+	// LastPingStatusCode is the SIP status of the most recent OPTIONS reply;
+	// absent when the peer did not answer.
+	LastPingStatusCode    int  `json:"last_ping_status_code,omitempty"`
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }

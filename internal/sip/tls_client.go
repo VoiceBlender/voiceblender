@@ -5,9 +5,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 // ClientTLSConfig controls how the certificate of a remote SIP TLS peer
@@ -97,6 +101,28 @@ func (e *Engine) RemoveInsecureTLSPeer(host string) {
 	if e != nil && e.peerTrust != nil {
 		e.peerTrust.remove(host)
 	}
+}
+
+// trustTLSNextHop exempts a trunk's next hop from certificate verification and
+// returns the hostname to hand back to RemoveInsecureTLSPeer, or "" when the
+// exemption does not apply. Only a TLS next hop named by hostname qualifies: an
+// IP literal sends no SNI, so the dial cannot be told apart from any other.
+func (e *Engine) trustTLSNextHop(next sip.Uri, transport string, log *slog.Logger) string {
+	if e == nil {
+		return ""
+	}
+	if !strings.EqualFold(transport, "tls") {
+		log.Warn("tls_insecure_skip_verify ignored: trunk next hop is not TLS", "transport", transport)
+		return ""
+	}
+	if net.ParseIP(next.Host) != nil {
+		log.Warn("tls_insecure_skip_verify ignored: an IP-literal next hop cannot be exempted per trunk; "+
+			"use SIP_TLS_CA_FILE or SIP_TLS_INSECURE_SKIP_VERIFY", "host", next.Host)
+		return ""
+	}
+	e.AddInsecureTLSPeer(next.Host)
+	log.Warn("certificate verification disabled for trunk peer", "host", next.Host)
+	return next.Host
 }
 
 // buildClientTLSConfig produces the dial-side TLS config shared by every

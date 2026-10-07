@@ -40,6 +40,7 @@ type CreateLegRequest struct {
 	URI             string            `json:"uri,omitempty"`              // deprecated alias for `to` (sip legs only)
 	From            string            `json:"from,omitempty"`             // caller ID — a bare user-part ("+15551234567") or a full SIP URI ("sip:alice@pbx.example.com")
 	OutboundProxy   string            `json:"outbound_proxy,omitempty"`   // next-hop SIP proxy for this INVITE; overrides the matched trunk's and the global default
+	TrunkID         string            `json:"trunk_id,omitempty"`         // SIP trunk to place the call through; overrides trunk selection by `from` (sip legs only)
 	Privacy         string            `json:"privacy,omitempty"`          // SIP Privacy header value (e.g. "id", "none")
 	RingTimeout     *int              `json:"ring_timeout,omitempty"`     // seconds; omitted = 60, 0 = no timeout
 	MaxDuration     int               `json:"max_duration,omitempty"`     // seconds; 0 = no limit
@@ -125,6 +126,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"); a \"sips:\" URI or a \";transport=tls\" param sends the INVITE over TLS, and \";transport=tcp\" over TCP. For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
+	"trunk_id":         {Description: `ID of the SIP trunk (POST /v1/sip/trunks) to place this call through. The trunk supplies the route to its upstream, its digest credentials and, unless "from" names a host, the From realm; when "from" is omitted the trunk's AOR is used. Takes precedence over selecting a trunk by matching "from" against trunk AORs. An unknown ID is rejected with 404. SIP legs only.`},
 	"outbound_proxy":   {Description: `Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.`},
 	"privacy":          {Description: `SIP Privacy header value (e.g. "id", "none")`},
 	"ring_timeout":     {Description: "Seconds to wait for answer (sip) or for the handshake (websocket) before the leg is ended with reason ring_timeout. Defaults to 60 when omitted; 0 = no timeout.", Default: 60},
@@ -903,8 +905,8 @@ var webRTCOfferRequestFields = map[string]FieldEnrichment{
 }
 
 // CreateTrunkRequest is the request body for POST /v1/sip/trunks. The shape
-// is typed by `type`; today only "sip_register" is implemented. "ip_ip"
-// (static-IP peering, no REGISTER) is reserved and rejected with 501.
+// is typed by `type`: "sip_register" (REGISTER to an upstream registrar) or
+// "ip_ip" (static peering, no REGISTER).
 type CreateTrunkRequest struct {
 	Type        string                `json:"type"`
 	AppID       string                `json:"app_id,omitempty"`
@@ -913,14 +915,13 @@ type CreateTrunkRequest struct {
 }
 
 // TrunkTypeEnum lists every trunk type understood by the request schema.
-// "ip_ip" is reserved (handler returns 501); "sip_register" is implemented.
 var TrunkTypeEnum = []string{"sip_register", "ip_ip"}
 
 var createTrunkRequestFields = map[string]FieldEnrichment{
-	"type":         {Description: "Trunk type discriminator. Only `sip_register` is implemented today; `ip_ip` is reserved and returns 501.", Enum: TrunkTypeEnum},
+	"type":         {Description: "Trunk type discriminator. `sip_register` REGISTERs to an upstream registrar; `ip_ip` peers with a fixed upstream without registering.", Enum: TrunkTypeEnum},
 	"app_id":       {Description: "Application identifier carried through to every event emitted by this trunk."},
 	"sip_register": {Description: "Required when type == \"sip_register\". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry)."},
-	"ip_ip":        {Description: "Reserved for static-IP peering (no REGISTER). Not yet implemented; supplying this returns 501."},
+	"ip_ip":        {Description: "Required when type == \"ip_ip\". Configures static peering with a fixed upstream (peer URI, optional digest credentials, inbound source addresses, OPTIONS health check)."},
 }
 
 // SIPRegisterTrunkSpec is the per-type body for sip_register trunks. The
@@ -949,13 +950,30 @@ var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
 	"expires_seconds":          {Description: "Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600)."},
 }
 
-// IPIPTrunkSpec is the placeholder shape for the unimplemented ip_ip type.
+// IPIPTrunkSpec is the per-type body for ip_ip trunks. The password is never
+// returned in any response.
 type IPIPTrunkSpec struct {
-	PeerURI string `json:"peer_uri,omitempty"`
+	PeerURI                    string   `json:"peer_uri"`
+	OutboundProxy              string   `json:"outbound_proxy,omitempty"`
+	AOR                        string   `json:"aor,omitempty"`
+	Username                   string   `json:"username,omitempty"`
+	Password                   string   `json:"password,omitempty"`
+	InboundSources             []string `json:"inbound_sources,omitempty"`
+	OptionsPingIntervalSeconds int      `json:"options_ping_interval_seconds,omitempty"`
+	// TLSInsecureSkipVerify disables certificate verification for this trunk's
+	// TLS next hop only.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
 }
 
 var ipipTrunkSpecFields = map[string]FieldEnrichment{
-	"peer_uri": {Description: "Static peer SIP URI for IP-IP peering. Reserved; not yet implemented."},
+	"peer_uri":                      {Description: "SIP URI of the peer (e.g. \"sip:203.0.113.10:5060\" or \"sips:sbc.carrier.example:5061\"). Outbound calls placed through this trunk are routed here: with a loose `Route` header when the call's Request-URI names another host, and with none when it already targets the peer. Transport is taken from the URI: a \"sips:\" scheme or a \";transport=tls\" parameter selects TLS, \";transport=tcp\" selects TCP, otherwise UDP. Any user part is ignored. When the host is an IP literal it is also matched against the source of inbound INVITEs."},
+	"outbound_proxy":                {Description: "Next-hop SIP proxy for this trunk's outbound INVITEs and OPTIONS pings. When set, the INVITE carries a single loose `Route` naming the proxy, so the peer is only reached if the call's Request-URI names it. Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `peer_uri`. A proxy is never treated as an inbound source — list its address in `inbound_sources` if the peer's calls arrive through it."},
+	"aor":                           {Description: "Optional identity this trunk presents (e.g. \"sip:acme@carrier.example\"). An outbound call whose `from` matches it, as a full URI or by user-part, is placed through this trunk without naming `trunk_id`; its host becomes the From / P-Asserted-Identity realm when `from` names none. Also used to tell apart several trunks that share an inbound source, by the To header."},
+	"username":                      {Description: "Digest auth username for outbound INVITEs the peer challenges. Requires `password`. Defaults to the `aor` user-part when a password is set."},
+	"password":                      {Description: "Digest auth password for outbound INVITEs the peer challenges. Optional — omit for a peer that authenticates by source address. Never returned in any response."},
+	"inbound_sources":               {Description: "IP addresses and CIDR ranges (IPv4 or IPv6) that inbound INVITEs from this peer arrive from, e.g. [\"198.51.100.0/24\", \"203.0.113.7\"]. An inbound call whose source address falls in one is tagged with this trunk's `trunk_id` and inherits its `app_id`; when several trunks match, the longest prefix wins. This is a matching rule, not an access list: calls from other addresses are still accepted. The `peer_uri` host is included automatically when it is an IP literal; hostnames are never resolved. At most 64 entries; a /0 range is rejected."},
+	"options_ping_interval_seconds": {Description: "Seconds between OPTIONS health checks sent to the peer; 0 (the default) disables them. With checks on, the trunk's status follows the peer — `active` when it answers, `failed` when it does not — and `sip.trunk_up` / `sip.trunk_down` are published on each change. Any reply counts as up, including 404 or 405, except 408 and 5xx other than 501; no reply within 5 seconds counts as down. With checks off the trunk stays `active`. Status is informational: calls are attempted on a `failed` trunk too.", Minimum: intPtr(0), Maximum: intPtr(3600), Default: 0},
+	"tls_insecure_skip_verify":      {Description: "Accept this trunk's next-hop certificate without verifying it, for a `sips:` / `;transport=tls` peer or outbound proxy whose certificate is self-signed or privately signed. Scoped to that peer's hostname — every other TLS peer is still verified in full. Ignored (with a logged warning) when the next hop is not TLS or is named by IP literal; use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there."},
 }
 
 // SchemaEnrichments maps "TypeName.json_field_name" → enrichment metadata.

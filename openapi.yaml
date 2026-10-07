@@ -51,7 +51,7 @@ info:
           description: Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate.
         - name: SIP_TLS_INSECURE_SKIP_VERIFY
           default: "false"
-          description: When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk sip_register.tls_insecure_skip_verify, which scopes the exemption to one peer. Does not affect the inbound TLS listener.
+          description: When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk tls_insecure_skip_verify (sip_register or ip_ip), which scopes the exemption to one peer. Does not affect the inbound TLS listener.
         - name: SIP_DEBUG
           default: "false"
           description: When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting.
@@ -72,7 +72,7 @@ info:
           description: When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT).
         - name: SIP_OUTBOUND_PROXY
           default: ""
-          description: 'Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only.'
+          description: 'Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` / `ip_ip.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only.'
         - name: SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS
           default: "3600"
           description: Expiry used when an inbound REGISTER carries no Expires value.
@@ -302,7 +302,7 @@ tags:
     - name: SIP Registrations
       description: Inbound SIP AOR registrations and parked REGISTER attempts
     - name: SIP Trunks
-      description: Outbound SIP trunks (REGISTER or static peering)
+      description: SIP trunks to upstream carriers and PBXs (REGISTER or static peering)
     - name: Events
       description: Real-time event stream and command channel (VSI)
     - name: Observability
@@ -312,7 +312,7 @@ paths:
         post:
             operationId: createLeg
             summary: Originate an outbound leg
-            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact.'
+            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact. `trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over selecting a trunk by matching `from` against trunk AORs.'
             tags:
                 - Legs
             requestBody:
@@ -330,6 +330,12 @@ paths:
                                 $ref: '#/components/schemas/Leg'
                 '400':
                     description: Invalid JSON, bad URI/URL, unknown codec, or unsupported type
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Unknown `trunk_id`, or a `streams[].room_id` that does not exist
                     content:
                         application/json:
                             schema:
@@ -3352,8 +3358,8 @@ paths:
     /sip/trunks:
         post:
             operationId: createSIPTrunk
-            summary: Create an outbound SIP trunk (REGISTER or static peering)
-            description: 'Creates a typed SIP trunk. For `type: "sip_register"`, VoiceBlender begins REGISTERing to the supplied registrar URI with digest auth, refreshes before expiry, and routes inbound INVITEs that arrive on that peer''s socket plus outbound INVITEs whose `from` matches the AOR through the trunk. Set `sip_register.outbound_proxy` to send both the REGISTER and those INVITEs via a next-hop proxy instead of straight at the registrar; the Request-URI and digest authentication still target `registrar_uri`. It defaults to `SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot reports the hop actually in effect. For `type: "ip_ip"`, returns 501 (reserved, not yet implemented).'
+            summary: Create a SIP trunk (REGISTER or static peering)
+            description: 'Creates a typed SIP trunk. For `type: "sip_register"`, VoiceBlender begins REGISTERing to the supplied registrar URI with digest auth, refreshes before expiry, and routes inbound INVITEs that arrive on that peer''s socket plus outbound INVITEs whose `from` matches the AOR through the trunk. Set `sip_register.outbound_proxy` to send both the REGISTER and those INVITEs via a next-hop proxy instead of straight at the registrar; the Request-URI and digest authentication still target `registrar_uri`. It defaults to `SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot reports the hop actually in effect. For `type: "ip_ip"`, VoiceBlender peers with a fixed upstream without registering: the trunk is `active` at once, outbound INVITEs placed through it (by `trunk_id` on POST /v1/legs, or by a `from` matching `ip_ip.aor`) are routed at `ip_ip.peer_uri` with the trunk''s optional digest credentials, and inbound INVITEs whose source address falls in `ip_ip.inbound_sources` are tagged with the trunk. Set `ip_ip.options_ping_interval_seconds` to health-check the peer with OPTIONS and receive `sip.trunk_up` / `sip.trunk_down` events.'
             tags:
                 - SIP Trunks
             requestBody:
@@ -3364,19 +3370,13 @@ paths:
                             $ref: '#/components/schemas/CreateTrunkRequest'
             responses:
                 '202':
-                    description: Trunk accepted; REGISTER runs asynchronously
+                    description: Trunk accepted. A `sip_register` trunk REGISTERs asynchronously; an `ip_ip` trunk is active immediately.
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/CreateTrunkResponse'
                 '400':
-                    description: Invalid JSON, missing required field, or unknown type
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Error'
-                '501':
-                    description: Trunk type reserved but not yet implemented (e.g. ip_ip)
+                    description: Invalid JSON, missing or invalid field, or unknown type
                     content:
                         application/json:
                             schema:
@@ -3416,8 +3416,8 @@ paths:
                                 $ref: '#/components/schemas/Error'
         delete:
             operationId: deleteSIPTrunk
-            summary: Unregister and remove a SIP trunk
-            description: 'Returns 202 Accepted; the unregister (REGISTER with Expires: 0) and final removal run asynchronously.'
+            summary: Remove a SIP trunk
+            description: 'Returns 202 Accepted; teardown and final removal run asynchronously. A `sip_register` trunk unregisters first (REGISTER with Expires: 0); an `ip_ip` trunk only stops its OPTIONS health check, and nothing is sent to the peer.'
             tags:
                 - SIP Trunks
             responses:
@@ -3866,6 +3866,9 @@ components:
                 outbound_proxy:
                     type: string
                     description: Next-hop SIP proxy for this INVITE, attached as a loose "Route" header (the Request-URI is left unchanged). Overrides the matched trunk's outbound_proxy and SIP_OUTBOUND_PROXY. Ignored when "to" resolves to an AOR registered to this server, which is delivered to the registered contact instead. SIP legs only.
+                trunk_id:
+                    type: string
+                    description: ID of the SIP trunk (POST /v1/sip/trunks) to place this call through. The trunk supplies the route to its upstream, its digest credentials and, unless "from" names a host, the From realm; when "from" is omitted the trunk's AOR is used. Takes precedence over selecting a trunk by matching "from" against trunk AORs. An unknown ID is rejected with 404. SIP legs only.
                 privacy:
                     type: string
                     description: SIP Privacy header value (e.g. "id", "none")
@@ -4027,7 +4030,7 @@ components:
             properties:
                 type:
                     type: string
-                    description: Trunk type discriminator. Only `sip_register` is implemented today; `ip_ip` is reserved and returns 501.
+                    description: Trunk type discriminator. `sip_register` REGISTERs to an upstream registrar; `ip_ip` peers with a fixed upstream without registering.
                     enum:
                         - sip_register
                         - ip_ip
@@ -4040,7 +4043,7 @@ components:
                     allOf:
                         - $ref: '#/components/schemas/SIPRegisterTrunkSpec'
                 ip_ip:
-                    description: Reserved for static-IP peering (no REGISTER). Not yet implemented; supplying this returns 501.
+                    description: Required when type == "ip_ip". Configures static peering with a fixed upstream (peer URI, optional digest credentials, inbound source addresses, OPTIONS health check).
                     nullable: true
                     allOf:
                         - $ref: '#/components/schemas/IPIPTrunkSpec'
@@ -4673,12 +4676,61 @@ components:
             properties:
                 peer_uri:
                     type: string
-                    description: Static peer SIP URI for IP-IP peering. Reserved; not yet implemented.
+                    description: 'SIP URI of the peer (e.g. "sip:203.0.113.10:5060" or "sips:sbc.carrier.example:5061"). Outbound calls placed through this trunk are routed here: with a loose `Route` header when the call''s Request-URI names another host, and with none when it already targets the peer. Transport is taken from the URI: a "sips:" scheme or a ";transport=tls" parameter selects TLS, ";transport=tcp" selects TCP, otherwise UDP. Any user part is ignored. When the host is an IP literal it is also matched against the source of inbound INVITEs.'
+                outbound_proxy:
+                    type: string
+                    description: Next-hop SIP proxy for this trunk's outbound INVITEs and OPTIONS pings. When set, the INVITE carries a single loose `Route` naming the proxy, so the peer is only reached if the call's Request-URI names it. Defaults to `SIP_OUTBOUND_PROXY`; when neither is set, requests go straight to `peer_uri`. A proxy is never treated as an inbound source — list its address in `inbound_sources` if the peer's calls arrive through it.
+                aor:
+                    type: string
+                    description: Optional identity this trunk presents (e.g. "sip:acme@carrier.example"). An outbound call whose `from` matches it, as a full URI or by user-part, is placed through this trunk without naming `trunk_id`; its host becomes the From / P-Asserted-Identity realm when `from` names none. Also used to tell apart several trunks that share an inbound source, by the To header.
+                username:
+                    type: string
+                    description: Digest auth username for outbound INVITEs the peer challenges. Requires `password`. Defaults to the `aor` user-part when a password is set.
+                password:
+                    type: string
+                    description: Digest auth password for outbound INVITEs the peer challenges. Optional — omit for a peer that authenticates by source address. Never returned in any response.
+                inbound_sources:
+                    type: array
+                    items:
+                        type: string
+                    description: 'IP addresses and CIDR ranges (IPv4 or IPv6) that inbound INVITEs from this peer arrive from, e.g. ["198.51.100.0/24", "203.0.113.7"]. An inbound call whose source address falls in one is tagged with this trunk''s `trunk_id` and inherits its `app_id`; when several trunks match, the longest prefix wins. This is a matching rule, not an access list: calls from other addresses are still accepted. The `peer_uri` host is included automatically when it is an IP literal; hostnames are never resolved. At most 64 entries; a /0 range is rejected.'
+                options_ping_interval_seconds:
+                    type: integer
+                    description: 'Seconds between OPTIONS health checks sent to the peer; 0 (the default) disables them. With checks on, the trunk''s status follows the peer — `active` when it answers, `failed` when it does not — and `sip.trunk_up` / `sip.trunk_down` are published on each change. Any reply counts as up, including 404 or 405, except 408 and 5xx other than 501; no reply within 5 seconds counts as down. With checks off the trunk stays `active`. Status is informational: calls are attempted on a `failed` trunk too.'
+                    default: 0
+                    minimum: 0
+                    maximum: 3600
+                tls_insecure_skip_verify:
+                    type: boolean
+                    description: Accept this trunk's next-hop certificate without verifying it, for a `sips:` / `;transport=tls` peer or outbound proxy whose certificate is self-signed or privately signed. Scoped to that peer's hostname — every other TLS peer is still verified in full. Ignored (with a logged warning) when the next hop is not TLS or is named by IP literal; use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there.
+            required:
+                - peer_uri
         IPIPTrunkView:
             type: object
             properties:
                 peer_uri:
                     type: string
+                outbound_proxy:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                inbound_sources:
+                    type: array
+                    items:
+                        type: string
+                options_ping_interval_seconds:
+                    type: integer
+                last_ping_at:
+                    type: string
+                last_ping_status_code:
+                    type: integer
+                tls_insecure_skip_verify:
+                    type: boolean
+            required:
+                - peer_uri
+                - inbound_sources
         LegStreamView:
             type: object
             properties:
@@ -5238,6 +5290,8 @@ components:
                 - sip.outbound_registration_active
                 - sip.outbound_registration_failed
                 - sip.outbound_registration_expired
+                - sip.trunk_up
+                - sip.trunk_down
         ICECandidateInit:
             type: object
             properties:
@@ -6838,5 +6892,49 @@ x-webhooks:
                                         type: string
                                     registrar:
                                         type: string
+                                    reason:
+                                        type: string
+    sip.trunk_up:
+        post:
+            summary: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    trunk_id:
+                                        type: string
+                                    trunk_type:
+                                        type: string
+                                    peer_uri:
+                                        type: string
+                                    status_code:
+                                        type: integer
+                                    reason:
+                                        type: string
+    sip.trunk_down:
+        post:
+            summary: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    app_id:
+                                        type: string
+                                    trunk_id:
+                                        type: string
+                                    trunk_type:
+                                        type: string
+                                    peer_uri:
+                                        type: string
+                                    status_code:
+                                        type: integer
                                     reason:
                                         type: string

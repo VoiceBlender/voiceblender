@@ -91,6 +91,9 @@ const (
 	SIPOutboundRegistrationActive  EventType = "sip.outbound_registration_active"
 	SIPOutboundRegistrationFailed  EventType = "sip.outbound_registration_failed"
 	SIPOutboundRegistrationExpired EventType = "sip.outbound_registration_expired"
+
+	SIPTrunkUp   EventType = "sip.trunk_up"
+	SIPTrunkDown EventType = "sip.trunk_down"
 )
 
 type Event struct {

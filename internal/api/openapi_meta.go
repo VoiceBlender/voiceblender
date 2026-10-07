@@ -330,12 +330,15 @@ func RoutesMetadata() []RouteMeta {
 				"For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose " +
 				"`Route` header, leaving the Request-URI unchanged. It outranks the matched trunk's " +
 				"`outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR " +
-				"registered to this server outranks all three and is delivered to the bound contact.",
+				"registered to this server outranks all three and is delivered to the bound contact. " +
+				"`trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over " +
+				"selecting a trunk by matching `from` against trunk AORs.",
 			Tags:        []string{"Legs"},
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Leg created", Type: LegView{}},
 				400: {Description: "Invalid JSON, bad URI/URL, unknown codec, or unsupported type"},
+				404: {Description: "Unknown `trunk_id`, or a `streams[].room_id` that does not exist"},
 			},
 		},
 		{
@@ -1653,7 +1656,7 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "POST", Path: "/sip/trunks", OperationID: "createSIPTrunk",
-			Summary: "Create an outbound SIP trunk (REGISTER or static peering)",
+			Summary: "Create a SIP trunk (REGISTER or static peering)",
 			Description: "Creates a typed SIP trunk. For `type: \"sip_register\"`, VoiceBlender " +
 				"begins REGISTERing to the supplied registrar URI with digest auth, refreshes before " +
 				"expiry, and routes inbound INVITEs that arrive on that peer's socket plus outbound " +
@@ -1663,13 +1666,18 @@ func RoutesMetadata() []RouteMeta {
 				"digest authentication still target `registrar_uri`. It defaults to " +
 				"`SIP_OUTBOUND_PROXY` and is resolved at creation time, so the trunk snapshot " +
 				"reports the hop actually in effect. " +
-				"For `type: \"ip_ip\"`, returns 501 (reserved, not yet implemented).",
+				"For `type: \"ip_ip\"`, VoiceBlender peers with a fixed upstream without " +
+				"registering: the trunk is `active` at once, outbound INVITEs placed through it " +
+				"(by `trunk_id` on POST /v1/legs, or by a `from` matching `ip_ip.aor`) are routed " +
+				"at `ip_ip.peer_uri` with the trunk's optional digest credentials, and inbound " +
+				"INVITEs whose source address falls in `ip_ip.inbound_sources` are tagged with the " +
+				"trunk. Set `ip_ip.options_ping_interval_seconds` to health-check the peer with " +
+				"OPTIONS and receive `sip.trunk_up` / `sip.trunk_down` events.",
 			Tags:        []string{"SIP Trunks"},
 			RequestType: CreateTrunkRequest{},
 			Responses: map[int]ResponseMeta{
-				202: {Description: "Trunk accepted; REGISTER runs asynchronously", Type: CreateTrunkResponse{}},
-				400: {Description: "Invalid JSON, missing required field, or unknown type"},
-				501: {Description: "Trunk type reserved but not yet implemented (e.g. ip_ip)"},
+				202: {Description: "Trunk accepted. A `sip_register` trunk REGISTERs asynchronously; an `ip_ip` trunk is active immediately.", Type: CreateTrunkResponse{}},
+				400: {Description: "Invalid JSON, missing or invalid field, or unknown type"},
 			},
 		},
 		{
@@ -1691,8 +1699,8 @@ func RoutesMetadata() []RouteMeta {
 		},
 		{
 			Method: "DELETE", Path: "/sip/trunks/{id}", OperationID: "deleteSIPTrunk",
-			Summary:     "Unregister and remove a SIP trunk",
-			Description: "Returns 202 Accepted; the unregister (REGISTER with Expires: 0) and final removal run asynchronously.",
+			Summary:     "Remove a SIP trunk",
+			Description: "Returns 202 Accepted; teardown and final removal run asynchronously. A `sip_register` trunk unregisters first (REGISTER with Expires: 0); an `ip_ip` trunk only stops its OPTIONS health check, and nothing is sent to the peer.",
 			Tags:        []string{"SIP Trunks"},
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Trunk accepted for teardown"},

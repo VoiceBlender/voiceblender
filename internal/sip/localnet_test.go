@@ -35,6 +35,31 @@ func TestParseLocalNets(t *testing.T) {
 	}
 }
 
+func TestParseSourcePrefixes(t *testing.T) {
+	got, err := ParseSourcePrefixes([]string{"10.1.2.3/8", " 192.168.1.20 ", "2001:db8::/32", "::ffff:192.0.2.7", "::ffff:198.51.100.0/120", "10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseSourcePrefixes: %v", err)
+	}
+	want := []string{"10.0.0.0/8", "192.168.1.20/32", "2001:db8::/32", "192.0.2.7/32", "198.51.100.0/24"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, p := range got {
+		if p.String() != want[i] {
+			t.Errorf("prefix %d = %s, want %s", i, p, want[i])
+		}
+	}
+
+	if got, err := ParseSourcePrefixes(nil); err != nil || len(got) != 0 {
+		t.Errorf("nil input = %v, %v; want no prefixes", got, err)
+	}
+	for _, bad := range [][]string{{""}, {"  "}, {"pbx.example"}, {"10.0.0.0/33"}, {"10.0.0.1", "nope"}} {
+		if _, err := ParseSourcePrefixes(bad); err == nil {
+			t.Errorf("ParseSourcePrefixes(%q) = nil error, want failure", bad)
+		}
+	}
+}
+
 func localNetEngine(t *testing.T, nets string) *Engine {
 	t.Helper()
 	prefixes, err := ParseLocalNets(nets)

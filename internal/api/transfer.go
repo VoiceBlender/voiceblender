@@ -356,9 +356,16 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	}
 	// Dial on the referrer's behalf so the INVITE picks up the same trunk
 	// credentials, Route and From realm that POST /v1/legs would give it.
+	// The trunk is passed by id, not re-found through the From: a trunk
+	// without an AOR could not be found that way.
 	referFrom := s.referIdentity(referrer)
-	trunkID := s.applyFromIdentity(referFrom, &inviteOpts)
+	var referTrunk sipmod.Trunk
+	if id := referrer.TrunkID(); id != "" {
+		referTrunk = s.SIPEngine.Trunks().Get(id)
+	}
+	trunkID := s.applyFromIdentity(referTrunk, referFrom, recipient, &inviteOpts)
 	newLeg.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
+	newLeg.SetTrunkID(trunkID)
 	if replaces != nil {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Replaces", replaces.String()))
 	}

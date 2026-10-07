@@ -23,14 +23,14 @@ type TrunksListResponse struct {
 	Trunks []sipmod.TrunkView `json:"trunks"`
 }
 
-// doCreateTrunk validates the request, registers the trunk, and starts the
-// async REGISTER loop. Shared by the REST handler and the VSI dispatcher.
+// doCreateTrunk validates the request, registers the trunk, and starts its
+// background lifecycle. Shared by the REST handler and the VSI dispatcher.
 func (s *Server) doCreateTrunk(req CreateTrunkRequest) (CreateTrunkResponse, error) {
 	switch req.Type {
 	case string(sipmod.TrunkTypeSIPRegister):
 		return s.doCreateSIPRegisterTrunk(req)
 	case string(sipmod.TrunkTypeIPIP):
-		return CreateTrunkResponse{}, newAPIError(http.StatusNotImplemented, "trunk type 'ip_ip' not yet implemented")
+		return s.doCreateIPIPTrunk(req)
 	case "":
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "type is required")
 	default:
@@ -62,22 +62,9 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.aor is invalid: %s", err.Error())
 	}
 
-	// Resolve the global default now rather than per-REGISTER, so the trunk
-	// snapshot reports the next hop actually in effect.
-	var outboundProxy *sip.Uri
-	if raw := spec.OutboundProxy; raw != "" {
-		u, err := sipmod.ParseProxyURI(raw)
-		if err != nil {
-			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register.outbound_proxy is invalid: %s", err.Error())
-		}
-		outboundProxy = &u
-	} else if s.Config.SIPOutboundProxy != "" {
-		u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
-		if err != nil {
-			s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; trunk will route at its registrar", "error", err)
-		} else {
-			outboundProxy = &u
-		}
+	outboundProxy, err := s.resolveTrunkProxy("sip_register.outbound_proxy", spec.OutboundProxy)
+	if err != nil {
+		return CreateTrunkResponse{}, err
 	}
 	// A TLS proxy without a TLS listener still registers, but the Contact can
 	// only advertise the UDP socket — so the upstream sends calls back in the
@@ -121,6 +108,110 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 	}, nil
 }
 
+// resolveTrunkProxy returns the trunk's outbound proxy: the per-trunk value, or
+// the global default. Resolved at create time rather than per request, so the
+// trunk snapshot reports the next hop actually in effect.
+func (s *Server) resolveTrunkProxy(field, raw string) (*sip.Uri, error) {
+	if raw != "" {
+		u, err := sipmod.ParseProxyURI(raw)
+		if err != nil {
+			return nil, newAPIError(http.StatusBadRequest, "%s is invalid: %s", field, err.Error())
+		}
+		return &u, nil
+	}
+	if s.Config.SIPOutboundProxy == "" {
+		return nil, nil
+	}
+	u, err := sipmod.ParseProxyURI(s.Config.SIPOutboundProxy)
+	if err != nil {
+		s.Log.Warn("SIP_OUTBOUND_PROXY is invalid; trunk will route at its upstream", "error", err)
+		return nil, nil
+	}
+	return &u, nil
+}
+
+const (
+	maxIPIPInboundSources   = 64
+	maxIPIPPingIntervalSecs = 3600
+)
+
+func (s *Server) doCreateIPIPTrunk(req CreateTrunkRequest) (CreateTrunkResponse, error) {
+	spec := req.IPIP
+	if spec == nil {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip block is required when type=ip_ip")
+	}
+	if spec.PeerURI == "" {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.peer_uri is required")
+	}
+	peerURI, err := sipmod.ParseProxyURI(spec.PeerURI)
+	if err != nil {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.peer_uri is invalid: %s", err.Error())
+	}
+
+	var aor *sip.Uri
+	if spec.AOR != "" {
+		var u sip.Uri
+		if err := sip.ParseUri(spec.AOR, &u); err != nil {
+			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.aor is invalid: %s", err.Error())
+		}
+		if u.User == "" || u.Host == "" {
+			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.aor is invalid: must have a user and a host")
+		}
+		aor = &u
+	}
+
+	if spec.Username != "" && spec.Password == "" {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.password is required when ip_ip.username is set")
+	}
+	if spec.Password != "" && spec.Username == "" && aor == nil {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.username is required when ip_ip.password is set without ip_ip.aor")
+	}
+
+	if len(spec.InboundSources) > maxIPIPInboundSources {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.inbound_sources has too many entries (max %d)", maxIPIPInboundSources)
+	}
+	sources, err := sipmod.ParseSourcePrefixes(spec.InboundSources)
+	if err != nil {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.inbound_sources is invalid: %s", err.Error())
+	}
+	for _, p := range sources {
+		if p.Bits() == 0 {
+			return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.inbound_sources is invalid: %s matches every address", p.String())
+		}
+	}
+
+	if spec.OptionsPingIntervalSeconds < 0 || spec.OptionsPingIntervalSeconds > maxIPIPPingIntervalSecs {
+		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip.options_ping_interval_seconds must be between 0 and %d", maxIPIPPingIntervalSecs)
+	}
+
+	outboundProxy, err := s.resolveTrunkProxy("ip_ip.outbound_proxy", spec.OutboundProxy)
+	if err != nil {
+		return CreateTrunkResponse{}, err
+	}
+
+	id := uuid.NewString()
+	trunk := sipmod.NewIPIPTrunk(s.SIPEngine, s.Bus, s.Log, sipmod.IPIPTrunkParams{
+		ID:                    id,
+		AppID:                 req.AppID,
+		PeerURI:               peerURI,
+		OutboundProxy:         outboundProxy,
+		AOR:                   aor,
+		Username:              spec.Username,
+		Password:              spec.Password,
+		InboundSources:        sources,
+		PingInterval:          time.Duration(spec.OptionsPingIntervalSeconds) * time.Second,
+		TLSInsecureSkipVerify: spec.TLSInsecureSkipVerify,
+	})
+	s.SIPEngine.Trunks().Add(trunk)
+	trunk.Start(context.Background())
+
+	return CreateTrunkResponse{
+		ID:     id,
+		Type:   string(sipmod.TrunkTypeIPIP),
+		Status: string(sipmod.TrunkStatusActive),
+	}, nil
+}
+
 // doListTrunks returns a snapshot of every configured trunk.
 func (s *Server) doListTrunks() TrunksListResponse {
 	trunks := s.SIPEngine.Trunks().List()
@@ -140,7 +231,7 @@ func (s *Server) doGetTrunk(id string) (sipmod.TrunkView, error) {
 	return t.Snapshot(), nil
 }
 
-// doDeleteTrunk unregisters and removes the trunk asynchronously.
+// doDeleteTrunk stops and removes the trunk asynchronously.
 func (s *Server) doDeleteTrunk(id string) error {
 	t := s.SIPEngine.Trunks().Get(id)
 	if t == nil {
@@ -186,7 +277,7 @@ func (s *Server) getTrunk(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteTrunk handles DELETE /v1/sip/trunks/{id}. Returns 202 Accepted and
-// performs the unregister + cleanup asynchronously.
+// performs the teardown asynchronously.
 func (s *Server) deleteTrunk(w http.ResponseWriter, r *http.Request) {
 	if err := s.doDeleteTrunk(chi.URLParam(r, "id")); err != nil {
 		handleAPIError(w, err)

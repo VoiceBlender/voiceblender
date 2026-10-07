@@ -35,6 +35,7 @@ type rawSIPRegistrar struct {
 	mu               sync.Mutex
 	receivedRegs     []*sip.Request
 	receivedInvites  []*sip.Request
+	receivedOptions  []*sip.Request
 	grantedExpires   int
 	challengeOnce    bool
 	expectedUsername string
@@ -51,6 +52,11 @@ type rawSIPRegistrar struct {
 	// registration succeeded.
 	successCount atomic.Int32
 	rejectAfter  int32
+
+	// optionsStatus is the status OPTIONS is answered with; 0 stays silent.
+	optionsStatus atomic.Int32
+	// challengeInvite answers an INVITE without credentials with 407.
+	challengeInvite bool
 }
 
 type rawRegistrarOpts struct {
@@ -58,6 +64,9 @@ type rawRegistrarOpts struct {
 	digestUser   string // "" disables 401 challenge
 	digestPass   string
 	rejectAfter  int // > 0: reject (503) after this many successful REGISTERs
+	// challengeInvite answers an INVITE carrying no Proxy-Authorization with
+	// 407, so the digest retry can be inspected.
+	challengeInvite bool
 }
 
 func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
@@ -92,7 +101,9 @@ func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
 		expectedPassword: opts.digestPass,
 		nonce:            "abcdef1234567890",
 		rejectAfter:      int32(opts.rejectAfter),
+		challengeInvite:  opts.challengeInvite,
 	}
+	r.optionsStatus.Store(sip.StatusOK)
 
 	srv.OnRegister(func(req *sip.Request, tx sip.ServerTransaction) {
 		r.mu.Lock()
@@ -146,9 +157,24 @@ func newRawSIPRegistrar(t *testing.T, opts rawRegistrarOpts) *rawSIPRegistrar {
 		r.mu.Lock()
 		r.receivedInvites = append(r.receivedInvites, req)
 		r.mu.Unlock()
+		if r.challengeInvite && req.GetHeader("Proxy-Authorization") == nil {
+			res := sip.NewResponseFromRequest(req, sip.StatusProxyAuthRequired, "Proxy Authentication Required", nil)
+			res.AppendHeader(sip.NewHeader("Proxy-Authenticate",
+				fmt.Sprintf(`Digest realm="vb-test", nonce="%s", algorithm=MD5`, r.nonce)))
+			_ = tx.Respond(res)
+			return
+		}
 		// Reject so the call setup terminates quickly.
 		res := sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
 		_ = tx.Respond(res)
+	})
+	srv.OnOptions(func(req *sip.Request, tx sip.ServerTransaction) {
+		r.mu.Lock()
+		r.receivedOptions = append(r.receivedOptions, req)
+		r.mu.Unlock()
+		if code := int(r.optionsStatus.Load()); code != 0 {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, code, "Options Reply", nil))
+		}
 	})
 	srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 	srv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
@@ -170,6 +196,18 @@ func (r *rawSIPRegistrar) registerCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.receivedRegs)
+}
+
+func (r *rawSIPRegistrar) invites() []*sip.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*sip.Request(nil), r.receivedInvites...)
+}
+
+func (r *rawSIPRegistrar) options() []*sip.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*sip.Request(nil), r.receivedOptions...)
 }
 
 func (r *rawSIPRegistrar) lastRegister() *sip.Request {
@@ -647,17 +685,6 @@ func TestTrunk_SIPRegister_RefreshFailedEmitsExpired(t *testing.T) {
 		})
 	if len(all) != 1 {
 		t.Errorf("got %d refresh_failed events, want exactly 1", len(all))
-	}
-}
-
-func TestTrunk_TypeIPIP_NotImplemented(t *testing.T) {
-	inst := newTestInstance(t, "trunk-ipip")
-	resp, body := createTrunkRequest(t, inst.baseURL(), map[string]interface{}{
-		"type":  "ip_ip",
-		"ip_ip": map[string]interface{}{"peer_uri": "sip:pbx.example"},
-	})
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body=%s", resp.StatusCode, body)
 	}
 }
 
