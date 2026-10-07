@@ -37,6 +37,7 @@ func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo stri
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.REFER, d.InviteRequest.Contact().Address)
+		e.appendDialogContact(req, d)
 		req.AppendHeader(referToHdr)
 		req.AppendHeader(sip.NewHeader("Referred-By", "<sip:"+e.bindIP+">"))
 		res, err := d.Do(ctx, req)
@@ -49,6 +50,7 @@ func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo stri
 		return nil
 	case *sipgo.DialogClientSession:
 		req := sip.NewRequest(sip.REFER, d.InviteResponse.Contact().Address)
+		e.appendDialogContact(req, d)
 		req.AppendHeader(referToHdr)
 		req.AppendHeader(sip.NewHeader("Referred-By", "<sip:"+e.bindIP+">"))
 		res, err := d.Do(ctx, req)
@@ -84,10 +86,12 @@ func (e *Engine) SendNotifySipfrag(ctx context.Context, dialog interface{}, stat
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := build(d.InviteRequest.Contact().Address)
+		e.appendDialogContact(req, d)
 		_, err := d.Do(ctx, req)
 		return err
 	case *sipgo.DialogClientSession:
 		req := build(d.InviteResponse.Contact().Address)
+		e.appendDialogContact(req, d)
 		_, err := d.Do(ctx, req)
 		return err
 	default:

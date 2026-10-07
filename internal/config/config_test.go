@@ -454,3 +454,13 @@ func TestLoad_CustomDataMaxBytes(t *testing.T) {
 		t.Errorf("CustomDataMaxBytes = %d, want 0", cfg.CustomDataMaxBytes)
 	}
 }
+
+func TestLoad_SIPLocalNets(t *testing.T) {
+	if cfg := Load(); cfg.SIPLocalNets != "" {
+		t.Errorf("default SIPLocalNets = %q, want empty", cfg.SIPLocalNets)
+	}
+	t.Setenv("SIP_LOCAL_NETS", "10.0.0.0/8,192.168.0.0/16")
+	if cfg := Load(); cfg.SIPLocalNets != "10.0.0.0/8,192.168.0.0/16" {
+		t.Errorf("SIPLocalNets = %q, want 10.0.0.0/8,192.168.0.0/16", cfg.SIPLocalNets)
+	}
+}

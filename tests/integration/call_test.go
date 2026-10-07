@@ -113,11 +113,17 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		AllowMultipleContacts: cfg.SIPRegistrationAllowMultipleContacts,
 	})
 
+	localNets, err := sipmod.ParseLocalNets(cfg.SIPLocalNets)
+	if err != nil {
+		t.Fatalf("parse SIPLocalNets: %v", err)
+	}
+
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:            "127.0.0.1",
 		ListenIP:          "127.0.0.1",
 		PortAllocator:     testRTPAllocator(t),
 		ExternalIP:        cfg.SIPExternalIP,
+		LocalNets:         localNets,
 		BindPort:          sipPort,
 		SIPHost:           name,
 		Codecs:            codecs,

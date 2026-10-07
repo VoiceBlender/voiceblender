@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -31,12 +32,15 @@ func containsToken(headerValue, token string) bool {
 
 // EngineConfig holds configuration for the SIP engine.
 type EngineConfig struct {
-	BindIP      string // IPv4 advertised address for SDP c= line / Contact (when v4 is in use)
-	BindIPV6    string // IPv6 advertised address; empty = v6 not advertised
-	ListenIP    string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
-	ListenIPV6  string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
-	ExternalIP  string // IPv4 public IP override for NAT/Docker (v6 has no equivalent — set BindIPV6 directly)
-	PublicHost  string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
+	BindIP     string // IPv4 advertised address for SDP c= line / Contact (when v4 is in use)
+	BindIPV6   string // IPv6 advertised address; empty = v6 not advertised
+	ListenIP   string // IPv4 socket bind (default: same as BindIP). Special values: "0.0.0.0", "::" (dual-stack)
+	ListenIPV6 string // IPv6 socket bind (default: same as BindIPV6). Used when configured separately from ListenIP.
+	ExternalIP string // IPv4 public IP override for NAT/Docker (v6 has no equivalent — set BindIPV6 directly)
+	PublicHost string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
+	// LocalNets lists the networks that reach us on BindIP directly. Peers in
+	// them are advertised BindIP in Contact and SDP, not ExternalIP/PublicHost.
+	LocalNets   []netip.Prefix
 	BindPort    int
 	TLSBindPort int    // 0 = TLS disabled
 	TLSCertPath string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
@@ -106,6 +110,8 @@ type Engine struct {
 	amrnbOctetAligned bool
 	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
 	bindIPV6          string // IPv6 advertised address; empty if v4-only
+	localIP           string // IPv4 advertised to peers in localNets: bindIP before the ExternalIP override
+	localNets         []netip.Prefix
 	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
 	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
 	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
@@ -213,6 +219,9 @@ func (e *Engine) contactHostForRequest(req *sip.Request) string {
 			return e.bindIPV6
 		}
 	case "IP4":
+		if ip := e.localAdvertisedIP(host); ip != "" {
+			return ip
+		}
 		if e.bindIP != "" {
 			return e.bindIP
 		}
@@ -277,6 +286,10 @@ type OutboundCall struct {
 
 	// Session timer (RFC 4028) — populated when remote's 200 OK includes timers.
 	SessionTimer *SessionTimerParams // nil when remote didn't include timers
+
+	// LocalIP is the address advertised in the offer's c= line; later offers
+	// and answers on this call must keep using it.
+	LocalIP string
 }
 
 // resolveExternalIPs probes the preferred outbound LAN IPs for both address
@@ -352,6 +365,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	// Explicit external IPv4 overrides advertised v4 (NAT/Docker). IPv6 has
 	// no equivalent — set BindIPV6 directly, since IPv6 deployments don't
 	// typically NAT.
+	localIP := advertiseIP
 	if cfg.ExternalIP != "" {
 		advertiseIP = cfg.ExternalIP
 	}
@@ -474,6 +488,8 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		amrnbOctetAligned: cfg.AMRNBOctetAligned,
 		bindIP:            advertiseIP,
 		bindIPV6:          advertiseIPV6,
+		localIP:           localIP,
+		localNets:         cfg.LocalNets,
 		publicHost:        publicHost,
 		listenIP:          listenIP,
 		listenIPV6:        listenIPV6,
@@ -495,6 +511,17 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 	if cfg.Log != nil {
 		warnIfBindV6OnlyConflict(cfg.Log, listenIP, listenIPV6)
+		v4Source := "SIP_BIND_IP"
+		switch {
+		case cfg.ExternalIP != "":
+			v4Source = "SIP_EXTERNAL_IP"
+		case needV4Probe:
+			v4Source = "auto-detected"
+		}
+		// Debug only: these are network addresses.
+		cfg.Log.Debug("SIP advertised addresses",
+			"ipv4", advertiseIP, "ipv4_source", v4Source, "ipv6", advertiseIPV6,
+			"host", publicHost, "local_ipv4", localIP, "local_nets", len(cfg.LocalNets))
 	}
 
 	e.registerHandlers()
@@ -745,6 +772,7 @@ func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBo
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
+		e.appendDialogContact(req, d)
 		if err := setRequestBody(req, sdpBody, extra); err != nil {
 			return nil, err
 		}
@@ -1035,6 +1063,11 @@ func (e *Engine) DialogRespond(d *sipgo.DialogServerSession, statusCode int, rea
 		res.AppendHeader(h)
 	}
 	res.AppendHeader(e.AllowHeader())
+	if res.Contact() == nil {
+		if c := e.localContact(d.InviteRequest.Source()); c != nil {
+			res.AppendHeader(c)
+		}
+	}
 	e.pinDestinationToSource(d.InviteRequest, res)
 	return d.WriteResponse(res)
 }
@@ -1339,9 +1372,9 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 
 	e.log.Info("outbound INVITE", "recipient", recipient.String(), "codecs", fmt.Sprintf("%v", codecs))
 
-	// Pick advertised IP family based on the resolved recipient host. Literal
+	// Pick the advertised IP from the host the INVITE is sent to. Literal
 	// hosts decide directly; hostnames go through the OS resolver.
-	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
+	localIP, localPeer := e.advertisedIPForRecipient(ctx, opts.nextHopHost(recipient))
 
 	// Optionally allocate a second RTP session for RTT (m=text).
 	cfg := SDPConfig{
@@ -1442,6 +1475,10 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 			}
 			req.SetDestination(t.Socket)
 		}
+	}
+
+	if localPeer {
+		req.AppendHeader(e.contactWithHost(localIP))
 	}
 
 	e.logSIPMessage("outbound", req)
@@ -1564,6 +1601,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		OfferedStreams: offered,
 		TextRTPSess:    textRtpSess,
 		SessionTimer:   sessionTimer,
+		LocalIP:        localIP,
 	}, nil
 }
 
@@ -1621,23 +1659,30 @@ func (e *Engine) AdvertisedIPForFamily(family string) string {
 // advertisedIPForRecipient picks the advertised IP for an outbound INVITE
 // based on the resolved family of the target host. Literal hosts decide
 // directly; hostnames are resolved with a short timeout and fall back to
-// the IPv4 advertised IP on failure (preserves prior behavior).
-func (e *Engine) advertisedIPForRecipient(ctx context.Context, host string) string {
+// the IPv4 advertised IP on failure (preserves prior behavior). local
+// reports that the target is on a local network and got the local address.
+func (e *Engine) advertisedIPForRecipient(ctx context.Context, host string) (ip string, local bool) {
 	// SIP URI hosts may carry the IPv6 brackets ("[::1]"); strip for parsing.
 	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	if family := AddressFamily(host); family != "" {
-		return e.AdvertisedIPForFamily(family)
+		if ip := e.localAdvertisedIP(host); ip != "" {
+			return ip, true
+		}
+		return e.AdvertisedIPForFamily(family), false
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupIPAddr(resolveCtx, host)
 	if err != nil || len(addrs) == 0 {
-		return e.AdvertisedIPForFamily("IP4")
+		return e.AdvertisedIPForFamily("IP4"), false
 	}
 	for _, a := range addrs {
 		if a.IP.To4() != nil {
+			if ip := e.localAdvertisedIP(a.IP.String()); ip != "" {
+				return ip, true
+			}
 			if e.bindIP != "" {
-				return e.bindIP
+				return e.bindIP, false
 			}
 			break
 		}
@@ -1645,12 +1690,12 @@ func (e *Engine) advertisedIPForRecipient(ctx context.Context, host string) stri
 	for _, a := range addrs {
 		if a.IP.To4() == nil && a.IP.To16() != nil {
 			if e.bindIPV6 != "" {
-				return e.bindIPV6
+				return e.bindIPV6, false
 			}
 			break
 		}
 	}
-	return e.AdvertisedIPForFamily("IP4")
+	return e.AdvertisedIPForFamily("IP4"), false
 }
 
 // PublicHost returns the canonical signalling hostname (SIP_DOMAIN when

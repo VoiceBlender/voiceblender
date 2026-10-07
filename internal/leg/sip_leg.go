@@ -222,7 +222,7 @@ func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog
 		connectedCh:     make(chan struct{}),
 		callID:          callID,
 		engine:          engine,
-		localIP:         engine.AdvertisedIPForFamily(offerFamily),
+		localIP:         engine.AdvertisedIPForPeer(offerFamily, call.Request.Source()),
 		supportedCodecs: engine.Codecs(),
 		rttRedundancy:   defaultRTTRedundancy,
 		rttBufferMs:     t140.DefaultBufferMs,
@@ -385,6 +385,9 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 		return fmt.Errorf("leg is %s, expected ringing or early_media", st)
 	}
 	l.outbound = call
+	if call.LocalIP != "" {
+		l.localIP = call.LocalIP
+	}
 	if st == StateRinging {
 		l.prim.rtpSess = call.RTPSess
 	}

@@ -50,13 +50,15 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	if len(opts.Codecs) > 0 {
 		codecs = opts.Codecs
 	}
-	localIP := e.advertisedIPForRecipient(ctx, recipient.Host)
-	sdpOffer := GenerateOffer(SDPConfig{
-		LocalIP:           localIP,
-		RTPPort:           rtpSess.LocalPort(),
-		Codecs:            codecs,
-		AMRWBOctetAligned: e.amrwbOctetAligned,
-	})
+	// Branches can sit on different networks, so each gets its own
+	// advertised address in Contact and SDP.
+	branchIP := func(target ForkTarget) (string, bool) {
+		host, _ := splitHostPort(target.Socket)
+		if host == "" {
+			host = recipient.Host
+		}
+		return e.advertisedIPForRecipient(ctx, host)
+	}
 
 	e.log.Info("outbound INVITE (forked)", "recipient", recipient.String(),
 		"branches", len(opts.ForkTargets), "codecs", fmt.Sprintf("%v", codecs))
@@ -75,7 +77,16 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 			Port:   port,
 		}
 		req := sip.NewRequest(sip.INVITE, branchURI)
-		req.SetBody(sdpOffer)
+		localIP, localPeer := branchIP(target)
+		if localPeer {
+			req.AppendHeader(e.contactWithHost(localIP))
+		}
+		req.SetBody(GenerateOffer(SDPConfig{
+			LocalIP:           localIP,
+			RTPPort:           rtpSess.LocalPort(),
+			Codecs:            codecs,
+			AMRWBOctetAligned: e.amrwbOctetAligned,
+		}))
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 		req.AppendHeader(e.AllowHeader())
 		toURI := recipient
@@ -96,6 +107,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	var (
 		winnerMu       sync.Mutex
 		winner         *sipgo.DialogClientSession
+		winnerIP       string
 		earlyMediaOnce sync.Once
 	)
 
@@ -166,6 +178,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 			winnerMu.Lock()
 			if winner == nil {
 				winner = ds
+				winnerIP, _ = branchIP(target)
 				winnerMu.Unlock()
 				// Plain cancel (no WaitAnswerForceCancelErr cause) so sipgo
 				// actually sends CANCEL on the losing branches instead of
@@ -237,5 +250,6 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		Dialog:    ds,
 		RemoteSDP: remoteSDP,
 		RTPSess:   rtpSess,
+		LocalIP:   winnerIP,
 	}, nil
 }

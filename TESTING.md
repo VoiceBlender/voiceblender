@@ -431,6 +431,11 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestSIPRegister_Unregister` | REGISTER with `Contact: *` and `Expires: 0` removes all bindings with `reason:unregistered` |
 | `TestSIPRegister_ForceDelete` | `DELETE /v1/sip/registrations/{aor}` force-unbinds with `reason:forced` |
 | `TestSIPRegister_DialAOR` | After REGISTER, `POST /v1/legs {"type":"sip","to":"sip:alice@..."}` routes the outbound INVITE to the bound socket (via a loose Route) while keeping the dialed AOR as the Request-URI |
+| `TestSIPLocalNets_RegisteredPhone` | Wire-level: a registered phone on a `SIP_LOCAL_NETS` network is sent the local address in the INVITE's Contact and SDP `c=`, and again in the hold re-INVITE (a target refresh); with no local networks both carry `SIP_EXTERNAL_IP` |
+| `TestSIPLocalNets_CallFromLocalPhone` | Wire-level: a call placed by a phone on a local network gets the local address in the 200 OK's Contact and SDP, and in a later re-INVITE from VoiceBlender |
+| `TestSIPLocalNets_OutboundRemoteHangup` | With `SIP_EXTERNAL_IP` unreachable, a local peer's BYE still reaches an outbound leg because its Contact is the local address |
+| `TestSIPLocalNets_InboundRemoteHangup` | Same for an inbound leg: the caller's BYE follows the local Contact from the 200 OK |
+| `TestSIPLocalNets_UnsetKeepsExternalContact` | Default unchanged: without `SIP_LOCAL_NETS` every peer is advertised `SIP_EXTERNAL_IP`, so an unreachable one never delivers its BYE |
 | `TestSIPRegister_CancelUnansweredRoutesToContact` | Deleting an unanswered outbound leg dialed to a registered AOR sends CANCEL to the registered contact (not the AOR host / VoiceBlender itself); the CANCEL Request-URI stays the dialed AOR per RFC 3261 §9.1 |
 | `TestSIPRegister_Fork` | AOR registered from two raw clients; `POST /v1/legs` parallel-forks (both clients receive an INVITE); the second client answers 200 OK, the first receives CANCEL and its INVITE transaction terminates (after Timer I = 5 s for UDP) |
 | `TestSIPInboundAuth_RegisterChallengeSuccess` | Consult enabled (webhook set); REGISTER parks → `sip.registration_attempt` event → `POST /v1/sip/registrations/attempts/{id}/challenge` → `401`; credentialed re-REGISTER (same Call-ID) verifies → `200 OK` and a live binding |
