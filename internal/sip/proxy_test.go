@@ -240,3 +240,54 @@ func TestDefaultPortForURI(t *testing.T) {
 		t.Errorf("sips default port = %d, want 5061", got)
 	}
 }
+
+func mustParseURI(t *testing.T, raw string) sip.Uri {
+	t.Helper()
+	var u sip.Uri
+	if err := sip.ParseUri(raw, &u); err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u
+}
+
+func TestURISocket(t *testing.T) {
+	tests := []struct {
+		raw           string
+		host          string
+		port          int
+		wantTransport string
+	}{
+		{"sip:pbx.example", "pbx.example", 5060, "udp"},
+		{"sip:pbx.example:5080", "pbx.example", 5080, "udp"},
+		{"sip:pbx.example;transport=TCP", "pbx.example", 5060, "tcp"},
+		{"sips:pbx.example", "pbx.example", 5061, "tls"},
+		{"sip:bob@10.0.0.1:5070;transport=tls", "10.0.0.1", 5070, "tls"},
+	}
+	for _, tc := range tests {
+		host, port, transport := uriSocket(mustParseURI(t, tc.raw))
+		if host != tc.host || port != tc.port || transport != tc.wantTransport {
+			t.Errorf("uriSocket(%q) = %s %d %s, want %s %d %s", tc.raw, host, port, transport, tc.host, tc.port, tc.wantTransport)
+		}
+	}
+}
+
+func TestSameSocket(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"sip:bob@pbx.example", "sip:pbx.example:5060", true},
+		{"sip:bob@PBX.example", "sip:pbx.example", true},
+		{"sip:bob@pbx.example;transport=udp", "sip:pbx.example", true},
+		{"sips:bob@pbx.example", "sips:pbx.example:5061", true},
+		{"sip:bob@pbx.example:5070", "sip:pbx.example", false},
+		{"sip:bob@pbx.example", "sip:pbx.example;transport=tcp", false},
+		{"sip:bob@pbx.example", "sips:pbx.example", false},
+		{"sip:bob@other.example", "sip:pbx.example", false},
+	}
+	for _, tc := range tests {
+		if got := sameSocket(mustParseURI(t, tc.a), mustParseURI(t, tc.b)); got != tc.want {
+			t.Errorf("sameSocket(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

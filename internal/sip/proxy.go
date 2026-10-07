@@ -8,14 +8,14 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// ParseProxyURI parses an outbound-proxy setting into the URI used as a loose
-// Route target. The returned URI is left without ";lr" so callers can echo it
-// back over the API exactly as configured; looseRouteHeader adds the param at
-// send time.
+// ParseProxyURI parses a next-hop setting (an outbound proxy or a trunk peer)
+// into the URI used as a loose Route target. The returned URI is left without
+// ";lr" so callers can echo it back over the API exactly as configured;
+// looseRouteHeader adds the param at send time.
 func ParseProxyURI(raw string) (sip.Uri, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return sip.Uri{}, errors.New("outbound proxy is empty")
+		return sip.Uri{}, errors.New("URI is empty")
 	}
 	var u sip.Uri
 	if err := sip.ParseUri(raw, &u); err != nil {
@@ -24,12 +24,12 @@ func ParseProxyURI(raw string) (sip.Uri, error) {
 	switch strings.ToLower(u.Scheme) {
 	case "sip", "sips":
 	default:
-		return sip.Uri{}, fmt.Errorf("outbound proxy must be a sip: or sips: URI, got %q", u.Scheme)
+		return sip.Uri{}, fmt.Errorf("must be a sip: or sips: URI, got %q", u.Scheme)
 	}
 	if u.Host == "" {
-		return sip.Uri{}, errors.New("outbound proxy has no host")
+		return sip.Uri{}, errors.New("URI has no host")
 	}
-	// A Route hop addresses a proxy, not a user at that proxy.
+	// A Route hop addresses a host, not a user at that host.
 	u.User = ""
 	return u, nil
 }
@@ -65,6 +65,28 @@ func defaultPortForURI(u sip.Uri) int {
 		return 5061
 	}
 	return 5060
+}
+
+// uriSocket returns the transport address a SIP URI implies, with the port and
+// transport defaulted when the URI carries none.
+func uriSocket(u sip.Uri) (host string, port int, transport string) {
+	port = u.Port
+	if port == 0 {
+		port = defaultPortForURI(u)
+	}
+	transport = TransportForURI(u)
+	if transport == "" {
+		transport = "udp"
+	}
+	return u.Host, port, transport
+}
+
+// sameSocket reports whether two SIP URIs resolve to the same host, port and
+// transport.
+func sameSocket(a, b sip.Uri) bool {
+	ah, ap, at := uriSocket(a)
+	bh, bp, bt := uriSocket(b)
+	return strings.EqualFold(ah, bh) && ap == bp && at == bt
 }
 
 // looseRouteHeader builds a "Route: <uri;lr>" header. The ";lr" is mandatory:

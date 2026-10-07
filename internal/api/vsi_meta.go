@@ -67,7 +67,7 @@ func VSICommandsMetadata() []VSICommandMeta {
 				"\"livekit_room\". For \"livekit_room\", custom headers come from the request's " +
 				"`headers` map (there is no HTTP request over the WebSocket).",
 			PayloadType: CreateLegRequest{}, ResultType: LegView{},
-			ErrorCodes: []int{400, 500, 502, 503},
+			ErrorCodes: []int{400, 404, 500, 502, 503},
 		},
 		{
 			Name: "answer_leg", Summary: "Answer a ringing inbound leg",
@@ -222,11 +222,11 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "accept_registration", Summary: "Accept a parked inbound REGISTER attempt (bind and reply 200 OK)", PayloadType: acceptRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 		{Name: "reject_registration", Summary: "Reject a parked inbound REGISTER attempt (reply 403 by default)", PayloadType: rejectRegistrationPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 
-		// ── SIP Trunks (outbound registrations) ─────────────────────────
-		{Name: "create_sip_trunk", Summary: "Create an outbound SIP trunk (REGISTER or static peering)", PayloadType: CreateTrunkRequest{}, ResultType: CreateTrunkResponse{}, ErrorCodes: []int{400, 501}},
+		// ── SIP Trunks ──────────────────────────────────────────────────
+		{Name: "create_sip_trunk", Summary: "Create a SIP trunk (REGISTER or static peering)", PayloadType: CreateTrunkRequest{}, ResultType: CreateTrunkResponse{}, ErrorCodes: []int{400}},
 		{Name: "list_sip_trunks", Summary: "List configured SIP trunks", ResultType: TrunksListResponse{}},
 		{Name: "get_sip_trunk", Summary: "Get a single SIP trunk", PayloadType: idPayload{}, ResultType: sipmod.TrunkView{}, ErrorCodes: []int{404}},
-		{Name: "delete_sip_trunk", Summary: "Unregister and remove a SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+		{Name: "delete_sip_trunk", Summary: "Remove a SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
 	}
 }
 
@@ -311,6 +311,8 @@ func EventsMetadata() []EventMeta {
 		{events.SIPOutboundRegistrationActive, "Outbound SIP trunk REGISTER accepted (initial or refresh)", reflect.TypeOf(events.SIPOutboundRegistrationActiveData{})},
 		{events.SIPOutboundRegistrationFailed, "Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)", reflect.TypeOf(events.SIPOutboundRegistrationFailedData{})},
 		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{})},
+		{events.SIPTrunkUp, "SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)", reflect.TypeOf(events.SIPTrunkStatusData{})},
+		{events.SIPTrunkDown, "SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)", reflect.TypeOf(events.SIPTrunkStatusData{})},
 	}
 }
 

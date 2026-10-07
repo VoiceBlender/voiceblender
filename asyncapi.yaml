@@ -554,6 +554,10 @@ channels:
                 $ref: '#/components/messages/evt_sip_outbound_registration_failed'
             sip.outbound_registration_expired:
                 $ref: '#/components/messages/evt_sip_outbound_registration_expired'
+            sip.trunk_up:
+                $ref: '#/components/messages/evt_sip_trunk_up'
+            sip.trunk_down:
+                $ref: '#/components/messages/evt_sip_trunk_down'
             connected:
                 $ref: '#/components/messages/frame_connected'
             ping:
@@ -1850,7 +1854,7 @@ operations:
         action: receive
         channel:
             $ref: '#/channels/vsi'
-        summary: Create an outbound SIP trunk (REGISTER or static peering)
+        summary: Create a SIP trunk (REGISTER or static peering)
         messages:
             - $ref: '#/channels/vsi/messages/create_sip_trunk'
         reply:
@@ -1889,7 +1893,7 @@ operations:
         action: receive
         channel:
             $ref: '#/channels/vsi'
-        summary: Unregister and remove a SIP trunk
+        summary: Remove a SIP trunk
         messages:
             - $ref: '#/channels/vsi/messages/delete_sip_trunk'
         reply:
@@ -2360,6 +2364,20 @@ operations:
         summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
         messages:
             - $ref: '#/channels/vsi/messages/sip.outbound_registration_expired'
+    send_sip_trunk_up:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.trunk_up'
+    send_sip_trunk_down:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
+        messages:
+            - $ref: '#/channels/vsi/messages/sip.trunk_down'
     send_connected:
         action: send
         channel:
@@ -5357,8 +5375,8 @@ components:
                     - type
         create_sip_trunk:
             name: create_sip_trunk
-            title: Create an outbound SIP trunk (REGISTER or static peering)
-            summary: Create an outbound SIP trunk (REGISTER or static peering)
+            title: Create a SIP trunk (REGISTER or static peering)
+            summary: Create a SIP trunk (REGISTER or static peering)
             payload:
                 type: object
                 properties:
@@ -5373,7 +5391,7 @@ components:
                     - type
         create_sip_trunkResult:
             name: create_sip_trunkResult
-            title: Create an outbound SIP trunk (REGISTER or static peering) — success response
+            title: Create a SIP trunk (REGISTER or static peering) — success response
             payload:
                 type: object
                 properties:
@@ -5448,8 +5466,8 @@ components:
                     - type
         delete_sip_trunk:
             name: delete_sip_trunk
-            title: Unregister and remove a SIP trunk
-            summary: Unregister and remove a SIP trunk
+            title: Remove a SIP trunk
+            summary: Remove a SIP trunk
             payload:
                 type: object
                 properties:
@@ -5464,7 +5482,7 @@ components:
                     - type
         delete_sip_trunkResult:
             name: delete_sip_trunkResult
-            title: Unregister and remove a SIP trunk — success response
+            title: Remove a SIP trunk — success response
             payload:
                 type: object
                 properties:
@@ -5938,6 +5956,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema
+        evt_sip_trunk_up:
+            name: evt_sip_trunk_up
+            title: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
+            summary: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.trunk_up. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.trunk_up/post/requestBody/content/application~1json/schema
+        evt_sip_trunk_down:
+            name: evt_sip_trunk_down
+            title: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
+            summary: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.trunk_down. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/sip.trunk_down/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.
@@ -6165,11 +6197,50 @@ components:
             properties:
                 peer_uri:
                     type: string
+                outbound_proxy:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                password:
+                    type: string
+                inbound_sources:
+                    type: array
+                    items:
+                        type: string
+                options_ping_interval_seconds:
+                    type: integer
+                tls_insecure_skip_verify:
+                    type: boolean
+            required:
+                - peer_uri
         IPIPTrunkView:
             type: object
             properties:
                 peer_uri:
                     type: string
+                outbound_proxy:
+                    type: string
+                aor:
+                    type: string
+                username:
+                    type: string
+                inbound_sources:
+                    type: array
+                    items:
+                        type: string
+                options_ping_interval_seconds:
+                    type: integer
+                last_ping_at:
+                    type: string
+                last_ping_status_code:
+                    type: integer
+                tls_insecure_skip_verify:
+                    type: boolean
+            required:
+                - peer_uri
+                - inbound_sources
         LegStreamView:
             type: object
             properties:

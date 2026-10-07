@@ -22,14 +22,15 @@ type fakeTrunk struct {
 	stopMu    sync.Mutex
 }
 
-func (f *fakeTrunk) ID() string                        { return f.id }
-func (f *fakeTrunk) Type() TrunkType                   { return f.typ }
-func (f *fakeTrunk) AOR() string                       { return f.aor }
-func (f *fakeTrunk) PeerSocket() (string, int, string) { return f.host, f.port, f.transport }
-func (f *fakeTrunk) ContactUser() string               { return f.contact }
-func (f *fakeTrunk) AppID() string                     { return f.appID }
-func (f *fakeTrunk) Snapshot() TrunkView               { return TrunkView{ID: f.id, Type: f.typ} }
-func (f *fakeTrunk) Start(context.Context)             {}
+func (f *fakeTrunk) ID() string                          { return f.id }
+func (f *fakeTrunk) Type() TrunkType                     { return f.typ }
+func (f *fakeTrunk) AOR() string                         { return f.aor }
+func (f *fakeTrunk) PeerSocket() (string, int, string)   { return f.host, f.port, f.transport }
+func (f *fakeTrunk) ContactUser() string                 { return f.contact }
+func (f *fakeTrunk) AppID() string                       { return f.appID }
+func (f *fakeTrunk) OutboundRoute(sip.Uri) OutboundRoute { return OutboundRoute{} }
+func (f *fakeTrunk) Snapshot() TrunkView                 { return TrunkView{ID: f.id, Type: f.typ} }
+func (f *fakeTrunk) Start(context.Context)               {}
 func (f *fakeTrunk) Stop(context.Context) error {
 	f.stopMu.Lock()
 	defer f.stopMu.Unlock()
@@ -228,6 +229,91 @@ func TestTrunkManager_LookupInbound(t *testing.T) {
 		m.Add(b)
 		if got, unique := m.LookupInbound("10.0.0.30", 5080, "", sip.Uri{}); got != b || !unique {
 			t.Fatalf("got %v unique=%v, want %v unique=true", got, unique, b)
+		}
+	})
+}
+
+func newSourceTrunk(t *testing.T, id, peer, aor string, sources ...string) *IPIPTrunk {
+	t.Helper()
+	peerURI, err := ParseProxyURI(peer)
+	if err != nil {
+		t.Fatalf("ParseProxyURI(%q): %v", peer, err)
+	}
+	prefixes, err := ParseSourcePrefixes(sources)
+	if err != nil {
+		t.Fatalf("ParseSourcePrefixes(%v): %v", sources, err)
+	}
+	p := IPIPTrunkParams{ID: id, PeerURI: peerURI, InboundSources: prefixes}
+	if aor != "" {
+		var u sip.Uri
+		if err := sip.ParseUri(aor, &u); err != nil {
+			t.Fatalf("parse aor %q: %v", aor, err)
+		}
+		p.AOR = &u
+	}
+	return NewIPIPTrunk(nil, nil, nil, p)
+}
+
+func TestTrunkManager_LookupInbound_SourceMatcher(t *testing.T) {
+	wide := newSourceTrunk(t, "wide", "sip:carrier.example", "", "10.1.0.0/16")
+	narrow := newSourceTrunk(t, "narrow", "sip:carrier.example", "", "10.1.2.0/24")
+	literal := newSourceTrunk(t, "literal", "sip:10.1.2.3:5060", "")
+	v6 := newSourceTrunk(t, "v6", "sip:carrier.example", "", "2001:db8::/32")
+	tieA := newSourceTrunk(t, "tie-a", "sip:carrier.example", "sip:a@carrier.example", "10.2.0.0/16")
+	tieB := newSourceTrunk(t, "tie-b", "sip:carrier.example", "sip:b@carrier.example", "10.2.0.0/16")
+	reg := &fakeTrunk{id: "reg", typ: TrunkTypeSIPRegister, aor: "sip:alice@vb.test", contact: "alice", host: "10.1.2.60", port: 5060}
+
+	m := NewTrunkManager()
+	for _, tr := range []Trunk{wide, narrow, literal, v6, tieA, tieB, reg} {
+		m.Add(tr)
+	}
+
+	tests := []struct {
+		name       string
+		host       string
+		port       int
+		to         sip.Uri
+		want       Trunk
+		wantUnique bool
+	}{
+		{"prefix-only match", "10.1.9.9", 5060, sip.Uri{}, wide, true},
+		{"longest prefix wins", "10.1.2.50", 5060, sip.Uri{}, narrow, true},
+		{"peer literal on its port", "10.1.2.3", 5060, sip.Uri{}, literal, true},
+		{"peer literal from an ephemeral port", "10.1.2.3", 40000, sip.Uri{}, literal, true},
+		{"registered socket beats a prefix", "10.1.2.60", 5060, sip.Uri{}, reg, true},
+		{"registered host beats a shorter prefix", "10.1.2.60", 40000, sip.Uri{}, reg, true},
+		{"v4-mapped source", "::ffff:10.1.9.9", 5060, sip.Uri{}, wide, true},
+		{"ipv6 prefix", "2001:db8::1", 5060, sip.Uri{}, v6, true},
+		{"equal prefixes narrowed by To AOR", "10.2.3.4", 5060, sip.Uri{Scheme: "sip", User: "b", Host: "carrier.example"}, tieB, true},
+		{"equal prefixes narrowed by To user", "10.2.3.4", 5060, sip.Uri{User: "a", Host: "elsewhere.test"}, tieA, true},
+		{"outside every source", "192.0.2.1", 5060, sip.Uri{}, nil, false},
+		{"hostname source", "carrier.example", 5060, sip.Uri{}, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, unique := m.LookupInbound(tc.host, tc.port, "", tc.to)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got.ID())
+				}
+				return
+			}
+			if got == nil || got.ID() != tc.want.ID() {
+				t.Fatalf("got %v, want %s", got, tc.want.ID())
+			}
+			if unique != tc.wantUnique {
+				t.Fatalf("unique = %v, want %v", unique, tc.wantUnique)
+			}
+		})
+	}
+
+	t.Run("equal prefixes without discriminator are not unique", func(t *testing.T) {
+		got, unique := m.LookupInbound("10.2.3.4", 5060, "", sip.Uri{User: "nobody", Host: "x.test"})
+		if got == nil || (got.ID() != "tie-a" && got.ID() != "tie-b") {
+			t.Fatalf("got %v, want one of the tied trunks", got)
+		}
+		if unique {
+			t.Fatal("unique = true, want false")
 		}
 	})
 }

@@ -176,7 +176,8 @@ Originate an outbound SIP call.
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
 | `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`); the transport comes from the URI — `sips:` or `;transport=tls` dials over TLS, `;transport=tcp` over TCP, otherwise UDP. An `outbound_proxy`, when present, is the hop actually contacted and its transport wins. For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
-| `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to `SIP_DOMAIN`. |
+| `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the trunk's AOR realm, falling back to `SIP_DOMAIN`. When omitted on a call placed with `trunk_id`, the trunk's AOR is used. |
+| `trunk_id` | string | no | SIP legs only. ID of the [SIP trunk](#sip-trunks) to place the call through. The trunk supplies the route to its upstream, its digest credentials and — unless `from` names a host — the From realm. Takes precedence over selecting a trunk by matching `from` against trunk AORs. An unknown ID is rejected with `404`. |
 | `outbound_proxy` | string | no | SIP legs only. Next hop for this INVITE, attached as a loose `Route` header with the Request-URI left unchanged (e.g. `"sip:edge.acme.net:5060;transport=tcp"`). Outranks the matched trunk's `outbound_proxy` and `SIP_OUTBOUND_PROXY`; ignored when `to` resolves to an AOR registered here. See [Routing through an outbound proxy](#routing-through-an-outbound-proxy). |
 | `privacy` | string | no | SIP Privacy header value (e.g. `"id"`, `"none"`) |
 | `ring_timeout` | integer | no | Seconds to wait for answer before the leg is ended with `leg.disconnected` reason `ring_timeout`. Defaults to 60 when omitted; `0` = no timeout, the leg rings until it is answered, refused or deleted. |
@@ -978,7 +979,7 @@ The typical app flow: on `leg.transfer_requested`, call **accept**, perform the 
 
 **Identity on the auto-dialled INVITE.** With `SIP_REFER_AUTO_DIAL=true`, the INVITE the server places toward the target is originated on the referrer leg's behalf:
 
-- If the referrer leg arrived on — or was dialled over — a **registered SIP trunk**, the transfer goes out over that same trunk: `From` and `P-Asserted-Identity` carry the trunk's AOR, and the INVITE picks up the trunk's digest credentials and `Route`. The upstream that delivered the call is the one that can route the target, and it only accepts an identity it authenticated; the transferor's own caller ID would usually match no AOR and be rejected. `Referred-By`, when the referrer sent one, still identifies who asked for the transfer.
+- If the referrer leg arrived on — or was dialled over — a **SIP trunk**, the transfer goes out over that same trunk: `From` and `P-Asserted-Identity` carry the trunk's AOR, and the INVITE picks up the trunk's digest credentials and `Route`. An `ip_ip` trunk created without an `aor` has no identity of its own, so the leg's own identity (next bullet) is sent over that trunk instead. The upstream that delivered the call is the one that can route the target, and it only accepts an identity it authenticated; the transferor's own caller ID would usually match no AOR and be rejected. `Referred-By`, when the referrer sent one, still identifies who asked for the transfer.
 - Otherwise the leg's own identity is reused — the caller's `From` for an inbound leg, the `from` the leg was created with for an outbound one.
 
 The resulting leg's `leg.ringing` reports both, as `from` (a full SIP URI when the host is known) and `trunk_id`.
@@ -3483,7 +3484,7 @@ The full machine-readable contract for the VSI WebSocket — every command, ever
 |-------|------|-------------|
 | `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
 
-Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a registered trunk inherit the trunk's `app_id`, and calls from a SIP device registered here inherit the `app_id` its registration was claimed with; both take precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring) and [claiming a registration](#inbound-register-authentication-digest-challenge)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a SIP trunk inherit the trunk's `app_id`, and calls from a SIP device registered here inherit the `app_id` its registration was claimed with; both take precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring) and [claiming a registration](#inbound-register-authentication-digest-challenge)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
 
 Events from untagged legs carry an empty `app_id` and are dropped by any non-empty filter — tag every leg an app cares about, or it will silently miss its own events.
 
@@ -4860,16 +4861,22 @@ POST /v1/sip/registrations/attempts/{attempt_id}/accept
 
 ---
 
-## SIP Trunks (Outbound Registrations)
+## SIP Trunks
 
-VoiceBlender acts as a SIP UAC and REGISTERs to an upstream SIP
-registrar/PBX so the registrar can deliver inbound calls to it and so that
-VoiceBlender's outbound calls traverse the registrar's proxy under the
-registered identity. Trunks are a typed resource: only the `sip_register`
-type is implemented in this release; `ip_ip` (static-IP peering) is reserved
-in the API schema and returns `501 Not Implemented` when requested.
+A trunk is VoiceBlender's standing connection to an upstream carrier, SBC or
+PBX. Outbound calls placed through a trunk are routed at that upstream with the
+trunk's identity and digest credentials; inbound calls arriving from it are
+tagged with the trunk and inherit its `app_id`. Trunks are a typed resource:
 
-### Lifecycle summary
+| `type` | Use it when | How it works |
+|---|---|---|
+| `sip_register` | The upstream hands out an account (AOR + password) and expects a REGISTER. | VoiceBlender acts as a SIP UAC, REGISTERs to the upstream registrar and refreshes before expiry. The registrar delivers inbound calls to the registered Contact. |
+| `ip_ip` | The upstream peers by address — a carrier SIP trunk, an SBC, another PBX. | No REGISTER. Calls are sent to a fixed `peer_uri`, inbound calls are recognised by their source address, and an optional OPTIONS health check tracks whether the peer is answering. See [Static peering (`ip_ip`)](#static-peering-ip_ip). |
+
+Trunks live in memory: they are not persisted and must be re-created after a
+restart.
+
+### Lifecycle summary (`sip_register`)
 
 | Action | Trigger | Event published |
 |---|---|---|
@@ -4880,19 +4887,43 @@ in the API schema and returns `501 Not Implemented` when requested.
 | `DELETE /v1/sip/trunks/{id}` | operator removes the trunk | `sip.outbound_registration_expired` (`reason: unregistered`) |
 | Server shutdown | every trunk is unregistered in parallel | `sip.outbound_registration_expired` (`reason: unregistered` or `shutdown`) |
 
+An `ip_ip` trunk has no registration lifecycle: it is `active` from creation.
+With the OPTIONS health check enabled it publishes `sip.trunk_up` and
+`sip.trunk_down` instead — see [Health check](#health-check).
+
 ### Implicit call wiring
 
-- **Outbound**: `POST /v1/legs` with `from` equal to a registered trunk's
-  AOR (full URI like `sip:alice@pbx.example`) or just the user-part
-  (`alice`) auto-attaches the trunk's digest credentials and adds a
-  loose-route `Route: <trunk's registrar URI;lr>` header. Caller-supplied
-  `auth` always wins. The resulting leg's `leg.ringing` event carries
-  `trunk_id`.
-- **Inbound**: any INVITE whose source socket matches a trunk's upstream
-  registrar peer (full host:port, or host-only as a fallback for ephemeral
-  source ports) is tagged with `trunk_id` on the `leg.ringing` event.
-  When several trunks share that peer, the Request-URI user (the trunk's
-  `contact_user`) and then the `To` URI (the trunk's AOR) pick between them.
+- **Outbound**: a `POST /v1/legs` call goes through a trunk when it names one
+  with `trunk_id`, or when its `from` equals a trunk's AOR — the full URI
+  (`sip:alice@pbx.example`) or just the user-part (`alice`). `trunk_id` wins
+  when both would select a trunk, and is the only way to select an `ip_ip`
+  trunk created without an `aor`. The trunk attaches its digest credentials and
+  a loose-route `Route: <upstream;lr>` header naming its registrar
+  (`sip_register`) or peer (`ip_ip`). Caller-supplied `auth` always wins. The
+  resulting leg's `leg.ringing` event carries `trunk_id`.
+
+  ```bash
+  curl -X POST http://vb.local:8080/v1/legs \
+    -H "Content-Type: application/json" \
+    -d '{
+      "type": "sip",
+      "to": "sip:+15557654321@203.0.113.10",
+      "from": "+15551230000",
+      "trunk_id": "c0a8f1d2-4b7e-4f0a-9d3c-2e5b6a7c8d90"
+    }'
+  ```
+
+  Trunk AORs are not checked for uniqueness. When two trunks share an AOR, or
+  two AORs share a user-part, which one a `from` selects is unspecified — name
+  the trunk with `trunk_id`.
+- **Inbound**: an INVITE is tagged with `trunk_id` on the `leg.ringing` event
+  when its source matches a trunk's upstream. For `sip_register` that is the
+  registrar peer's socket (full host:port, or host-only as a fallback for
+  ephemeral source ports); for `ip_ip` it is any address in the trunk's
+  `inbound_sources`. An exact host:port match wins, then the longest matching
+  prefix. When several trunks still share the source, the Request-URI user
+  (a `sip_register` trunk's `contact_user`) and then the `To` URI (the trunk's
+  AOR) pick between them.
   If exactly one trunk matches and it has an `app_id`, the leg inherits it —
   overriding any `X-App-ID` header — so `leg.ringing` and every later event
   for the leg reach only that app's filtered event stream.
@@ -4930,8 +4961,10 @@ into the From — `sip:alice@pbx.example.com:5070` yields a From host of
 
 ### POST /v1/sip/trunks
 
-Create and start a trunk. Synchronously validates; REGISTER runs
-asynchronously. Returns **202 Accepted** with `{id, type, status}`.
+Create and start a trunk. Synchronously validates, then returns **202
+Accepted** with `{id, type, status}`. A `sip_register` trunk REGISTERs
+asynchronously and starts as `registering`; an `ip_ip` trunk is `active` at
+once.
 
 ```bash
 curl -X POST http://vb.local:8080/v1/sip/trunks \
@@ -4974,8 +5007,117 @@ Field reference (`sip_register` block):
 | `expires_seconds` | no | Requested expiry. Clamped to `[SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]`. |
 | `tls_insecure_skip_verify` | no | Accept this trunk's TLS next hop certificate without verifying it — self-signed, privately signed, or SAN-less (`x509: certificate relies on legacy Common Name field`). Scoped to that peer; every other TLS peer is still verified, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored with a logged warning when the next hop is not TLS or is named by IP literal. See [TLS proxies](#tls-proxies). |
 
-Errors: `400` for invalid JSON, missing fields, or invalid URIs. `501` when
-`type == "ip_ip"` (not yet implemented). `400` for unknown types.
+Errors: `400` for invalid JSON, missing or invalid fields, invalid URIs, or an
+unknown `type`.
+
+### Static peering (`ip_ip`)
+
+An `ip_ip` trunk describes an upstream that is reached at a fixed address and
+needs no registration.
+
+```bash
+curl -X POST http://vb.local:8080/v1/sip/trunks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "ip_ip",
+    "app_id": "acme",
+    "ip_ip": {
+      "peer_uri":        "sip:203.0.113.10:5060",
+      "username":        "acct-4411",
+      "password":        "supersecret",
+      "inbound_sources": ["198.51.100.0/24"],
+      "options_ping_interval_seconds": 30
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "instance_id": "abc-123",
+  "id": "c0a8f1d2-4b7e-4f0a-9d3c-2e5b6a7c8d90",
+  "type": "ip_ip",
+  "status": "active"
+}
+```
+
+Field reference (`ip_ip` block):
+
+| Field | Required | Description |
+|---|---|---|
+| `peer_uri` | yes | SIP URI of the peer, e.g. `sip:203.0.113.10:5060` or `sips:sbc.carrier.example:5061`. `sips:` / `;transport=tls` selects TLS and `;transport=tcp` TCP, otherwise UDP. Any user part is ignored. An IP-literal host is also an inbound source; a hostname is used for outbound calls only and is never resolved for inbound matching. |
+| `outbound_proxy` | no | Next-hop proxy for this trunk's INVITEs and OPTIONS pings. Defaults to `SIP_OUTBOUND_PROXY`. See the proxy note below. |
+| `aor` | no | Identity the trunk presents, e.g. `sip:acme@carrier.example`. Lets a call select the trunk by `from`, supplies the From / P-Asserted-Identity realm when `from` names no host, and tells trunks that share an inbound source apart by the `To` header. |
+| `username` | no | Digest username for INVITEs the peer challenges. Requires `password`; defaults to the `aor` user-part. |
+| `password` | no | Digest password. Omit for a peer that authenticates by source address. **Never returned in any response.** |
+| `inbound_sources` | no | IPs and CIDR ranges (IPv4 or IPv6) the peer's INVITEs arrive from. At most 64 entries; a `/0` range is rejected. |
+| `options_ping_interval_seconds` | no | Seconds between OPTIONS health checks, `1`–`3600`. `0` (default) disables them. |
+| `tls_insecure_skip_verify` | no | Accept this trunk's TLS next hop certificate without verifying it. Same scope and limits as for `sip_register`. |
+
+**Outbound.** A call placed through the trunk is sent to `peer_uri`. When the
+call's `to` already targets the peer — same host, port and transport — the
+INVITE goes out with no `Route` header at all; otherwise it carries a loose
+`Route: <peer_uri;lr>` and the Request-URI is left as dialled. If the peer
+answers `401`/`407`, the INVITE is retried once with the trunk's credentials.
+
+With an outbound proxy in effect (the trunk's own or `SIP_OUTBOUND_PROXY`),
+the INVITE carries a single `Route` naming the **proxy**, not the peer. The
+peer is then reached only if the call's `to` names it, so dial
+`sip:<number>@<peer host>` on proxied trunks.
+
+**Inbound.** `inbound_sources` is a matching rule, not an access list: it
+decides which trunk an inbound call is attributed to, and calls from any other
+address are still accepted and ring untagged. Three consequences:
+
+- A proxy is never an inbound source. If the peer's calls reach you through
+  one, list the proxy's address in `inbound_sources`.
+- A range that covers devices registered to this server takes their calls too:
+  a matched call gets the trunk's `app_id` instead of the one its registration
+  was claimed with. Keep ranges as narrow as the carrier's signalling addresses.
+- Two trunks listing the same range are told apart by the `To` header against
+  each trunk's `aor`. When that does not settle it, `trunk_id` may name either
+  and the leg inherits no trunk `app_id`.
+
+#### Health check
+
+With `options_ping_interval_seconds` set, the trunk sends an OPTIONS to the
+peer straight away and then at that interval, and its `status` follows the
+result:
+
+| OPTIONS outcome | Peer is | `status` |
+|---|---|---|
+| Any final response except those below — including `404`, `405`, `403`, a `401`/`407` challenge, and `501` | up | `active` |
+| `408`, or any `5xx` other than `501` | down | `failed` |
+| No response within 5 seconds, or a transport error | down | `failed` |
+
+Many peers refuse OPTIONS yet take calls, so a refusal counts as an answer. A
+`5xx` does not, because that is what a proxy in front of a dead peer returns.
+
+`sip.trunk_up` is published on the first answer and on every recovery;
+`sip.trunk_down` on every change to `failed`. Each fires once per change, not
+once per ping. A single failed check flips the trunk — there is no
+consecutive-failure threshold.
+
+```json
+{
+  "type": "sip.trunk_down",
+  "trunk_id": "c0a8f1d2-4b7e-4f0a-9d3c-2e5b6a7c8d90",
+  "trunk_type": "ip_ip",
+  "app_id": "acme",
+  "peer_uri": "sip:203.0.113.10:5060",
+  "status_code": 503,
+  "reason": "Service Unavailable"
+}
+```
+
+`status_code` is omitted when the peer did not answer; `reason` is then
+`timeout` or the transport error. These events carry no leg or room, so they
+are delivered to the global `WEBHOOK_URL` and to VSI subscribers only.
+
+`status` is informational. A call placed through a `failed` trunk is still
+attempted, and with the health check off the trunk stays `active` — meaning
+configured, not verified. Deleting a trunk publishes neither event.
 
 ### Routing through an outbound proxy
 
@@ -5118,9 +5260,9 @@ Resolution order, most specific first:
 |---|---|---|
 | 1 | `to` resolves to an AOR registered here | Delivered to the bound contact; any proxy is ignored (and logged). Local delivery is not an egress. |
 | 2 | `outbound_proxy` on `POST /v1/legs` | That one INVITE. |
-| 3 | `sip_register.outbound_proxy` on the matched trunk | That trunk's REGISTER and its INVITEs. The INVITEs carry a loose `Route`; the REGISTER is sent to the hop with no Route (see below). |
+| 3 | `outbound_proxy` on the call's trunk (`sip_register` or `ip_ip`) | That trunk's INVITEs, plus its REGISTER or OPTIONS pings. The INVITEs carry a loose `Route`; the REGISTER and OPTIONS are sent to the hop with no Route (see below). |
 | 4 | `SIP_OUTBOUND_PROXY` | Everything not covered above. |
-| 5 | The matched trunk's `registrar_uri` | Trunk-matched INVITEs, unchanged from earlier releases. |
+| 5 | The call's trunk upstream: `registrar_uri` or `peer_uri` | INVITEs placed through a trunk. An `ip_ip` trunk adds no `Route` when `to` already targets its peer. |
 | 6 | The Request-URI host | Everything else. |
 
 `SIP_OUTBOUND_PROXY` deliberately does **not** displace rule 5: setting it
@@ -5147,6 +5289,9 @@ endpoints. A malformed `outbound_proxy` is a `400`; a malformed
 > give each a distinct `contact_user` or AOR. When those still leave more than
 > one candidate, `trunk_id` on `leg.ringing` may name any one of them and the
 > leg does not inherit a trunk `app_id`.
+>
+> This applies to `sip_register` trunks. An `ip_ip` trunk is matched only by
+> its `inbound_sources`, never by its proxy.
 
 ### GET /v1/sip/trunks
 
@@ -5179,14 +5324,34 @@ curl http://vb.local:8080/v1/sip/trunks
         "call_id": "f7c1...@vb.example",
         "cseq": 4
       }
+    },
+    {
+      "id": "c0a8f1d2-4b7e-4f0a-9d3c-2e5b6a7c8d90",
+      "type": "ip_ip",
+      "app_id": "acme",
+      "status": "failed",
+      "last_error": "503 Service Unavailable",
+      "created_at": "2026-06-24T12:00:00Z",
+      "ip_ip": {
+        "peer_uri": "sip:203.0.113.10:5060",
+        "username": "acct-4411",
+        "inbound_sources": ["198.51.100.0/24", "203.0.113.10/32"],
+        "options_ping_interval_seconds": 30,
+        "last_ping_at": "2026-06-24T12:05:30Z",
+        "last_ping_status_code": 503
+      }
     }
   ]
 }
 ```
 
-`outbound_proxy` is omitted entirely when the trunk routes at its registrar.
-When present it is the hop actually in effect, whether it came from the trunk's
-own `outbound_proxy` or from `SIP_OUTBOUND_PROXY`.
+`outbound_proxy` is omitted entirely when the trunk routes at its registrar or
+peer. When present it is the hop actually in effect, whether it came from the
+trunk's own `outbound_proxy` or from `SIP_OUTBOUND_PROXY`.
+
+For an `ip_ip` trunk, `inbound_sources` is the effective list in CIDR form —
+the configured entries plus the `peer_uri` host when it is an IP literal.
+`last_ping_status_code` is absent when the last OPTIONS went unanswered.
 
 ### GET /v1/sip/trunks/{id}
 
@@ -5195,10 +5360,14 @@ is unknown.
 
 ### DELETE /v1/sip/trunks/{id}
 
-Returns **202 Accepted** immediately. In the background: cancels the refresh
-timer, sends one final REGISTER with `Expires: 0` (digest-authed if
-challenged), removes the trunk from the manager, and emits
-`sip.outbound_registration_expired` with `reason: unregistered`.
+Returns **202 Accepted** immediately. In the background, a `sip_register`
+trunk cancels the refresh timer, sends one final REGISTER with `Expires: 0`
+(digest-authed if challenged), is removed from the manager, and emits
+`sip.outbound_registration_expired` with `reason: unregistered`. An `ip_ip`
+trunk stops its OPTIONS health check and is removed; nothing is sent to the
+peer and no event is published.
+
+Calls already established through the trunk are not affected.
 
 ```bash
 curl -X DELETE http://vb.local:8080/v1/sip/trunks/7f5d39c6-2987-4643-9822-5c7ced9080e7
@@ -5211,6 +5380,8 @@ curl -X DELETE http://vb.local:8080/v1/sip/trunks/7f5d39c6-2987-4643-9822-5c7ced
 | `sip.outbound_registration_active` | REGISTER (initial or refresh) returned 2xx. Carries `trunk_id`, `aor`, `registrar`, `contact`, `granted_expires_seconds`, `expires_at`, `call_id`. |
 | `sip.outbound_registration_failed` | REGISTER attempt failed (transport error, non-2xx after digest retry). Carries `trunk_id`, `aor`, `registrar`, `status_code`, `reason`. The trunk stays in the manager and retries with exponential backoff. |
 | `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), or refresh failed past granted lifetime. `reason` is one of `unregistered`, `shutdown`, `refresh_failed`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER. |
+| `sip.trunk_up` | An `ip_ip` trunk's peer answered its OPTIONS health check — the first answer, or a recovery. Carries `trunk_id`, `trunk_type`, `peer_uri`, `status_code`. See [Health check](#health-check). |
+| `sip.trunk_down` | An `ip_ip` trunk's peer failed its OPTIONS health check. Carries `trunk_id`, `trunk_type`, `peer_uri`, and `status_code` / `reason` (`status_code` is omitted when there was no response). |
 
 ### VSI commands
 
@@ -5228,6 +5399,10 @@ Payloads and result shapes mirror the REST endpoints above.
 | `SIP_OUTBOUND_REGISTRATION_REFRESH_RATIO` | `0.5` | Fraction of granted expiry at which the trunk refreshes |
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the failure-retry exponential backoff |
 | `SIP_OUTBOUND_PROXY` | _(empty)_ | Default next hop for outbound REGISTERs and INVITEs. Overridden per-trunk by `outbound_proxy` and per-call by `outbound_proxy` on `POST /v1/legs`. A malformed value fails startup. |
+
+The `SIP_OUTBOUND_REGISTRATION_*` variables apply to `sip_register` trunks
+only. An `ip_ip` trunk has no server-wide tunables; its health check is set per
+trunk.
 
 ---
 

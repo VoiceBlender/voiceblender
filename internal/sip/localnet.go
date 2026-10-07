@@ -34,6 +34,38 @@ func ParseLocalNets(s string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
+// ParseSourcePrefixes parses a list of CIDR ranges and bare IPs into prefixes
+// comparable against a request's source address: IPv4-mapped entries are
+// unmapped, because source addresses are.
+func ParseSourcePrefixes(entries []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	seen := map[netip.Prefix]bool{}
+	for _, entry := range entries {
+		parsed, err := ParseLocalNets(entry)
+		if err != nil {
+			return nil, err
+		}
+		if len(parsed) == 0 {
+			return nil, fmt.Errorf("empty entry")
+		}
+		for _, p := range parsed {
+			p = unmapPrefix(p)
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out, nil
+}
+
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if !p.Addr().Is4In6() || p.Bits() < 96 {
+		return p
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96).Masked()
+}
+
 // localAdvertisedIP returns the IPv4 address to advertise to peer when it is
 // on one of the configured local networks, and "" when the default advertised
 // address applies. peer is an IP literal, with or without a port.

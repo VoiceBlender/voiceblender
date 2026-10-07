@@ -166,25 +166,12 @@ func NewOutboundRegistration(engine *Engine, bus *events.Bus, log *slog.Logger, 
 }
 
 // applyTLSTrust registers this trunk's next hop as a peer whose certificate is
-// accepted unverified. Only meaningful for a TLS next hop named by hostname:
-// an IP literal sends no SNI, so the dial cannot be told apart from any other.
+// accepted unverified.
 func (r *OutboundRegistration) applyTLSTrust() {
-	if !r.tlsInsecureSkipVerify || r.engine == nil {
+	if !r.tlsInsecureSkipVerify {
 		return
 	}
-	if !strings.EqualFold(r.peerTransport, "tls") {
-		r.log.Warn("tls_insecure_skip_verify ignored: trunk next hop is not TLS", "transport", r.peerTransport)
-		return
-	}
-	host := r.nextHopURI().Host
-	if net.ParseIP(host) != nil {
-		r.log.Warn("tls_insecure_skip_verify ignored: an IP-literal next hop cannot be exempted per trunk; "+
-			"use SIP_TLS_CA_FILE or SIP_TLS_INSECURE_SKIP_VERIFY", "host", host)
-		return
-	}
-	r.trustedTLSHost = host
-	r.engine.AddInsecureTLSPeer(host)
-	r.log.Warn("certificate verification disabled for trunk peer", "host", host)
+	r.trustedTLSHost = r.engine.trustTLSNextHop(r.nextHopURI(), r.peerTransport, r.log)
 }
 
 // clearTLSTrust revokes the exemption. Called once the trunk is done with the
@@ -213,17 +200,7 @@ func engineHostOrFallback(e *Engine) string {
 // source. With a proxy in front the 2xx comes back from the proxy, so this
 // seed agrees with the post-response value.
 func (r *OutboundRegistration) computePeerSocket() {
-	next := r.nextHopURI()
-	r.peerHost = next.Host
-	r.peerPort = next.Port
-	if r.peerPort == 0 {
-		r.peerPort = defaultPortForURI(next)
-	}
-	if t := TransportForURI(next); t != "" {
-		r.peerTransport = t
-	} else {
-		r.peerTransport = "udp"
-	}
+	r.peerHost, r.peerPort, r.peerTransport = uriSocket(r.nextHopURI())
 }
 
 // nextHopURI is where this trunk's REGISTER is actually sent: the outbound
@@ -290,6 +267,19 @@ func (r *OutboundRegistration) FromHost() string { return r.aor.Host }
 // outbound INVITE path; never exposed over the API.
 func (r *OutboundRegistration) Credentials() (string, string) {
 	return r.username, r.password
+}
+
+// OutboundRoute always names the registrar as a Route, whatever the recipient:
+// the registrar authenticated this identity and expects to be in the path.
+func (r *OutboundRegistration) OutboundRoute(_ sip.Uri) OutboundRoute {
+	regURI := r.registrarURI
+	return OutboundRoute{
+		RouteURI:     &regURI,
+		ProxyURI:     r.outboundProxy,
+		FromHost:     r.aor.Host,
+		AuthUsername: r.username,
+		AuthPassword: r.password,
+	}
 }
 
 // Snapshot returns the current TrunkView. Safe to call concurrently.
