@@ -262,6 +262,7 @@ func (s *Server) routes() {
 		r.Post("/legs/{id}/amd", s.startAMDLeg)
 		r.Post("/legs/{id}/ice-candidates", s.webrtcAddCandidate)
 		r.Get("/legs/{id}/ice-candidates", s.webrtcGetCandidates)
+		r.Post("/legs/{id}/ice-restart", s.webrtcICERestart)
 
 		// Rooms
 		r.Post("/rooms", s.createRoom)

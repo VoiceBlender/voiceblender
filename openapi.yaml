@@ -91,6 +91,12 @@ info:
         - name: WEBRTC_EXTERNAL_IPS
           default: (empty)
           description: Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value "auto" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal.
+        - name: WEBRTC_ICE_DISCONNECTED_TIMEOUT
+          default: 5s
+          description: How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE.
+        - name: WEBRTC_ICE_FAILED_TIMEOUT
+          default: 25s
+          description: How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration).
         - name: RTP_PORT_MIN
           default: "10000"
           description: Minimum UDP port for RTP/RTCP media
@@ -1827,6 +1833,46 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '404':
                     description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+    /legs/{id}/ice-restart:
+        parameters:
+            - $ref: '#/components/parameters/LegId'
+        post:
+            operationId: restartICE
+            summary: Restart ICE on a WebRTC leg
+            description: Applies a new SDP offer carrying fresh ICE credentials (browser `restartIce()`) to the existing leg and returns the answer. The leg id, media session and room membership are kept. Trickle the new candidates through `/legs/{id}/ice-candidates` after the answer arrives.
+            tags:
+                - WebRTC
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/WebRTCICERestartRequest'
+            responses:
+                '200':
+                    description: SDP answer
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/WebRTCOfferResult'
+                '400':
+                    description: Invalid JSON, invalid SDP offer, offer does not change ICE credentials, or leg is not a WebRTC leg
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '404':
+                    description: Leg not found
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '500':
+                    description: Failed to create answer
                     content:
                         application/json:
                             schema:
@@ -4506,6 +4552,13 @@ components:
                     maximum: 8
             required:
                 - volume
+        WebRTCICERestartRequest:
+            type: object
+            properties:
+                sdp:
+                    type: string
+            required:
+                - sdp
         WebRTCOfferRequest:
             type: object
             properties:
@@ -5237,6 +5290,8 @@ components:
                 - leg.hold
                 - leg.unhold
                 - leg.command_failed
+                - leg.ice_interrupted
+                - leg.ice_restored
                 - leg.stream_added
                 - leg.stream_removed
                 - leg.stream_rejected
@@ -5588,6 +5643,42 @@ x-webhooks:
                                         type: string
                                     error:
                                         type: string
+    leg.ice_interrupted:
+        post:
+            summary: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    app_id:
+                                        type: string
+                                    leg_type:
+                                        type: string
+                                        description: Leg type; always "webrtc"
+    leg.ice_restored:
+        post:
+            summary: WebRTC leg regained ICE connectivity after leg.ice_interrupted
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                        description: Leg identifier
+                                    app_id:
+                                        type: string
+                                    leg_type:
+                                        type: string
+                                        description: Leg type; always "webrtc"
     leg.stream_added:
         post:
             summary: An additional m=audio stream was negotiated on a live dialog

@@ -13,7 +13,7 @@ A Go voice engine that connects SIP, WebRTC, WhatsApp, WebSocket and other call 
 - **SIP** -- inbound and outbound calls over UDP, TCP and TLS, with digest auth, hold, REFER transfer, early media and session timers
 - **SIP trunks & registrations** -- register to upstream PBXs/carriers or peer with them by static IP, and act as a registrar for SIP clients
 - **Codecs** -- PCMU, PCMA, G.722, Opus, AMR-WB, AMR-NB, with mid-call codec renegotiation
-- **WebRTC** -- browser voice via SDP offer/answer with trickle ICE
+- **WebRTC** -- browser voice via SDP offer/answer with trickle ICE and ICE restarts
 - **WhatsApp Business Calling** -- inbound and outbound WhatsApp voice calls
 - **WebSocket legs** -- raw PCM over WebSocket for bots and custom clients
 - **LiveKit** -- bridge a LiveKit room, one leg per remote participant

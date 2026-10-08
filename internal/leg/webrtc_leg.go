@@ -175,6 +175,11 @@ func (l *WebRTCLeg) AddICECandidate(c webrtc.ICECandidateInit) error {
 	return l.media.AddICECandidate(c)
 }
 
+// RestartICE applies an ICE restart offer and returns the answer SDP.
+func (l *WebRTCLeg) RestartICE(offerSDP string) (string, error) {
+	return l.media.RestartICE(offerSDP)
+}
+
 // DrainCandidates returns buffered local ICE candidates and whether gathering is done.
 func (l *WebRTCLeg) DrainCandidates() ([]webrtc.ICECandidateInit, bool) {
 	return l.media.DrainLocalCandidates()

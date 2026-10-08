@@ -113,6 +113,13 @@ func VSICommandsMetadata() []VSICommandMeta {
 			PayloadType: idPayload{}, ResultType: WebRTCCandidatesResult{},
 			ErrorCodes: []int{400, 404},
 		},
+		{
+			Name: "webrtc_ice_restart", Summary: "Restart ICE on a WebRTC leg",
+			Description: "Applies a new SDP offer carrying fresh ICE credentials (browser `restartIce()`) to the existing leg and returns the answer; the leg id, media session and room membership are kept. " +
+				"Send the client's new candidates with webrtc_add_candidate only after this result arrives, and poll webrtc_get_candidates again: its `done` flag restarts at false.",
+			PayloadType: vsiWebRTCICERestartPayload{}, ResultType: WebRTCOfferResult{},
+			ErrorCodes: []int{400, 404, 500},
+		},
 		// ── Rooms ───────────────────────────────────────────────────────
 		{Name: "list_rooms", Summary: "List all rooms", ResultType: []RoomView{}},
 		{Name: "get_room", Summary: "Get a single room by id", PayloadType: idPayload{}, ResultType: RoomView{}, ErrorCodes: []int{404}},
@@ -258,6 +265,8 @@ func EventsMetadata() []EventMeta {
 		{events.LegHold, "Leg put on hold (local or remote)", reflect.TypeOf(events.LegHoldData{})},
 		{events.LegUnhold, "Leg taken off hold (local or remote)", reflect.TypeOf(events.LegUnholdData{})},
 		{events.LegCommandFailed, "An asynchronous leg command (202 Accepted) failed during execution", reflect.TypeOf(events.LegCommandFailedData{})},
+		{events.LegICEInterrupted, "WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE", reflect.TypeOf(events.LegICEInterruptedData{})},
+		{events.LegICERestored, "WebRTC leg regained ICE connectivity after leg.ice_interrupted", reflect.TypeOf(events.LegICERestoredData{})},
 		{events.LegStreamAdded, "An additional m=audio stream was negotiated on a live dialog", reflect.TypeOf(events.LegStreamData{})},
 		{events.LegStreamRemoved, "An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone", reflect.TypeOf(events.LegStreamData{})},
 		{events.LegStreamRejected, "The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected", reflect.TypeOf(events.LegStreamData{})},

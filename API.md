@@ -3571,6 +3571,7 @@ The WebSocket accepts bidirectional commands using the same naming as the REST A
 | `webrtc_offer` | `{"sdp":"..."}` | Establish a WebRTC leg via SDP offer/answer; returns `{leg_id, sdp}` |
 | `webrtc_add_candidate` | `{"id":"...","candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0}}` | Add a remote ICE candidate to a WebRTC leg |
 | `webrtc_get_candidates` | `{"id":"..."}` | Drain server-gathered ICE candidates; returns `{candidates, done}` |
+| `webrtc_ice_restart` | `{"id":"...","sdp":"..."}` | Restart ICE on a WebRTC leg with a new offer; returns `{leg_id, sdp}` |
 | `list_rooms` | *(none)* | List all rooms |
 | `get_room` | `{"id":"..."}` | Get a single room |
 | `create_room` | `CreateRoomRequest` | Create a room |
@@ -4117,7 +4118,7 @@ Send a remote ICE candidate to the server for a WebRTC leg (trickle ICE).
 
 ### GET /v1/legs/{id}/ice-candidates
 
-Retrieve server-side ICE candidates gathered since the last call (trickle ICE). Poll this endpoint until `done` is `true` and `candidates` is empty.
+Retrieve server-side ICE candidates gathered since the last call (trickle ICE). Poll this endpoint until `done` is `true` and `candidates` is empty. After an [ICE restart](#post-v1legsidice-restart) `done` goes back to `false` and polling starts over.
 
 **Response:** `200 OK`
 
@@ -4141,15 +4142,83 @@ Retrieve server-side ICE candidates gathered since the last call (trickle ICE). 
 
 ---
 
+### POST /v1/legs/{id}/ice-restart
+
+Restart ICE on an existing WebRTC leg, so a browser whose network path changed (Wi-Fi to cellular, NAT rebinding, VPN flap) keeps its call. The leg ID, room membership, recordings and the DTLS/SRTP session are all kept; only the ICE transport is re-established.
+
+The client creates a new offer with fresh ICE credentials — `pc.restartIce()` followed by `createOffer()` in a browser — and posts it here. The answer carries the server's new ICE credentials.
+
+**Request:**
+
+```json
+{
+  "sdp": "v=0\r\no=- 4611731400430051336 3 IN IP4 127.0.0.1\r\n..."
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sdp` | string | yes | SDP offer whose `ice-ufrag` / `ice-pwd` differ from the previous offer. |
+
+**Response:** `200 OK`
+
+```json
+{
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "sdp": "v=0\r\no=- 4611731400430051336 3 IN IP4 127.0.0.1\r\n..."
+}
+```
+
+**Trickle ICE after a restart:** both sides gather a new set of candidates.
+
+- Send the browser's new candidates to `POST /v1/legs/{id}/ice-candidates` only after this response has arrived. Candidates that reach the server before the restart offer are discarded with the old ICE session.
+- Poll `GET /v1/legs/{id}/ice-candidates` again. Its `done` flag restarts at `false` and candidates left over from the previous round are dropped.
+
+**When to restart:** a WebRTC leg that stops receiving anything for `WEBRTC_ICE_DISCONNECTED_TIMEOUT` (default 5s) emits `leg.ice_interrupted` and stays alive. The restart can be sent at any point before `WEBRTC_ICE_FAILED_TIMEOUT` (default 25s more) runs out; after that the leg is torn down with `leg.disconnected` reason `ice_failure`. `leg.ice_restored` fires once media connectivity is back. A restart may also be sent while the leg is still connected, in which case neither event fires. `leg.connected` is not emitted again.
+
+Only client-initiated restarts are supported, and the offer must not change anything except the ICE credentials and candidates.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/550e8400-e29b-41d4-a716-446655440000/ice-restart \
+  -H 'Content-Type: application/json' \
+  -d '{"sdp":"v=0\r\no=- ..."}'
+```
+
+```js
+pc.oniceconnectionstatechange = async () => {
+  if (pc.iceConnectionState !== 'disconnected') return;
+  pc.restartIce();
+  await pc.setLocalDescription(await pc.createOffer());
+  const res = await fetch(`/v1/legs/${legId}/ice-restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+  });
+  const { sdp } = await res.json();
+  await pc.setRemoteDescription({ type: 'answer', sdp });
+  // now flush candidates gathered since restartIce() and resume polling
+};
+```
+
+**Errors:**
+- `400` — Invalid JSON, invalid SDP offer, offer does not change the ICE credentials, or leg is not a WebRTC leg
+- `404` — Leg not found
+- `500` — Answer generation failed
+
+---
+
 ### WebRTC over VSI
 
-The same offer/answer/trickle-ICE flow is also available over the `/v1/vsi` WebSocket — useful when a client is already connected to receive events and wants to avoid an extra HTTP round trip per ICE candidate. Three commands mirror the REST endpoints:
+The same offer/answer/trickle-ICE flow is also available over the `/v1/vsi` WebSocket — useful when a client is already connected to receive events and wants to avoid an extra HTTP round trip per ICE candidate. Four commands mirror the REST endpoints:
 
 | Command | Payload | Result |
 |---------|---------|--------|
 | `webrtc_offer` | `{"sdp":"..."}` | `{"leg_id":"...","sdp":"..."}` |
 | `webrtc_add_candidate` | `{"id":"...","candidate":{...}}` | `{"status":"added"}` |
 | `webrtc_get_candidates` | `{"id":"..."}` | `{"candidates":[...],"done":true}` |
+| `webrtc_ice_restart` | `{"id":"...","sdp":"..."}` | `{"leg_id":"...","sdp":"..."}` |
 
 **Example exchange:**
 
@@ -4169,6 +4238,10 @@ The same offer/answer/trickle-ICE flow is also available over the `/v1/vsi` WebS
 // Client polls until done=true
 {"type":"webrtc_get_candidates","request_id":"r3","payload":{"id":"550e8400-..."}}
 {"type":"webrtc_get_candidates.result","request_id":"r3","data":{"candidates":[{"candidate":"candidate:...","sdpMid":"0","sdpMLineIndex":0}],"done":false}}
+
+// Later, after the client's network changed: restart ICE on the same leg
+{"type":"webrtc_ice_restart","request_id":"r4","payload":{"id":"550e8400-...","sdp":"v=0\r\no=- ..."}}
+{"type":"webrtc_ice_restart.result","request_id":"r4","data":{"leg_id":"550e8400-...","sdp":"v=0\r\no=- ..."}}
 ```
 
 The returned `leg_id` is interchangeable with REST: subsequent `mute_leg`, `add_leg_to_room`, `delete_leg`, etc. all accept it. Errors follow the standard VSI error envelope (`{"type":"error","request_id":"...","data":{"code":...,"message":"..."}}`).
@@ -4301,6 +4374,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.hold` | Leg put on hold (local or remote) | `leg_id`, `leg_type` |
 | `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `leg_type` |
 | `leg.command_failed` | An asynchronous leg command failed after the HTTP 202 was returned | `leg_id`, `command` (e.g. `ring`, `early_media`, `hold`, `unhold`, `add_to_room`), `error` |
+| `leg.ice_interrupted` | WebRTC leg lost ICE connectivity; the leg is kept alive so the peer can [restart ICE](#post-v1legsidice-restart) | `leg_id`, `leg_type` (`webrtc`) |
+| `leg.ice_restored` | WebRTC leg regained ICE connectivity after `leg.ice_interrupted`, with or without an ICE restart | `leg_id`, `leg_type` (`webrtc`) |
 | `leg.transfer_initiated` | We sent a SIP REFER for this leg | `leg_id`, `kind` (`blind`/`attended`), `target`, `replaces_leg_id` |
 | `leg.transfer_requested` | A peer sent us a SIP REFER targeting this leg. In the default app-driven model it is a decision request — respond via `accept_transfer`/`decline_transfer` (see [Receiving a transfer](#receiving-a-transfer-inbound-refer)). `declined` is vestigial (always false) | `leg_id`, `kind`, `target`, `replaces_call_id`, `declined` |
 | `leg.transfer_progress` | NOTIFY sipfrag for an in-flight transfer | `leg_id`, `status_code`, `reason` |
@@ -4501,7 +4576,7 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `session_expired` | SIP session timer expired without refresh (RFC 4028) |
 | `invite_failed` | INVITE failed for a non-SIP reason (transport error, DNS failure, etc.) |
 | `connect_failed` | Call answered but media/codec negotiation failed |
-| `ice_failure` | WebRTC ICE connection failed |
+| `ice_failure` | WebRTC ICE connection failed: connectivity was lost and neither returned nor was restored by an ICE restart before `WEBRTC_ICE_FAILED_TIMEOUT` ran out |
 | `ice_failed`, `ice_disconnected` | WhatsApp leg lost its ICE connection |
 | `peer_closed` | WebRTC or WhatsApp peer closed its media connection (DTLS close) without any other teardown signal. A WhatsApp leg waits one second for the accompanying BYE first, and reports `remote_bye` if it arrives |
 | `dtls_failed` | WebRTC or WhatsApp DTLS handshake failed, so no media could flow |

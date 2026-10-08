@@ -23,6 +23,7 @@ A single-file browser client for interacting with VoiceBlender via WebRTC.
 ## Features
 
 - **WebRTC audio** -- full-duplex voice via `POST /v1/webrtc/offer` (PCMU/G.711 at 8kHz)
+- **ICE restart** -- when the network path changes, the client restarts ICE via `POST /v1/legs/{id}/ice-restart` and keeps the same leg
 - **Mute/unmute** -- toggles mic locally and notifies the server
 - **Room management** -- create or join a room, add your leg to it for multi-party mixing
 - **DTMF keypad** -- send RFC 4733 telephone-event digits

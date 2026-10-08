@@ -3,6 +3,7 @@ package leg
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -44,6 +46,18 @@ type PCMediaConfig struct {
 	// Connected state. Subsequent state transitions don't re-fire.
 	OnConnected func()
 
+	// TolerateICEDisconnect keeps the peer connection alive through the ICE
+	// disconnected state so the remote peer can restart ICE: OnInterrupted
+	// fires instead of OnDisconnect, and OnRestored once connectivity is
+	// back. ICE failed still fires OnDisconnect.
+	TolerateICEDisconnect bool
+	OnInterrupted         func()
+	OnRestored            func()
+
+	// Zero keeps pion's default (5s disconnected, then 25s more to failed).
+	ICEDisconnectedTimeout time.Duration
+	ICEFailedTimeout       time.Duration
+
 	// AnsweringDTLSRole forces the DTLS role on actpass offers. Use
 	// DTLSRoleClient against ice-lite peers (e.g. WhatsApp).
 	AnsweringDTLSRole webrtc.DTLSRole
@@ -65,6 +79,21 @@ type PCMediaConfig struct {
 const (
 	PCPeerClosed = "peer_closed"
 	PCDTLSFailed = "dtls_failed"
+)
+
+var (
+	// ErrNotICERestart is returned by RestartICE when the offer keeps the
+	// current ICE credentials.
+	ErrNotICERestart = errors.New("offer does not change ICE credentials")
+	// ErrInvalidOffer is returned by RestartICE when the offer cannot be
+	// parsed or applied.
+	ErrInvalidOffer = errors.New("invalid SDP offer")
+)
+
+const (
+	defaultICEDisconnectedTimeout = 5 * time.Second
+	defaultICEFailedTimeout       = 25 * time.Second
+	defaultICEKeepaliveInterval   = 2 * time.Second
 )
 
 // PCMedia wraps a pion PeerConnection and exposes PCM16 io.Reader/io.Writer
@@ -91,6 +120,9 @@ type PCMedia struct {
 	mu            sync.Mutex
 	iceCandidates []webrtc.ICECandidateInit
 	iceDone       bool
+
+	negMu       sync.Mutex
+	interrupted atomic.Bool
 
 	tapMu       sync.RWMutex
 	speakingTap io.Writer
@@ -150,6 +182,16 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	}
 	if len(cfg.ExternalIPs) > 0 {
 		se.SetNAT1To1IPs(cfg.ExternalIPs, webrtc.ICECandidateTypeHost)
+	}
+	if cfg.ICEDisconnectedTimeout > 0 || cfg.ICEFailedTimeout > 0 {
+		disconnected, failed := cfg.ICEDisconnectedTimeout, cfg.ICEFailedTimeout
+		if disconnected <= 0 {
+			disconnected = defaultICEDisconnectedTimeout
+		}
+		if failed <= 0 {
+			failed = defaultICEFailedTimeout
+		}
+		se.SetICETimeouts(disconnected, failed, defaultICEKeepaliveInterval)
 	}
 	if cfg.LoopbackICE {
 		se.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
@@ -260,9 +302,25 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	})
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		m.log.Debug("pcmedia: ICE connection state", "state", state.String())
-		if cfg.OnDisconnect != nil &&
-			(state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateDisconnected) {
-			cfg.OnDisconnect(state.String())
+		switch state {
+		case webrtc.ICEConnectionStateDisconnected:
+			if !cfg.TolerateICEDisconnect {
+				if cfg.OnDisconnect != nil {
+					cfg.OnDisconnect(state.String())
+				}
+				return
+			}
+			if !m.interrupted.Swap(true) && cfg.OnInterrupted != nil {
+				cfg.OnInterrupted()
+			}
+		case webrtc.ICEConnectionStateFailed:
+			if cfg.OnDisconnect != nil {
+				cfg.OnDisconnect(state.String())
+			}
+		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
+			if m.interrupted.Swap(false) && cfg.OnRestored != nil {
+				cfg.OnRestored()
+			}
 		}
 	})
 	var connectedOnce sync.Once
@@ -321,6 +379,74 @@ func (m *PCMedia) Context() context.Context { return m.ctx }
 
 func (m *PCMedia) AddICECandidate(c webrtc.ICECandidateInit) error {
 	return m.pc.AddICECandidate(c)
+}
+
+// RestartICE applies a remote offer carrying new ICE credentials to the live
+// peer connection and returns the answer. Local candidates of the new
+// generation are trickled through DrainLocalCandidates again.
+func (m *PCMedia) RestartICE(offerSDP string) (string, error) {
+	m.negMu.Lock()
+	defer m.negMu.Unlock()
+
+	ufrag, pwd, err := sdpICECredentials(offerSDP)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidOffer, err)
+	}
+	cur := m.pc.RemoteDescription()
+	if cur == nil {
+		return "", errors.New("no remote description")
+	}
+	curUfrag, curPwd, err := sdpICECredentials(cur.SDP)
+	if err != nil {
+		return "", fmt.Errorf("current remote description: %w", err)
+	}
+	if ufrag == curUfrag && pwd == curPwd {
+		return "", ErrNotICERestart
+	}
+
+	m.mu.Lock()
+	prevCandidates, prevDone := m.iceCandidates, m.iceDone
+	m.iceCandidates, m.iceDone = nil, false
+	m.mu.Unlock()
+
+	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}
+	if err := m.pc.SetRemoteDescription(offer); err != nil {
+		m.mu.Lock()
+		m.iceCandidates, m.iceDone = prevCandidates, prevDone
+		m.mu.Unlock()
+		return "", fmt.Errorf("%w: %v", ErrInvalidOffer, err)
+	}
+	answer, err := m.pc.CreateAnswer(nil)
+	if err != nil {
+		return "", fmt.Errorf("create answer: %w", err)
+	}
+	if err := m.pc.SetLocalDescription(answer); err != nil {
+		return "", fmt.Errorf("set local description: %w", err)
+	}
+	return answer.SDP, nil
+}
+
+// sdpICECredentials returns the ice-ufrag/ice-pwd of an SDP, preferring the
+// session level and falling back to the first media section that has them.
+func sdpICECredentials(raw string) (ufrag, pwd string, err error) {
+	var parsed sdp.SessionDescription
+	if err := parsed.UnmarshalString(raw); err != nil {
+		return "", "", err
+	}
+	ufrag, _ = parsed.Attribute("ice-ufrag")
+	pwd, _ = parsed.Attribute("ice-pwd")
+	for _, md := range parsed.MediaDescriptions {
+		if ufrag == "" {
+			ufrag, _ = md.Attribute("ice-ufrag")
+		}
+		if pwd == "" {
+			pwd, _ = md.Attribute("ice-pwd")
+		}
+	}
+	if ufrag == "" || pwd == "" {
+		return "", "", errors.New("missing ICE credentials")
+	}
+	return ufrag, pwd, nil
 }
 
 // DrainLocalCandidates returns buffered local ICE candidates and the
@@ -526,6 +652,7 @@ func (m *PCMedia) writeLoop() {
 			}
 			continue
 		}
+		writeErrCount = 0
 		seq++
 		ts += uint32(m.frameSz)
 	}
