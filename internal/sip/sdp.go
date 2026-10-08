@@ -59,6 +59,10 @@ type SDPConfig struct {
 	// breaks their DTMF.
 	DTMFClockRate int
 
+	// OmitRTCPMux drops a=rtcp-mux from the audio section; see
+	// AudioStream.OmitRTCPMux.
+	OmitRTCPMux bool
+
 	// Streams, when non-empty, replaces the single audio section the generators
 	// would otherwise derive from RTPPort/Codecs/AMR*/DTMF*. Sections are
 	// emitted in slice order; a zero Port rejects one per RFC 3264 §6. The
@@ -388,11 +392,15 @@ func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
 		}
 	}
 
+	// The negotiated telephone-event may already be the 48 kHz one, or sit on
+	// PT 100; a second line would then repeat the rate or the payload type.
+	te48k := s.OfferTE48k && dtmfPT != 100 && dtmfRate != 48000
+
 	formats := make([]string, 0, len(s.Codecs)+2)
 	for _, c := range s.Codecs {
 		formats = append(formats, strconv.Itoa(int(s.PayloadType(c))))
 	}
-	if s.OfferTE48k {
+	if te48k {
 		formats = append(formats, "100") // telephone-event/48000
 	}
 	formats = append(formats, strconv.Itoa(int(dtmfPT)))
@@ -407,7 +415,7 @@ func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
 				pionsdp.NewAttribute("fmtp", fmt.Sprintf("%d %s", pt, fmtp)))
 		}
 	}
-	if s.OfferTE48k {
+	if te48k {
 		addTelephoneEvent(md, 100, 48000)
 	}
 	addTelephoneEvent(md, dtmfPT, dtmfRate)
@@ -434,7 +442,9 @@ func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
 			md.Attributes = append(md.Attributes, pionsdp.NewAttribute(kv.key, kv.val))
 		}
 	}
-	md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute("rtcp-mux"))
+	if !s.OmitRTCPMux {
+		md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute("rtcp-mux"))
+	}
 
 	return md
 }
@@ -481,6 +491,7 @@ func answerStream(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, dir
 		DTMFPT:            dtmfPT,
 		DTMFClockRate:     dtmfRate,
 		OfferTE48k:        selected == codec.CodecOpus,
+		OmitRTCPMux:       cfg.OmitRTCPMux,
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
 		AMRWBModeSet:      cfg.AMRWBModeSet,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
@@ -538,6 +549,23 @@ func (m *SDPMedia) PreferredDTMFEvent() (pt uint8, rate int, ok bool) {
 		}
 	}
 	return best, bestRate, found
+}
+
+// DTMFEventForCodec returns the telephone-event PT and clock rate to use
+// alongside audio codec c: the one advertised at c's RTP clock rate, as
+// RFC 4733 pairs them, or PreferredDTMFEvent when the remote advertised none
+// at that rate.
+func (m *SDPMedia) DTMFEventForCodec(c codec.CodecType) (pt uint8, rate int, ok bool) {
+	want := c.ClockRate()
+	for p, r := range m.DTMFEventPTs {
+		if r == want && (!ok || p < pt) {
+			pt, rate, ok = p, r, true
+		}
+	}
+	if ok {
+		return pt, rate, true
+	}
+	return m.PreferredDTMFEvent()
 }
 
 // resolveDTMF returns the telephone-event PT and clock rate for a generated

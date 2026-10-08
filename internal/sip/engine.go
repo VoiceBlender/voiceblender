@@ -168,14 +168,21 @@ func (e *Engine) LogSyntheticResponse(req *sip.Request, statusCode int, reason s
 // inviteIsTLS reports whether an inbound INVITE arrived over TLS (based on
 // the topmost Via sent-by transport). Used to pick sip: vs sips: Contact.
 func inviteIsTLS(req *sip.Request) bool {
+	t := inviteTransport(req)
+	return t == "TLS" || t == "WSS"
+}
+
+// inviteTransport returns the upper-cased transport of the topmost Via, which
+// is the one the request arrived on, or "" when there is none.
+func inviteTransport(req *sip.Request) string {
 	if req == nil {
-		return false
+		return ""
 	}
 	via := req.Via()
 	if via == nil {
-		return false
+		return ""
 	}
-	return strings.EqualFold(via.Transport, "TLS") || strings.EqualFold(via.Transport, "WSS")
+	return strings.ToUpper(via.Transport)
 }
 
 // ContactForInvite is the public form of contactForInvite, used by callers
@@ -1064,7 +1071,7 @@ func (e *Engine) DialogRespond(d *sipgo.DialogServerSession, statusCode int, rea
 	}
 	res.AppendHeader(e.AllowHeader())
 	if res.Contact() == nil {
-		if c := e.localContact(d.InviteRequest.Source()); c != nil {
+		if c := e.inboundDialogContact(d.InviteRequest); c != nil {
 			res.AppendHeader(c)
 		}
 	}

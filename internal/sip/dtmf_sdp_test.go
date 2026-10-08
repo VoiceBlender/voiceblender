@@ -186,3 +186,109 @@ func TestParseSDPCapturesTelephoneEvent(t *testing.T) {
 		t.Errorf("DTMFPTForRate(8000) should not match")
 	}
 }
+
+// With several telephone-event lines on offer, the one at the selected codec's
+// RTP clock rate is used, whatever its payload type.
+func TestDTMFEventForCodec(t *testing.T) {
+	both := &SDPMedia{DTMFEventPTs: map[uint8]int{97: 48000, 101: 8000}}
+	tests := []struct {
+		name     string
+		m        *SDPMedia
+		codec    codec.CodecType
+		wantPT   uint8
+		wantRate int
+	}{
+		{"PCMU takes the 8 kHz line", both, codec.CodecPCMU, 101, 8000},
+		{"G.722 has an 8 kHz RTP clock", both, codec.CodecG722, 101, 8000},
+		{"Opus takes the 48 kHz line", both, codec.CodecOpus, 97, 48000},
+		{"no line at the codec rate falls back to the lowest PT", both, codec.CodecAMRWB, 97, 48000},
+		{"AMR-WB keeps a lone 8 kHz line", &SDPMedia{DTMFEventPTs: map[uint8]int{101: 8000}}, codec.CodecAMRWB, 101, 8000},
+		{"lowest PT among several at the codec rate", &SDPMedia{DTMFEventPTs: map[uint8]int{110: 8000, 101: 8000, 96: 16000}}, codec.CodecPCMA, 101, 8000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pt, rate, ok := tt.m.DTMFEventForCodec(tt.codec)
+			if !ok || pt != tt.wantPT || rate != tt.wantRate {
+				t.Errorf("DTMFEventForCodec = (%d, %d, %v), want (%d, %d, true)", pt, rate, ok, tt.wantPT, tt.wantRate)
+			}
+		})
+	}
+
+	if _, _, ok := (&SDPMedia{}).DTMFEventForCodec(codec.CodecPCMU); ok {
+		t.Error("DTMFEventForCodec with no telephone-event offered should not match")
+	}
+}
+
+func telephoneEventLines(sdp string) []string {
+	var out []string
+	for _, line := range strings.Split(sdp, "\r\n") {
+		if strings.Contains(line, "telephone-event") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// The extra 48 kHz telephone-event that accompanies Opus must not repeat a
+// payload type or a clock rate the negotiated one already covers.
+func TestOpusAnswerDoesNotRepeatTelephoneEvent(t *testing.T) {
+	tests := []struct {
+		name      string
+		pt        uint8
+		rate      int
+		wantMLine string
+		wantLines []string
+	}{
+		{"48 kHz negotiated on another PT", 97, 48000, "m=audio 5004 RTP/AVP 111 97",
+			[]string{"a=rtpmap:97 telephone-event/48000"}},
+		{"48 kHz negotiated on PT 100", 100, 48000, "m=audio 5004 RTP/AVP 111 100",
+			[]string{"a=rtpmap:100 telephone-event/48000"}},
+		{"8 kHz negotiated on PT 100", 100, 8000, "m=audio 5004 RTP/AVP 111 100",
+			[]string{"a=rtpmap:100 telephone-event/8000"}},
+		{"8 kHz negotiated on PT 101", 101, 8000, "m=audio 5004 RTP/AVP 111 100 101",
+			[]string{"a=rtpmap:100 telephone-event/48000", "a=rtpmap:101 telephone-event/8000"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ans := string(GenerateAnswer(SDPConfig{
+				LocalIP:       "192.0.2.1",
+				RTPPort:       5004,
+				Codecs:        []codec.CodecType{codec.CodecOpus},
+				DTMFPT:        tt.pt,
+				DTMFClockRate: tt.rate,
+			}, codec.CodecOpus, 111, false))
+
+			if !strings.Contains(ans, tt.wantMLine+"\r\n") {
+				t.Errorf("m-line: want %q in:\n%s", tt.wantMLine, ans)
+			}
+			got := telephoneEventLines(ans)
+			if strings.Join(got, "|") != strings.Join(tt.wantLines, "|") {
+				t.Errorf("telephone-event lines = %v, want %v", got, tt.wantLines)
+			}
+		})
+	}
+}
+
+func TestOmitRTCPMux(t *testing.T) {
+	cfg := SDPConfig{LocalIP: "192.0.2.1", RTPPort: 5004, Codecs: []codec.CodecType{codec.CodecPCMU}}
+
+	if ans := string(GenerateAnswer(cfg, codec.CodecPCMU, 0, false)); !strings.Contains(ans, "a=rtcp-mux") {
+		t.Errorf("a=rtcp-mux must stay the default:\n%s", ans)
+	}
+
+	cfg.OmitRTCPMux = true
+	if ans := string(GenerateAnswer(cfg, codec.CodecPCMU, 0, false)); strings.Contains(ans, "a=rtcp-mux") {
+		t.Errorf("answer carries a=rtcp-mux despite OmitRTCPMux:\n%s", ans)
+	}
+	if re := string(GenerateReInviteSDP(cfg, codec.CodecPCMU, 0, DirSendOnly)); strings.Contains(re, "a=rtcp-mux") {
+		t.Errorf("re-INVITE carries a=rtcp-mux despite OmitRTCPMux:\n%s", re)
+	}
+
+	streams := SDPConfig{LocalIP: "192.0.2.1", Streams: []AudioStream{
+		{Port: 5004, Codecs: []codec.CodecType{codec.CodecPCMU}, OmitRTCPMux: true},
+		{Port: 5006, Codecs: []codec.CodecType{codec.CodecPCMU}},
+	}}
+	if got := strings.Count(string(GenerateAnswer(streams, codec.CodecPCMU, 0, false)), "a=rtcp-mux"); got != 1 {
+		t.Errorf("a=rtcp-mux count = %d, want 1 (per section)", got)
+	}
+}

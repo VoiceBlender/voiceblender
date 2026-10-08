@@ -62,6 +62,9 @@ type mediaStream struct {
 	// from the peer's SDP. A peer advertising telephone-event on any other PT
 	// would otherwise have its DTMF silently dropped.
 	dtmfRecvPTs map[uint8]int
+	// omitRTCPMux is set when we answered an offer that carried no a=rtcp-mux;
+	// every later SDP for the stream must then leave it out too.
+	omitRTCPMux bool
 	lastDTMFTS  uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
 	dtmfCh      chan string
 
@@ -449,6 +452,7 @@ func (l *SIPLeg) materializeStream(offer *sipmod.SDPMedia, p sipmod.SlotPlan) (*
 	s.rtpPT = p.PT
 	s.negotiatedDir = p.Direction
 	s.desiredDir = p.Direction
+	s.omitRTCPMux = !ra.RTCPMux
 	l.configureAMRWB(s, offer, p.PT)
 	l.configureAMRNB(s, offer, p.PT)
 	l.configureDTMF(s, offer)
@@ -462,6 +466,7 @@ func (l *SIPLeg) materializeStream(offer *sipmod.SDPMedia, p sipmod.SlotPlan) (*
 		DTMFPT:            s.dtmfSendPT,
 		DTMFClockRate:     s.dtmfClockRate,
 		OfferTE48k:        p.Codec == codec.CodecOpus,
+		OmitRTCPMux:       s.omitRTCPMux,
 		AMRWBOctetAligned: s.amrwbOctetAligned,
 		AMRWBModeSet:      s.amrwbModeSet,
 		AMRNBOctetAligned: s.amrnbOctetAligned,

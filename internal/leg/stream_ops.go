@@ -245,6 +245,7 @@ func (l *SIPLeg) ensurePrimarySlotLocked() {
 		DTMFPT:            l.prim.dtmfSendPT,
 		DTMFClockRate:     l.prim.dtmfClockRate,
 		OfferTE48k:        l.prim.codecType == codec.CodecOpus,
+		OmitRTCPMux:       l.prim.omitRTCPMux,
 		AMRWBOctetAligned: l.prim.amrwbOctetAligned,
 		AMRWBModeSet:      l.prim.amrwbModeSet,
 		AMRNBOctetAligned: l.prim.amrnbOctetAligned,

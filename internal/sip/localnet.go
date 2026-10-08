@@ -110,6 +110,35 @@ func (e *Engine) localContact(peer string) *sip.ContactHeader {
 	return e.contactWithHost(ip)
 }
 
+// inboundDialogContact returns the Contact to advertise on the dialog an
+// inbound INVITE creates, and nil when the default Contact applies. The default
+// names the UDP listener, so a dialog set up over TCP or TLS needs its own:
+// otherwise the peer sends its ACK, and every later request, over UDP.
+func (e *Engine) inboundDialogContact(req *sip.Request) *sip.ContactHeader {
+	host := e.localAdvertisedIP(req.Source())
+	if host == "" {
+		host = e.publicHost
+	}
+	uri := sip.Uri{Scheme: "sip", Host: host, Port: e.bindPort}
+	switch transport := inviteTransport(req); {
+	case transport == "TCP":
+		uri.UriParams = sip.NewParams()
+		uri.UriParams.Add("transport", "tcp")
+	case transport == "TLS" && e.tlsPort != 0:
+		uri.Port = e.tlsPort
+		// A sips Contact is only for a sips Request-URI (RFC 5630).
+		if strings.EqualFold(req.Recipient.Scheme, "sips") {
+			uri.Scheme = "sips"
+		} else {
+			uri.UriParams = sip.NewParams()
+			uri.UriParams.Add("transport", "tls")
+		}
+	default:
+		return e.localContact(req.Source())
+	}
+	return &sip.ContactHeader{Address: uri}
+}
+
 // AdvertisedIPForPeer is AdvertisedIPForFamily narrowed by the peer's address:
 // a peer on a local network gets the local address rather than the external one.
 func (e *Engine) AdvertisedIPForPeer(family, peer string) string {
@@ -126,7 +155,7 @@ func (e *Engine) AdvertisedIPForPeer(family, peer string) string {
 func (e *Engine) appendDialogContact(req *sip.Request, dialog interface{}) {
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
-		if c := e.localContact(d.InviteRequest.Source()); c != nil {
+		if c := e.inboundDialogContact(d.InviteRequest); c != nil {
 			req.AppendHeader(c)
 		}
 	case *sipgo.DialogClientSession:
