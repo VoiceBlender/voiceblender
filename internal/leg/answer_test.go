@@ -2,6 +2,7 @@ package leg
 
 import (
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -115,10 +116,72 @@ func TestNegotiateInboundAnswer_SingleStreamOfferUnchanged(t *testing.T) {
 	if strings.Contains(string(answer), "a=mid") {
 		t.Errorf("unsolicited a=mid in the answer:\n%s", answer)
 	}
-	for _, want := range []string{"a=sendrecv", "a=ptime:20", "a=rtcp-mux", "a=rtpmap:0 PCMU/8000"} {
+	for _, want := range []string{"a=sendrecv", "a=ptime:20", "a=rtpmap:0 PCMU/8000"} {
 		if !strings.Contains(string(answer), want) {
 			t.Errorf("answer missing %q:\n%s", want, answer)
 		}
+	}
+}
+
+// An answer may carry a=rtcp-mux only when the offer did (RFC 5761 §5.1.1),
+// and a later re-INVITE on the dialog must not bring it back.
+func TestNegotiateInboundAnswer_MirrorsRTCPMux(t *testing.T) {
+	const offer = "v=0\r\n" +
+		"o=- 1 0 IN IP4 192.0.2.9\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 192.0.2.9\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 40000 RTP/AVP 0 101\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n" +
+		"a=rtpmap:101 telephone-event/8000\r\n"
+
+	for _, offered := range []bool{false, true} {
+		sdp := offer
+		if offered {
+			sdp += "a=rtcp-mux\r\n"
+		}
+		l := newAnswerLeg(t, sdp)
+		answer, err := l.negotiateInboundAnswer(codec.CodecUnknown)
+		if err != nil {
+			t.Fatalf("negotiateInboundAnswer: %v", err)
+		}
+		if got := strings.Contains(string(answer), "a=rtcp-mux"); got != offered {
+			t.Errorf("offer rtcp-mux=%v: answer rtcp-mux=%v:\n%s", offered, got, answer)
+		}
+		hold := l.reInviteSDP(sipmod.DirSendOnly)
+		if got := strings.Contains(string(hold), "a=rtcp-mux"); got != offered {
+			t.Errorf("offer rtcp-mux=%v: hold re-INVITE rtcp-mux=%v:\n%s", offered, got, hold)
+		}
+	}
+}
+
+// An offer listing telephone-event at several clock rates is answered with the
+// one matching the selected codec, not simply the lowest payload type.
+func TestNegotiateInboundAnswer_TelephoneEventFollowsCodecRate(t *testing.T) {
+	l := newAnswerLeg(t, "v=0\r\n"+
+		"o=- 1 0 IN IP4 192.0.2.9\r\n"+
+		"s=-\r\n"+
+		"c=IN IP4 192.0.2.9\r\n"+
+		"t=0 0\r\n"+
+		"m=audio 40000 RTP/AVP 96 0 97 101\r\n"+
+		"a=rtpmap:96 opus/48000/2\r\n"+
+		"a=rtpmap:0 PCMU/8000\r\n"+
+		"a=rtpmap:97 telephone-event/48000\r\n"+
+		"a=rtpmap:101 telephone-event/8000\r\n")
+
+	answer, err := l.negotiateInboundAnswer(codec.CodecUnknown)
+	if err != nil {
+		t.Fatalf("negotiateInboundAnswer: %v", err)
+	}
+	if !strings.Contains(string(answer), "m=audio "+strconv.Itoa(l.prim.rtpSess.LocalPort())+" RTP/AVP 0 101\r\n") {
+		t.Errorf("want PCMU with telephone-event on PT 101:\n%s", answer)
+	}
+	if !strings.Contains(string(answer), "a=rtpmap:101 telephone-event/8000") ||
+		strings.Contains(string(answer), "telephone-event/48000") {
+		t.Errorf("PCMU must be paired with telephone-event/8000 only:\n%s", answer)
+	}
+	if l.prim.dtmfSendPT != 101 || l.prim.dtmfClockRate != 8000 {
+		t.Errorf("DTMF send = PT %d at %d Hz, want PT 101 at 8000 Hz", l.prim.dtmfSendPT, l.prim.dtmfClockRate)
 	}
 }
 

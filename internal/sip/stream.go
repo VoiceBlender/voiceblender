@@ -38,6 +38,10 @@ type AudioStream struct {
 	DTMFClockRate int
 	OfferTE48k    bool // emit the extra telephone-event/48000 line used with Opus
 
+	// OmitRTCPMux drops a=rtcp-mux, which an answer may carry only when the
+	// offer did (RFC 5761 §5.1.1).
+	OmitRTCPMux bool
+
 	AMRWBOctetAligned bool
 	AMRWBModeSet      string
 	AMRNBOctetAligned bool

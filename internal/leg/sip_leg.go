@@ -909,8 +909,9 @@ func (l *SIPLeg) configureAMRNB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remo
 // offer/answer). RFC 4733 recommends matching the audio codec's clock rate,
 // but real phones disagree — MicroSIP pairs AMR-WB with telephone-event/16000,
 // Fanvil pairs it with telephone-event/8000 — so we trust the peer rather
-// than impose a rate. Falls back to PT 101 at the codec-conventional rate
-// when no telephone-event was offered.
+// than impose a rate. When the peer advertised several, the one at the codec's
+// clock rate wins. Falls back to PT 101 at the codec-conventional rate when no
+// telephone-event was offered.
 func (l *SIPLeg) configureDTMF(s *mediaStream, remoteSDP *sipmod.SDPMedia) {
 	s.dtmfSendPT = 101
 	s.dtmfClockRate = sipmod.TelephoneEventClockRate(s.codecType)
@@ -918,7 +919,7 @@ func (l *SIPLeg) configureDTMF(s *mediaStream, remoteSDP *sipmod.SDPMedia) {
 	if remoteSDP == nil {
 		return
 	}
-	if pt, rate, ok := remoteSDP.PreferredDTMFEvent(); ok {
+	if pt, rate, ok := remoteSDP.DTMFEventForCodec(s.codecType); ok {
 		s.dtmfSendPT = pt
 		s.dtmfClockRate = rate
 	}
@@ -1813,6 +1814,7 @@ func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 		AMRNBModeSet:      l.prim.amrnbModeSet,
 		DTMFPT:            l.prim.dtmfSendPT,
 		DTMFClockRate:     l.prim.dtmfClockRate,
+		OmitRTCPMux:       l.prim.omitRTCPMux,
 	}
 	if l.textRtpSess != nil {
 		cfg.TextRTPPort = l.textRtpSess.LocalPort()

@@ -204,6 +204,72 @@ func TestAppendDialogContact(t *testing.T) {
 	}
 }
 
+func inviteOver(transport, scheme, source string) *sip.Request {
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Scheme: scheme, User: "500", Host: "203.0.113.5"})
+	req.AppendHeader(&sip.ViaHeader{
+		ProtocolName: "SIP", ProtocolVersion: "2.0", Transport: transport,
+		Host: "198.51.100.7", Port: 5060, Params: sip.NewParams(),
+	})
+	req.SetSource(source)
+	return req
+}
+
+func TestInboundDialogContact(t *testing.T) {
+	e := localNetEngine(t, "10.0.0.0/8")
+	e.tlsPort = 15061
+
+	tests := []struct {
+		name      string
+		transport string
+		scheme    string
+		source    string
+		want      string // "" means the default Contact applies
+	}{
+		{"UDP keeps the default", "UDP", "sip", "198.51.100.7:5060", ""},
+		{"UDP from a local peer", "UDP", "sip", "10.1.2.3:5060", "sip:192.168.1.10:15099"},
+		{"TCP", "TCP", "sip", "198.51.100.7:40000", "sip:203.0.113.5:15099;transport=tcp"},
+		{"TCP in lower case", "tcp", "sip", "198.51.100.7:40000", "sip:203.0.113.5:15099;transport=tcp"},
+		{"TCP from a local peer", "TCP", "sip", "10.1.2.3:40000", "sip:192.168.1.10:15099;transport=tcp"},
+		{"TLS with a sip Request-URI", "TLS", "sip", "198.51.100.7:40000", "sip:203.0.113.5:15061;transport=tls"},
+		{"TLS with a sips Request-URI", "TLS", "sips", "198.51.100.7:40000", "sips:203.0.113.5:15061"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := e.inboundDialogContact(inviteOver(tt.transport, tt.scheme, tt.source))
+			got := ""
+			if c != nil {
+				got = c.Address.String()
+			}
+			if got != tt.want {
+				t.Errorf("Contact = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// Without a TLS listener there is no TLS port to name.
+	e.tlsPort = 0
+	if c := e.inboundDialogContact(inviteOver("TLS", "sip", "198.51.100.7:40000")); c != nil {
+		t.Errorf("TLS with no TLS listener: Contact = %s, want the default", c.Address.String())
+	}
+}
+
+// The Contact of a re-INVITE or REFER is a target refresh, so on a TCP dialog
+// it must keep naming TCP.
+func TestAppendDialogContact_KeepsTransport(t *testing.T) {
+	e := localNetEngine(t, "10.0.0.0/8")
+	d := &sipgo.DialogServerSession{Dialog: sipgo.Dialog{InviteRequest: inviteOver("TCP", "sip", "198.51.100.7:40000")}}
+
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Scheme: "sip", Host: "198.51.100.7"})
+	e.appendDialogContact(req, d)
+	c := req.Contact()
+	if c == nil {
+		t.Fatal("re-INVITE on a TCP dialog carries no Contact")
+	}
+	if got, want := c.Address.String(), "sip:203.0.113.5:15099;transport=tcp"; got != want {
+		t.Errorf("Contact = %q, want %q", got, want)
+	}
+}
+
 func TestContactHostForRequest_LocalNets(t *testing.T) {
 	e := localNetEngine(t, "10.0.0.0/8")
 	req := sip.NewRequest(sip.INVITE, sip.Uri{Scheme: "sip", Host: "192.168.1.10"})
