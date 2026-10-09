@@ -119,7 +119,7 @@ func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SI
 	l := leg.NewSIPRECInboundLeg(call, s.SIPEngine, s.Log)
 	// After the leg exists, so a warning carries the leg it came from.
 	s.verifySIPRECMetadata(sess, l.ID())
-	if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
+	if appID, ok := sipmod.LookupHeader(l.SIPHeaders(), "X-App-ID"); ok {
 		l.SetAppID(appID)
 	}
 	s.LegMgr.Add(l)

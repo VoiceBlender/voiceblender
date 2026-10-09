@@ -3695,12 +3695,12 @@ components:
                     type: object
                     additionalProperties:
                         type: string
-                    description: 'Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs.'
+                    description: 'Deprecated: X-/P- headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs.'
                 headers:
                     type: object
                     additionalProperties:
                         type: string
-                    description: Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time.
+                    description: Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time. On an inbound INVITE the prefix is matched in any case and names are reported as received.
                 custom_data:
                     description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
                 filters:
@@ -5393,7 +5393,7 @@ x-webhooks:
                                         type: object
                                         additionalProperties:
                                             type: string
-                                        description: X-* custom SIP headers, if present
+                                        description: X-/P- custom SIP headers (matched in any case, keyed as received), if present
                                     offered_codecs:
                                         type: array
                                         items:

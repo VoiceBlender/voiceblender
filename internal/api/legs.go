@@ -1560,7 +1560,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// A trunk's or registration's app_id overrides X-App-ID, which the peer controls.
 	if ownerAppID != "" {
 		l.SetAppID(ownerAppID)
-	} else if appID, ok := l.SIPHeaders()["X-App-ID"]; ok {
+	} else if appID, ok := sipmod.LookupHeader(l.SIPHeaders(), "X-App-ID"); ok {
 		l.SetAppID(appID)
 	}
 	l.SetTrunkID(trunkID)

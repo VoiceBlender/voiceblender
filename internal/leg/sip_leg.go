@@ -11,7 +11,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -99,7 +98,7 @@ type SIPLeg struct {
 	streamsIndependent bool
 
 	earlyMediaSDP    []byte            // SDP sent in 183, reused in 200 OK on Answer
-	sipHeaders       map[string]string // X-* headers from inbound INVITE or outbound request
+	sipHeaders       map[string]string // X-/P- headers from inbound INVITE or outbound request
 	originUser       string            // user part of the identity to originate under on this leg's behalf (see OriginatingIdentity)
 	originHost       string            // host part of the same identity; empty = engine publicHost
 	trunkID          string            // trunk this leg arrived on (inbound) or was dialled over (outbound); "" = none
@@ -176,19 +175,7 @@ func (l *SIPLeg) JitterBufferMs() int {
 func NewSIPInboundLeg(call *sipmod.InboundCall, engine *sipmod.Engine, log *slog.Logger) *SIPLeg {
 	ctx, cancel := context.WithCancel(call.Dialog.Context())
 
-	// Extract X-* headers from the inbound INVITE request.
-	var hdrs map[string]string
-	if call.Request != nil {
-		for _, h := range call.Request.Headers() {
-			name := h.Name()
-			if strings.HasPrefix(name, "X-") {
-				if hdrs == nil {
-					hdrs = make(map[string]string)
-				}
-				hdrs[name] = h.Value()
-			}
-		}
-	}
+	hdrs := sipmod.CustomHeaders(call.Request)
 
 	// Extract Call-ID for re-INVITE matching.
 	var callID string

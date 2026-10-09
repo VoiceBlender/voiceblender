@@ -40,7 +40,7 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.ringing.uri":         "Dialed SIP URI (outbound only)",
 		"leg.ringing.from":        "Caller URI (inbound) or From header value (outbound, if set)",
 		"leg.ringing.to":          "Callee URI (inbound only)",
-		"leg.ringing.sip_headers": "X-* custom SIP headers, if present",
+		"leg.ringing.sip_headers": "X-/P- custom SIP headers (matched in any case, keyed as received), if present",
 
 		// leg.early_media
 		"leg.early_media.leg_id":   "Leg identifier",
