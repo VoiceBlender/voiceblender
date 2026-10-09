@@ -237,10 +237,8 @@ func buildSRCMetadata(sessionID string, parties []srcParty) (*siprec.Recording, 
 // when the leg has one, otherwise a synthetic one built from its ID, so every
 // participant carries something resolvable.
 func srcParticipantAOR(l leg.Leg) string {
-	if hdrs := l.SIPHeaders(); hdrs != nil {
-		if from, ok := hdrs["X-SIPREC-AOR"]; ok && from != "" {
-			return from
-		}
+	if from, ok := sipmod.LookupHeader(l.SIPHeaders(), "X-SIPREC-AOR"); ok && from != "" {
+		return from
 	}
 	return "sip:" + l.ID() + "@voiceblender.local"
 }

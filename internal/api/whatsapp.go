@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -99,11 +98,11 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	}
 	finalSDP := []byte(pc.LocalDescription().SDP)
 
-	headers := sipHeadersFromRequest(call.Request)
+	headers := sipmod.CustomHeaders(call.Request)
 	l := leg.NewWhatsAppInboundLeg(call.Dialog, media, call.From, call.To, headers, finalSDP, s.Log)
 	legPtr = l
 	l.SetSIPResponseLogger(s.SIPEngine)
-	if appID, ok := headers["X-App-ID"]; ok {
+	if appID, ok := sipmod.LookupHeader(headers, "X-App-ID"); ok {
 		l.SetAppID(appID)
 	}
 	s.LegMgr.Add(l)
@@ -329,15 +328,4 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 	})
 
 	s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
-}
-
-func sipHeadersFromRequest(req *sip.Request) map[string]string {
-	out := map[string]string{}
-	for _, h := range req.Headers() {
-		name := h.Name()
-		if strings.HasPrefix(strings.ToUpper(name), "X-") {
-			out[name] = h.Value()
-		}
-	}
-	return out
 }

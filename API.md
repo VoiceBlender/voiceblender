@@ -51,10 +51,12 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
   "held": false,
   "role": "agent",
   "sip_headers": {
-    "X-Correlation-ID": "abc-123"
+    "X-Correlation-ID": "abc-123",
+    "p-asserted-identity": "<sip:+15551234567@carrier.example>"
   },
   "headers": {
-    "X-Correlation-ID": "abc-123"
+    "X-Correlation-ID": "abc-123",
+    "p-asserted-identity": "<sip:+15551234567@carrier.example>"
   },
   "custom_data": {
     "order_id": "A-991",
@@ -73,8 +75,8 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | `deaf` | boolean | `true` if the leg is deaf (cannot hear others) |
 | `held` | boolean | `true` if the call is on hold (SIP legs only) |
 | `role` | string | Routing role used by the room's audio routing matrix (e.g. `"customer"`, `"agent"`, `"supervisor"`). Omitted/empty means full mesh. |
-| `sip_headers` | object | Deprecated — `X-*` headers from the inbound INVITE. Only present on `sip_inbound` legs. Use `headers` for new code. |
-| `headers` | object | Custom protocol headers exposed by the leg's transport — `X-`/`P-` headers from a SIP INVITE, WebSocket handshake, or supplied at outbound dial time. |
+| `sip_headers` | object | Deprecated — `X-`/`P-` headers from the inbound INVITE, the same map as `headers`. Only present on `sip_inbound` legs. Use `headers` for new code. |
+| `headers` | object | Custom protocol headers exposed by the leg's transport — `X-`/`P-` headers from a SIP INVITE, WebSocket handshake, or supplied at outbound dial time. On an inbound INVITE the prefix is matched in any case and each name is reported exactly as received (`x-foo` stays `x-foo`), so look keys up case-insensitively. |
 | `custom_data` | any | Opaque application JSON attached to the leg. Omitted when the leg has none. See [Custom data](#custom-data). |
 
 ---
@@ -3484,7 +3486,7 @@ The full machine-readable contract for the VSI WebSocket — every command, ever
 |-------|------|-------------|
 | `app_id` | string (regex) | If set, only events whose `app_id` matches the regex are forwarded. Omit to receive all events. |
 
-Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header on inbound calls. Inbound calls arriving over a SIP trunk inherit the trunk's `app_id`, and calls from a SIP device registered here inherit the `app_id` its registration was claimed with; both take precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring) and [claiming a registration](#inbound-register-authentication-digest-challenge)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
+Set `app_id` on legs via `POST /v1/legs` body, `POST /v1/webrtc/offer` body (WebRTC legs), or the `X-App-ID` SIP header (any case) on inbound calls. Inbound calls arriving over a SIP trunk inherit the trunk's `app_id`, and calls from a SIP device registered here inherit the `app_id` its registration was claimed with; both take precedence over `X-App-ID` (see [Implicit call wiring](#implicit-call-wiring) and [claiming a registration](#inbound-register-authentication-digest-challenge)). Set on rooms via `POST /v1/rooms` body. Auto-created rooms inherit `app_id` from the originating leg.
 
 Events from untagged legs carry an empty `app_id` and are dropped by any non-empty filter — tag every leg an app cares about, or it will silently miss its own events.
 
@@ -4361,7 +4363,7 @@ All event data uses typed structs with consistent field names. Events scoped to 
 
 | Event | Description | Data Fields |
 |-------|-------------|-------------|
-| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-*` headers are present. `offered_codecs` included on inbound SIP — array of `{name, payload_type, clock_rate, priority}` from the remote SDP offer, in priority order. |
+| `leg.ringing` | SIP or WhatsApp call ringing | `leg_id`, `leg_type` (`sip_inbound`/`sip_outbound`/`whatsapp_in`), `from`, `to` (inbound); `leg_id`, `leg_type`, `uri`, `from` (outbound). `sip_headers` included when `X-`/`P-` headers (in any case) are present, keyed by name as received. `offered_codecs` included on inbound SIP — array of `{name, payload_type, clock_rate, priority}` from the remote SDP offer, in priority order. |
 | `leg.early_media` | Outbound leg received 183 Session Progress with SDP; media pipeline active | `leg_id`, `leg_type` |
 | `leg.connected` | Leg answered/connected | `leg_id`, `leg_type` |
 | `leg.disconnected` | Leg hung up | `leg_id`, `cdr`, `quality` (see CDR-style structure below) |

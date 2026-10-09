@@ -312,8 +312,8 @@ var legViewFields = map[string]FieldEnrichment{
 	"held":        {Description: "Whether the call is on hold (SIP legs only)"},
 	"role":        {Description: "Routing role used by the room's audio routing matrix (e.g. \"customer\", \"agent\", \"supervisor\"). Empty string means unroled (full mesh)."},
 	"app_id":      {Description: "Application identifier for event stream filtering."},
-	"sip_headers": {Description: "Deprecated: X-* headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
-	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time."},
+	"sip_headers": {Description: "Deprecated: X-/P- headers from the inbound INVITE. Only present on sip_inbound legs. Use `headers` for new code; it carries the same map plus surfaces handshake headers for websocket legs."},
+	"headers":     {Description: "Custom protocol headers exposed by the leg's transport — X-/P- headers from a SIP INVITE, the WebSocket upgrade request, or supplied at outbound dial time. On an inbound INVITE the prefix is matched in any case and names are reported as received."},
 	"custom_data": {Description: customDataDescription},
 	"filters":     {Description: "The ingress audio filter chain that actually runs for this leg, after applying the server default and dropping any filter whose backing resource is unavailable. Absent when no processing is applied. Compare with the `filters` sent at creation to see what was dropped."},
 }
