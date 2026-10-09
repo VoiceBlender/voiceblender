@@ -116,6 +116,20 @@ type LegUnholdData struct {
 	LegType string `json:"leg_type"`
 }
 
+// LegICEInterruptedData is emitted when a leg loses ICE connectivity but is
+// kept alive so the peer can restart ICE.
+type LegICEInterruptedData struct {
+	LegScope
+	LegType string `json:"leg_type"`
+}
+
+// LegICERestoredData is emitted when ICE connectivity returns after a
+// leg.ice_interrupted, with or without an ICE restart.
+type LegICERestoredData struct {
+	LegScope
+	LegType string `json:"leg_type"`
+}
+
 // LegCommandFailedData is emitted when an asynchronous leg command (one that
 // runs on a goroutine after the HTTP handler has returned 202) fails. The
 // command field identifies the action that failed, e.g. "hold", "transfer",

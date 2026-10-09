@@ -891,6 +891,11 @@ var agentMessageRequestFields = map[string]FieldEnrichment{
 	"message": {Description: "Context or instruction to inject into the running agent session"},
 }
 
+// WebRTCICERestartRequest is the request body for POST /v1/legs/{id}/ice-restart.
+type WebRTCICERestartRequest struct {
+	SDP string `json:"sdp"`
+}
+
 // WebRTCOfferRequest is the request body for POST /v1/webrtc/offer.
 type WebRTCOfferRequest struct {
 	SDP        string            `json:"sdp"`

@@ -147,6 +147,7 @@ var routeToVSICommand = map[string]string{
 	"Post /legs/{id}/amd":                             "leg_amd_start",
 	"Post /legs/{id}/ice-candidates":                  "webrtc_add_candidate",
 	"Get /legs/{id}/ice-candidates":                   "webrtc_get_candidates",
+	"Post /legs/{id}/ice-restart":                     "webrtc_ice_restart",
 	"Patch /legs/{id}/role":                           "set_leg_role",
 	"Post /rooms":                                     "create_room",
 	"Get /rooms":                                      "list_rooms",

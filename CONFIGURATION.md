@@ -27,6 +27,8 @@ Full documentation, guides and API reference: <https://voiceblender.org/docs/>
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `WEBRTC_EXTERNAL_IPS` | *(empty)* | Comma-separated public IPs advertised as host ICE candidates (pion `SetNAT1To1IPs`). Set this when VoiceBlender runs behind NAT/Docker and the gathered host interface IPs aren't routable from the remote peer — otherwise WebRTC peers behind firewalls won't be able to reach VB. Supports IPv4 and IPv6 literals. The literal value `auto` performs STUN-based public-IP discovery at startup against the first reachable `ICE_SERVERS` entry; discovery failure is non-fatal and logs a warning. |
+| `WEBRTC_ICE_DISCONNECTED_TIMEOUT` | `5s` | How long a WebRTC leg may receive nothing before it emits `leg.ice_interrupted` (Go duration). The leg stays up and the peer may restart ICE. |
+| `WEBRTC_ICE_FAILED_TIMEOUT` | `25s` | How long after `leg.ice_interrupted` a WebRTC leg waits for connectivity to return, or for an ICE restart to complete, before it is torn down with reason `ice_failure` (Go duration). Lower it to release legs of vanished peers sooner. |
 | `RECORDING_DIR` | `/tmp/recordings` | Local recording output directory |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`). Verbatim transcript text, DTMF digits and full event payloads are logged only at `debug`. |
 | `WEBHOOK_URL` | | Default webhook URL for inbound calls |

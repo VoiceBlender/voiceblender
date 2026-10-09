@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/pion/webrtc/v4"
 )
@@ -213,6 +216,7 @@ func TestVSIMetadata_WebRTCRegistered(t *testing.T) {
 		"webrtc_offer":          false,
 		"webrtc_add_candidate":  false,
 		"webrtc_get_candidates": false,
+		"webrtc_ice_restart":    false,
 	}
 	for _, cmd := range VSICommandsMetadata() {
 		if _, ok := want[cmd.Name]; ok {
@@ -222,6 +226,155 @@ func TestVSIMetadata_WebRTCRegistered(t *testing.T) {
 	for name, found := range want {
 		if !found {
 			t.Errorf("VSI command %q missing from VSICommandsMetadata", name)
+		}
+	}
+}
+
+func sdpUfrag(t *testing.T, sdp string) string {
+	t.Helper()
+	for _, line := range strings.Split(sdp, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "a=ice-ufrag:"); ok {
+			return v
+		}
+	}
+	t.Fatal("no a=ice-ufrag line in SDP")
+	return ""
+}
+
+func wantAPIErrorCode(t *testing.T, err error, code int) {
+	t.Helper()
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *apiError with code %d", err, code)
+	}
+	if apiErr.Code != code {
+		t.Errorf("code = %d (%s), want %d", apiErr.Code, apiErr.Message, code)
+	}
+}
+
+func TestDoWebRTCICERestart_HappyPath(t *testing.T) {
+	s := newTestServer(t)
+	clientPC, sdp := makeClientOffer(t)
+	defer clientPC.Close()
+	res, err := s.doWebRTCOffer(WebRTCOfferRequest{SDP: sdp})
+	if err != nil {
+		t.Fatalf("doWebRTCOffer: %v", err)
+	}
+	if err := clientPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: res.SDP}); err != nil {
+		t.Fatalf("client SetRemoteDescription: %v", err)
+	}
+
+	// Drain the first gathering round so new candidates can only come from the restart.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := s.doWebRTCGetCandidates(res.LegID)
+		if err != nil {
+			t.Fatalf("doWebRTCGetCandidates: %v", err)
+		}
+		if got.Done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial ICE gathering did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	offer, err := clientPC.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
+	if err != nil {
+		t.Fatalf("restart CreateOffer: %v", err)
+	}
+	if err := clientPC.SetLocalDescription(offer); err != nil {
+		t.Fatalf("restart SetLocalDescription: %v", err)
+	}
+	restart, err := s.doWebRTCICERestart(res.LegID, offer.SDP)
+	if err != nil {
+		t.Fatalf("doWebRTCICERestart: %v", err)
+	}
+	if restart.LegID != res.LegID {
+		t.Errorf("leg_id = %q, want %q", restart.LegID, res.LegID)
+	}
+	if before, after := sdpUfrag(t, res.SDP), sdpUfrag(t, restart.SDP); before == after {
+		t.Errorf("answer kept ice-ufrag %q; expected new ICE credentials", after)
+	}
+	if err := clientPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: restart.SDP}); err != nil {
+		t.Fatalf("client SetRemoteDescription(restart answer): %v", err)
+	}
+
+	candidates := 0
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		got, err := s.doWebRTCGetCandidates(res.LegID)
+		if err != nil {
+			t.Fatalf("doWebRTCGetCandidates after restart: %v", err)
+		}
+		candidates += len(got.Candidates)
+		if got.Done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ICE gathering after restart did not finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if candidates == 0 {
+		t.Error("no new local candidates offered after the restart")
+	}
+	if _, ok := s.LegMgr.Get(res.LegID); !ok {
+		t.Error("leg gone after ICE restart")
+	}
+}
+
+func TestDoWebRTCICERestart_Errors(t *testing.T) {
+	s := newTestServer(t)
+	clientPC, sdp := makeClientOffer(t)
+	defer clientPC.Close()
+	res, err := s.doWebRTCOffer(WebRTCOfferRequest{SDP: sdp})
+	if err != nil {
+		t.Fatalf("doWebRTCOffer: %v", err)
+	}
+	wa, _ := newWhatsAppTestLeg(t, s)
+
+	tests := []struct {
+		name  string
+		legID string
+		sdp   string
+		code  int
+	}{
+		{"unknown leg", "nope", sdp, http.StatusNotFound},
+		{"not a webrtc leg", wa.ID(), sdp, http.StatusBadRequest},
+		{"invalid sdp", res.LegID, "not sdp", http.StatusBadRequest},
+		{"empty sdp", res.LegID, "", http.StatusBadRequest},
+		{"unchanged ICE credentials", res.LegID, sdp, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.doWebRTCICERestart(tt.legID, tt.sdp)
+			wantAPIErrorCode(t, err, tt.code)
+		})
+	}
+
+	// A rejected restart must leave the leg usable.
+	if _, ok := s.LegMgr.Get(res.LegID); !ok {
+		t.Error("leg gone after rejected ICE restart")
+	}
+}
+
+// TestEventsMetadata_ICERegistered ensures the ICE connectivity events reach
+// asyncapi-gen and the webhook schema.
+func TestEventsMetadata_ICERegistered(t *testing.T) {
+	want := map[events.EventType]bool{
+		events.LegICEInterrupted: false,
+		events.LegICERestored:    false,
+	}
+	for _, ev := range EventsMetadata() {
+		if _, ok := want[ev.Type]; ok {
+			want[ev.Type] = true
+		}
+	}
+	for typ, found := range want {
+		if !found {
+			t.Errorf("event %q missing from EventsMetadata", typ)
 		}
 	}
 }

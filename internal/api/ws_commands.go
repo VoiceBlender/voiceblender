@@ -197,6 +197,13 @@ type vsiWebRTCAddCandidatePayload struct {
 	Candidate webrtc.ICECandidateInit `json:"candidate"`
 }
 
+// vsiWebRTCICERestartPayload combines a leg id with the restart offer for
+// webrtc_ice_restart.
+type vsiWebRTCICERestartPayload struct {
+	ID  string `json:"id"`
+	SDP string `json:"sdp"`
+}
+
 // addLegPayload combines room_id with AddLegRequest fields.
 type addLegPayload struct {
 	RoomID     string  `json:"room_id"`
@@ -480,6 +487,18 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			return
 		}
 		result, err := s.doWebRTCGetCandidates(p.ID)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, result)
+
+	case "webrtc_ice_restart":
+		var p vsiWebRTCICERestartPayload
+		if !s.wsParsePayload(lw, msg, &p) {
+			return
+		}
+		result, err := s.doWebRTCICERestart(p.ID, p.SDP)
 		if err != nil {
 			s.wsCommandError(lw, msg, err)
 			return

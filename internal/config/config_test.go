@@ -364,6 +364,36 @@ func TestLoad_S3PreflightTimeouts(t *testing.T) {
 	}
 }
 
+func TestLoad_WebRTCICETimeouts(t *testing.T) {
+	tests := []struct {
+		name             string
+		disconnected     string
+		failed           string
+		wantDisconnected time.Duration
+		wantFailed       time.Duration
+	}{
+		{"defaults", "", "", 5 * time.Second, 25 * time.Second},
+		{"overridden", "2s", "500ms", 2 * time.Second, 500 * time.Millisecond},
+		{"unparseable falls back", "soon", "x", 5 * time.Second, 25 * time.Second},
+		{"non-positive falls back", "0s", "-3s", 5 * time.Second, 25 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WEBRTC_ICE_DISCONNECTED_TIMEOUT", tt.disconnected)
+			t.Setenv("WEBRTC_ICE_FAILED_TIMEOUT", tt.failed)
+
+			cfg := Load()
+
+			if cfg.ICEDisconnectedTimeout != tt.wantDisconnected {
+				t.Errorf("ICEDisconnectedTimeout = %v, want %v", cfg.ICEDisconnectedTimeout, tt.wantDisconnected)
+			}
+			if cfg.ICEFailedTimeout != tt.wantFailed {
+				t.Errorf("ICEFailedTimeout = %v, want %v", cfg.ICEFailedTimeout, tt.wantFailed)
+			}
+		})
+	}
+}
+
 func TestLoad_ICEServers(t *testing.T) {
 	t.Setenv("ICE_SERVERS", "stun:stun1.example.com,stun:stun2.example.com")
 

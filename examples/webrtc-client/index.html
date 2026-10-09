@@ -209,6 +209,8 @@ let legId = null;       // assigned leg ID
 let roomId = null;      // current room
 let localStream = null; // mic MediaStream
 let muted = false;
+let restarting = false; // an ICE restart offer is in flight
+let pendingCandidates = []; // local candidates held until the server has the offer
 let micAnalyser = null;
 let spkAnalyser = null;
 let audioCtx = null;
@@ -255,7 +257,11 @@ async function api(method, path, body) {
   if (body !== undefined) opts.body = JSON.stringify(body);
   const resp = await fetch(baseURL() + path, opts);
   const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(data.error || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
   return data;
 }
 
@@ -318,10 +324,34 @@ async function connect() {
     };
 
     pc.oniceconnectionstatechange = () => {
+      if (!pc) return;
       log(`ICE: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        setStatus('Disconnected', 'error');
-        cleanup();
+      switch (pc.iceConnectionState) {
+        case 'disconnected':
+          // The server keeps the leg for a while; try to get the path back.
+          setStatus('Reconnecting...', '');
+          restartIce();
+          break;
+        case 'connected':
+        case 'completed':
+          if (legId) setStatus('Connected', 'connected');
+          break;
+        case 'failed':
+          setStatus('Disconnected', 'error');
+          cleanup();
+          break;
+      }
+    };
+
+    // Trickle ICE: send local candidates to the server as they arrive. They
+    // are held while an offer is in flight, since the server only accepts
+    // candidates for an offer it has already answered.
+    pc.onicecandidate = (ev) => {
+      if (!ev.candidate) return;
+      if (!legId || restarting) {
+        pendingCandidates.push(ev.candidate);
+      } else {
+        sendCandidate(ev.candidate);
       }
     };
 
@@ -334,21 +364,7 @@ async function connect() {
     legId = result.leg_id;
 
     await pc.setRemoteDescription({ type: 'answer', sdp: result.sdp });
-
-    // Trickle ICE: send local candidates to server as they arrive
-    pc.onicecandidate = async (ev) => {
-      if (ev.candidate) {
-        try {
-          await api('POST', `/v1/legs/${legId}/ice-candidates`, {
-            candidate: ev.candidate.candidate,
-            sdpMid: ev.candidate.sdpMid,
-            sdpMLineIndex: ev.candidate.sdpMLineIndex
-          });
-        } catch (err) {
-          log(`ICE candidate send failed: ${err.message}`, 'error');
-        }
-      }
-    };
+    flushPendingCandidates();
 
     // Poll server for its ICE candidates
     pollServerCandidates(legId);
@@ -366,6 +382,67 @@ async function connect() {
     log(`Connect failed: ${err.message}`, 'error');
     setStatus('Error', 'error');
     cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trickle ICE: send local candidates to the server
+// ---------------------------------------------------------------------------
+async function sendCandidate(candidate) {
+  try {
+    await api('POST', `/v1/legs/${legId}/ice-candidates`, {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex
+    });
+  } catch (err) {
+    log(`ICE candidate send failed: ${err.message}`, 'error');
+  }
+}
+
+function flushPendingCandidates() {
+  const queued = pendingCandidates;
+  pendingCandidates = [];
+  queued.forEach(sendCandidate);
+}
+
+// ---------------------------------------------------------------------------
+// ICE restart: keep the same leg after the network path changed
+// ---------------------------------------------------------------------------
+async function restartIce() {
+  if (restarting || !pc || !legId) return;
+  restarting = true;
+  const lid = legId;
+  log('Connectivity lost, restarting ICE...');
+  try {
+    pendingCandidates = [];
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+
+    // The API may be unreachable until the new network is up, so retry.
+    let result = null;
+    while (!result) {
+      if (!pc || legId !== lid) return;
+      try {
+        result = await api('POST', `/v1/legs/${lid}/ice-restart`, { sdp: offer.sdp });
+      } catch (err) {
+        if (err.status) throw err; // the server answered: the leg is gone or the offer was rejected
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    if (!pc || legId !== lid) return;
+
+    await pc.setRemoteDescription({ type: 'answer', sdp: result.sdp });
+    restarting = false;
+    flushPendingCandidates();
+    pollServerCandidates(lid);
+    log('ICE restarted', 'success');
+  } catch (err) {
+    log(`ICE restart failed: ${err.message}`, 'error');
+    setStatus('Disconnected', 'error');
+    cleanup();
+  } finally {
+    restarting = false;
   }
 }
 
@@ -408,6 +485,8 @@ function cleanup() {
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   micAnalyser = null;
   spkAnalyser = null;
+  restarting = false;
+  pendingCandidates = [];
   legId = null;
   roomId = null;
   document.getElementById('legId').textContent = '';

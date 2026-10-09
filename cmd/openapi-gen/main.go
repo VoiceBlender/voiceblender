@@ -433,6 +433,8 @@ func configVars() *seq {
 		{Name: "SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", Default: "true", Description: "When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR."},
 		{Name: "ICE_SERVERS", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},
 		{Name: "WEBRTC_EXTERNAL_IPS", Default: "(empty)", Description: "Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value \"auto\" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal."},
+		{Name: "WEBRTC_ICE_DISCONNECTED_TIMEOUT", Default: "5s", Description: "How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE."},
+		{Name: "WEBRTC_ICE_FAILED_TIMEOUT", Default: "25s", Description: "How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration)."},
 		{Name: "RTP_PORT_MIN", Default: "10000", Description: "Minimum UDP port for RTP/RTCP media"},
 		{Name: "RTP_PORT_MAX", Default: "20000", Description: "Maximum UDP port for RTP/RTCP media"},
 		{Name: "DEFAULT_SAMPLE_RATE", Default: "16000", Description: "Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000."},

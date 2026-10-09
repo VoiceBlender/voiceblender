@@ -74,6 +74,10 @@ type Config struct {
 	RTPPortMax            int
 	SIPJitterBufferMs     int
 	SIPJitterBufferMaxMs  int
+	// A WebRTC leg survives ICE disconnected and is torn down at ICE failed,
+	// so the two timeouts together bound the window for an ICE restart.
+	ICEDisconnectedTimeout time.Duration
+	ICEFailedTimeout       time.Duration
 	// WSJitterBufferMs is the WebSocket ingress playout lead. Unlike the SIP
 	// buffer it needs no separate cap: the WS ingress buffer is already bounded
 	// by wsmedia's IngressBufferMs.
@@ -198,6 +202,8 @@ func Load() Config {
 		TrustProxyHeaders:         envBool("TRUST_PROXY_HEADERS", false),
 		ICEServers:                strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
 		WebRTCExternalIPs:         parseExternalIPs(os.Getenv("WEBRTC_EXTERNAL_IPS")),
+		ICEDisconnectedTimeout:    envPositiveDuration("WEBRTC_ICE_DISCONNECTED_TIMEOUT", 5*time.Second),
+		ICEFailedTimeout:          envPositiveDuration("WEBRTC_ICE_FAILED_TIMEOUT", 25*time.Second),
 		RecordingDir:              envOr("RECORDING_DIR", "/tmp/recordings"),
 		LogLevel:                  envOr("LOG_LEVEL", "info"),
 		WebhookURL:                os.Getenv("WEBHOOK_URL"),
@@ -333,6 +339,14 @@ func envDuration(key string, def time.Duration) time.Duration {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
+	}
+	return def
+}
+
+// envPositiveDuration is envDuration that also rejects zero and negatives.
+func envPositiveDuration(key string, def time.Duration) time.Duration {
+	if d := envDuration(key, def); d > 0 {
+		return d
 	}
 	return def
 }

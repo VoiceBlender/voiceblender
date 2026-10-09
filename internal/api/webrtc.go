@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
@@ -46,6 +47,28 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 		RTPPortMin:  uint16(s.Config.RTPPortMin),
 		RTPPortMax:  uint16(s.Config.RTPPortMax),
 		Log:         s.Log,
+
+		TolerateICEDisconnect:  true,
+		ICEDisconnectedTimeout: s.Config.ICEDisconnectedTimeout,
+		ICEFailedTimeout:       s.Config.ICEFailedTimeout,
+		OnInterrupted: func() {
+			if l == nil {
+				return
+			}
+			s.Bus.Publish(events.LegICEInterrupted, &events.LegICEInterruptedData{
+				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+				LegType:  "webrtc",
+			})
+		},
+		OnRestored: func() {
+			if l == nil {
+				return
+			}
+			s.Bus.Publish(events.LegICERestored, &events.LegICERestoredData{
+				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+				LegType:  "webrtc",
+			})
+		},
 		OnDisconnect: func(reason string) {
 			if l != nil {
 				s.cleanupLeg(l)
@@ -95,6 +118,28 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil
 }
 
+func (s *Server) doWebRTCICERestart(legID, sdp string) (*WebRTCOfferResult, error) {
+	l, ok := s.LegMgr.Get(legID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "leg not found")
+	}
+	wl, ok := l.(*leg.WebRTCLeg)
+	if !ok {
+		return nil, newAPIError(http.StatusBadRequest, "leg is not a WebRTC leg")
+	}
+	answer, err := wl.RestartICE(sdp)
+	switch {
+	case errors.Is(err, leg.ErrNotICERestart):
+		return nil, newAPIError(http.StatusBadRequest, "offer does not change ICE credentials")
+	case errors.Is(err, leg.ErrInvalidOffer):
+		return nil, newAPIError(http.StatusBadRequest, "invalid SDP offer")
+	case err != nil:
+		s.Log.Warn("webrtc ICE restart failed", "leg_id", legID, "error", err)
+		return nil, newAPIError(http.StatusInternalServerError, "failed to create answer")
+	}
+	return &WebRTCOfferResult{LegID: legID, SDP: answer}, nil
+}
+
 func (s *Server) doWebRTCAddCandidate(legID string, c webrtc.ICECandidateInit) error {
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
@@ -133,6 +178,21 @@ func (s *Server) webrtcOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.doWebRTCOffer(req)
+	if err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) webrtcICERestart(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req WebRTCICERestartRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	result, err := s.doWebRTCICERestart(id, req.SDP)
 	if err != nil {
 		handleAPIError(w, err)
 		return

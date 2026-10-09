@@ -94,6 +94,10 @@ channels:
                 $ref: '#/components/messages/webrtc_get_candidates'
             webrtc_get_candidates.result:
                 $ref: '#/components/messages/webrtc_get_candidatesResult'
+            webrtc_ice_restart:
+                $ref: '#/components/messages/webrtc_ice_restart'
+            webrtc_ice_restart.result:
+                $ref: '#/components/messages/webrtc_ice_restartResult'
             list_rooms:
                 $ref: '#/components/messages/list_rooms'
             list_rooms.result:
@@ -448,6 +452,10 @@ channels:
                 $ref: '#/components/messages/evt_leg_unhold'
             leg.command_failed:
                 $ref: '#/components/messages/evt_leg_command_failed'
+            leg.ice_interrupted:
+                $ref: '#/components/messages/evt_leg_ice_interrupted'
+            leg.ice_restored:
+                $ref: '#/components/messages/evt_leg_ice_restored'
             leg.stream_added:
                 $ref: '#/components/messages/evt_leg_stream_added'
             leg.stream_removed:
@@ -833,6 +841,20 @@ operations:
                 $ref: '#/channels/vsi'
             messages:
                 - $ref: '#/channels/vsi/messages/webrtc_get_candidates.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_webrtc_ice_restart:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Restart ICE on a WebRTC leg
+        description: 'Applies a new SDP offer carrying fresh ICE credentials (browser `restartIce()`) to the existing leg and returns the answer; the leg id, media session and room membership are kept. Send the client''s new candidates with webrtc_add_candidate only after this result arrives, and poll webrtc_get_candidates again: its `done` flag restarts at false.'
+        messages:
+            - $ref: '#/channels/vsi/messages/webrtc_ice_restart'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/webrtc_ice_restart.result'
                 - $ref: '#/channels/vsi/messages/error'
     recv_list_rooms:
         action: receive
@@ -1993,6 +2015,20 @@ operations:
         summary: An asynchronous leg command (202 Accepted) failed during execution
         messages:
             - $ref: '#/channels/vsi/messages/leg.command_failed'
+    send_leg_ice_interrupted:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.ice_interrupted'
+    send_leg_ice_restored:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: WebRTC leg regained ICE connectivity after leg.ice_interrupted
+        messages:
+            - $ref: '#/channels/vsi/messages/leg.ice_restored'
     send_leg_stream_added:
         action: send
         channel:
@@ -3023,6 +3059,36 @@ components:
                         type: string
                     data:
                         $ref: '#/components/schemas/WebRTCCandidatesResult'
+                required:
+                    - type
+        webrtc_ice_restart:
+            name: webrtc_ice_restart
+            title: Restart ICE on a WebRTC leg
+            summary: Restart ICE on a WebRTC leg
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: webrtc_ice_restart
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/vsiWebRTCICERestartPayload'
+                required:
+                    - type
+        webrtc_ice_restartResult:
+            name: webrtc_ice_restartResult
+            title: Restart ICE on a WebRTC leg — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: webrtc_ice_restart.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/WebRTCOfferResult'
                 required:
                     - type
         list_rooms:
@@ -5585,6 +5651,20 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.command_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/leg.command_failed/post/requestBody/content/application~1json/schema
+        evt_leg_ice_interrupted:
+            name: evt_leg_ice_interrupted
+            title: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
+            summary: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.ice_interrupted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.ice_interrupted/post/requestBody/content/application~1json/schema
+        evt_leg_ice_restored:
+            name: evt_leg_ice_restored
+            title: WebRTC leg regained ICE connectivity after leg.ice_interrupted
+            summary: WebRTC leg regained ICE connectivity after leg.ice_interrupted
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.ice_restored. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/leg.ice_restored/post/requestBody/content/application~1json/schema
         evt_leg_stream_added:
             name: evt_leg_stream_added
             title: An additional m=audio stream was negotiated on a live dialog
@@ -7354,3 +7434,13 @@ components:
             required:
                 - id
                 - candidate
+        vsiWebRTCICERestartPayload:
+            type: object
+            properties:
+                id:
+                    type: string
+                sdp:
+                    type: string
+            required:
+                - id
+                - sdp

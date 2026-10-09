@@ -69,6 +69,12 @@ func WebhookFieldDescriptions() map[string]string {
 		"leg.unhold.leg_id":   "Leg identifier",
 		"leg.unhold.leg_type": `Hold direction: "local" or "remote"`,
 
+		// leg.ice_interrupted / ice_restored
+		"leg.ice_interrupted.leg_id":   "Leg identifier",
+		"leg.ice_interrupted.leg_type": `Leg type; always "webrtc"`,
+		"leg.ice_restored.leg_id":      "Leg identifier",
+		"leg.ice_restored.leg_type":    `Leg type; always "webrtc"`,
+
 		// dtmf.received
 		"dtmf.received.leg_id": "Leg identifier",
 		"dtmf.received.digit":  "DTMF digit received",
@@ -988,6 +994,20 @@ func RoutesMetadata() []RouteMeta {
 				400: {Description: "Invalid JSON or leg is not a WebRTC leg"},
 				404: {Description: "Leg not found"},
 				500: {Description: "Failed to add ICE candidate"},
+			},
+		},
+		{
+			Method: "POST", Path: "/legs/{id}/ice-restart", OperationID: "restartICE",
+			Summary: "Restart ICE on a WebRTC leg",
+			Description: "Applies a new SDP offer carrying fresh ICE credentials (browser `restartIce()`) to the existing leg and returns the answer. " +
+				"The leg id, media session and room membership are kept. Trickle the new candidates through `/legs/{id}/ice-candidates` after the answer arrives.",
+			Tags:        []string{"WebRTC"},
+			RequestType: WebRTCICERestartRequest{},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "SDP answer", Type: WebRTCOfferResult{}},
+				400: {Description: "Invalid JSON, invalid SDP offer, offer does not change ICE credentials, or leg is not a WebRTC leg"},
+				404: {Description: "Leg not found"},
+				500: {Description: "Failed to create answer"},
 			},
 		},
 		{
