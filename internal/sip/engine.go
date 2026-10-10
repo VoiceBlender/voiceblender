@@ -272,6 +272,17 @@ type InboundCall struct {
 
 	// Session timer (RFC 4028) — populated when remote requests timers.
 	SessionTimer *SessionTimerParams // nil when remote didn't request timers
+
+	tx sip.ServerTransaction
+}
+
+// Drop abandons an unanswered INVITE without sending a final response, ending
+// the dialog. It is a no-op once a 2xx was sent or the dialog already ended.
+func (c *InboundCall) Drop() {
+	if c.tx == nil || c.Dialog.LoadState() >= sip.DialogStateEstablished {
+		return
+	}
+	c.tx.Terminate()
 }
 
 // OutboundCall wraps a sipgo DialogClientSession with parsed answer SDP.
@@ -945,6 +956,7 @@ func (e *Engine) registerHandlers() {
 			Request:      req,
 			Body:         body,
 			SessionTimer: sessionTimer,
+			tx:           tx,
 		}
 
 		if e.onInvite != nil {

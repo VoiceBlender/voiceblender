@@ -67,6 +67,9 @@ info:
         - name: SIP_AUTO_RINGING
           default: "false"
           description: When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer.
+        - name: SIP_INBOUND_RING_TIMEOUT_SECONDS
+          default: "180"
+          description: 'How long an inbound SIP, SIPREC or WhatsApp leg may stay unanswered (state ringing or early_media) before it is released. On expiry the INVITE is dropped without any final SIP response and leg.disconnected fires with reason ring_timeout. The limit is server-side only; the INVITE''s Expires header is ignored. 0 = unbounded: a caller that never sends CANCEL then holds its leg until it is answered or deleted.'
         - name: SIP_USE_SOURCE_SOCKET
           default: "false"
           description: When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT).
@@ -441,7 +444,7 @@ paths:
             description: |-
                 Validates the leg exists and queues a hangup. The HTTP call returns 202 as soon as the leg is found; the SIP work and cleanup run in the background, and the eventual disconnection is observed via the `leg.disconnected` event.
 
-                Without a request body the legacy behavior is preserved: SIP BYE on connected legs (`cdr.reason: "api_hangup"`), or dialog cancel on unanswered inbound legs (`cdr.reason: "caller_cancel"`).
+                Without a request body the leg ends with `cdr.reason: "api_hangup"`: SIP BYE on connected legs, or, on unanswered inbound legs, the INVITE is dropped without any final SIP response.
 
                 With `{"reason": "<value>"}` and an unanswered SIP inbound leg (state `ringing` or `early_media`), VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is passed through to `leg.disconnected`'s `cdr.reason`.
 

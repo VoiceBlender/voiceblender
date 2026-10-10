@@ -98,8 +98,12 @@ type Config struct {
 	// false (the app-driven consult path).
 	SIPReferConsultTimeoutMs int
 	SIPAutoRinging           bool
-	SIPTCPEnabled            bool // listen for SIP over TCP alongside UDP; needed for inbound SIPREC, whose INVITEs are too large for UDP
-	SIPUseSourceSocket       bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
+	// SIPInboundRingTimeoutSeconds bounds how long an inbound leg may stay
+	// unanswered before its INVITE is dropped without a final response, so a
+	// peer that never sends CANCEL cannot pin a leg forever. 0 = unbounded.
+	SIPInboundRingTimeoutSeconds int
+	SIPTCPEnabled                bool // listen for SIP over TCP alongside UDP; needed for inbound SIPREC, whose INVITEs are too large for UDP
+	SIPUseSourceSocket           bool // when true, send SIP responses and in-dialog requests to the request's source socket instead of Contact / Via sent-by; needed when peers advertise unroutable addresses (e.g. behind NAT)
 
 	SIPRegistrationDefaultExpiresSeconds int
 	SIPRegistrationMaxExpiresSeconds     int
@@ -249,6 +253,7 @@ func Load() Config {
 		SIPRegistrationSweepIntervalMs:       envInt("SIP_REGISTRATION_SWEEP_INTERVAL_MS", 1000),
 		SIPRegistrationAllowMultipleContacts: envBool("SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", true),
 
+		SIPInboundRingTimeoutSeconds:   envInt("SIP_INBOUND_RING_TIMEOUT_SECONDS", 180),
 		SIPInboundAuthConsultTimeoutMs: envInt("SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS", 2000),
 		SIPInboundAuthNonceTTLSeconds:  envInt("SIP_INBOUND_AUTH_NONCE_TTL_SECONDS", 60),
 		SIPInboundRegisterDefault:      envOr("SIP_INBOUND_REGISTER_DEFAULT", "reject"),

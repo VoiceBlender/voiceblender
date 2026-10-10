@@ -133,36 +133,34 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		SIPHeaders: headers,
 	})
 
-	select {
-	case <-l.AnswerCh():
-		if err := l.Answer(context.Background()); err != nil {
-			s.Log.Error("whatsapp inbound: answer failed", "leg_id", l.ID(), "call_id", callID, "error", err)
-			s.cleanupLeg(l)
-			return
-		}
-		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-			LegType:  string(l.Type()),
-		})
-		var dtmfSeq atomic.Uint64
-		l.OnDTMF(func(digit rune) {
-			seq := dtmfSeq.Add(1)
-			s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
-				LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-				Digit:    string(digit),
-				Seq:      seq,
-			})
-			s.broadcastDTMF(l.ID(), digit)
-		})
-		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
-		<-ctx.Done()
-		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "remote_bye")
-		}
-	case <-ctx.Done():
+	if !s.awaitInboundAnswer(l, call, l.AnswerCh()) {
+		return
+	}
+
+	if err := l.Answer(context.Background()); err != nil {
+		s.Log.Error("whatsapp inbound: answer failed", "leg_id", l.ID(), "call_id", callID, "error", err)
 		s.cleanupLeg(l)
-		s.publishDisconnect(l, "caller_cancel")
+		return
+	}
+	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:  string(l.Type()),
+	})
+	var dtmfSeq atomic.Uint64
+	l.OnDTMF(func(digit rune) {
+		seq := dtmfSeq.Add(1)
+		s.Bus.Publish(events.DTMFReceived, &events.DTMFReceivedData{
+			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+			Digit:    string(digit),
+			Seq:      seq,
+		})
+		s.broadcastDTMF(l.ID(), digit)
+	})
+	s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+	<-ctx.Done()
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, "remote_bye")
 	}
 }
 

@@ -972,6 +972,41 @@ func (s *Server) watchLegDialogEnd(l leg.Leg, dialogCtx context.Context, maxDura
 	}
 }
 
+// awaitInboundAnswer blocks until an unanswered inbound leg is answered and
+// reports true. Otherwise the INVITE is dropped without a final response, the
+// leg is torn down, and it reports false.
+func (s *Server) awaitInboundAnswer(l leg.Leg, call *sipmod.InboundCall, answerCh <-chan struct{}) bool {
+	var timeoutC <-chan time.Time
+	if d := time.Duration(s.Config.SIPInboundRingTimeoutSeconds) * time.Second; d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
+
+	reason := "caller_cancel"
+	select {
+	case <-answerCh:
+		return true
+	case <-call.Dialog.Context().Done():
+	case <-l.Context().Done():
+	case <-timeoutC:
+		// An API teardown already under way owns the final response.
+		if l.State() == leg.StateHungUp {
+			return false
+		}
+		reason = "ring_timeout"
+		s.Log.Info("inbound ring timeout", "leg_id", l.ID(), "timeout_seconds", s.Config.SIPInboundRingTimeoutSeconds)
+	}
+
+	call.Drop()
+	// API path already published; ClaimDisconnect would no-op anyway.
+	if l.State() != leg.StateHungUp {
+		s.cleanupLeg(l)
+		s.publishDisconnect(l, reason)
+	}
+	return false
+}
+
 // rejectionMapping maps a user-supplied disconnect reason to a SIP final
 // status code + reason phrase, used when the leg is rejected before answer.
 // Unknown reasons return ok=false; the handler then returns 400.
@@ -1586,49 +1621,38 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		AuthUsername:  authUsername,
 	})
 
-	// Wait for REST answer or context cancellation (caller hangup / timeout)
-	select {
-	case <-l.AnswerCh():
-		if err := l.Answer(context.Background()); err != nil {
-			s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
-			s.LegMgr.Remove(l.ID())
-			s.Webhooks.ClearLegWebhook(l.ID())
-			s.Bus.CustomData.ClearLeg(l.ID())
-			return
+	if !s.awaitInboundAnswer(l, call, l.AnswerCh()) {
+		return
+	}
+
+	if err := l.Answer(context.Background()); err != nil {
+		s.Log.Error("answer failed", "leg_id", l.ID(), "error", err)
+		s.LegMgr.Remove(l.ID())
+		s.Webhooks.ClearLegWebhook(l.ID())
+		s.Bus.CustomData.ClearLeg(l.ID())
+		return
+	}
+
+	s.setupLegEventForwarding(l)
+	s.setupHoldCallbacks(l)
+
+	// Wire session timer expiry to hangup + event.
+	l.OnSessionExpired(func() {
+		if l.State() != leg.StateHungUp {
+			s.cleanupLeg(l)
+			s.publishDisconnect(l, "session_expired")
 		}
+	})
 
-		s.setupLegEventForwarding(l)
-		s.setupHoldCallbacks(l)
+	s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
+		LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
+		LegType:  string(l.Type()),
+	})
+	s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
+	s.attachAnsweredStreamRooms(l, s.takeStreamRoomsOverride(l.ID()))
 
-		// Wire session timer expiry to hangup + event.
-		l.OnSessionExpired(func() {
-			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "session_expired")
-			}
-		})
-
-		s.Bus.Publish(events.LegConnected, &events.LegConnectedData{
-			LegScope: events.LegScope{LegID: l.ID(), AppID: l.AppID()},
-			LegType:  string(l.Type()),
-		})
-		s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
-		s.attachAnsweredStreamRooms(l, s.takeStreamRoomsOverride(l.ID()))
-
-		// Block until call ends (BYE received or context cancelled)
-		s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
-		return
-
-	case <-call.Dialog.Context().Done():
-		// Caller hung up before answer.
-	}
-
-	// API path already published; ClaimDisconnect would no-op anyway.
-	if l.State() == leg.StateHungUp {
-		return
-	}
-	s.cleanupLeg(l)
-	s.publishDisconnect(l, "caller_cancel")
+	// Block until call ends (BYE received or context cancelled)
+	s.watchLegDialogEnd(l, call.Dialog.Context(), 0)
 }
 
 // amdLeg is the slice of a leg the AMD driver needs: identity to scope its

@@ -766,6 +766,26 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 - `404` — Leg not found, or a `streams[].room_id` names a room that does not exist
 - `409` — Leg is not in `ringing` or `early_media` state
 
+#### Unanswered inbound legs
+
+An inbound leg that is never answered does not ring forever. Once it has spent `SIP_INBOUND_RING_TIMEOUT_SECONDS` (default 180) in `ringing` or `early_media`, VoiceBlender drops the INVITE **without sending a final SIP response** and releases the leg — the same silent release a `DELETE /v1/legs/{id}` without a `reason` performs. The limit is enforced server-side only; the INVITE's `Expires` header is ignored. Applies to SIP, SIPREC and WhatsApp inbound legs.
+
+```json
+{
+  "type": "leg.disconnected",
+  "timestamp": "2026-03-24T14:33:00.120Z",
+  "instance_id": "inst-abc",
+  "leg_id": "550e8400-e29b-41d4-a716-446655440000",
+  "cdr": {
+    "reason": "ring_timeout",
+    "duration_total": 180.0,
+    "duration_answered": 0
+  }
+}
+```
+
+To tell the caller instead, reject the leg before the limit with `DELETE /v1/legs/{id}` and a `reason` (e.g. `{"reason": "unavailable"}` → `480`). Set the variable to `0` to disable the limit; see [CONFIGURATION.md](CONFIGURATION.md).
+
 ---
 
 ### POST /v1/legs/{id}/early-media
@@ -918,7 +938,7 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 | `forbidden` | 403 Forbidden |
 | `server_error` | 500 Server Internal Error |
 
-Without a body, behavior is unchanged: BYE on connected legs (`cdr.reason: "api_hangup"`), or dialog cancel on unanswered inbound legs (`cdr.reason: "caller_cancel"`).
+Without a body the leg ends with `cdr.reason: "api_hangup"`: a BYE on connected legs, or, on unanswered inbound legs, the INVITE is dropped **without any final SIP response** — the caller keeps ringing until it gives up. Send a `reason` when the caller should be told.
 
 **Response:** `202 Accepted`
 
@@ -4561,7 +4581,7 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `api_hangup` | Hung up via `DELETE /v1/legs/{id}` |
 | `remote_bye` | Remote party sent BYE |
 | `caller_cancel` | Inbound caller hung up before answer |
-| `ring_timeout` | Outbound `ring_timeout` (60 seconds unless the request set one) expired before answer |
+| `ring_timeout` | Outbound `ring_timeout` (60 seconds unless the request set one) expired before answer, or an inbound leg stayed unanswered past `SIP_INBOUND_RING_TIMEOUT_SECONDS` |
 | `max_duration` | Outbound `max_duration` reached after connect |
 | `busy` | Remote returned 486 Busy Here |
 | `unavailable` | Remote returned 480 Temporarily Unavailable |

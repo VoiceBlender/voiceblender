@@ -314,6 +314,10 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestOutboundInbound_RingTimeout` | Ring timeout expires, call fails |
 | `TestRingTimeout_Default` | A leg created without `ring_timeout` is ended by the default ring timeout with reason `ring_timeout` (the 60 s default is shortened for the test) |
 | `TestRingTimeout_ExplicitZeroDisablesDefault` | `ring_timeout: 0` still means no timeout — the leg keeps ringing past the default |
+| `TestInboundRingTimeout_DropsSilently` | An inbound leg nobody answers, whose caller never CANCELs, is released after `SIP_INBOUND_RING_TIMEOUT_SECONDS` with reason `ring_timeout`; the INVITE handler goroutine exits and the caller sees no final response (its leg keeps ringing) |
+| `TestInboundRingTimeout_ZeroIsUnbounded` | `SIP_INBOUND_RING_TIMEOUT_SECONDS=0` keeps an unanswered inbound leg ringing |
+| `TestInboundRingTimeout_AnswerBeatsTimeout` | The timeout only bounds the unanswered phase — an answered call outlives it |
+| `TestDeleteUnansweredInbound_NoReasonDropsSilently` | `DELETE /v1/legs/{id}` without a `reason` on an unanswered inbound leg releases the parked INVITE handler, reports `api_hangup`, and sends the caller no final response |
 | `TestRoomDelete_CancelsPendingOutboundLeg` | `DELETE /v1/rooms/{id}` cancels an outbound leg created with that `room_id` that is still ringing: reason `room_deleted`, exactly one `leg.disconnected`, and the CANCEL reaches the far end |
 | `TestRecording_StandaloneSIPLeg` | Stereo recording of standalone SIP leg (left=in, right=out) |
 | `TestRecording_InRoomLeg` | Stereo recording of leg in a room (left=participant, right=mix) |
