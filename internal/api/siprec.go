@@ -137,16 +137,8 @@ func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SI
 		SourceAddress: call.Request.Source(),
 	})
 
-	if !s.Config.SIPRECAutoAnswer {
-		select {
-		case <-l.AnswerCh():
-		case <-call.Dialog.Context().Done():
-			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "caller_cancel")
-			}
-			return
-		}
+	if !s.Config.SIPRECAutoAnswer && !s.awaitInboundAnswer(l, call, l.AnswerCh()) {
+		return
 	}
 
 	if err := l.Answer(context.Background()); err != nil {

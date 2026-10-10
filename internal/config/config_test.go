@@ -494,3 +494,18 @@ func TestLoad_SIPLocalNets(t *testing.T) {
 		t.Errorf("SIPLocalNets = %q, want 10.0.0.0/8,192.168.0.0/16", cfg.SIPLocalNets)
 	}
 }
+
+func TestLoad_SIPInboundRingTimeoutSeconds(t *testing.T) {
+	t.Setenv("SIP_INBOUND_RING_TIMEOUT_SECONDS", "")
+	if got := Load().SIPInboundRingTimeoutSeconds; got != 180 {
+		t.Errorf("SIPInboundRingTimeoutSeconds = %d, want 180 by default", got)
+	}
+	t.Setenv("SIP_INBOUND_RING_TIMEOUT_SECONDS", "0")
+	if got := Load().SIPInboundRingTimeoutSeconds; got != 0 {
+		t.Errorf("SIPInboundRingTimeoutSeconds = %d, want 0 (unbounded)", got)
+	}
+	t.Setenv("SIP_INBOUND_RING_TIMEOUT_SECONDS", "45")
+	if got := Load().SIPInboundRingTimeoutSeconds; got != 45 {
+		t.Errorf("SIPInboundRingTimeoutSeconds = %d, want 45", got)
+	}
+}

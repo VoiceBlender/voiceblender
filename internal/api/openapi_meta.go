@@ -422,8 +422,8 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Validates the leg exists and queues a hangup. The HTTP call returns 202 as soon as the leg is " +
 				"found; the SIP work and cleanup run in the background, and the eventual disconnection is observed via " +
 				"the `leg.disconnected` event.\n\n" +
-				"Without a request body the legacy behavior is preserved: SIP BYE on connected legs (`cdr.reason: " +
-				"\"api_hangup\"`), or dialog cancel on unanswered inbound legs (`cdr.reason: \"caller_cancel\"`).\n\n" +
+				"Without a request body the leg ends with `cdr.reason: \"api_hangup\"`: SIP BYE on connected legs, or, " +
+				"on unanswered inbound legs, the INVITE is dropped without any final SIP response.\n\n" +
 				"With `{\"reason\": \"<value>\"}` and an unanswered SIP inbound leg (state `ringing` or `early_media`), " +
 				"VoiceBlender sends a final non-2xx response instead of BYE/cancel: `busy`→486, `declined`/`rejected`→" +
 				"603, `unavailable`→480, `not_found`→404, `forbidden`→403, `server_error`→500. The reason value is " +
