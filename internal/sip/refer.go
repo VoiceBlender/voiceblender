@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,12 +28,9 @@ func (p *ReplacesParams) String() string {
 }
 
 // SendRefer sends an in-dialog REFER, returning nil on 202 Accepted.
-func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo string, replaces *ReplacesParams) error {
-	target := referTo
-	if replaces != nil {
-		target = fmt.Sprintf("%s?Replaces=%s", referTo, url.QueryEscape(replaces.String()))
-	}
-	referToHdr := sip.NewHeader("Refer-To", "<"+target+">")
+// headers are embedded in the Refer-To URI (see BuildReferTo).
+func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo string, replaces *ReplacesParams, headers map[string]string) error {
+	referToHdr := sip.NewHeader("Refer-To", "<"+BuildReferTo(referTo, replaces, headers)+">")
 
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
@@ -64,6 +62,69 @@ func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo stri
 	default:
 		return fmt.Errorf("unsupported dialog type: %T", dialog)
 	}
+}
+
+// BuildReferTo returns the Refer-To URI: referTo plus Replaces (attended) and
+// any extra headers as URI headers (RFC 3261 §19.1.1), which the referee
+// copies into the INVITE it sends to the target (RFC 3515 §2.1). Headers are
+// sorted by name so the URI is deterministic; headers already on referTo are
+// kept.
+func BuildReferTo(referTo string, replaces *ReplacesParams, headers map[string]string) string {
+	var parts []string
+	if replaces != nil {
+		parts = append(parts, "Replaces="+url.QueryEscape(replaces.String()))
+	}
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		parts = append(parts, escapeURIHeader(name)+"="+escapeURIHeader(headers[name]))
+	}
+	if len(parts) == 0 {
+		return referTo
+	}
+	sep := "?"
+	if strings.Contains(referTo, "?") {
+		sep = "&"
+	}
+	return referTo + sep + strings.Join(parts, "&")
+}
+
+// escapeURIHeader percent-encodes everything outside RFC 3261's "unreserved"
+// set, so '&', '=', '?', '>', ';' and spaces inside a value can't break the
+// header list or the surrounding <...>.
+func escapeURIHeader(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isAlphaNum(c) || strings.IndexByte("-_.!~*'()", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// IsHeaderToken reports whether name is a valid SIP header name (RFC 3261
+// "token").
+func IsHeaderToken(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !isAlphaNum(c) && strings.IndexByte("-.!%*_+`'~", c) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlphaNum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // SendNotifySipfrag sends a "refer" subscription NOTIFY with a sipfrag body.

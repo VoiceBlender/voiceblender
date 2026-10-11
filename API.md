@@ -974,6 +974,7 @@ Transfer a SIP leg to a third party using SIP REFER (RFC 3515). Supports both **
 |-------|------|----------|-------------|
 | `target` | string | yes | SIP URI of the third party |
 | `replaces_leg_id` | string | no | Existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind. |
+| `headers` | object | no | SIP headers (`name → value`) carried to the target as URI headers in the Refer-To, e.g. `<sip:bob@example.com?X-Conversation-ID=abc>` (RFC 3261 §19.1.1); the peer copies them into the INVITE it sends. Whether a peer honours them is peer-specific. Names must be SIP tokens; `Replaces` is rejected (use `replaces_leg_id`). |
 
 **Response:** `202 Accepted`
 

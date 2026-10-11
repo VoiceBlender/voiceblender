@@ -58,7 +58,8 @@ func (l *SIPLeg) DialogIdentity() (callID, localTag, remoteTag string, ok bool) 
 }
 
 // Transfer sends an in-dialog REFER. replaces non-nil = attended (RFC 3891).
-func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.ReplacesParams) error {
+// headers are embedded in the Refer-To URI for the peer's INVITE.
+func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.ReplacesParams, headers map[string]string) error {
 	l.mu.RLock()
 	st := l.state
 	l.mu.RUnlock()
@@ -74,7 +75,7 @@ func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.R
 	} else {
 		return fmt.Errorf("no dialog available")
 	}
-	return l.engine.SendRefer(ctx, dialog, target, replaces)
+	return l.engine.SendRefer(ctx, dialog, target, replaces, headers)
 }
 
 // SendNotifySipfrag emits a NOTIFY sipfrag for the implicit refer subscription.

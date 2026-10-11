@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,14 @@ func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegR
 	if target.Host == "" {
 		return nil, newAPIError(http.StatusBadRequest, "target URI missing host")
 	}
+	for name := range req.Headers {
+		if !sipmod.IsHeaderToken(name) {
+			return nil, newAPIError(http.StatusBadRequest, "invalid header name %q", name)
+		}
+		if strings.EqualFold(name, "Replaces") {
+			return nil, newAPIError(http.StatusBadRequest, "Replaces header is not allowed, use replaces_leg_id")
+		}
+	}
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
@@ -133,7 +142,7 @@ func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegR
 
 	go func() {
 		callID := sl.CallID()
-		if err := sl.Transfer(sl.Context(), req.Target, replaces); err != nil {
+		if err := sl.Transfer(sl.Context(), req.Target, replaces, req.Headers); err != nil {
 			if _, stillPending := s.transfers.get(callID); !stillPending {
 				s.Log.Debug("transfer REFER returned after NOTIFY-terminated resolution", "leg_id", sl.ID(), "error", err)
 				return

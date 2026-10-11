@@ -226,12 +226,14 @@ var deleteLegRequestFields = map[string]FieldEnrichment{
 // TransferRequest is the body for POST /v1/legs/{id}/transfer.
 type TransferRequest struct {
 	Target        string `json:"target"`                    // SIP URI of the third party
-	ReplacesLegID string `json:"replaces_leg_id,omitempty"` // attended transfer: existing leg whose dialog is replaced
+	ReplacesLegID string            `json:"replaces_leg_id,omitempty"` // attended transfer: existing leg whose dialog is replaced
+	Headers       map[string]string `json:"headers,omitempty"`         // SIP headers embedded in the Refer-To URI for the peer's INVITE
 }
 
 var transferRequestFields = map[string]FieldEnrichment{
 	"target":          {Description: "SIP URI to transfer the call to (e.g. \"sip:bob@example.com\")."},
 	"replaces_leg_id": {Description: "ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer."},
+	"headers":         {Description: "SIP headers to carry to the transfer target, embedded as URI headers in the Refer-To (RFC 3261 §19.1.1, RFC 3515 §2.1); the peer copies them into the INVITE it sends to the target. Whether a peer honours them is peer-specific. `Replaces` is not allowed here — use `replaces_leg_id`."},
 }
 
 // SIPAuth holds digest authentication credentials.

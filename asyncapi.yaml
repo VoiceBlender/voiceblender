@@ -7377,6 +7377,10 @@ components:
                     type: string
                 replaces_leg_id:
                     type: string
+                headers:
+                    type: object
+                    additionalProperties:
+                        type: string
             required:
                 - id
                 - target
