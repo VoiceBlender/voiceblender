@@ -117,6 +117,10 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 	if err != nil {
 		t.Fatalf("parse SIPLocalNets: %v", err)
 	}
+	allowedSources, err := sipmod.ParseAllowedSources(cfg.SIPAllowedIPs)
+	if err != nil {
+		t.Fatalf("parse SIPAllowedIPs: %v", err)
+	}
 
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:            "127.0.0.1",
@@ -124,6 +128,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		PortAllocator:     testRTPAllocator(t),
 		ExternalIP:        cfg.SIPExternalIP,
 		LocalNets:         localNets,
+		AllowedSources:    allowedSources,
 		BindPort:          sipPort,
 		SIPHost:           name,
 		Codecs:            codecs,

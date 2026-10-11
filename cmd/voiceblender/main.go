@@ -145,20 +145,29 @@ func main() {
 		log.Error("invalid SIP_LOCAL_NETS", "error", err)
 		os.Exit(1)
 	}
+	sipAllowedSources, err := sipmod.ParseAllowedSources(cfg.SIPAllowedIPs)
+	if err != nil {
+		log.Error("invalid SIP_ALLOWED_IPS", "error", err)
+		os.Exit(1)
+	}
+	if len(sipAllowedSources) > 0 {
+		log.Info("SIP source allowlist enabled", "prefixes", len(sipAllowedSources))
+	}
 
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
-		BindIP:      cfg.SIPBindIP,
-		BindIPV6:    cfg.SIPBindIPV6,
-		ListenIP:    cfg.SIPListenIP,
-		ListenIPV6:  cfg.SIPListenIPV6,
-		ExternalIP:  cfg.SIPExternalIP,
-		LocalNets:   sipLocalNets,
-		PublicHost:  cfg.SIPDomain,
-		BindPort:    sipPort,
-		TLSBindPort: sipTLSPort,
-		TLSCertPath: cfg.SIPTLSCert,
-		TLSKeyPath:  cfg.SIPTLSKey,
+		BindIP:         cfg.SIPBindIP,
+		BindIPV6:       cfg.SIPBindIPV6,
+		ListenIP:       cfg.SIPListenIP,
+		ListenIPV6:     cfg.SIPListenIPV6,
+		ExternalIP:     cfg.SIPExternalIP,
+		LocalNets:      sipLocalNets,
+		AllowedSources: sipAllowedSources,
+		PublicHost:     cfg.SIPDomain,
+		BindPort:       sipPort,
+		TLSBindPort:    sipTLSPort,
+		TLSCertPath:    cfg.SIPTLSCert,
+		TLSKeyPath:     cfg.SIPTLSKey,
 		ClientTLS: sipmod.ClientTLSConfig{
 			CAFile:             cfg.SIPTLSCAFile,
 			InsecureSkipVerify: cfg.SIPTLSInsecure,

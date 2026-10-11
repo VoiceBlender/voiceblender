@@ -11,7 +11,9 @@ All responses are `Content-Type: application/json`.
 > and your network placement. Do not expose it to untrusted networks; front it
 > with a reverse proxy or gateway that enforces auth if you need per-caller
 > credentials. This is distinct from SIP-layer auth (digest challenge of inbound
-> INVITE/REGISTER) and outbound webhook signing (`WEBHOOK_SECRET`).
+> INVITE/REGISTER) and outbound webhook signing (`WEBHOOK_SECRET`). The SIP
+> listener has its own source allowlist, `SIP_ALLOWED_IPS`; `ALLOWED_IPS` does
+> not apply to it.
 
 ## Asynchronous endpoints
 
@@ -4630,6 +4632,7 @@ All errors return:
 | `SIP_BIND_IP` | `127.0.0.1` | IP advertised in SDP/Contact/Via headers (auto-detected if `0.0.0.0`) |
 | `SIP_LISTEN_IP` | _(same as SIP_BIND_IP)_ | IP to bind the UDP socket on |
 | `SIP_PORT` | `5060` | SIP listen port |
+| `SIP_ALLOWED_IPS` | _(empty = accept all)_ | Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6, in any mix) that SIP requests are accepted from, on UDP, TCP and TLS. Empty or any `/0` entry accepts every source; otherwise requests from any other address are dropped without a SIP response, in-dialog ones included. See [CONFIGURATION.md](CONFIGURATION.md). |
 | `SIP_HOST` | `voiceblender` | SIP User-Agent name |
 | `ICE_SERVERS` | `stun:stun.l.google.com:19302` | STUN/TURN URLs (comma-separated) |
 | `RECORDING_DIR` | `/tmp/recordings` | Recording output directory |
@@ -5165,7 +5168,9 @@ peer is then reached only if the call's `to` names it, so dial
 
 **Inbound.** `inbound_sources` is a matching rule, not an access list: it
 decides which trunk an inbound call is attributed to, and calls from any other
-address are still accepted and ring untagged. Three consequences:
+address are still accepted and ring untagged. To refuse other addresses
+outright, set `SIP_ALLOWED_IPS`; it is applied first, so a trunk's sources must
+be inside it once it is set. Three consequences:
 
 - A proxy is never an inbound source. If the peer's calls reach you through
   one, list the proxy's address in `inbound_sources`.
@@ -5565,6 +5570,7 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_call_duration_seconds` | Histogram | `type` | Answered call duration (time from answer to hangup). Use `rate(sum)/rate(count)` for ACD |
 | `voiceblender_call_total_duration_seconds` | Histogram | `type` | Total leg lifetime including ringing time (time from leg creation to hangup) |
 | `voiceblender_recovered_panics_total` | Counter | `component`, `site` | Panics recovered and contained instead of crashing the process. `component`: `mixer`, `room`. `site`: `readLoop`, `writeLoop`, `mixTick`, `panicTeardown`, `deleteHangup` |
+| `voiceblender_sip_requests_rejected_total` | Counter | — | SIP requests dropped without a response because their source is not in `SIP_ALLOWED_IPS`. Stays at zero while the list is empty. A UDP retransmission counts again, so read it as a rate rather than as a number of callers |
 | `voiceblender_audio_denoise_streams` | Gauge | — | Legs currently running the `denoise` filter. Read from the pool at scrape time |
 | `voiceblender_audio_denoise_instances` | Gauge | — | Per-stream denoise states the kernel holds, live plus pooled. One per denoising leg, retained after the leg ends so the next one reuses it |
 | `voiceblender_audio_denoise_gtcrn_streams` | Gauge | — | Legs currently running the `denoise_gtcrn` filter |

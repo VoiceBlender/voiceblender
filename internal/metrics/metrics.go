@@ -192,6 +192,7 @@ func New(bus *events.Bus) *Collector {
 		c.webhookDeliveries,
 		c.vsiEventsDropped,
 		recoveredPanics,
+		sipRequestsRejected,
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "voiceblender_audio_denoise_streams",
 			Help: "Legs currently running the denoise filter.",
