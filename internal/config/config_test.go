@@ -495,6 +495,16 @@ func TestLoad_SIPLocalNets(t *testing.T) {
 	}
 }
 
+func TestLoad_SIPAllowedIPs(t *testing.T) {
+	if cfg := Load(); cfg.SIPAllowedIPs != "" {
+		t.Errorf("default SIPAllowedIPs = %q, want empty", cfg.SIPAllowedIPs)
+	}
+	t.Setenv("SIP_ALLOWED_IPS", "203.0.113.0/24,2001:db8::1")
+	if cfg := Load(); cfg.SIPAllowedIPs != "203.0.113.0/24,2001:db8::1" {
+		t.Errorf("SIPAllowedIPs = %q, want 203.0.113.0/24,2001:db8::1", cfg.SIPAllowedIPs)
+	}
+}
+
 func TestLoad_SIPInboundRingTimeoutSeconds(t *testing.T) {
 	t.Setenv("SIP_INBOUND_RING_TIMEOUT_SECONDS", "")
 	if got := Load().SIPInboundRingTimeoutSeconds; got != 180 {

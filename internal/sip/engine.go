@@ -40,11 +40,14 @@ type EngineConfig struct {
 	PublicHost string // FQDN advertised in From/Contact/Via signaling headers; falls back to ExternalIP/BindIP when empty
 	// LocalNets lists the networks that reach us on BindIP directly. Peers in
 	// them are advertised BindIP in Contact and SDP, not ExternalIP/PublicHost.
-	LocalNets   []netip.Prefix
-	BindPort    int
-	TLSBindPort int    // 0 = TLS disabled
-	TLSCertPath string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
-	TLSKeyPath  string // private key (privkey.pem) — required when TLSBindPort > 0
+	LocalNets []netip.Prefix
+	// AllowedSources lists the only sources SIP requests are accepted from.
+	// Empty accepts every source.
+	AllowedSources []netip.Prefix
+	BindPort       int
+	TLSBindPort    int    // 0 = TLS disabled
+	TLSCertPath    string // CA-signed cert (fullchain.pem) — required when TLSBindPort > 0
+	TLSKeyPath     string // private key (privkey.pem) — required when TLSBindPort > 0
 	// ClientTLS controls how the certificates of remote peers are trusted on
 	// outbound TLS dials (registrars, proxies, SBCs).
 	ClientTLS ClientTLSConfig
@@ -112,6 +115,7 @@ type Engine struct {
 	bindIPV6          string // IPv6 advertised address; empty if v4-only
 	localIP           string // IPv4 advertised to peers in localNets: bindIP before the ExternalIP override
 	localNets         []netip.Prefix
+	allowlist         *sourceAllowlist
 	publicHost        string // hostname advertised in From/Contact/Via — equals SIPDomain when set, otherwise bindIP
 	listenIP          string // primary listen address (for ListenAndServe). May be "::" / "0.0.0.0" / literal.
 	listenIPV6        string // optional secondary IPv6 listen address (only used when both v4 and v6 literals are configured separately)
@@ -414,11 +418,19 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		sipgo.WithUserAgent(cfg.SIPHost),
 		sipgo.WithUserAgentHostname(publicHost),
 	}
+	// sipgo keeps only the last set of transport-layer options it is given.
+	var tpOpts []sip.TransportLayerOption
 	if cfg.SIPDebug {
+		tpOpts = append(tpOpts, sip.WithTransportLayerLogger(sipgoLog))
 		uaOpts = append(uaOpts,
-			sipgo.WithUserAgentTransportLayerOptions(sip.WithTransportLayerLogger(sipgoLog)),
-			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)),
-		)
+			sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(sipgoLog)))
+	}
+	allowlist := &sourceAllowlist{prefixes: cfg.AllowedSources, log: cfg.Log}
+	if allowlist.enabled() {
+		tpOpts = append(tpOpts, sip.WithTransportLayerReadFilter(allowlist.filterUDP))
+	}
+	if len(tpOpts) > 0 {
+		uaOpts = append(uaOpts, sipgo.WithUserAgentTransportLayerOptions(tpOpts...))
 	}
 	// Used for outbound TLS dials (e.g. wa.meta.vc:5061). The listener's own
 	// cert is still supplied separately via ListenAndServeTLS.
@@ -508,6 +520,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		bindIPV6:          advertiseIPV6,
 		localIP:           localIP,
 		localNets:         cfg.LocalNets,
+		allowlist:         allowlist,
 		publicHost:        publicHost,
 		listenIP:          listenIP,
 		listenIPV6:        listenIPV6,
@@ -852,14 +865,20 @@ func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBo
 }
 
 func (e *Engine) registerHandlers() {
-	// wrap prepends SIP_DEBUG message dumping to a handler. Identity
-	// wrapper when SIP_DEBUG is off.
+	// wrap puts the source allowlist and SIP_DEBUG message dumping in front
+	// of a handler. Identity wrapper when both are off.
 	wrap := func(h sipgo.RequestHandler) sipgo.RequestHandler {
-		if !e.sipDebug {
+		if !e.sipDebug && !e.allowlist.enabled() {
 			return h
 		}
 		return func(req *sip.Request, tx sip.ServerTransaction) {
-			e.logSIPMessage("inbound", req)
+			if !e.allowlist.allows(req.Source()) {
+				e.dropUnlisted(req, tx)
+				return
+			}
+			if e.sipDebug {
+				e.logSIPMessage("inbound", req)
+			}
 			h(req, tx)
 		}
 	}
@@ -1015,6 +1034,7 @@ func (e *Engine) registerHandlers() {
 	e.server.OnRefer(wrap(e.handleRefer))
 	e.server.OnNotify(wrap(e.handleNotify))
 	e.server.OnRegister(wrap(e.handleRegister))
+	e.server.OnNoRoute(wrap(e.handleNoRoute))
 }
 
 // Registrar returns the engine's AOR registry (may be nil when the engine
