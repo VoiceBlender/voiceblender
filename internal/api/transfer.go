@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,15 @@ func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegR
 	if target.Host == "" {
 		return nil, newAPIError(http.StatusBadRequest, "target URI missing host")
 	}
+	if err := sipmod.ValidateReferToHeaders(req.ReferToHeaders); err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid refer_to_headers: %v", err)
+	}
+	if err := sipmod.ValidateReferHeaders(req.Headers); err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid headers: %v", err)
+	}
+	if name, clash := targetHeaderClash(target, req); clash {
+		return nil, newAPIError(http.StatusBadRequest, "header %q is already set on target", name)
+	}
 	l, ok := s.LegMgr.Get(legID)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "leg not found")
@@ -133,7 +143,7 @@ func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegR
 
 	go func() {
 		callID := sl.CallID()
-		if err := sl.Transfer(sl.Context(), req.Target, replaces); err != nil {
+		if err := sl.Transfer(sl.Context(), req.Target, replaces, sipmod.ReferOptions{ReferToHeaders: req.ReferToHeaders, Headers: req.Headers}); err != nil {
 			if _, stillPending := s.transfers.get(callID); !stillPending {
 				s.Log.Debug("transfer REFER returned after NOTIFY-terminated resolution", "leg_id", sl.ID(), "error", err)
 				return
@@ -149,6 +159,22 @@ func (s *Server) doTransferLeg(legID string, req TransferRequest) (*TransferLegR
 	}()
 
 	return &TransferLegResult{Status: "transfer_initiated"}, nil
+}
+
+// targetHeaderClash reports a URI header already on target that the request
+// would add a second time.
+func targetHeaderClash(target sip.Uri, req TransferRequest) (string, bool) {
+	for _, kv := range target.Headers {
+		if req.ReplacesLegID != "" && strings.EqualFold(kv.K, "Replaces") {
+			return kv.K, true
+		}
+		for name := range req.ReferToHeaders {
+			if strings.EqualFold(kv.K, name) {
+				return kv.K, true
+			}
+		}
+	}
+	return "", false
 }
 
 // transferLeg implements POST /v1/legs/{id}/transfer.

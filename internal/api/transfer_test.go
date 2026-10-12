@@ -1,6 +1,80 @@
 package api
 
-import "testing"
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/VoiceBlender/voiceblender/internal/leg"
+)
+
+// Header validation runs before the leg lookup, so a request that passes it
+// reaches the lookup and misses (404), while a bad one stops at 400.
+func TestDoTransferLeg_HeaderValidation(t *testing.T) {
+	s := &Server{LegMgr: leg.NewManager(), Log: slog.Default()}
+	cases := []struct {
+		name     string
+		req      TransferRequest
+		wantCode int
+		wantMsg  string
+	}{
+		{"both maps valid", TransferRequest{
+			Target:         "sip:bob@example.com",
+			ReferToHeaders: map[string]string{"x-inin-cnv": "b2de3fe4", "User-to-User": "00FA;encoding=hex"},
+			Headers:        map[string]string{"X-Correlation-ID": "abc", "Referred-By": "<sip:alice@example.com>"},
+		}, http.StatusNotFound, "leg not found"},
+		{"target already carries a different header", TransferRequest{
+			Target:         "sip:bob@example.com?X-Old=1",
+			ReferToHeaders: map[string]string{"X-New": "2"},
+		}, http.StatusNotFound, "leg not found"},
+		{"refer_to_headers: bad name", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"X Foo": "1"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: Replaces", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"replaces": "abc"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: dialog header", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"From": "<sip:ceo@example.com>"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: body", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"body": "v=0"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: CRLF in value", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"X-A": "1\r\nVia: x"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: case-insensitive duplicate", TransferRequest{
+			Target: "sip:bob@example.com", ReferToHeaders: map[string]string{"X-A": "1", "x-a": "2"},
+		}, http.StatusBadRequest, "invalid refer_to_headers"},
+		{"refer_to_headers: already on target", TransferRequest{
+			Target: "sip:bob@example.com?x-a=0", ReferToHeaders: map[string]string{"X-A": "1"},
+		}, http.StatusBadRequest, "already set on target"},
+		{"Replaces on target with replaces_leg_id", TransferRequest{
+			Target: "sip:bob@example.com?Replaces=abc%3Bto-tag%3Dx%3Bfrom-tag%3Dy", ReplacesLegID: "other",
+		}, http.StatusBadRequest, "already set on target"},
+		{"headers: Refer-To", TransferRequest{
+			Target: "sip:bob@example.com", Headers: map[string]string{"Refer-To": "<sip:evil@example.com>"},
+		}, http.StatusBadRequest, "invalid headers"},
+		{"headers: Contact", TransferRequest{
+			Target: "sip:bob@example.com", Headers: map[string]string{"Contact": "<sip:evil@example.com>"},
+		}, http.StatusBadRequest, "invalid headers"},
+		{"headers: CRLF in value", TransferRequest{
+			Target: "sip:bob@example.com", Headers: map[string]string{"X-A": "1\r\nRefer-To: <sip:evil@example.com>"},
+		}, http.StatusBadRequest, "invalid headers"},
+	}
+	for _, c := range cases {
+		_, err := s.doTransferLeg("no-such-leg", c.req)
+		var ae *apiError
+		if !errors.As(err, &ae) {
+			t.Errorf("%s: err = %v, want *apiError", c.name, err)
+			continue
+		}
+		if ae.Code != c.wantCode || !strings.Contains(ae.Message, c.wantMsg) {
+			t.Errorf("%s: got %d %q, want %d containing %q", c.name, ae.Code, ae.Message, c.wantCode, c.wantMsg)
+		}
+	}
+}
 
 // The pendingReferStore state machine backs the app-driven inbound-REFER
 // consult: exactly one of accept / decline(timeout) may win, and terminal

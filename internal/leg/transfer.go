@@ -58,7 +58,7 @@ func (l *SIPLeg) DialogIdentity() (callID, localTag, remoteTag string, ok bool) 
 }
 
 // Transfer sends an in-dialog REFER. replaces non-nil = attended (RFC 3891).
-func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.ReplacesParams) error {
+func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.ReplacesParams, opts sipmod.ReferOptions) error {
 	l.mu.RLock()
 	st := l.state
 	l.mu.RUnlock()
@@ -74,7 +74,7 @@ func (l *SIPLeg) Transfer(ctx context.Context, target string, replaces *sipmod.R
 	} else {
 		return fmt.Errorf("no dialog available")
 	}
-	return l.engine.SendRefer(ctx, dialog, target, replaces)
+	return l.engine.SendRefer(ctx, dialog, target, replaces, opts)
 }
 
 // SendNotifySipfrag emits a NOTIFY sipfrag for the implicit refer subscription.
