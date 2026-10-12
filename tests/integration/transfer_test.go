@@ -10,6 +10,8 @@ import (
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
+	"github.com/emiago/sipgo/sip"
 )
 
 // TestTransfer_Blind_Outbound: A↔B established. POST /transfer on B's leg
@@ -252,6 +254,150 @@ func TestTransfer_Inbound_AppDeclines(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 }
 
+// TestTransfer_Blind_CustomHeaders: `refer_to_headers` end up percent-encoded
+// in the Refer-To URI and `headers` on the REFER request itself, where a
+// caller-supplied Referred-By replaces the default one. Asserted on the wire,
+// as instance B receives it.
+func TestTransfer_Blind_CustomHeaders(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferConsultTimeoutMs = 200 // nothing answers the parked REFER
+	})
+
+	type wireRefer struct {
+		referTo, correlation, uui string
+		referredBy                []string
+	}
+	got := make(chan wireRefer, 1)
+	instB.engine.OnRefer(func(callID, target string, replaces *sipmod.ReplacesParams, req *sip.Request, tx sip.ServerTransaction) {
+		w := wireRefer{}
+		if h := req.GetHeader("Refer-To"); h != nil {
+			w.referTo = h.Value()
+		}
+		if h := req.GetHeader("X-Correlation-ID"); h != nil {
+			w.correlation = h.Value()
+		}
+		if h := req.GetHeader("User-to-User"); h != nil {
+			w.uui = h.Value()
+		}
+		for _, h := range req.GetHeaders("Referred-By") {
+			w.referredBy = append(w.referredBy, h.Value())
+		}
+		select {
+		case got <- w:
+		default:
+		}
+		instB.apiSrv.HandleIncomingRefer(callID, target, replaces, req, tx)
+	})
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	target := "sip:test@127.0.0.1:5999"
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
+		"target": target,
+		"refer_to_headers": map[string]string{
+			"x-inin-cnv":   "b2de3fe4-f097",
+			"User-to-User": "00FA1B2C;encoding=hex",
+		},
+		"headers": map[string]string{
+			"X-Correlation-ID": "abc 123",
+			"User-to-User":     "00C0FFEE;encoding=hex",
+			"Referred-By":      "<sip:+15551230000@example.com>",
+		},
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d", resp.StatusCode)
+	}
+
+	var w wireRefer
+	select {
+	case w = <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("instance B never received the REFER")
+	}
+	if want := "<" + target + "?User-to-User=00FA1B2C%3Bencoding%3Dhex&x-inin-cnv=b2de3fe4-f097>"; w.referTo != want {
+		t.Errorf("Refer-To = %q, want %q", w.referTo, want)
+	}
+	if w.correlation != "abc 123" {
+		t.Errorf("X-Correlation-ID = %q, want %q", w.correlation, "abc 123")
+	}
+	if w.uui != "00C0FFEE;encoding=hex" {
+		t.Errorf("User-to-User = %q, want the REFER's own value", w.uui)
+	}
+	if len(w.referredBy) != 1 || w.referredBy[0] != "<sip:+15551230000@example.com>" {
+		t.Errorf("Referred-By = %q, want only the caller's", w.referredBy)
+	}
+
+	// B strips the URI headers from the target it reports.
+	instB.collector.waitForMatch(t, events.LegTransferRequested, func(e events.Event) bool {
+		d, ok := e.Data.(*events.LegTransferRequestedData)
+		return ok && d.Target == target
+	}, 3*time.Second)
+
+	instA.collector.waitForMatch(t, events.LegTransferFailed, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+// TestTransfer_Blind_DefaultReferredBy: without `headers` the REFER still
+// carries exactly one Referred-By, and Refer-To is the bare target.
+func TestTransfer_Blind_DefaultReferredBy(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstanceWithOpts(t, "instance-b", func(c *config.Config) {
+		c.SIPReferConsultTimeoutMs = 200
+	})
+
+	type wireRefer struct {
+		referTo    string
+		referredBy []string
+	}
+	got := make(chan wireRefer, 1)
+	instB.engine.OnRefer(func(callID, target string, replaces *sipmod.ReplacesParams, req *sip.Request, tx sip.ServerTransaction) {
+		w := wireRefer{}
+		if h := req.GetHeader("Refer-To"); h != nil {
+			w.referTo = h.Value()
+		}
+		for _, h := range req.GetHeaders("Referred-By") {
+			w.referredBy = append(w.referredBy, h.Value())
+		}
+		select {
+		case got <- w:
+		default:
+		}
+		instB.apiSrv.HandleIncomingRefer(callID, target, replaces, req, tx)
+	})
+
+	outboundID, _ := establishCall(t, instA, instB)
+
+	target := "sip:test@127.0.0.1:5999"
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{
+		"target": target,
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("transfer: status %d", resp.StatusCode)
+	}
+
+	select {
+	case w := <-got:
+		if w.referTo != "<"+target+">" {
+			t.Errorf("Refer-To = %q, want %q", w.referTo, "<"+target+">")
+		}
+		if len(w.referredBy) != 1 || w.referredBy[0] != "<sip:127.0.0.1>" {
+			t.Errorf("Referred-By = %q, want the default", w.referredBy)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("instance B never received the REFER")
+	}
+
+	instA.collector.waitForMatch(t, events.LegTransferFailed, func(e events.Event) bool {
+		return e.Data.GetLegID() == outboundID
+	}, 5*time.Second)
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
 // TestTransfer_NotConnected: POST /transfer against a leg that hasn't
 // connected → 409.
 func TestTransfer_NotConnected(t *testing.T) {
@@ -294,6 +440,25 @@ func TestTransfer_BadRequest(t *testing.T) {
 	// "sip:" parses under sipgo but has no host — must be rejected.
 	if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), map[string]interface{}{"target": "sip:"}); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("sip: bare scheme: expected 400, got %d", r.StatusCode)
+	}
+
+	// Header validation: every one of these must stop at 400 without a REFER.
+	target := "sip:bob@127.0.0.1:5060"
+	for name, body := range map[string]map[string]interface{}{
+		"refer_to_headers bad name":       {"target": target, "refer_to_headers": map[string]string{"X Foo": "1"}},
+		"refer_to_headers Replaces":       {"target": target, "refer_to_headers": map[string]string{"Replaces": "abc"}},
+		"refer_to_headers dialog header":  {"target": target, "refer_to_headers": map[string]string{"From": "<sip:ceo@example.com>"}},
+		"refer_to_headers body":           {"target": target, "refer_to_headers": map[string]string{"body": "v=0"}},
+		"refer_to_headers CRLF value":     {"target": target, "refer_to_headers": map[string]string{"X-A": "1\r\nVia: x"}},
+		"refer_to_headers duplicate":      {"target": target, "refer_to_headers": map[string]string{"X-A": "1", "x-a": "2"}},
+		"refer_to_headers already on URI": {"target": target + "?X-A=0", "refer_to_headers": map[string]string{"x-a": "1"}},
+		"headers Refer-To":                {"target": target, "headers": map[string]string{"Refer-To": "<sip:evil@example.com>"}},
+		"headers Contact":                 {"target": target, "headers": map[string]string{"Contact": "<sip:evil@example.com>"}},
+		"headers CRLF value":              {"target": target, "headers": map[string]string{"X-A": "1\r\nRefer-To: <sip:evil@example.com>"}},
+	} {
+		if r := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/transfer", instA.baseURL(), outboundID), body); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, r.StatusCode)
+		}
 	}
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))

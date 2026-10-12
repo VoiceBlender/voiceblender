@@ -4508,11 +4508,16 @@ components:
                 replaces_leg_id:
                     type: string
                     description: ID of an existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind transfer.
+                refer_to_headers:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: SIP headers to carry to the transfer target, embedded as URI headers in the Refer-To (RFC 3261 §19.1.1), e.g. `<sip:bob@example.com?User-to-User=...>`; the peer copies them into the INVITE it sends to the target. Values are percent-encoded for you. Whether a peer honours them is peer-specific. Dialog and routing headers (RFC 3261 §19.1.5), `body` and `Replaces` are rejected — use `replaces_leg_id` for attended transfer.
                 headers:
                     type: object
                     additionalProperties:
                         type: string
-                    description: SIP headers to carry to the transfer target, embedded as URI headers in the Refer-To (RFC 3261 §19.1.1, RFC 3515 §2.1); the peer copies them into the INVITE it sends to the target. Whether a peer honours them is peer-specific. `Replaces` is not allowed here — use `replaces_leg_id`.
+                    description: SIP headers to set on the REFER request itself, read by the peer that receives the REFER. A `Referred-By` given here replaces the default one. `Refer-To`, `Contact` and the dialog and routing headers are rejected.
             required:
                 - target
         UpdateLegStreamRequest:

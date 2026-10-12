@@ -974,7 +974,52 @@ Transfer a SIP leg to a third party using SIP REFER (RFC 3515). Supports both **
 |-------|------|----------|-------------|
 | `target` | string | yes | SIP URI of the third party |
 | `replaces_leg_id` | string | no | Existing connected SIP leg whose dialog should be replaced (attended transfer). Omit for blind. |
-| `headers` | object | no | SIP headers (`name → value`) carried to the target as URI headers in the Refer-To, e.g. `<sip:bob@example.com?X-Conversation-ID=abc>` (RFC 3261 §19.1.1); the peer copies them into the INVITE it sends. Whether a peer honours them is peer-specific. Names must be SIP tokens; `Replaces` is rejected (use `replaces_leg_id`). |
+| `refer_to_headers` | object | no | SIP headers (`name → value`) for the **transfer target**, embedded as URI headers in the Refer-To (RFC 3261 §19.1.1). The peer that receives the REFER copies them into the INVITE it sends to the target. Values are percent-encoded for you. |
+| `headers` | object | no | SIP headers (`name → value`) set on the **REFER request itself**, read by the peer that receives the REFER. A `Referred-By` given here replaces the default `<sip:{bind-ip}>`. |
+
+#### Custom headers on a transfer
+
+The two maps reach different parties, and which one a platform reads is platform-specific — some read data only from the Refer-To URI, others only from the REFER's own headers. Send both when unsure.
+
+```bash
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/transfer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "target": "sip:support@example.com",
+    "refer_to_headers": {
+      "User-to-User": "00FA1B2C;encoding=hex",
+      "X-Conversation-ID": "b2de3fe4-f097"
+    },
+    "headers": {
+      "X-Correlation-ID": "abc123",
+      "Referred-By": "<sip:+15551230000@example.com>"
+    }
+  }'
+```
+
+produces:
+
+```
+REFER sip:peer@203.0.113.7 SIP/2.0
+Refer-To: <sip:support@example.com?User-to-User=00FA1B2C%3Bencoding%3Dhex&X-Conversation-ID=b2de3fe4-f097>
+Referred-By: <sip:+15551230000@example.com>
+X-Correlation-ID: abc123
+```
+
+- `refer_to_headers` are appended after any headers already present in `target` (and after `Replaces` on an attended transfer), sorted by name. Whether the peer honours them is up to the peer (RFC 3261 §19.1.5).
+- URI *parameters* (`;name=value`) are a different part of the URI: put them directly in `target`, e.g. `sip:support@example.com;transport=tcp`.
+
+Both maps are validated up front and rejected with `400`:
+
+| Rule | `refer_to_headers` | `headers` |
+|------|--------------------|-----------|
+| Name is not a SIP token, or value contains control characters (CR, LF, …) | rejected | rejected |
+| Same name twice, differing only in case | rejected | rejected |
+| `From`, `To`, `Call-ID`, `CSeq`, `Via`, `Route`, `Record-Route`, `Contact`, `Max-Forwards`, `Content-Length`, `Content-Type` (and their compact forms) | rejected | rejected |
+| `Accept`, `Accept-Encoding`, `Accept-Language`, `Allow`, `Organization`, `Supported`, `User-Agent` | rejected | allowed |
+| `body` (would set the INVITE's message body), `Replaces` (use `replaces_leg_id`) | rejected | allowed |
+| `Refer-To` | allowed | rejected |
+| Name already present as a URI header in `target` | rejected | — |
 
 **Response:** `202 Accepted`
 
@@ -987,7 +1032,7 @@ The REST call returns immediately after validating the request. The REFER is sen
 **Events emitted:** `leg.transfer_initiated` when the peer's 202 Accepted arrives, then `leg.transfer_progress` per NOTIFY sipfrag, then either `leg.transfer_completed` or `leg.transfer_failed`. If the peer rejects the REFER outright (e.g. 603 Decline), only `leg.transfer_failed` fires.
 
 **Errors:**
-- `400` — Missing or invalid `target` (including URIs without a host such as `sip:`)
+- `400` — Missing or invalid `target` (including URIs without a host such as `sip:`), or a `refer_to_headers` / `headers` entry that fails the rules above
 - `404` — Leg not found
 - `409` — Leg not connected, not a SIP leg, or `replaces_leg_id` is not a connected SIP leg
 
@@ -3611,7 +3656,7 @@ The commands below mirror the corresponding REST endpoints and use **resource-fi
 | `leg_ring` | `{"id":"..."}` | Send 180 Ringing on a SIP inbound leg |
 | `leg_early_media` | `{"id":"...","codec":"PCMU"}` | Enable 183 Session Progress with media on a SIP inbound leg |
 | `leg_amd_start` | `{"id":"...","initial_silence_timeout":2500,...}` | Start AMD on a connected SIP leg (all `AMDParams` fields are optional) |
-| `leg_transfer` | `{"id":"...","target":"sip:bob@example.com","replaces_leg_id":""}` | Initiate SIP REFER transfer (blind or attended) |
+| `leg_transfer` | `{"id":"...","target":"sip:bob@example.com","replaces_leg_id":"","refer_to_headers":{"User-to-User":"00FA;encoding=hex"},"headers":{"X-Correlation-ID":"abc"}}` | Initiate SIP REFER transfer (blind or attended); `refer_to_headers` and `headers` are optional and behave as in `POST /v1/legs/{id}/transfer` |
 | `leg_record_start` | `{"id":"...","storage":"file",...}` | Start recording a leg (stereo when in a room or SIP, mono otherwise) |
 | `leg_record_stop` | `{"id":"..."}` | Stop a leg recording; returns `{status, file}` |
 | `leg_record_pause` | `{"id":"..."}` | Pause a leg recording |

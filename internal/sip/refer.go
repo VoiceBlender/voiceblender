@@ -27,41 +27,65 @@ func (p *ReplacesParams) String() string {
 	return fmt.Sprintf("%s;to-tag=%s;from-tag=%s", p.CallID, p.ToTag, p.FromTag)
 }
 
-// SendRefer sends an in-dialog REFER, returning nil on 202 Accepted.
-// headers are embedded in the Refer-To URI (see BuildReferTo).
-func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo string, replaces *ReplacesParams, headers map[string]string) error {
-	referToHdr := sip.NewHeader("Refer-To", "<"+BuildReferTo(referTo, replaces, headers)+">")
+// ReferOptions carries the optional headers of an outgoing REFER.
+type ReferOptions struct {
+	// ReferToHeaders are embedded in the Refer-To URI (see BuildReferTo).
+	ReferToHeaders map[string]string
+	// Headers are set on the REFER request itself.
+	Headers map[string]string
+}
 
+// SendRefer sends an in-dialog REFER, returning nil on 202 Accepted.
+func (e *Engine) SendRefer(ctx context.Context, dialog interface{}, referTo string, replaces *ReplacesParams, opts ReferOptions) error {
+	hdrs := []sip.Header{sip.NewHeader("Refer-To", "<"+BuildReferTo(referTo, replaces, opts.ReferToHeaders)+">")}
+	hdrs = append(hdrs, referRequestHeaders(e.bindIP, opts.Headers)...)
+
+	var req *sip.Request
+	var do func(context.Context, *sip.Request) (*sip.Response, error)
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
-		req := sip.NewRequest(sip.REFER, d.InviteRequest.Contact().Address)
+		req = sip.NewRequest(sip.REFER, d.InviteRequest.Contact().Address)
 		e.appendDialogContact(req, d)
-		req.AppendHeader(referToHdr)
-		req.AppendHeader(sip.NewHeader("Referred-By", "<sip:"+e.bindIP+">"))
-		res, err := d.Do(ctx, req)
-		if err != nil {
-			return fmt.Errorf("REFER Do: %w", err)
-		}
-		if res.StatusCode != sip.StatusAccepted {
-			return fmt.Errorf("REFER rejected: %d %s", res.StatusCode, res.Reason)
-		}
-		return nil
+		do = d.Do
 	case *sipgo.DialogClientSession:
-		req := sip.NewRequest(sip.REFER, d.InviteResponse.Contact().Address)
+		req = sip.NewRequest(sip.REFER, d.InviteResponse.Contact().Address)
 		e.appendDialogContact(req, d)
-		req.AppendHeader(referToHdr)
-		req.AppendHeader(sip.NewHeader("Referred-By", "<sip:"+e.bindIP+">"))
-		res, err := d.Do(ctx, req)
-		if err != nil {
-			return fmt.Errorf("REFER Do: %w", err)
-		}
-		if res.StatusCode != sip.StatusAccepted {
-			return fmt.Errorf("REFER rejected: %d %s", res.StatusCode, res.Reason)
-		}
-		return nil
+		do = d.Do
 	default:
 		return fmt.Errorf("unsupported dialog type: %T", dialog)
 	}
+	for _, h := range hdrs {
+		req.AppendHeader(h)
+	}
+	res, err := do(ctx, req)
+	if err != nil {
+		return fmt.Errorf("REFER Do: %w", err)
+	}
+	if res.StatusCode != sip.StatusAccepted {
+		return fmt.Errorf("REFER rejected: %d %s", res.StatusCode, res.Reason)
+	}
+	return nil
+}
+
+// referRequestHeaders returns the headers a REFER carries besides Refer-To:
+// the caller's own, sorted by name, plus a default Referred-By unless the
+// caller supplied one.
+func referRequestHeaders(bindIP string, headers map[string]string) []sip.Header {
+	names := sortedNames(headers)
+	out := make([]sip.Header, 0, len(names)+1)
+	referredBy := false
+	for _, name := range names {
+		if l := strings.ToLower(name); l == "referred-by" || l == "b" {
+			referredBy = true
+		}
+	}
+	if !referredBy {
+		out = append(out, sip.NewHeader("Referred-By", "<sip:"+bindIP+">"))
+	}
+	for _, name := range names {
+		out = append(out, sip.NewHeader(name, headers[name]))
+	}
+	return out
 }
 
 // BuildReferTo returns the Refer-To URI: referTo plus Replaces (attended) and
@@ -74,12 +98,7 @@ func BuildReferTo(referTo string, replaces *ReplacesParams, headers map[string]s
 	if replaces != nil {
 		parts = append(parts, "Replaces="+url.QueryEscape(replaces.String()))
 	}
-	names := make([]string, 0, len(headers))
-	for name := range headers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range sortedNames(headers) {
 		parts = append(parts, escapeURIHeader(name)+"="+escapeURIHeader(headers[name]))
 	}
 	if len(parts) == 0 {
@@ -90,6 +109,15 @@ func BuildReferTo(referTo string, replaces *ReplacesParams, headers map[string]s
 		sep = "&"
 	}
 	return referTo + sep + strings.Join(parts, "&")
+}
+
+func sortedNames(headers map[string]string) []string {
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // escapeURIHeader percent-encodes everything outside RFC 3261's "unreserved"
@@ -106,6 +134,74 @@ func escapeURIHeader(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// Lower-case names, compact forms included.
+var (
+	// Headers a referee should not honour from a URI (RFC 3261 §19.1.5), the
+	// "body" pseudo-header, and Replaces, which only the attended flow sets.
+	referToDeniedHeaders = headerSet(
+		"from", "f", "to", "t", "call-id", "i", "cseq", "via", "v",
+		"route", "record-route", "contact", "m", "max-forwards",
+		"content-length", "l", "content-type", "c",
+		"accept", "accept-encoding", "accept-language", "allow",
+		"organization", "supported", "k", "user-agent",
+		"body", "replaces",
+	)
+	// Headers the dialog layer owns on the REFER request.
+	referDeniedHeaders = headerSet(
+		"refer-to", "r", "from", "f", "to", "t", "call-id", "i", "cseq",
+		"via", "v", "contact", "m", "max-forwards", "route", "record-route",
+		"content-length", "l", "content-type", "c",
+	)
+)
+
+func headerSet(names ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[n] = struct{}{}
+	}
+	return set
+}
+
+// ValidateReferToHeaders checks headers destined for the Refer-To URI.
+func ValidateReferToHeaders(headers map[string]string) error {
+	return validateHeaders(headers, referToDeniedHeaders)
+}
+
+// ValidateReferHeaders checks headers destined for the REFER request itself.
+func ValidateReferHeaders(headers map[string]string) error {
+	return validateHeaders(headers, referDeniedHeaders)
+}
+
+func validateHeaders(headers map[string]string, denied map[string]struct{}) error {
+	seen := make(map[string]struct{}, len(headers))
+	for _, name := range sortedNames(headers) {
+		if !IsHeaderToken(name) {
+			return fmt.Errorf("invalid header name %q", name)
+		}
+		lower := strings.ToLower(name)
+		if _, dup := seen[lower]; dup {
+			return fmt.Errorf("duplicate header %q", name)
+		}
+		seen[lower] = struct{}{}
+		if _, bad := denied[lower]; bad {
+			return fmt.Errorf("header %q is not allowed", name)
+		}
+		if hasControlChar(headers[name]) {
+			return fmt.Errorf("header %q value contains control characters", name)
+		}
+	}
+	return nil
+}
+
+func hasControlChar(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // IsHeaderToken reports whether name is a valid SIP header name (RFC 3261

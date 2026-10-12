@@ -111,6 +111,111 @@ func TestIsHeaderToken(t *testing.T) {
 	}
 }
 
+func TestValidateReferToHeaders(t *testing.T) {
+	ok := []map[string]string{
+		nil,
+		{"x-inin-cnv": "b2de3fe4-f097"},
+		{"User-to-User": "00FA1B2C;encoding=hex", "Diversion": "<sip:+15551230000@example.com>;reason=unconditional"},
+		{"Accept-Contact": "*;audio", "P-Asserted-Identity": "<sip:alice@example.com>"},
+		{"X-Tabbed": "a\tb", "X-Empty": ""},
+	}
+	for _, h := range ok {
+		if err := ValidateReferToHeaders(h); err != nil {
+			t.Errorf("%v: unexpected error %v", h, err)
+		}
+	}
+	bad := []map[string]string{
+		{"X Foo": "1"},
+		{"": "1"},
+		{"X-A": "1", "x-a": "2"},
+		{"X-A": "1\r\nVia: SIP/2.0/UDP evil"},
+		{"X-A": "a\x00b"},
+		{"X-A": "a\x7fb"},
+		{"Replaces": "abc;to-tag=x;from-tag=y"},
+		{"body": "v=0"},
+		{"BODY": "v=0"},
+	}
+	for _, name := range []string{
+		"From", "f", "To", "t", "Call-ID", "i", "CSeq", "Via", "v", "Route", "Record-Route",
+		"Contact", "m", "Max-Forwards", "Content-Length", "l", "Content-Type", "c",
+		"Accept", "Accept-Encoding", "Accept-Language", "Allow", "Organization", "Supported", "k", "User-Agent",
+	} {
+		bad = append(bad, map[string]string{name: "x"})
+	}
+	for _, h := range bad {
+		if err := ValidateReferToHeaders(h); err == nil {
+			t.Errorf("%v: expected an error", h)
+		}
+	}
+}
+
+func TestValidateReferHeaders(t *testing.T) {
+	ok := []map[string]string{
+		nil,
+		{"X-Correlation-ID": "abc", "User-to-User": "00FA1B2C;encoding=hex"},
+		{"Referred-By": "<sip:+15551230000@example.com>"},
+		// Legitimate on the REFER itself, unlike in the Refer-To URI.
+		{"Supported": "norefersub", "Refer-Sub": "true", "User-Agent": "app/1.0"},
+	}
+	for _, h := range ok {
+		if err := ValidateReferHeaders(h); err != nil {
+			t.Errorf("%v: unexpected error %v", h, err)
+		}
+	}
+	bad := []map[string]string{
+		{"X:Foo": "1"},
+		{"X-A": "1", "X-a": "2"},
+		{"X-A": "1\r\nRefer-To: <sip:evil@example.com>"},
+	}
+	for _, name := range []string{
+		"Refer-To", "r", "From", "f", "To", "t", "Call-ID", "i", "CSeq", "Via", "v",
+		"Contact", "m", "Max-Forwards", "Route", "Record-Route", "Content-Length", "l", "Content-Type", "c",
+	} {
+		bad = append(bad, map[string]string{name: "x"})
+	}
+	for _, h := range bad {
+		if err := ValidateReferHeaders(h); err == nil {
+			t.Errorf("%v: expected an error", h)
+		}
+	}
+}
+
+func TestReferRequestHeaders(t *testing.T) {
+	render := func(headers map[string]string) []string {
+		var out []string
+		for _, h := range referRequestHeaders("10.0.0.1", headers) {
+			out = append(out, h.Name()+": "+h.Value())
+		}
+		return out
+	}
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    []string
+	}{
+		{"default Referred-By", nil, []string{"Referred-By: <sip:10.0.0.1>"}},
+		{"custom headers sorted after the default", map[string]string{"X-B": "2", "User-to-User": "00FA;encoding=hex"},
+			[]string{"Referred-By: <sip:10.0.0.1>", "User-to-User: 00FA;encoding=hex", "X-B: 2"}},
+		{"Referred-By overridden", map[string]string{"referred-by": "<sip:+15551230000@example.com>", "X-A": "1"},
+			[]string{"X-A: 1", "referred-by: <sip:+15551230000@example.com>"}},
+		{"compact Referred-By overrides too", map[string]string{"b": "<sip:alice@example.com>"},
+			[]string{"b: <sip:alice@example.com>"}},
+	}
+	for _, c := range cases {
+		got := render(c.headers)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: got %q want %q", c.name, got, c.want)
+				break
+			}
+		}
+	}
+}
+
 func TestParseSipfrag(t *testing.T) {
 	cases := []struct {
 		body     string
