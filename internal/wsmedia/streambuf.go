@@ -159,8 +159,23 @@ func (sb *streamBuffer) readPlayout(p []byte) (int, error) {
 			writeConceal(p, sb.lastFrame, gStart, gEnd, sb.sampleRate)
 			return f, nil
 		}
+		waitStart := time.Now()
 		for len(sb.buf) < f && !sb.closed {
 			sb.cond.Wait()
+		}
+		// A wait this long means the producer went idle — the end of a
+		// talkspurt — rather than stalling mid-word. Rebuild the whole lead
+		// before the next talkspurt plays, while the delay costs nothing
+		// audible. Otherwise the lead exists only once per stream: a producer
+		// that sends in real time (a TTS streamed at playback pace) plays every
+		// later talkspurt from an empty buffer, concealing and inserting frames
+		// throughout. A shorter stall resumes at once, as the warm-up note above
+		// explains.
+		if !sb.closed && time.Since(waitStart) >= rewarmAfterIdle {
+			sb.drift.Rewarms++
+			for len(sb.buf) < sb.playoutBytes && !sb.closed {
+				sb.cond.Wait()
+			}
 		}
 		if len(sb.buf) == 0 && sb.closed {
 			return 0, io.EOF

@@ -3,6 +3,7 @@ package wsmedia
 import (
 	"encoding/binary"
 	"math"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/speaking"
 )
@@ -18,6 +19,12 @@ const maxConcealFrames = 2
 // stopped altogether, and stretching its last silence forever would hide that
 // from the mixer's starvation counters.
 const maxInsertRun = 2
+
+// rewarmAfterIdle is how long the reader must have waited for real audio, after
+// concealment ran out, for the gap to count as an idle producer (the end of a
+// talkspurt) rather than a mid-word stall. Well above the network jitter the
+// lead absorbs, and well below the pause between two utterances.
+const rewarmAfterIdle = 200 * time.Millisecond
 
 // concealCrossfadeMs is how much of a concealed frame is blended with the tail
 // of the frame it repeats. Splicing a frame onto itself steps at the seam
@@ -38,6 +45,9 @@ type DriftStats struct {
 	// could not wait for a pause. These are audible in principle, unlike
 	// Trimmed/Inserted.
 	Concealed int64
+	// Rewarms counts talkspurts that began after an idle producer and so had
+	// the whole lead rebuilt first (see rewarmAfterIdle).
+	Rewarms int64
 }
 
 // frameIsQuiet reports whether a frame of little-endian PCM16 sits below the
