@@ -133,9 +133,7 @@ func (sb *streamBuffer) readPlayout(p []byte) (int, error) {
 		if target < f {
 			target = f
 		}
-		for len(sb.buf) < target && !sb.closed {
-			sb.cond.Wait()
-		}
+		sb.waitFor(target)
 		if !sb.closed {
 			sb.warming = false
 		}
@@ -159,8 +157,13 @@ func (sb *streamBuffer) readPlayout(p []byte) (int, error) {
 			writeConceal(p, sb.lastFrame, gStart, gEnd, sb.sampleRate)
 			return f, nil
 		}
-		for len(sb.buf) < f && !sb.closed {
-			sb.cond.Wait()
+		waitStart := time.Now()
+		sb.waitFor(f)
+		// The producer went idle between talkspurts, so rebuilding the lead now
+		// costs nothing audible.
+		if !sb.closed && time.Since(waitStart) >= rewarmAfterIdle {
+			sb.drift.Rewarms++
+			sb.waitFor(sb.playoutBytes)
 		}
 		if len(sb.buf) == 0 && sb.closed {
 			return 0, io.EOF
@@ -192,6 +195,21 @@ func (sb *streamBuffer) readPlayout(p []byte) (int, error) {
 	n := sb.takeFrame(p)
 	sb.rememberFrame(p[:n])
 	return n, nil
+}
+
+// waitFor blocks until n bytes are buffered or the buffer closes. A read that
+// waited restarts the pacing clock; otherwise the next frame follows back to
+// back and takes a frame of the lead with it.
+func (sb *streamBuffer) waitFor(n int) {
+	if len(sb.buf) >= n || sb.closed {
+		return
+	}
+	for len(sb.buf) < n && !sb.closed {
+		sb.cond.Wait()
+	}
+	if sb.pace > 0 {
+		sb.nextRead = time.Now().Add(sb.pace)
+	}
 }
 
 // drainTail hands back a partial frame left over at close.

@@ -196,6 +196,121 @@ func TestStreamBufferPlayoutConcealsUnderrunThenWaits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("read did not resume once real audio arrived")
 	}
+	if got := sb.Drift().Rewarms; got != 0 {
+		t.Fatalf("Rewarms=%d, want 0 after a short stall", got)
+	}
+}
+
+// A producer that streams in real time (a TTS paced to playback) stops between
+// utterances. The next utterance must get the whole lead back before it plays;
+// otherwise it runs from an empty buffer and every late chunk is concealed.
+func TestStreamBufferRewarmsLeadAfterIdleProducer(t *testing.T) {
+	const samples = 160 // 320 bytes
+	frameBytes := samples * 2
+	sb := newStreamBuffer(4096, 0, 2*frameBytes, 16000) // no pacing, isolate the lead
+	voiced := voicedFrame(samples)
+	out := make([]byte, frameBytes)
+
+	for i := 0; i < 2; i++ {
+		if _, err := sb.Write(voiced); err != nil {
+			t.Fatalf("warm write %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 2+maxConcealFrames; i++ { // play the talkspurt, then conceal its end
+		if _, err := sb.Read(out); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() { sb.Read(out); close(done) }()
+	time.Sleep(rewarmAfterIdle + 50*time.Millisecond) // the producer is idle
+
+	if _, err := sb.Write(voiced); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("read released the next talkspurt before its lead was rebuilt")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := sb.Write(voiced); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("read did not release once the lead was rebuilt")
+	}
+	if got := sb.Drift().Rewarms; got != 1 {
+		t.Fatalf("Rewarms=%d, want 1", got)
+	}
+	sb.mu.Lock()
+	got := len(sb.buf)
+	sb.mu.Unlock()
+	if got != frameBytes {
+		t.Fatalf("buffered=%d after the first frame of the talkspurt, want %d (the lead minus one frame)", got, frameBytes)
+	}
+}
+
+// A frame released by a blocking wait must not be followed back to back by the
+// next one: that hands a frame of the lead to the mixer the moment it is built.
+func TestStreamBufferPlayoutRepacesAfterWait(t *testing.T) {
+	const samples = 160
+	frameBytes := samples * 2
+	sb := newStreamBuffer(4096, 20, 2*frameBytes, 16000)
+	voiced := voicedFrame(samples)
+	out := make([]byte, frameBytes)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		for i := 0; i < 3; i++ {
+			sb.Write(voiced)
+		}
+	}()
+	if _, err := sb.Read(out); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	released := time.Now()
+	if _, err := sb.Read(out); err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if gap := time.Since(released); gap < 15*time.Millisecond {
+		t.Fatalf("second frame followed the warm-up after %v, want about one pace", gap)
+	}
+}
+
+func TestStreamBufferRewarmLetsCloseThrough(t *testing.T) {
+	const samples = 160
+	frameBytes := samples * 2
+	sb := newStreamBuffer(4096, 0, 2*frameBytes, 16000)
+	voiced := voicedFrame(samples)
+	out := make([]byte, frameBytes)
+	for i := 0; i < 2; i++ {
+		sb.Write(voiced)
+	}
+	for i := 0; i < 2+maxConcealFrames; i++ {
+		sb.Read(out)
+	}
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { n, err := sb.Read(out); done <- result{n, err} }()
+	time.Sleep(rewarmAfterIdle + 50*time.Millisecond)
+	sb.Write(voiced) // one frame, less than the lead
+	time.Sleep(20 * time.Millisecond)
+	sb.Close()
+	select {
+	case r := <-done:
+		if r.n != frameBytes || r.err != nil {
+			t.Fatalf("read after close = (%d, %v), want the buffered frame", r.n, r.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close did not release a reader rebuilding its lead")
+	}
 }
 
 func TestStreamBufferConcealFadesToSilence(t *testing.T) {

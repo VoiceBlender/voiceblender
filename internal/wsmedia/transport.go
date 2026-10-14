@@ -133,6 +133,13 @@ func (t *Transport) Close() error {
 		t.closed.Store(true)
 		t.cancel()
 		t.audioIn.Close()
+		if t.audioIn.playoutBytes > 0 {
+			d := t.audioIn.Drift()
+			t.log.Info("wsmedia: ingress playout stats",
+				"underruns", d.Underruns, "concealed", d.Concealed,
+				"inserted", d.Inserted, "trimmed", d.Trimmed, "rewarms", d.Rewarms,
+				"dropped_bytes", t.audioIn.Dropped())
+		}
 		_ = t.conn.Close()
 		if c, ok := t.audioOut.(io.Closer); ok {
 			_ = c.Close()

@@ -233,7 +233,7 @@ Configured server-wide:
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
 
-**WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a separate, simpler mechanism. There is no reordering to do — a WebSocket delivers in order — so the buffer is only a playout lead: inbound PCM is withheld until the lead is buffered, and a producer that runs a few milliseconds late against the mixer's 20 ms tick spends the lead instead of leaving a gap in the mix. The lead is rebuilt after every underrun. Like the SIP buffer it costs latency equal to its depth and is off by default; `40`–`60` ms is typical for an external agent pacing PCM of its own accord. It needs no separate cap — the WebSocket ingress buffer is already bounded at 1000 ms.
+**WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a simpler mechanism — a WebSocket delivers in order, so the buffer is only a playout lead that absorbs a producer running late against the mixer's 20 ms tick. The lead is rebuilt at the start of every talkspurt (after 200 ms with nothing sent), so it works with producers that go silent between utterances. Send audio steadily, about one frame per 20 ms, rather than in bursts. Off by default; it adds latency equal to its depth, and `40`–`60` ms is typical.
 
 Configured server-wide:
 
