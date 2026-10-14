@@ -85,7 +85,8 @@ type Participant struct {
 	// full queue instead of dropping, so the producer runs on the mix tick and
 	// clock drift costs latency rather than audio. Only for sources that can be
 	// slowed down — never a live leg, and never a bridge endpoint, whose writer
-	// is driven from the peer room's mixTick.
+	// is driven from the peer room's mixTick. Nor a WS leg with a playout lead,
+	// whose queue would drain the lead out of the playout buffer.
 	mixerClocked atomic.Bool
 
 	// A participant that has gone quiet and one whose source has stopped are
@@ -93,6 +94,7 @@ type Participant struct {
 	framesRead atomic.Uint64
 	starved    atomic.Uint64
 	shortReads atomic.Uint64
+	dropped    atomic.Uint64 // drop-oldest on a full queue
 
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
@@ -563,6 +565,12 @@ func closeWriter(w io.Writer) error {
 // leg's writer is its own egress. Only closeWriterForPanic does that. It runs
 // outside m.mu because the Reader's Close is arbitrary third-party IO.
 func (m *Mixer) teardownParticipant(p *Participant) {
+	if n := p.framesRead.Load(); n > 0 {
+		m.log.Info("mixer: participant feed",
+			"participant_id", p.ID, "frames_read", n, "starved", p.starved.Load(),
+			"dropped", p.dropped.Load(), "short_reads", p.shortReads.Load(),
+			"mixer_clocked", p.mixerClocked.Load())
+	}
 	if p.guard != nil {
 		p.guard.Close() // prevent any further writes to the network
 	}
@@ -765,6 +773,7 @@ func (m *Mixer) readLoop(p *Participant, stopCh <-chan struct{}) {
 		default:
 			select {
 			case <-p.incoming:
+				p.dropped.Add(1)
 			default:
 			}
 			select {

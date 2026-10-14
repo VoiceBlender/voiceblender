@@ -395,6 +395,29 @@ func TestMixer_LiveParticipantDropsInsteadOfThrottling(t *testing.T) {
 	}
 }
 
+func TestMixer_DroppedCountsDropOldestOnlyForLiveSources(t *testing.T) {
+	const ticks = 10
+	for _, clocked := range []bool{false, true} {
+		m := New(slog.Default(), DefaultSampleRate)
+		m.Start()
+		br := &burstReader{frameSize: m.frameSizeBytes, max: 100000}
+		p := m.AddParticipant("burst", br, &captureWriter{})
+		if clocked {
+			p.MarkMixerClocked()
+		}
+		time.Sleep(time.Duration(ticks*Ptime) * time.Millisecond)
+		dropped := p.dropped.Load()
+		m.Stop()
+
+		if clocked && dropped != 0 {
+			t.Fatalf("mixer-clocked source dropped %d frames, want 0", dropped)
+		}
+		if !clocked && dropped == 0 {
+			t.Fatal("live source overran its queue but dropped counted 0")
+		}
+	}
+}
+
 func TestMixer_MarkMixerClockedThrottlesDuplexSource(t *testing.T) {
 	const ticks = 10
 	produced := runBurstSource(t, ticks, func(m *Mixer, r io.Reader) {

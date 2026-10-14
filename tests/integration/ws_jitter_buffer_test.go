@@ -11,6 +11,7 @@ import (
 
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/gobwas/ws/wsutil"
 )
 
@@ -237,5 +238,99 @@ func TestRoomWSJitterBufferAbsorbsSlowProducerDrift(t *testing.T) {
 	// 60ms is here to prove the point, not because drift requires it.
 	if on > 1 {
 		t.Fatalf("drift compensation left %d gaps vs %d without it", on, off)
+	}
+}
+
+// talkspurtSender streams utterances in real time and sends nothing between
+// them, like a TTS paced to playback. Inside each utterance some frames arrive
+// late, which only a rebuilt lead can absorb.
+func talkspurtSender(utterances int, done chan<- struct{}) func(*testing.T, interface{ Write([]byte) (int, error) }, <-chan struct{}) {
+	return func(t *testing.T, conn interface{ Write([]byte) (int, error) }, stop <-chan struct{}) {
+		const (
+			utteranceFrames = 30
+			gap             = 400 * time.Millisecond
+			lateEvery       = 8
+			lateBy          = 30 * time.Millisecond
+		)
+		defer close(done)
+		voiced := make([]byte, 640)
+		for i := 0; i < 320; i++ {
+			binary.LittleEndian.PutUint16(voiced[i*2:], uint16(int16(6000)))
+		}
+		for u := 0; u < utterances; u++ {
+			next := time.Now()
+			for i := 0; i < utteranceFrames; i++ {
+				due := next
+				if i%lateEvery == lateEvery/2 {
+					due = due.Add(lateBy)
+				}
+				select {
+				case <-stop:
+					return
+				case <-time.After(time.Until(due)):
+				}
+				if err := wsutil.WriteClientBinary(conn, voiced); err != nil {
+					return
+				}
+				next = next.Add(20 * time.Millisecond)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(gap):
+			}
+		}
+	}
+}
+
+func TestRoomWSJitterBufferRewarmsLeadPerTalkspurt(t *testing.T) {
+	const utterances = 5
+	inst := newTestInstanceWithOpts(t, "ws-jitter-talkspurt", func(c *config.Config) {
+		c.WSJitterBufferMs = 80
+	})
+
+	wsURL := "ws://" + inst.httpAddr +
+		"/v1/legs/websocket?sample_rate=16000&wire_format=binary&room_id=talkspurt-room"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := wsDial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	ringing := inst.collector.waitForMatch(t, events.LegRinging, nil, 2*time.Second)
+	legID := ringing.Data.GetLegID()
+	inst.collector.waitForMatch(t, events.LegJoinedRoom, func(e events.Event) bool {
+		return e.Data.GetLegID() == legID
+	}, 2*time.Second)
+	l, ok := inst.legMgr.Get(legID)
+	if !ok {
+		t.Fatalf("leg %s not found", legID)
+	}
+	wsLeg, ok := l.(*leg.WebSocketLeg)
+	if !ok {
+		t.Fatalf("leg %s is %T, want *leg.WebSocketLeg", legID, l)
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	done := make(chan struct{})
+	go talkspurtSender(utterances, done)(t, conn, stop)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("sender did not finish")
+	}
+
+	d := wsLeg.Transport().AudioDrift()
+	t.Logf("drift after %d talkspurts: %+v", utterances, d)
+	if d.Rewarms < utterances-1 {
+		t.Fatalf("Rewarms=%d, want at least %d — the lead was not rebuilt per talkspurt", d.Rewarms, utterances-1)
+	}
+	// Each talkspurt ends in one underrun as the buffer drains. Any more means a
+	// late frame inside an utterance found the buffer empty.
+	if d.Underruns > utterances+1 {
+		t.Fatalf("Underruns=%d over %d talkspurts — late frames are not covered by the lead", d.Underruns, utterances)
 	}
 }
