@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -150,7 +151,7 @@ func TestDeepgramFinalize_AfterSessionEndsErrors(t *testing.T) {
 func TestSTTFinalizerConformance(t *testing.T) {
 	log := slog.Default()
 
-	if _, ok := Provider(NewDeepgram(log)).(Finalizer); !ok {
+	if _, ok := Provider(NewDeepgram(providercfg.Deepgram{}, log)).(Finalizer); !ok {
 		t.Error("*DeepgramTranscriber does not implement Finalizer")
 	}
 	if _, ok := Provider(NewSpeechmatics("", log)).(Finalizer); !ok {
@@ -161,7 +162,7 @@ func TestSTTFinalizerConformance(t *testing.T) {
 		t.Error("*AzureTranscriber implements Finalizer; VoiceBlender's Azure " +
 			"integration has no mid-stream flush, so it must not claim one")
 	}
-	if _, ok := Provider(NewElevenLabs(log)).(Finalizer); ok {
+	if _, ok := Provider(NewElevenLabs(providercfg.ElevenLabs{}, log)).(Finalizer); ok {
 		t.Error("*ElevenLabsTranscriber implements Finalizer; VoiceBlender's " +
 			"ElevenLabs integration has no mid-stream flush, so it must not claim one")
 	}

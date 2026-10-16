@@ -161,9 +161,9 @@ func newAgentSession(s *Server, provider string) agent.Provider {
 	case "pipecat":
 		return agent.NewPipecat(s.Log)
 	case "deepgram":
-		return agent.NewDeepgram(s.Log)
+		return agent.NewDeepgram(s.Config.Deepgram, s.Log)
 	default:
-		return agent.NewElevenLabs(s.Log)
+		return agent.NewElevenLabs(s.Config.ElevenLabs, s.Log)
 	}
 }
 

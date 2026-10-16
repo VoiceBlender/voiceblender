@@ -145,12 +145,24 @@ info:
         - name: ELEVENLABS_API_KEY
           default: ""
           description: API key for ElevenLabs TTS, STT, and Agent provider
+        - name: ELEVENLABS_BASE_URL
+          default: https://api.elevenlabs.io
+          description: ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io
+        - name: ELEVENLABS_ENABLE_LOGGING
+          default: "true"
+          description: false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
         - name: DEEPGRAM_API_KEY
           default: ""
-          description: API key for Deepgram STT and TTS
+          description: API key for Deepgram STT, TTS and Voice Agent
+        - name: DEEPGRAM_BASE_URL
+          default: https://api.deepgram.com
+          description: Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint
+        - name: DEEPGRAM_MIP_OPT_OUT
+          default: "false"
+          description: true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program
         - name: AZURE_SPEECH_KEY
           default: ""
           description: Subscription key for Azure Cognitive Speech Services (TTS and STT)

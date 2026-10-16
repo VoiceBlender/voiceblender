@@ -37,6 +37,7 @@ A Go voice engine that connects SIP, WebRTC, WhatsApp, WebSocket and other call 
 - **TTS** -- ElevenLabs, Google Cloud, AWS Polly, Deepgram, Azure, with speculative preflight synthesis
 - **STT** -- ElevenLabs, Deepgram, Deepgram Flux, Azure, Speechmatics, with turn detection
 - **AI agents** -- ElevenLabs, VAPI, Pipecat, Deepgram, attachable to a leg or a whole room
+- **Vendor data controls** -- regional endpoints and model-training/retention opt-outs for Deepgram and ElevenLabs
 - **Answering machine detection** -- human / machine classification with beep detection
 
 **Control & observability**

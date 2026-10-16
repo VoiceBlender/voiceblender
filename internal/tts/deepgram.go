@@ -8,21 +8,24 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-)
+	"net/url"
 
-const deepgramTTSURL = "https://api.deepgram.com/v1/speak"
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
+)
 
 // Deepgram implements Provider using the Deepgram TTS API.
 type Deepgram struct {
 	apiKey string
+	cfg    providercfg.Deepgram
 	client *http.Client
 	log    *slog.Logger
 }
 
 // NewDeepgram creates a Deepgram TTS provider.
-func NewDeepgram(apiKey string, log *slog.Logger) *Deepgram {
+func NewDeepgram(apiKey string, cfg providercfg.Deepgram, log *slog.Logger) *Deepgram {
 	return &Deepgram{
 		apiKey: apiKey,
+		cfg:    cfg,
 		client: &http.Client{},
 		log:    log,
 	}
@@ -49,8 +52,7 @@ func (d *Deepgram) Synthesize(ctx context.Context, text string, opts Options) (*
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s?model=%s&encoding=linear16&sample_rate=16000&container=none", deepgramTTSURL, model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildDeepgramSpeakURL(d.cfg, model), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -74,4 +76,12 @@ func (d *Deepgram) Synthesize(ctx context.Context, text string, opts Options) (*
 		Audio:    resp.Body,
 		MimeType: "audio/pcm;rate=16000",
 	}, nil
+}
+
+func buildDeepgramSpeakURL(cfg providercfg.Deepgram, model string) string {
+	u := cfg.HTTPBase() + "/v1/speak?model=" + url.QueryEscape(model) + "&encoding=linear16&sample_rate=16000&container=none"
+	if cfg.MIPOptOut {
+		u += "&mip_opt_out=true"
+	}
+	return u
 }

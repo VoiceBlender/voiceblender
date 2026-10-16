@@ -13,13 +13,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
 const (
-	deepgramWSURL  = "wss://api.deepgram.com/v1/listen"
 	dgFrameBytes   = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 	dgDefaultModel = "nova-3"
 )
@@ -33,6 +33,7 @@ type DeepgramTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	cfg     providercfg.Deepgram
 	log     *slog.Logger
 	// lw is the live socket writer, guarded by mu. Non-nil only between a
 	// successful dial and Start returning, so Finalize can reach a socket
@@ -40,11 +41,11 @@ type DeepgramTranscriber struct {
 	lw *wsutilx.LockedWriter
 }
 
-func NewDeepgram(log *slog.Logger) *DeepgramTranscriber {
-	return &DeepgramTranscriber{log: log}
+func NewDeepgram(cfg providercfg.Deepgram, log *slog.Logger) *DeepgramTranscriber {
+	return &DeepgramTranscriber{cfg: cfg, log: log}
 }
 
-func buildDeepgramV1URL(opts Options) string {
+func buildDeepgramV1URL(cfg providercfg.Deepgram, opts Options) string {
 	lang := opts.Language
 	if lang == "" {
 		lang = "en"
@@ -55,7 +56,8 @@ func buildDeepgramV1URL(opts Options) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(deepgramWSURL)
+	b.WriteString(cfg.WSBase())
+	b.WriteString("/v1/listen")
 	b.WriteString("?encoding=linear16&sample_rate=16000&channels=1&model=")
 	b.WriteString(url.QueryEscape(model))
 	b.WriteString("&language=")
@@ -76,6 +78,9 @@ func buildDeepgramV1URL(opts Options) string {
 	for _, kt := range opts.Keyterms {
 		b.WriteString("&keyterm=")
 		b.WriteString(url.QueryEscape(kt))
+	}
+	if cfg.MIPOptOut {
+		b.WriteString("&mip_opt_out=true")
 	}
 	return b.String()
 }
@@ -104,7 +109,7 @@ func (t *DeepgramTranscriber) Start(ctx context.Context, reader io.Reader, apiKe
 		},
 	}
 
-	wsURL := buildDeepgramV1URL(opts)
+	wsURL := buildDeepgramV1URL(t.cfg, opts)
 	t.log.Info("deepgram stt dialing", "url", wsURL)
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {

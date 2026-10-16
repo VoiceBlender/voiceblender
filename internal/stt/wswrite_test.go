@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -58,16 +59,16 @@ func TestSTTSendLoopsUnblockOnWedgedWrite(t *testing.T) {
 		run  func(ctx context.Context, lw *wsutilx.LockedWriter)
 	}{
 		{"deepgram", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewDeepgram(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewDeepgram(providercfg.Deepgram{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"elevenlabs", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewElevenLabs(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewElevenLabs(providercfg.ElevenLabs{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"azure", func(ctx context.Context, lw *wsutilx.LockedWriter) {
 			NewAzure("test", slog.Default()).sendLoop(ctx, pcmReader{}, lw, "reqid")
 		}},
 		{"deepgram_flux", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewDeepgramFlux(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewDeepgramFlux(providercfg.Deepgram{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"speechmatics", func(ctx context.Context, lw *wsutilx.LockedWriter) {
 			NewSpeechmatics("", slog.Default()).sendLoop(ctx, pcmReader{}, lw)
@@ -102,11 +103,11 @@ func TestSTTRecvLoopsLogCloseCode(t *testing.T) {
 		run  func(ctx context.Context, log *slog.Logger, conn net.Conn)
 	}{
 		{"deepgram", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			tr := NewDeepgram(log)
+			tr := NewDeepgram(providercfg.Deepgram{}, log)
 			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 		{"elevenlabs", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			tr := NewElevenLabs(log)
+			tr := NewElevenLabs(providercfg.ElevenLabs{}, log)
 			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 		{"azure", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
@@ -114,7 +115,7 @@ func TestSTTRecvLoopsLogCloseCode(t *testing.T) {
 			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), func(string, bool) {}, Options{})
 		}},
 		{"deepgram_flux", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			tr := NewDeepgramFlux(log)
+			tr := NewDeepgramFlux(providercfg.Deepgram{}, log)
 			tr.recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), Options{}, func(string, bool) {})
 		}},
 		{"speechmatics", func(ctx context.Context, log *slog.Logger, conn net.Conn) {

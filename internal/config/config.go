@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/google/uuid"
 )
 
@@ -39,8 +40,10 @@ type Config struct {
 	WebhookSecret      string
 	CustomDataMaxBytes int // cap on a leg's custom_data JSON; 0 = unlimited
 	ElevenLabsAPIKey   string
+	ElevenLabs         providercfg.ElevenLabs
 	VAPIAPIKey         string
 	DeepgramAPIKey     string
+	Deepgram           providercfg.Deepgram
 	AzureSpeechKey     string
 	AzureSpeechRegion  string
 	SpeechmaticsAPIKey string
@@ -185,6 +188,14 @@ func Load() Config {
 	if defaultRate != 8000 && defaultRate != 16000 && defaultRate != 48000 {
 		defaultRate = 16000
 	}
+	elevenLabs := providercfg.ElevenLabs{
+		BaseURL:        envOr("ELEVENLABS_BASE_URL", providercfg.ElevenLabsDefaultBaseURL),
+		DisableLogging: !envBool("ELEVENLABS_ENABLE_LOGGING", true),
+	}
+	deepgram := providercfg.Deepgram{
+		BaseURL:   envOr("DEEPGRAM_BASE_URL", providercfg.DeepgramDefaultBaseURL),
+		MIPOptOut: envBool("DEEPGRAM_MIP_OPT_OUT", false),
+	}
 	return Config{
 		InstanceID:                envOr("INSTANCE_ID", uuid.New().String()),
 		SIPBindIP:                 envOr("SIP_BIND_IP", "127.0.0.1"),
@@ -216,8 +227,10 @@ func Load() Config {
 		WebhookSecret:             os.Getenv("WEBHOOK_SECRET"),
 		CustomDataMaxBytes:        envInt("CUSTOM_DATA_MAX_BYTES", 1024),
 		ElevenLabsAPIKey:          os.Getenv("ELEVENLABS_API_KEY"),
+		ElevenLabs:                elevenLabs,
 		VAPIAPIKey:                os.Getenv("VAPI_API_KEY"),
 		DeepgramAPIKey:            os.Getenv("DEEPGRAM_API_KEY"),
+		Deepgram:                  deepgram,
 		AzureSpeechKey:            os.Getenv("AZURE_SPEECH_KEY"),
 		AzureSpeechRegion:         envOr("AZURE_SPEECH_REGION", "eastus"),
 		SpeechmaticsAPIKey:        os.Getenv("SPEECHMATICS_API_KEY"),

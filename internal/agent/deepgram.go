@@ -10,12 +10,11 @@ import (
 	"net"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
-
-const deepgramAgentURL = "wss://agent.deepgram.com/v1/agent/converse"
 
 // DeepgramSession manages a WebSocket connection to the Deepgram Voice Agent API.
 type DeepgramSession struct {
@@ -24,11 +23,12 @@ type DeepgramSession struct {
 	cancel         context.CancelFunc
 	conversationID string
 	lw             *wsutilx.LockedWriter
+	cfg            providercfg.Deepgram
 	log            *slog.Logger
 }
 
-func NewDeepgram(log *slog.Logger) *DeepgramSession {
-	return &DeepgramSession{log: log}
+func NewDeepgram(cfg providercfg.Deepgram, log *slog.Logger) *DeepgramSession {
+	return &DeepgramSession{cfg: cfg, log: log}
 }
 
 // Start dials the Deepgram Voice Agent WebSocket and streams audio bidirectionally.
@@ -63,8 +63,9 @@ func (s *DeepgramSession) Start(ctx context.Context, reader io.Reader, writer io
 		},
 	}
 
-	s.log.Info("deepgram agent dialing", "url", deepgramAgentURL)
-	conn, _, _, err := dialer.Dial(ctx, deepgramAgentURL)
+	agentURL := s.cfg.AgentURL()
+	s.log.Info("deepgram agent dialing", "url", agentURL)
+	conn, _, _, err := dialer.Dial(ctx, agentURL)
 	if err != nil {
 		s.log.Error("deepgram agent dial failed", "error", err)
 		return err
@@ -126,6 +127,15 @@ func (s *DeepgramSession) ConversationID() string {
 }
 
 func (s *DeepgramSession) sendSettings(lw *wsutilx.LockedWriter, opts Options) error {
+	data, err := json.Marshal(s.buildSettings(opts))
+	if err != nil {
+		return err
+	}
+	s.log.Debug("deepgram agent sending settings", "data", string(data))
+	return lw.WriteText(data)
+}
+
+func (s *DeepgramSession) buildSettings(opts Options) map[string]interface{} {
 	// Audio config forced to 16kHz — VoiceBlender's audio pipeline always
 	// delivers/expects 16-bit PCM at 16kHz.
 	audioConfig := map[string]interface{}{
@@ -190,12 +200,10 @@ func (s *DeepgramSession) sendSettings(lw *wsutilx.LockedWriter, opts Options) e
 		}
 	}
 
-	data, err := json.Marshal(settings)
-	if err != nil {
-		return err
+	if s.cfg.MIPOptOut {
+		settings["mip_opt_out"] = true
 	}
-	s.log.Debug("deepgram agent sending settings", "data", string(data))
-	return lw.WriteText(data)
+	return settings
 }
 
 func (s *DeepgramSession) sendLoop(ctx context.Context, reader io.Reader, lw *wsutilx.LockedWriter) {

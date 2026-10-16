@@ -42,15 +42,15 @@ var (
 func (s *Server) newSTTProvider(provider string) stt.Provider {
 	switch provider {
 	case "deepgram":
-		return stt.NewDeepgram(s.Log)
+		return stt.NewDeepgram(s.Config.Deepgram, s.Log)
 	case "deepgram_flux":
-		return stt.NewDeepgramFlux(s.Log)
+		return stt.NewDeepgramFlux(s.Config.Deepgram, s.Log)
 	case "azure":
 		return stt.NewAzure(s.Config.AzureSpeechRegion, s.Log)
 	case "speechmatics":
 		return stt.NewSpeechmatics(s.Config.SpeechmaticsURL, s.Log)
 	default:
-		return stt.NewElevenLabs(s.Log)
+		return stt.NewElevenLabs(s.Config.ElevenLabs, s.Log)
 	}
 }
 

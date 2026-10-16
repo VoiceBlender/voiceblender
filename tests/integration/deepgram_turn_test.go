@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/stt"
 	"github.com/VoiceBlender/voiceblender/internal/tts"
 )
@@ -69,7 +70,7 @@ func synthesizeDeepgramSpeech(t *testing.T, key, text string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	res, err := tts.NewDeepgram(key, slog.Default()).Synthesize(ctx, text, tts.Options{Voice: "aura-2-asteria-en"})
+	res, err := tts.NewDeepgram(key, providercfg.Deepgram{}, slog.Default()).Synthesize(ctx, text, tts.Options{Voice: "aura-2-asteria-en"})
 	if err != nil {
 		t.Fatalf("synthesize fixture speech: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestDeepgramFlux_TurnLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	if err := stt.NewDeepgramFlux(slog.Default()).
+	if err := stt.NewDeepgramFlux(providercfg.Deepgram{}, slog.Default()).
 		Start(ctx, newPacedReader(audio, 3*time.Second), key, opts, nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestDeepgramV1_SpeechFinalAndUtteranceEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	if err := stt.NewDeepgram(slog.Default()).
+	if err := stt.NewDeepgram(providercfg.Deepgram{}, slog.Default()).
 		Start(ctx, newPacedReader(audio, 3*time.Second), key, opts, nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
