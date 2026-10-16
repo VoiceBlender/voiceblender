@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -177,7 +178,7 @@ func TestBuildDeepgramV1URL(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := buildDeepgramV1URL(tc.opts); got != tc.want {
+			if got := buildDeepgramV1URL(providercfg.Deepgram{}, tc.opts); got != tc.want {
 				t.Errorf("buildDeepgramV1URL()\n got %s\nwant %s", got, tc.want)
 			}
 		})

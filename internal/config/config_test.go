@@ -519,3 +519,28 @@ func TestLoad_SIPInboundRingTimeoutSeconds(t *testing.T) {
 		t.Errorf("SIPInboundRingTimeoutSeconds = %d, want 45", got)
 	}
 }
+
+func TestLoad_VendorDataHandling(t *testing.T) {
+	for _, key := range []string{"DEEPGRAM_BASE_URL", "DEEPGRAM_MIP_OPT_OUT", "ELEVENLABS_BASE_URL", "ELEVENLABS_ENABLE_LOGGING"} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.Deepgram.BaseURL != "https://api.deepgram.com" || cfg.Deepgram.MIPOptOut {
+		t.Errorf("Deepgram defaults = %+v", cfg.Deepgram)
+	}
+	if cfg.ElevenLabs.BaseURL != "https://api.elevenlabs.io" || cfg.ElevenLabs.DisableLogging {
+		t.Errorf("ElevenLabs defaults = %+v", cfg.ElevenLabs)
+	}
+
+	t.Setenv("DEEPGRAM_BASE_URL", "https://api.eu.deepgram.com")
+	t.Setenv("DEEPGRAM_MIP_OPT_OUT", "true")
+	t.Setenv("ELEVENLABS_BASE_URL", "https://api.eu.residency.elevenlabs.io")
+	t.Setenv("ELEVENLABS_ENABLE_LOGGING", "false")
+	cfg = Load()
+	if cfg.Deepgram.BaseURL != "https://api.eu.deepgram.com" || !cfg.Deepgram.MIPOptOut {
+		t.Errorf("Deepgram overrides = %+v", cfg.Deepgram)
+	}
+	if cfg.ElevenLabs.BaseURL != "https://api.eu.residency.elevenlabs.io" || !cfg.ElevenLabs.DisableLogging {
+		t.Errorf("ElevenLabs overrides = %+v", cfg.ElevenLabs)
+	}
+}

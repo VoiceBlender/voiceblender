@@ -193,7 +193,7 @@ func main() {
 	}
 
 	// TTS provider (always created; per-request API key can override env var)
-	ttsProvider := tts.NewElevenLabs(cfg.ElevenLabsAPIKey, log)
+	ttsProvider := tts.NewElevenLabs(cfg.ElevenLabsAPIKey, cfg.ElevenLabs, log)
 	if cfg.ElevenLabsAPIKey != "" {
 		log.Info("ElevenLabs TTS enabled (default API key set)")
 	} else {

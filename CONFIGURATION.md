@@ -35,8 +35,12 @@ Full documentation, guides and API reference: <https://voiceblender.org/docs/>
 | `WEBHOOK_SECRET` | | HMAC-SHA256 signing secret for the global webhook. Applied to events delivered to `WEBHOOK_URL`; per-leg/per-room webhooks set via the API can supply their own secret. |
 | `CUSTOM_DATA_MAX_BYTES` | `1024` | Maximum size in bytes of a leg's `custom_data` JSON. The value is repeated on every event for that leg, so this caps webhook payload growth. `0` = unlimited. |
 | `ELEVENLABS_API_KEY` | | API key for ElevenLabs TTS, STT, and Agent |
+| `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io` | ElevenLabs API origin, used for TTS, STT and Agent (WebSocket URLs are derived from it). Set `https://api.eu.residency.elevenlabs.io` (or another data-residency host) for an isolated-region account, whose API key differs from the global one. |
+| `ELEVENLABS_ENABLE_LOGGING` | `true` | `false` sends `enable_logging=false` (zero retention mode) on ElevenLabs TTS and STT requests. Zero retention is an ElevenLabs enterprise feature. The Agent API has no per-request equivalent; configure retention on the ElevenLabs agent itself. |
 | `VAPI_API_KEY` | | API key for VAPI Agent provider |
-| `DEEPGRAM_API_KEY` | | API key for Deepgram STT and TTS |
+| `DEEPGRAM_API_KEY` | | API key for Deepgram STT, TTS and Voice Agent |
+| `DEEPGRAM_BASE_URL` | `https://api.deepgram.com` | Deepgram API origin, used for STT (`deepgram`, `deepgram_flux`), TTS and the Voice Agent (WebSocket URLs are derived from it). Set `https://api.eu.deepgram.com` for the EU endpoint. With the default origin the Voice Agent uses `wss://agent.deepgram.com`; with any other origin it uses `<origin>/v1/agent/converse`. |
+| `DEEPGRAM_MIP_OPT_OUT` | `false` | `true` opts every Deepgram request out of the Model Improvement Program: `mip_opt_out=true` on STT and TTS, and `"mip_opt_out": true` in the Voice Agent `Settings` message (overriding any value in the request's `settings`). |
 | `AZURE_SPEECH_KEY` | | Subscription key for Azure Cognitive Speech Services (TTS and STT) |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure region for Speech Services (e.g. `eastus`, `westeurope`) |
 | `SPEECHMATICS_API_KEY` | | API key for Speechmatics STT |

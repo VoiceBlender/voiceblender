@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -21,7 +22,7 @@ import (
 // /v2/listen has no Finalize message, so the provider must not advertise one —
 // doFinalizeSTTLeg relies on the type assertion failing to answer 501.
 func TestFluxDoesNotImplementFinalizer(t *testing.T) {
-	if _, ok := Provider(NewDeepgramFlux(slog.Default())).(Finalizer); ok {
+	if _, ok := Provider(NewDeepgramFlux(providercfg.Deepgram{}, slog.Default())).(Finalizer); ok {
 		t.Error("*FluxTranscriber implements Finalizer; Deepgram Flux has no mid-stream flush")
 	}
 }
@@ -70,7 +71,7 @@ func TestBuildFluxURL(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := buildFluxURL(tc.opts); got != tc.want {
+			if got := buildFluxURL(providercfg.Deepgram{}, tc.opts); got != tc.want {
 				t.Errorf("buildFluxURL()\n got %s\nwant %s", got, tc.want)
 			}
 		})
@@ -88,7 +89,7 @@ func runFluxRecv(t *testing.T, opts Options, frames []string) *collector {
 	t.Helper()
 	conn := sttScriptServer(t, frames)
 	var c collector
-	tr := NewDeepgramFlux(slog.Default())
+	tr := NewDeepgramFlux(providercfg.Deepgram{}, slog.Default())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -250,7 +251,7 @@ func TestFluxSendLoop_Sends80msFrames(t *testing.T) {
 	// Ten 80ms frames' worth of audio, delivered 20ms at a time.
 	src := &chunkedReader{data: bytes.Repeat([]byte{0xAB}, fluxFrameBytes*10), chunk: 640}
 
-	tr := NewDeepgramFlux(slog.Default())
+	tr := NewDeepgramFlux(providercfg.Deepgram{}, slog.Default())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	tr.sendLoop(ctx, src, wsutilx.NewLockedWriter(conn))
@@ -274,7 +275,7 @@ func TestFluxSendLoop_FlushesPartialTail(t *testing.T) {
 
 	src := &chunkedReader{data: bytes.Repeat([]byte{0xCD}, fluxFrameBytes+640), chunk: 640}
 
-	tr := NewDeepgramFlux(slog.Default())
+	tr := NewDeepgramFlux(providercfg.Deepgram{}, slog.Default())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	tr.sendLoop(ctx, src, wsutilx.NewLockedWriter(conn))
@@ -313,7 +314,7 @@ func equalStrings(a, b []string) bool {
 // A transcript says where in the audio it was said, which arrival time cannot:
 // Flux reports a turn when the turn ends, so arrival lands after the words.
 func TestFluxTranscriptCarriesWhenItWasSaid(t *testing.T) {
-	tr := NewDeepgramFlux(slog.Default())
+	tr := NewDeepgramFlux(providercfg.Deepgram{}, slog.Default())
 
 	var c collector
 	tr.dispatchTurn(fluxMessage{

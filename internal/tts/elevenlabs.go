@@ -8,24 +8,28 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 )
 
 const (
-	elevenLabsBaseURL      = "https://api.elevenlabs.io/v1/text-to-speech"
 	elevenLabsDefaultModel = "eleven_multilingual_v2"
 )
 
 // ElevenLabs implements Provider using the ElevenLabs streaming TTS API.
 type ElevenLabs struct {
 	apiKey string
+	cfg    providercfg.ElevenLabs
 	client *http.Client
 	log    *slog.Logger
 }
 
 // NewElevenLabs creates an ElevenLabs TTS provider.
-func NewElevenLabs(apiKey string, log *slog.Logger) *ElevenLabs {
+func NewElevenLabs(apiKey string, cfg providercfg.ElevenLabs, log *slog.Logger) *ElevenLabs {
 	return &ElevenLabs{
 		apiKey: apiKey,
+		cfg:    cfg,
 		client: &http.Client{},
 		log:    log,
 	}
@@ -53,8 +57,7 @@ func (e *ElevenLabs) Synthesize(ctx context.Context, text string, opts Options) 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/%s/stream?output_format=pcm_16000", elevenLabsBaseURL, opts.Voice)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildElevenLabsTTSURL(e.cfg, opts.Voice), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -78,4 +81,12 @@ func (e *ElevenLabs) Synthesize(ctx context.Context, text string, opts Options) 
 		Audio:    resp.Body,
 		MimeType: "audio/pcm;rate=16000",
 	}, nil
+}
+
+func buildElevenLabsTTSURL(cfg providercfg.ElevenLabs, voice string) string {
+	u := cfg.HTTPBase() + "/v1/text-to-speech/" + url.PathEscape(voice) + "/stream?output_format=pcm_16000"
+	if cfg.DisableLogging {
+		u += "&enable_logging=false"
+	}
+	return u
 }

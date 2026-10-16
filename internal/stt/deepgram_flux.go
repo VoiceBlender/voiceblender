@@ -13,13 +13,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
 const (
-	fluxWSURL = "wss://api.deepgram.com/v2/listen"
 	// 1280 samples × 2 bytes = 80ms at 16kHz, the chunk size Deepgram
 	// recommends for Flux's turn detector.
 	fluxFrameBytes   = 2560
@@ -39,14 +39,15 @@ type FluxTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	cfg     providercfg.Deepgram
 	log     *slog.Logger
 }
 
-func NewDeepgramFlux(log *slog.Logger) *FluxTranscriber {
-	return &FluxTranscriber{log: log}
+func NewDeepgramFlux(cfg providercfg.Deepgram, log *slog.Logger) *FluxTranscriber {
+	return &FluxTranscriber{cfg: cfg, log: log}
 }
 
-func buildFluxURL(opts Options) string {
+func buildFluxURL(cfg providercfg.Deepgram, opts Options) string {
 	model := opts.Model
 	hints := opts.LanguageHints
 	switch {
@@ -61,7 +62,8 @@ func buildFluxURL(opts Options) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fluxWSURL)
+	b.WriteString(cfg.WSBase())
+	b.WriteString("/v2/listen")
 	b.WriteString("?encoding=linear16&sample_rate=16000&model=")
 	b.WriteString(url.QueryEscape(model))
 
@@ -83,6 +85,9 @@ func buildFluxURL(opts Options) string {
 	for _, kt := range opts.Keyterms {
 		b.WriteString("&keyterm=")
 		b.WriteString(url.QueryEscape(kt))
+	}
+	if cfg.MIPOptOut {
+		b.WriteString("&mip_opt_out=true")
 	}
 	return b.String()
 }
@@ -111,7 +116,7 @@ func (t *FluxTranscriber) Start(ctx context.Context, reader io.Reader, apiKey st
 		},
 	}
 
-	wsURL := buildFluxURL(opts)
+	wsURL := buildFluxURL(t.cfg, opts)
 	t.log.Info("deepgram flux stt dialing", "url", wsURL)
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {

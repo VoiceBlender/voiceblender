@@ -10,14 +10,14 @@ import (
 	"net"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
 const (
-	elevenlabsWSURL = "wss://api.elevenlabs.io/v1/convai/conversation"
-	frameBytes      = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
+	frameBytes = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
 // ElevenLabsSession manages a WebSocket connection to the ElevenLabs ConvAI API.
@@ -26,11 +26,12 @@ type ElevenLabsSession struct {
 	running        bool
 	cancel         context.CancelFunc
 	conversationID string
+	cfg            providercfg.ElevenLabs
 	log            *slog.Logger
 }
 
-func NewElevenLabs(log *slog.Logger) *ElevenLabsSession {
-	return &ElevenLabsSession{log: log}
+func NewElevenLabs(cfg providercfg.ElevenLabs, log *slog.Logger) *ElevenLabsSession {
+	return &ElevenLabsSession{cfg: cfg, log: log}
 }
 
 // Start dials the ElevenLabs ConvAI WebSocket and streams audio bidirectionally.
@@ -64,7 +65,7 @@ func (s *ElevenLabsSession) Start(ctx context.Context, reader io.Reader, writer 
 		},
 	}
 
-	url := elevenlabsWSURL + "?agent_id=" + opts.AgentID
+	url := s.cfg.WSBase() + "/v1/convai/conversation?agent_id=" + opts.AgentID
 	s.log.Info("agent dialing", "url", url)
 	conn, _, _, err := dialer.Dial(ctx, url)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -58,10 +59,10 @@ func TestAgentSendLoopsUnblockOnWedgedWrite(t *testing.T) {
 		run  func(ctx context.Context, lw *wsutilx.LockedWriter)
 	}{
 		{"deepgram", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewDeepgram(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewDeepgram(providercfg.Deepgram{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"elevenlabs", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewElevenLabs(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewElevenLabs(providercfg.ElevenLabs{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"pipecat", func(ctx context.Context, lw *wsutilx.LockedWriter) {
 			NewPipecat(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
@@ -99,10 +100,10 @@ func TestAgentRecvLoopsLogCloseCode(t *testing.T) {
 		run  func(ctx context.Context, log *slog.Logger, conn net.Conn)
 	}{
 		{"deepgram", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			NewDeepgram(log).recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), io.Discard, Callbacks{})
+			NewDeepgram(providercfg.Deepgram{}, log).recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), io.Discard, Callbacks{})
 		}},
 		{"elevenlabs", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			NewElevenLabs(log).recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), io.Discard, Callbacks{})
+			NewElevenLabs(providercfg.ElevenLabs{}, log).recvLoop(ctx, conn, wsutilx.NewLockedWriter(conn), io.Discard, Callbacks{})
 		}},
 		{"pipecat", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
 			NewPipecat(log).recvLoop(ctx, conn, io.Discard, Callbacks{})

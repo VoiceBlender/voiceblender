@@ -8,15 +8,16 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
 const (
-	wsURL      = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
 	frameBytes = 640 // 320 samples × 2 bytes (16-bit PCM at 16kHz, 20ms)
 )
 
@@ -25,11 +26,25 @@ type ElevenLabsTranscriber struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	cfg     providercfg.ElevenLabs
 	log     *slog.Logger
 }
 
-func NewElevenLabs(log *slog.Logger) *ElevenLabsTranscriber {
-	return &ElevenLabsTranscriber{log: log}
+func NewElevenLabs(cfg providercfg.ElevenLabs, log *slog.Logger) *ElevenLabsTranscriber {
+	return &ElevenLabsTranscriber{cfg: cfg, log: log}
+}
+
+func buildElevenLabsSTTURL(cfg providercfg.ElevenLabs, opts Options) string {
+	lang := opts.Language
+	if lang == "" {
+		lang = "en"
+	}
+	u := cfg.WSBase() + "/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&language_code=" +
+		url.QueryEscape(lang) + "&audio_format=pcm_16000&commit_strategy=vad"
+	if cfg.DisableLogging {
+		u += "&enable_logging=false"
+	}
+	return u
 }
 
 // Start connects to ElevenLabs STT and streams PCM from reader.
@@ -58,13 +73,9 @@ func (t *ElevenLabsTranscriber) Start(ctx context.Context, reader io.Reader, api
 		},
 	}
 
-	lang := opts.Language
-	if lang == "" {
-		lang = "en"
-	}
-	url := wsURL + "?model_id=scribe_v2_realtime&language_code=" + lang + "&audio_format=pcm_16000&commit_strategy=vad"
-	t.log.Info("stt dialing", "url", url)
-	conn, _, _, err := dialer.Dial(ctx, url)
+	wsURL := buildElevenLabsSTTURL(t.cfg, opts)
+	t.log.Info("stt dialing", "url", wsURL)
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
 	if err != nil {
 		t.log.Error("stt dial failed", "error", err)
 		return err
