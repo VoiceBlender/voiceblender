@@ -5036,6 +5036,7 @@ components:
                 - speaking.stopped
                 - turn.complete
                 - turn.incomplete
+                - turn.error
                 - playback.started
                 - playback.finished
                 - playback.error
@@ -5782,6 +5783,8 @@ x-webhooks:
                                     processing_ms:
                                         type: integer
                                         description: End-to-end SmartTurn inference latency in milliseconds
+                                    roundtrip_ms:
+                                        type: integer
     turn.incomplete:
         post:
             summary: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
@@ -5812,6 +5815,32 @@ x-webhooks:
                                     processing_ms:
                                         type: integer
                                         description: End-to-end SmartTurn inference latency in milliseconds
+                                    roundtrip_ms:
+                                        type: integer
+    turn.error:
+        post:
+            summary: SmartTurn evaluation failed or turn detection session terminated
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    leg_id:
+                                        type: string
+                                    room_id:
+                                        type: string
+                                    app_id:
+                                        type: string
+                                    transport:
+                                        type: string
+                                    reason:
+                                        type: string
+                                    fatal:
+                                        type: boolean
+                                    message:
+                                        type: string
     playback.started:
         post:
             summary: Playback began

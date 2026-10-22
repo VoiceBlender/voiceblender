@@ -54,7 +54,9 @@ type Collector struct {
 	// Turn detection metrics (SmartTurn microservice).
 	turnEvaluationsTotal    *prometheus.CounterVec
 	turnEvalDurationSeconds *prometheus.HistogramVec
+	turnRoundtripSeconds    *prometheus.HistogramVec
 	turnProbabilities       prometheus.Histogram
+	turnErrorsTotal         *prometheus.CounterVec
 
 	registry *prometheus.Registry
 }
@@ -130,8 +132,14 @@ func New(bus *events.Bus) *Collector {
 
 		turnEvalDurationSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "voiceblender_turn_eval_duration_seconds",
-			Help:    "Turn evaluation latency in seconds.",
+			Help:    "SmartTurn service-internal evaluation latency (processing_ms). For end-to-end VB latency see voiceblender_turn_roundtrip_seconds.",
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
+		}, []string{"transport"}),
+
+		turnRoundtripSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "voiceblender_turn_roundtrip_seconds",
+			Help:    "VoiceBlender end-to-end turn evaluation latency (network + service). Only populated for HTTP transport.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0},
 		}, []string{"transport"}),
 
 		turnProbabilities: prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -139,6 +147,11 @@ func New(bus *events.Bus) *Collector {
 			Help:    "Distribution of turn completion probabilities.",
 			Buckets: prometheus.LinearBuckets(0.0, 0.1, 11),
 		}),
+
+		turnErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "voiceblender_turn_errors_total",
+			Help: "Total failed SmartTurn evaluations by transport and reason.",
+		}, []string{"transport", "reason"}),
 
 		registry: reg,
 	}
@@ -163,7 +176,9 @@ func New(bus *events.Bus) *Collector {
 		c.vsiEventsDropped,
 		c.turnEvaluationsTotal,
 		c.turnEvalDurationSeconds,
+		c.turnRoundtripSeconds,
 		c.turnProbabilities,
+		c.turnErrorsTotal,
 		recoveredPanics,
 	)
 
@@ -256,6 +271,21 @@ func (c *Collector) handle(e events.Event) {
 	case events.RoomDeleted:
 		c.activeRooms.Dec()
 
+	case events.TurnError:
+		d, ok := e.Data.(*events.TurnErrorData)
+		if !ok || d == nil {
+			return
+		}
+		transport := d.Transport
+		if transport == "" {
+			transport = "unknown"
+		}
+		reason := d.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		c.turnErrorsTotal.WithLabelValues(transport, reason).Inc()
+
 	case events.TurnComplete, events.TurnIncomplete:
 		d, ok := e.Data.(*events.TurnDetectionData)
 		if !ok || d == nil {
@@ -273,8 +303,9 @@ func (c *Collector) handle(e events.Event) {
 		if d.ProcessingMs > 0 {
 			c.turnEvalDurationSeconds.WithLabelValues(transport).Observe(float64(d.ProcessingMs) / 1000.0)
 		}
-		if d.Probability >= 0 {
-			c.turnProbabilities.Observe(d.Probability)
+		if d.RoundtripMs > 0 {
+			c.turnRoundtripSeconds.WithLabelValues(transport).Observe(float64(d.RoundtripMs) / 1000.0)
 		}
+		c.turnProbabilities.Observe(d.Probability) // float64 is always >= 0
 	}
 }

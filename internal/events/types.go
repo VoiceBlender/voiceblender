@@ -65,6 +65,7 @@ const (
 
 	TurnComplete   EventType = "turn.complete"
 	TurnIncomplete EventType = "turn.incomplete"
+	TurnError      EventType = "turn.error"
 
 	RoomCreated EventType = "room.created"
 	RoomDeleted EventType = "room.deleted"

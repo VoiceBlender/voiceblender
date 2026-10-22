@@ -552,10 +552,19 @@
           try {
             const msg = JSON.parse(ev.data);
             if (!msg || !msg.type) return;
-            if (msg.data && msg.data.leg_id && msg.data.leg_id !== currentLegId) return;
+
+            // In VoiceBlender VSI, event fields are flattened into the envelope (e.g. msg.leg_id, msg.probability).
+            // Support both flattened fields and nested data wrappers:
+            const data = (msg.data && typeof msg.data === 'object') ? { ...msg.data, ...msg } : msg;
+            if (data.leg_id && currentLegId && data.leg_id !== currentLegId) return;
 
             const tb = document.getElementById('turnBadge');
             const ts = document.getElementById('turnStats');
+
+            const rawProb = data.probability !== undefined ? Number(data.probability) : undefined;
+            const probStr = rawProb !== undefined ? `${(rawProb * 100).toFixed(1)}%` : '--';
+            const latencyStr = data.processing_ms !== undefined ? `${data.processing_ms}ms` : '--';
+            const transportStr = data.transport ? ` (${data.transport})` : '';
 
             if (msg.type === 'speaking.started') {
               tb.className = 'turn-badge speaking';
@@ -566,15 +575,24 @@
             } else if (msg.type === 'turn.complete') {
               tb.className = 'turn-badge complete';
               tb.textContent = 'TURN COMPLETE';
-              ts.textContent = `Prob: ${(msg.data.probability * 100).toFixed(1)}% | Latency: ${msg.data.processing_ms}ms (${msg.data.transport})`;
-              log(`[SmartTurn] Turn COMPLETE (prob: ${(msg.data.probability * 100).toFixed(1)}%, latency: ${msg.data.processing_ms}ms)`, 'turn-complete');
+              ts.textContent = `Probability: ${probStr} | Latency: ${latencyStr}${transportStr}`;
+              log(`[SmartTurn] Turn COMPLETE (Prob: ${probStr}, Latency: ${latencyStr}${transportStr})`, 'turn-complete');
             } else if (msg.type === 'turn.incomplete') {
               tb.className = 'turn-badge incomplete';
               tb.textContent = 'INCOMPLETE PAUSE';
-              ts.textContent = `Prob: ${(msg.data.probability * 100).toFixed(1)}% | Latency: ${msg.data.processing_ms}ms (${msg.data.transport})`;
-              log(`[SmartTurn] Turn INCOMPLETE (prob: ${(msg.data.probability * 100).toFixed(1)}%, latency: ${msg.data.processing_ms}ms)`, 'turn-incomplete');
+              ts.textContent = `Probability: ${probStr} | Latency: ${latencyStr}${transportStr}`;
+              log(`[SmartTurn] Turn INCOMPLETE (Prob: ${probStr}, Latency: ${latencyStr}${transportStr})`, 'turn-incomplete');
+            } else if (msg.type === 'turn.error') {
+              tb.className = 'turn-badge';
+              tb.style.backgroundColor = '#ef4444';
+              tb.style.color = '#fff';
+              tb.textContent = 'TURN ERROR';
+              ts.textContent = `${data.reason || 'error'}: ${data.message || ''}`;
+              log(`[SmartTurn] ERROR: ${data.reason} (${data.message || ''})`, 'error');
             }
-          } catch (e) { }
+          } catch (e) {
+            console.error('Error handling VSI event:', e);
+          }
         };
         vsiWs.onerror = () => {
           log(`VSI event stream connection error`, 'error');

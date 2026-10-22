@@ -122,6 +122,7 @@ Originate an outbound SIP call.
 | `webhook_secret` | string | no | HMAC-SHA256 signing secret for the per-leg webhook. |
 | `amd` | object | no | Enable Answering Machine Detection on this outbound call. Disabled by default — omit the field entirely to skip AMD. Include the object to enable; all inner fields are optional and default to sensible values when omitted or zero. See **AMD Parameters** below. |
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
+| `turn_detection` | bool | no | Enable SmartTurn turn detection for this leg. Omit to use the server default (`SMART_TURN_ENABLED` env var, default `false`). |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
 | `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
@@ -591,6 +592,7 @@ VoiceBlender holds the supplied credential only in memory for the challenge's li
 | Field | Type | Description |
 |---|---|---|
 | `speech_detection` | bool (optional) | Override the server default for `speaking.started` / `speaking.stopped` events on this leg. Omit to use `SPEECH_DETECTION_ENABLED` (default `false`). |
+| `turn_detection` | bool (optional) | Override the server default for SmartTurn turn detection on this leg. Omit to use `SMART_TURN_ENABLED` (default `false`). |
 | `codec` | string (optional) | Force a specific codec for the answer SDP. One of `PCMU`, `PCMA`, `G722`, `opus`, `AMR-WB`, `AMR-NB`. Must appear in the remote offer's `offered_codecs` list (see `leg.ringing`). When omitted, the server picks the first codec present in both the remote offer and the engine's supported set. Ignored when the leg is already in `early_media` state — the codec is locked in at 183. |
 | `streams` | object[] (optional) | **SIP only.** Rooms for the caller's additional audio streams, applied once the answer is negotiated. Each entry takes `room_id` and `role`. Entries are **positional over the accepted streams beyond the primary**, in m-line order — the caller's offer decides how many exist, so an entry with no matching stream is ignored. See [Choosing a room per stream](#choosing-a-room-per-stream). |
 
@@ -3955,6 +3957,47 @@ The returned `leg_id` is interchangeable with REST: subsequent `mute_leg`, `add_
 
 ---
 
+## Turn Detection (SmartTurn)
+
+VoiceBlender integrates conversational turn-taking detection backed by [SmartTurn](https://github.com/VoiceBlender/smartturn-go) (Pipecat Smart Turn v3.2 ONNX model + Silero VAD v5). It evaluates whether a speaker has completed their turn or simply paused to think, providing sub-second semantic boundary detection for AI voice agents.
+
+### Turn Vocabulary: `stt.turn` vs `turn.complete` (Dual Turn Architecture)
+
+VoiceBlender supports two distinct, complementary turn signals:
+- **`stt.turn` (STT Engine Turn Machine)**: Emitted by streaming speech-to-text models with linguistic awareness (e.g. Deepgram Flux). It delivers incremental transcript updates, word timings, and semantic states (`start_of_turn`, `update`, `eager_end_of_turn`, `turn_resumed`, `end_of_turn`). This feeds speculative synthesis mechanisms like `tts_preflight` where transcripts are immediately available.
+- **`turn.complete` / `turn.incomplete` (SmartTurn Acoustic Evaluation)**: Emitted by the SmartTurn integration over WebSocket or HTTP. It evaluates an acoustic Log-Mel spectrogram window with Silero VAD. It does not transcribe speech, but offers fast (~30ms inference) acoustic turn-taking classification, published to the event bus, `/v1/vsi`, webhooks, and Prometheus metrics (`voiceblender_turn_evaluations_total`, `voiceblender_turn_roundtrip_seconds`, `voiceblender_turn_errors_total`).
+
+### Transports & Buffering Semantics
+
+SmartTurn can be configured in two transport modes via `SMART_TURN_TRANSPORT`:
+
+- **WebSocket (`ws`) — Recommended**:
+  VoiceBlender streams 20ms raw PCM audio chunks continuously over a persistent WebSocket connection. `smartturn-go` runs Silero VAD on the audio stream and buffers speech into an internal 8-second ring buffer. When a pause is detected (default `400ms`), the model evaluates the turn. If evaluated as **`turn.incomplete`**, the 8-second audio history is **retained**, allowing subsequent speech to append to the context window for higher classification accuracy.
+- **HTTP REST (`http`)**:
+  VoiceBlender uses its local speaking detector to track speech activity. When the speaker stops (`speaking.stopped`), VoiceBlender POSTs the accumulated audio clip to `POST /v1/evaluate`. In HTTP mode, evaluation is **stateless**: each pause clears the audio buffer, so each turn is evaluated in isolation. Note: `SMART_TURN_PAUSE_DURATION_MS`, `SMART_TURN_VAD`, and `SMART_TURN_ADAPTIVE` are WebSocket-only settings and are ignored in HTTP mode.
+
+### Audio Pipeline & DTX / Silence Suppression Caveat
+
+In WebSocket mode, `smartturn-go`'s VAD requires continuous audio frames (or comfort noise) to detect the trailing silence pause window. If an upstream WebRTC or SIP peer uses Discontinuous Transmission (DTX) or client-side silence suppression, RTP packets stop during speech pauses. When packets cease, `smartturn-go` cannot advance its pause frame counter. For reliable turn detection in WebSocket streaming mode:
+- Ensure upstream SIP trunks or WebRTC clients do not enable aggressive DTX without comfort noise, or
+- Use `http` transport mode, where VoiceBlender's local RTP jitter buffer and speaking detector manage pause transitions.
+
+### Opt-In & Configuration
+
+Turn detection is **disabled by default**. Enable it globally via `SMART_TURN_ENABLED=true` or per-call:
+- Outbound: `"turn_detection": true` on `POST /v1/legs`
+- Inbound: `"turn_detection": true` on `POST /v1/legs/{id}/answer`
+
+### Turn Error Handling
+
+If the SmartTurn service becomes unreachable or evaluation fails, VoiceBlender emits a `turn.error` event with `reason` and `fatal`:
+- `http_eval_failed`: Transient HTTP request failure (`fatal: false`).
+- `ws_session_dropped`: WebSocket connection dropped; auto-reconnect attempted (`fatal: false`).
+- `ws_reconnect_exhausted`: Exponential backoff reconnects failed 5 times; turn detection disabled for the leg (`fatal: true`).
+- `start_failed`: Initial transport connection failed (`fatal: true`).
+
+---
+
 ## Webhooks
 
 Webhooks deliver real-time event notifications via HTTP POST. There are three ways to configure webhooks:
@@ -4112,6 +4155,9 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `recording.resumed` | Recording resumed from a paused state | `leg_id` or `room_id` |
 | `stt.text` | Speech-to-text transcript | `leg_id`, `room_id` (if room STT), `stream_id` (which of the leg's streams; empty when the leg's audio is the call), `text`, `is_final`, `speech_final`, `audio_start_ms`, `audio_end_ms` |
 | `stt.turn` | Speech-to-text turn boundary | `leg_id`, `room_id` (if room STT), `stream_id`, `event`, `turn_index`, `text`, `end_of_turn_confidence`, `audio_window_start_ms`, `audio_window_end_ms`, `last_word_end_ms`, `words`, `languages` |
+| `turn.complete` | SmartTurn turn completion decision | `leg_id`, `room_id` (if in a room), `action` (`turn.complete`), `probability`, `threshold`, `processing_ms`, `roundtrip_ms`, `transport` |
+| `turn.incomplete` | SmartTurn turn continuation decision | `leg_id`, `room_id` (if in a room), `action` (`turn.incomplete`), `probability`, `threshold`, `processing_ms`, `roundtrip_ms`, `transport` |
+| `turn.error` | SmartTurn evaluation failure or transport disconnect | `leg_id`, `room_id` (if in a room), `transport`, `reason`, `fatal`, `message` |
 | `agent.connected` | Agent connected to provider | `leg_id` or `room_id`, `conversation_id` |
 | `agent.disconnected` | Agent session ended | `leg_id` or `room_id` |
 | `agent.user_transcript` | User speech transcribed by agent | `leg_id` or `room_id`, `text` |

@@ -166,9 +166,9 @@ type Config struct {
 	SmartTurnEnabled         bool    // SMART_TURN_ENABLED — global default; false = opt-out until per-leg override
 	SmartTurnURL             string  // SMART_TURN_URL — base URL of the smartturn-go service (e.g. http://smartturn:8080)
 	SmartTurnTransport       string  // SMART_TURN_TRANSPORT — "ws" (default) or "http"
-	SmartTurnVAD             string  // SMART_TURN_VAD — "rms" (default) or "silero" (WS mode only)
+	SmartTurnVAD             string  // SMART_TURN_VAD — "silero" (default) or "rms" (WS mode only)
 	SmartTurnThreshold       float64 // SMART_TURN_THRESHOLD — probability cut-off for TURN_COMPLETE (default 0.55)
-	SmartTurnPauseDurationMs int     // SMART_TURN_PAUSE_DURATION_MS — silence window (default 500)
+	SmartTurnPauseDurationMs int     // SMART_TURN_PAUSE_DURATION_MS — silence window in ms (default 400, WS mode only)
 	SmartTurnAdaptive        bool    // SMART_TURN_ADAPTIVE — enable adaptive thresholding in WS mode
 }
 
@@ -292,7 +292,7 @@ func Load() Config {
 		SmartTurnTransport:       smartTurnTransport(envOr("SMART_TURN_TRANSPORT", "ws")),
 		SmartTurnVAD:             envOr("SMART_TURN_VAD", "silero"),
 		SmartTurnThreshold:       envFloat("SMART_TURN_THRESHOLD", 0.55),
-		SmartTurnPauseDurationMs: envInt("SMART_TURN_PAUSE_DURATION_MS", 500),
+		SmartTurnPauseDurationMs: envInt("SMART_TURN_PAUSE_DURATION_MS", 400),
 		SmartTurnAdaptive:        envBool("SMART_TURN_ADAPTIVE", false),
 	}
 }
@@ -452,4 +452,23 @@ func smartTurnTransport(v string) string {
 	default:
 		return "ws"
 	}
+}
+
+// SmartTurnHTTPIgnoredVars returns any environment variables that were explicitly set
+// but are ignored because SMART_TURN_TRANSPORT is "http".
+func (c *Config) SmartTurnHTTPIgnoredVars() []string {
+	if c.SmartTurnTransport != "http" {
+		return nil
+	}
+	var ignored []string
+	if _, ok := os.LookupEnv("SMART_TURN_VAD"); ok {
+		ignored = append(ignored, "SMART_TURN_VAD")
+	}
+	if _, ok := os.LookupEnv("SMART_TURN_ADAPTIVE"); ok {
+		ignored = append(ignored, "SMART_TURN_ADAPTIVE")
+	}
+	if _, ok := os.LookupEnv("SMART_TURN_PAUSE_DURATION_MS"); ok {
+		ignored = append(ignored, "SMART_TURN_PAUSE_DURATION_MS")
+	}
+	return ignored
 }

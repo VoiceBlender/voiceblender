@@ -3,7 +3,6 @@ package turndetector
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,11 +34,12 @@ type HTTPProvider struct {
 	client *http.Client
 	opts   Options
 
-	mu      sync.Mutex
-	buf     []byte  // raw PCM ring approximation (oldest bytes dropped when full)
-	running bool
-	cancel  context.CancelFunc
-	onEvent func(Event)
+	mu        sync.Mutex
+	buf       []byte // raw PCM ring approximation (oldest bytes dropped when full)
+	running   bool
+	ctx       context.Context    // derived from Start's ctx; cancelled by Stop
+	ctxCancel context.CancelFunc // cancels ctx and any in-flight evaluate goroutines
+	onEvent   func(Event)
 }
 
 // httpEvaluateResponse is the JSON shape returned by POST /v1/evaluate.
@@ -68,15 +68,17 @@ func (p *HTTPProvider) Start(ctx context.Context, onEvent func(Event)) error {
 	if p.opts.ServiceURL == "" {
 		return fmt.Errorf("turndetector: SMART_TURN_URL is not set")
 	}
-	_, cancel := context.WithCancel(ctx)
-	p.cancel = cancel
+	// Store derived context so Stop() cancels any in-flight evaluate goroutines.
+	derived, cancel := context.WithCancel(ctx)
+	p.ctx = derived
+	p.ctxCancel = cancel
 	p.onEvent = onEvent
 	p.buf = make([]byte, 0, httpBufferSamples*2) // int16 = 2 bytes per sample
 	p.running = true
 	return nil
 }
 
-// Stop halts the provider and releases resources.
+// Stop halts the provider, cancels in-flight evaluations, and releases resources.
 func (p *HTTPProvider) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -84,10 +86,11 @@ func (p *HTTPProvider) Stop() {
 		return
 	}
 	p.running = false
-	if p.cancel != nil {
-		p.cancel()
-		p.cancel = nil
+	if p.ctxCancel != nil {
+		p.ctxCancel()
+		p.ctxCancel = nil
 	}
+	p.ctx = nil
 	p.buf = nil
 }
 
@@ -109,12 +112,12 @@ func (p *HTTPProvider) Write(b []byte) (int, error) {
 	if !p.running {
 		return len(b), nil
 	}
-	cap := httpBufferSamples * 2
-	available := cap - len(p.buf)
-	if len(b) >= cap {
+	bufCap := httpBufferSamples * 2
+	available := bufCap - len(p.buf)
+	if len(b) >= bufCap {
 		// Incoming chunk larger than the whole buffer: keep only the tail.
-		p.buf = p.buf[:cap]
-		copy(p.buf, b[len(b)-cap:])
+		p.buf = p.buf[:bufCap]
+		copy(p.buf, b[len(b)-bufCap:])
 	} else if len(b) > available {
 		// Drop oldest bytes to make room.
 		drop := len(b) - available
@@ -130,6 +133,12 @@ func (p *HTTPProvider) Write(b []byte) (int, error) {
 // NotifyPause is called by the API layer when the speaking.Detector fires a
 // speaking.stopped event. It drains the PCM buffer and POSTs it to SmartTurn.
 // Runs the HTTP call in its own goroutine so the speaking callback is not blocked.
+//
+// Buffer semantics: the buffer is cleared after each POST. This is intentional —
+// the HTTP endpoint is stateless per-request. Each utterance is evaluated on its
+// own audio, with no carry-over from a previous TURN_INCOMPLETE. This differs from
+// the WS transport, where smartturn-go maintains an 8s ring buffer server-side and
+// retains audio across decisions.
 func (p *HTTPProvider) NotifyPause(ctx context.Context) {
 	p.mu.Lock()
 	if !p.running || len(p.buf) == 0 {
@@ -143,12 +152,24 @@ func (p *HTTPProvider) NotifyPause(ctx context.Context) {
 	threshold := p.opts.Threshold
 	serviceURL := p.opts.ServiceURL
 	onEvent := p.onEvent
+	onError := p.opts.OnError
+	evalCtx := p.ctx // use the provider's cancellable context
 	p.mu.Unlock()
 
+	// Prefer the provider's own context; fall back to the caller's if not yet started.
+	if evalCtx == nil {
+		evalCtx = ctx
+	}
+
 	go func() {
-		ev, err := p.evaluate(ctx, serviceURL, threshold, payload)
+		ev, err := p.evaluate(evalCtx, serviceURL, threshold, payload)
 		if err != nil {
-			p.log.Warn("SmartTurn HTTP evaluation failed", "err", err)
+			if evalCtx.Err() == nil {
+				p.log.Warn("SmartTurn HTTP evaluation failed", "err", err)
+				if onError != nil {
+					onError("http_eval_failed", err.Error(), false)
+				}
+			}
 			return
 		}
 		if onEvent != nil {
@@ -165,12 +186,16 @@ func (p *HTTPProvider) SetOptions(opts Options) {
 }
 
 func (p *HTTPProvider) evaluate(ctx context.Context, serviceURL string, threshold float64, payload []byte) (*Event, error) {
+	start := time.Now()
+
 	u, err := url.Parse(serviceURL + httpEvaluatePath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid SmartTurn URL: %w", err)
 	}
 	q := u.Query()
-	q.Set("threshold", strconv.FormatFloat(threshold, 'f', -1, 64))
+	if threshold > 0 {
+		q.Set("threshold", strconv.FormatFloat(threshold, 'f', -1, 64))
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(payload))
@@ -203,16 +228,6 @@ func (p *HTTPProvider) evaluate(ctx context.Context, serviceURL string, threshol
 		Probability:   r.Probability,
 		ThresholdUsed: thresh,
 		ProcessingMs:  r.EvaluationMs,
+		RoundtripMs:   time.Since(start).Milliseconds(),
 	}, nil
-}
-
-// binaryLittleEndianInt16 converts raw PCM bytes to []int16 samples.
-// Kept as a package-level helper for test use.
-func binaryLittleEndianInt16(b []byte) []int16 {
-	n := len(b) / 2
-	out := make([]int16, n)
-	for i := range out {
-		out[i] = int16(binary.LittleEndian.Uint16(b[i*2:]))
-	}
-	return out
 }

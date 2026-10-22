@@ -1,24 +1,25 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/mixer"
-	"github.com/VoiceBlender/voiceblender/internal/speaking"
 	"github.com/VoiceBlender/voiceblender/internal/turndetector"
 )
 
 // newTurnProvider constructs the appropriate Provider based on the configured transport.
-func (s *Server) newTurnProvider() turndetector.Provider {
+func (s *Server) newTurnProvider(onError func(reason, msg string, fatal bool)) turndetector.Provider {
 	opts := turndetector.Options{
 		ServiceURL:      s.Config.SmartTurnURL,
 		VAD:             s.Config.SmartTurnVAD,
 		Threshold:       s.Config.SmartTurnThreshold,
 		PauseDurationMs: s.Config.SmartTurnPauseDurationMs,
 		Adaptive:        s.Config.SmartTurnAdaptive,
+		OnError:         onError,
 	}
 	var p turndetector.Provider
 	if s.Config.SmartTurnTransport == "http" {
@@ -48,10 +49,36 @@ func (s *Server) maybeStartTurnDetector(l leg.Leg, override *bool) {
 
 // startTurnDetector creates, wires, and starts a SmartTurn session for a connected leg.
 func (s *Server) startTurnDetector(l leg.Leg) {
-	transport := s.Config.SmartTurnTransport
-	provider := s.newTurnProvider()
+	// M3: guard against leg types whose SetSpeakingTap is a no-op. Starting
+	// a provider for these legs wastes a WS connection and never receives audio.
+	switch l.(type) {
+	case *leg.WebSocketLeg, *leg.MoQLeg, *leg.LiveKitPublishLeg, *leg.LiveKitParticipantLeg:
+		s.Log.Warn("SmartTurn: leg type does not support speaking tap, skipping",
+			"leg_id", l.ID(), "type", fmt.Sprintf("%T", l))
+		return
+	}
 
+	transport := s.Config.SmartTurnTransport
 	scope := events.LegRoomScope{LegID: l.ID(), RoomID: l.RoomID(), AppID: l.AppID()}
+
+	onError := func(reason, msg string, fatal bool) {
+		s.Log.Warn("smartturn error",
+			slog.String("reason", reason),
+			slog.String("message", msg),
+			slog.Bool("fatal", fatal),
+			slog.String("leg_id", l.ID()),
+			slog.String("transport", transport),
+		)
+		s.Bus.Publish(events.TurnError, &events.TurnErrorData{
+			LegRoomScope: scope,
+			Transport:    transport,
+			Reason:       reason,
+			Fatal:        fatal,
+			Message:      msg,
+		})
+	}
+
+	provider := s.newTurnProvider(onError)
 
 	// onEvent translates a SmartTurn decision into a VoiceBlender bus event.
 	onEvent := func(ev turndetector.Event) {
@@ -64,6 +91,7 @@ func (s *Server) startTurnDetector(l leg.Leg) {
 			slog.Float64("probability", ev.Probability),
 			slog.Float64("threshold", ev.ThresholdUsed),
 			slog.Int64("processing_ms", ev.ProcessingMs),
+			slog.Int64("roundtrip_ms", ev.RoundtripMs),
 			slog.String("transport", transport),
 		)
 		s.Bus.Publish(typ, &events.TurnDetectionData{
@@ -72,11 +100,19 @@ func (s *Server) startTurnDetector(l leg.Leg) {
 			Probability:  ev.Probability,
 			Threshold:    ev.ThresholdUsed,
 			ProcessingMs: ev.ProcessingMs,
+			RoundtripMs:  ev.RoundtripMs,
 		})
 	}
 
 	if err := provider.Start(l.Context(), onEvent); err != nil {
 		s.Log.Error("SmartTurn provider failed to start", "err", err, "leg_id", l.ID())
+		s.Bus.Publish(events.TurnError, &events.TurnErrorData{
+			LegRoomScope: scope,
+			Transport:    transport,
+			Reason:       "start_failed",
+			Fatal:        true,
+			Message:      err.Error(),
+		})
 		return
 	}
 
@@ -84,9 +120,8 @@ func (s *Server) startTurnDetector(l leg.Leg) {
 	// NewResampleWriter is an automatic no-op passthrough when l.SampleRate() == 16000.
 	turnWriter := mixer.NewResampleWriter(provider, l.SampleRate(), mixer.DefaultSampleRate)
 
-	// Plug the provider into the leg's speaking tap.
-	// If a speaking.Detector is already wired, combine them with io.MultiWriter
-	// so both detectors receive the same PCM stream.
+	// M2: single lock hold to read-modify-write speakDets, avoiding TOCTOU.
+	// SetSpeakingTap is called exactly once after determining the final writer.
 	s.speakMu.Lock()
 	existingDet, hasDet := s.speakDets[l.ID()]
 	s.speakMu.Unlock()
@@ -97,52 +132,35 @@ func (s *Server) startTurnDetector(l leg.Leg) {
 		l.SetSpeakingTap(turnWriter)
 	}
 
-	// HTTP mode: drive evaluation from speaking.stopped events.
-	// We wrap the existing speaking detector's event callback to also call
-	// NotifyPause so the HTTPProvider sends the buffered audio when speech ends.
+	// M1: HTTP mode — hook into speaking.stopped bus events to trigger evaluation.
+	// This replaces the previous approach of building a second speaking.Detector
+	// (which duplicated callback logic and broke speaking event publishing).
+	// Bus.Publish is synchronous but NotifyPause only holds its mutex briefly
+	// before spawning a goroutine, so running inline from the bus handler is safe.
 	if transport == "http" {
 		if hp, ok := provider.(*turndetector.HTTPProvider); ok {
-			s.speakMu.Lock()
-			if hasDet {
-				// Replace the existing detector with one whose callback also notifies the HTTP provider.
-				legID := l.ID()
-				sampleRate := l.SampleRate()
-				det := speaking.New(legID, sampleRate, l.IsMuted, func(e speaking.Event) {
-					typ := events.SpeakingStarted
-					if !e.Speaking {
-						typ = events.SpeakingStopped
-						hp.NotifyPause(l.Context())
-					}
-					s.Bus.Publish(typ, &events.SpeakingData{
-						LegRoomScope: events.LegRoomScope{LegID: e.LegID, RoomID: l.RoomID(), AppID: l.AppID()},
-					})
-				})
-				// Swap the old detector for the new combined one.
-				if old, ok := s.speakDets[legID]; ok {
-					old.Stop()
-				}
-				s.speakDets[legID] = det
-				s.speakMu.Unlock()
+			legID := l.ID()
 
-				l.SetSpeakingTap(io.MultiWriter(det, turnWriter))
-				det.Start()
-			} else {
-				s.speakMu.Unlock()
-				// No existing speaking detector; create one solely for turn detection signals.
-				legID := l.ID()
-				sampleRate := l.SampleRate()
-				det := speaking.New(legID, sampleRate, l.IsMuted, func(e speaking.Event) {
-					if !e.Speaking {
-						hp.NotifyPause(l.Context())
-					}
-				})
-				s.speakMu.Lock()
-				s.speakDets[legID] = det
-				s.speakMu.Unlock()
-
-				l.SetSpeakingTap(io.MultiWriter(det, turnWriter))
-				det.Start()
+			// If no speaking detector exists, create one first so speaking events
+			// are published correctly. The bus subscriber below will then fire on
+			// its speaking.stopped events.
+			if !hasDet {
+				s.startSpeakingDetector(l)
 			}
+
+			unsub := s.Bus.Subscribe(func(e events.Event) {
+				if e.Type != events.SpeakingStopped {
+					return
+				}
+				if e.Data == nil || e.Data.GetLegID() != legID {
+					return
+				}
+				hp.NotifyPause(l.Context())
+			})
+
+			s.turnUnsubsMu.Lock()
+			s.turnUnsubs[legID] = unsub
+			s.turnUnsubsMu.Unlock()
 		}
 	}
 
@@ -155,6 +173,17 @@ func (s *Server) startTurnDetector(l leg.Leg) {
 
 // stopTurnDetector stops and removes the SmartTurn session for a leg.
 func (s *Server) stopTurnDetector(legID string) {
+	// Cancel the HTTP-mode bus subscriber first, if any.
+	s.turnUnsubsMu.Lock()
+	unsub, hasUnsub := s.turnUnsubs[legID]
+	if hasUnsub {
+		delete(s.turnUnsubs, legID)
+	}
+	s.turnUnsubsMu.Unlock()
+	if hasUnsub {
+		unsub()
+	}
+
 	s.turnDetMu.Lock()
 	p, ok := s.turnDets[legID]
 	if ok {
@@ -173,6 +202,15 @@ func (s *Server) HasTurnDetector(legID string) bool {
 	defer s.turnDetMu.Unlock()
 	_, ok := s.turnDets[legID]
 	return ok
+}
+
+// GetTurnProvider returns the active TurnProvider for the given leg.
+// Primarily for tests.
+func (s *Server) GetTurnProvider(legID string) (turndetector.Provider, bool) {
+	s.turnDetMu.Lock()
+	defer s.turnDetMu.Unlock()
+	p, ok := s.turnDets[legID]
+	return p, ok
 }
 
 // setTurnOverride stashes a per-leg turn_detection override to be applied
@@ -194,4 +232,3 @@ func (s *Server) takeTurnOverride(legID string) *bool {
 	}
 	return ov
 }
-

@@ -58,6 +58,11 @@ type Server struct {
 	turnOverrideMu sync.Mutex
 	turnOverride   map[string]*bool
 
+	// turnUnsubs holds the bus unsubscribe functions for HTTP-mode SmartTurn
+	// subscribers (one per leg), so they can be cleaned up in stopTurnDetector.
+	turnUnsubsMu sync.Mutex
+	turnUnsubs   map[string]func()
+
 	// streamRoomsMu guards streamRooms, the per-stream room placement an
 	// answer request asked for. It is stashed here because the answer is
 	// negotiated asynchronously — the streams do not exist until then.
@@ -117,6 +122,7 @@ func NewServer(
 		speechOverride:   make(map[string]*bool),
 		turnDets:         make(map[string]turndetector.Provider),
 		turnOverride:     make(map[string]*bool),
+		turnUnsubs:       make(map[string]func()),
 		streamRooms:      make(map[string][]AnswerLegStream),
 		siprecSessions:   make(map[string]*siprecSession),
 		siprecRecordings: make(map[string]*siprecRecording),
@@ -138,6 +144,11 @@ func NewServer(
 		s.cleanupLeg(l)
 		s.publishDisconnect(l, reason)
 	})
+
+	if ignored := cfg.SmartTurnHTTPIgnoredVars(); len(ignored) > 0 {
+		log.Warn("SmartTurn: settings ignored in HTTP mode (pause is decided by the speaking detector, ~300ms)",
+			"ignored_vars", ignored)
+	}
 
 	s.routes()
 	return s

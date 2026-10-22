@@ -464,8 +464,8 @@ func TestLoad_SmartTurnConfig(t *testing.T) {
 	if cfg.SmartTurnThreshold != 0.55 {
 		t.Errorf("SmartTurnThreshold = %v, want 0.55", cfg.SmartTurnThreshold)
 	}
-	if cfg.SmartTurnPauseDurationMs != 500 {
-		t.Errorf("SmartTurnPauseDurationMs = %d, want 500", cfg.SmartTurnPauseDurationMs)
+	if cfg.SmartTurnPauseDurationMs != 400 {
+		t.Errorf("SmartTurnPauseDurationMs = %d, want 400", cfg.SmartTurnPauseDurationMs)
 	}
 	if cfg.SmartTurnAdaptive {
 		t.Error("expected SmartTurnAdaptive = false by default")
@@ -477,7 +477,7 @@ func TestLoad_SmartTurnConfig(t *testing.T) {
 	t.Setenv("SMART_TURN_TRANSPORT", "http")
 	t.Setenv("SMART_TURN_VAD", "rms")
 	t.Setenv("SMART_TURN_THRESHOLD", "0.65")
-	t.Setenv("SMART_TURN_PAUSE_DURATION_MS", "400")
+	t.Setenv("SMART_TURN_PAUSE_DURATION_MS", "600")
 	t.Setenv("SMART_TURN_ADAPTIVE", "true")
 
 	cfg = Load()
@@ -496,8 +496,8 @@ func TestLoad_SmartTurnConfig(t *testing.T) {
 	if cfg.SmartTurnThreshold != 0.65 {
 		t.Errorf("SmartTurnThreshold = %v, want 0.65", cfg.SmartTurnThreshold)
 	}
-	if cfg.SmartTurnPauseDurationMs != 400 {
-		t.Errorf("SmartTurnPauseDurationMs = %d, want 400", cfg.SmartTurnPauseDurationMs)
+	if cfg.SmartTurnPauseDurationMs != 600 {
+		t.Errorf("SmartTurnPauseDurationMs = %d, want 600", cfg.SmartTurnPauseDurationMs)
 	}
 	if !cfg.SmartTurnAdaptive {
 		t.Error("expected SmartTurnAdaptive = true")
@@ -513,5 +513,25 @@ func TestSmartTurnTransport_Validation(t *testing.T) {
 	}
 	if got := smartTurnTransport("invalid"); got != "ws" {
 		t.Errorf("smartTurnTransport(invalid) = %q, want fallback ws", got)
+	}
+}
+
+func TestSmartTurnHTTPIgnoredVars(t *testing.T) {
+	// WS transport: should return nil even if vars are set
+	t.Setenv("SMART_TURN_TRANSPORT", "ws")
+	t.Setenv("SMART_TURN_VAD", "silero")
+	t.Setenv("SMART_TURN_PAUSE_DURATION_MS", "400")
+	t.Setenv("SMART_TURN_ADAPTIVE", "true")
+	cfg := Load()
+	if ignored := cfg.SmartTurnHTTPIgnoredVars(); len(ignored) != 0 {
+		t.Errorf("expected no ignored vars for WS transport, got %v", ignored)
+	}
+
+	// HTTP transport: should list explicitly set WS-only vars
+	t.Setenv("SMART_TURN_TRANSPORT", "http")
+	cfg = Load()
+	ignored := cfg.SmartTurnHTTPIgnoredVars()
+	if len(ignored) != 3 {
+		t.Fatalf("expected 3 ignored vars for HTTP transport, got %d (%v)", len(ignored), ignored)
 	}
 }

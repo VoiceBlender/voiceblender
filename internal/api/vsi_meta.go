@@ -272,6 +272,7 @@ func EventsMetadata() []EventMeta {
 		{events.SpeakingStopped, "Participant stopped speaking", reflect.TypeOf(events.SpeakingData{})},
 		{events.TurnComplete, "SmartTurn determined the speaker has completed their conversational turn", reflect.TypeOf(events.TurnDetectionData{})},
 		{events.TurnIncomplete, "SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)", reflect.TypeOf(events.TurnDetectionData{})},
+		{events.TurnError, "SmartTurn evaluation failed or turn detection session terminated", reflect.TypeOf(events.TurnErrorData{})},
 		{events.PlaybackStarted, "Playback began", reflect.TypeOf(events.PlaybackStartedData{})},
 		{events.PlaybackFinished, "Playback ended", reflect.TypeOf(events.PlaybackFinishedData{})},
 		{events.PlaybackError, "Playback failed", reflect.TypeOf(events.PlaybackErrorData{})},

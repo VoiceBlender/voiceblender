@@ -72,17 +72,18 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 		return nil, newAPIError(http.StatusInternalServerError, "failed to set local description")
 	}
 
-	l = leg.NewWebRTCLeg(media, s.Log)
-	// Must precede Add: OnConnected can fire immediately and publishes l.AppID().
+	legCreated := leg.NewWebRTCLeg(media, s.Log)
+	// Must precede Add and l assignment: OnConnected checks l != nil and can fire immediately.
 	if req.AppID != "" {
-		l.SetAppID(req.AppID)
+		legCreated.SetAppID(req.AppID)
 	}
 	if req.SpeechDetection != nil {
-		s.setSpeechOverride(l.ID(), req.SpeechDetection)
+		s.setSpeechOverride(legCreated.ID(), req.SpeechDetection)
 	}
 	if req.TurnDetection != nil {
-		s.setTurnOverride(l.ID(), req.TurnDetection)
+		s.setTurnOverride(legCreated.ID(), req.TurnDetection)
 	}
+	l = legCreated
 	s.LegMgr.Add(l)
 
 	return &WebRTCOfferResult{LegID: l.ID(), SDP: answer.SDP}, nil

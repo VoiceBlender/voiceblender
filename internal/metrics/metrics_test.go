@@ -191,6 +191,14 @@ func TestMetrics_TurnDetection(t *testing.T) {
 		ProcessingMs: 18,
 	})
 
+	bus.Publish(events.TurnError, &events.TurnErrorData{
+		LegRoomScope: events.LegRoomScope{LegID: "leg-1"},
+		Transport:    "http",
+		Reason:       "http_eval_failed",
+		Fatal:        false,
+		Message:      "status 500",
+	})
+
 	body := getMetrics(t, c)
 	for _, want := range []string{
 		`voiceblender_turn_evaluations_total{result="complete",transport="ws"} 1`,
@@ -198,10 +206,10 @@ func TestMetrics_TurnDetection(t *testing.T) {
 		`voiceblender_turn_eval_duration_seconds_count{transport="ws"} 1`,
 		`voiceblender_turn_eval_duration_seconds_count{transport="http"} 1`,
 		`voiceblender_turn_probabilities_count 2`,
+		`voiceblender_turn_errors_total{reason="http_eval_failed",transport="http"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q, body:\n%s", want, body)
 		}
 	}
 }
-

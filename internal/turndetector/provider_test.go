@@ -36,12 +36,17 @@ func TestHTTPProvider_TurnComplete(t *testing.T) {
 	p := NewHTTP(slog.Default())
 	p.SetOptions(Options{ServiceURL: srv.URL, Threshold: 0.55})
 
-	var received atomic.Int32
-	var lastEvent Event
+	var (
+		mu        sync.Mutex
+		received  atomic.Int32
+		lastEvent Event
+	)
 
 	ctx := context.Background()
 	if err := p.Start(ctx, func(ev Event) {
+		mu.Lock()
 		lastEvent = ev
+		mu.Unlock()
 		received.Add(1)
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -64,11 +69,89 @@ func TestHTTPProvider_TurnComplete(t *testing.T) {
 	if received.Load() == 0 {
 		t.Fatal("expected onEvent to be called")
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if !lastEvent.Complete {
 		t.Errorf("expected Complete=true, got false")
 	}
 	if lastEvent.Probability != 0.87 {
 		t.Errorf("probability = %v, want 0.87", lastEvent.Probability)
+	}
+	p.Stop()
+}
+
+func TestHTTPProvider_NoErrorWhenContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := NewHTTP(slog.Default())
+	var errorCalled atomic.Bool
+	p.SetOptions(Options{
+		ServiceURL: srv.URL,
+		OnError: func(reason, msg string, fatal bool) {
+			errorCalled.Store(true)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx, func(Event) {})
+	p.Write(make([]byte, 640))
+	cancel() // cancel context before pause eval completes
+	p.NotifyPause(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+	if errorCalled.Load() {
+		t.Error("expected OnError not to be called when context is cancelled")
+	}
+	p.Stop()
+}
+
+func TestHTTPProvider_ErrorCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query().Get("pause_duration"); q != "" {
+			t.Errorf("expected no pause_duration in HTTP mode, got %s", q)
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := NewHTTP(slog.Default())
+	var (
+		reasonGot string
+		fatalGot  bool
+		called    atomic.Bool
+	)
+	p.SetOptions(Options{
+		ServiceURL:      srv.URL,
+		PauseDurationMs: 400,
+		OnError: func(reason, msg string, fatal bool) {
+			reasonGot = reason
+			fatalGot = fatal
+			called.Store(true)
+		},
+	})
+
+	ctx := context.Background()
+	p.Start(ctx, func(Event) {})
+	p.Write(make([]byte, 640))
+	p.NotifyPause(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !called.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !called.Load() {
+		t.Fatal("expected OnError to be called on HTTP 500")
+	}
+	if reasonGot != "http_eval_failed" {
+		t.Errorf("reason = %q, want http_eval_failed", reasonGot)
+	}
+	if fatalGot {
+		t.Errorf("expected fatal=false for http_eval_failed")
 	}
 	p.Stop()
 }
@@ -213,14 +296,19 @@ func TestWSProvider_TurnDecisions(t *testing.T) {
 	p := NewWS(slog.Default())
 	p.SetOptions(Options{ServiceURL: srv.URL, Threshold: 0.60, VAD: "silero"})
 
-	var received atomic.Int32
-	var lastEvent Event
+	var (
+		evMu      sync.Mutex
+		received  atomic.Int32
+		lastEvent Event
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if err := p.Start(ctx, func(ev Event) {
+		evMu.Lock()
 		lastEvent = ev
+		evMu.Unlock()
 		received.Add(1)
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -244,6 +332,8 @@ func TestWSProvider_TurnDecisions(t *testing.T) {
 	if received.Load() == 0 {
 		t.Fatal("expected turn decision event from WebSocket")
 	}
+	evMu.Lock()
+	defer evMu.Unlock()
 	if !lastEvent.Complete {
 		t.Errorf("expected Complete=true, got %v", lastEvent.Complete)
 	}
@@ -364,6 +454,16 @@ func TestBuildWSURL(t *testing.T) {
 		{
 			name: "already_ws_scheme",
 			opts: Options{ServiceURL: "ws://localhost:8080", Threshold: 0.60},
+			want: "ws://localhost:8080/v1/ws/stream?vad=silero&threshold=0.6",
+		},
+		{
+			name: "already_has_ws_stream_path",
+			opts: Options{ServiceURL: "ws://localhost:8080/v1/ws/stream", Threshold: 0.60},
+			want: "ws://localhost:8080/v1/ws/stream?vad=silero&threshold=0.6",
+		},
+		{
+			name: "http_with_trailing_slash_and_path",
+			opts: Options{ServiceURL: "http://localhost:8080/v1/ws/stream/", Threshold: 0.60},
 			want: "ws://localhost:8080/v1/ws/stream?vad=silero&threshold=0.6",
 		},
 	}

@@ -30,6 +30,7 @@ A Go service that bridges SIP and WebRTC voice calls with multi-party audio mixi
 - **Answering Machine Detection (AMD)** -- per-call analysis of outbound call audio to classify the answerer as human, machine, no-speech, or not-sure; optional voicemail beep detection via Goertzel frequency analysis
 - **Webhooks** -- real-time event delivery with HMAC-SHA256 signing and retry; a stable per-event `event_id` (also sent as `X-Event-Id`) for receiver-side deduplication; typed event data with CDR-style `leg.disconnected` (disposition, timing, quality)
 - **WebSocket event stream (VSI)** -- `GET /v1/vsi` streams all events and accepts commands (mute, hold, DTMF, room management) over a single persistent WebSocket; filter by `app_id` regex for multi-tenant isolation
+- **Turn Detection (SmartTurn)** -- real-time conversational turn-taking detection using Pipecat Smart Turn (v3.2) and Silero VAD over WebSocket or HTTP REST, emitting `turn.complete`, `turn.incomplete`, and `turn.error` events
 - **Prometheus metrics** -- operational metrics exposed at `GET /metrics` (active legs/rooms, call durations, disconnect reasons, event-egress drop/delivery counters, Go runtime). See [API.md](API.md) for the full metric reference. Profiling via `go tool pprof` is available at `/debug/pprof/` when built with `-tags pprof`.
 
 ## Quick Start
@@ -135,6 +136,13 @@ All configuration is via environment variables:
 | `SIP_OUTBOUND_REGISTRATION_FAILURE_BACKOFF_MAX_MS` | `300000` | Upper cap on the exponential backoff between failed outbound REGISTER attempts. Failures emit `sip.outbound_registration_failed`; the trunk stays in the manager and keeps retrying. |
 | `SIP_OUTBOUND_PROXY` | _(empty = route at the registrar / dialed URI)_ | Default next hop for outbound REGISTERs and INVITEs, attached as a loose `Route: <sip:proxy;lr>` header with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` on `POST /v1/sip/trunks` and per-call by `outbound_proxy` on `POST /v1/legs`; a `to` that resolves to an AOR registered here outranks all three. Digest auth still targets the registrar, not the proxy. Not applied to SIPREC SRC or WhatsApp legs. A malformed value fails startup. **Caveat:** inbound legs are tagged with `trunk_id` by the peer socket they arrive on, so when several trunks share one proxy that tag becomes ambiguous — it is informational, never an authorization gate. |
 | `SPEECH_DETECTION_ENABLED` | `false` | Emit `speaking.started` / `speaking.stopped` events for every connected leg by default. Per-call `speech_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer` overrides this. |
+| `SMART_TURN_ENABLED` | `false` | Enable SmartTurn turn detection globally for all legs. Can be overridden per-call via `turn_detection` on `POST /v1/legs` or `POST /v1/legs/{id}/answer`. |
+| `SMART_TURN_URL` | `http://localhost:8080` | URL of the SmartTurn microservice. For WebSocket transport (`ws`), use `ws://` or `http://` (automatically converted). |
+| `SMART_TURN_TRANSPORT` | `ws` | Transport for SmartTurn: `ws` (streaming WebSocket, recommended) or `http` (stateless REST evaluation on pause). |
+| `SMART_TURN_THRESHOLD` | `0.55` | Classification confidence threshold `[0.0, 1.0]` for `turn.complete`. Probabilities >= threshold are considered complete turns. |
+| `SMART_TURN_PAUSE_DURATION_MS` | `400` | Silence pause duration before evaluation in ms. **WebSocket mode only.** Ignored in HTTP mode where VoiceBlender's speaking detector drives pauses. |
+| `SMART_TURN_VAD` | `silero` | VAD engine used by SmartTurn (`silero` or `rms`). Default is `silero` (~106µs neural VAD). **WebSocket mode only.** |
+| `SMART_TURN_ADAPTIVE` | `false` | Enable dynamic threshold adaptation based on pause duration. **WebSocket mode only.** |
 | `AMRWB_MODE` | `2` | AMR-WB (G.722.2) encoder speech-mode **ceiling** `0..8`: `0`=6.60, `1`=8.85, `2`=12.65, `3`=14.25, `4`=15.85, `5`=18.25, `6`=19.85, `7`=23.05, `8`=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set` (so e.g. `8` yields HD 23.85 only when the peer allows it, falling back automatically). Default `2` (12.65) matches the GSMA IR.92 / VoLTE common rate. Out-of-range values clamp to `0..8`. |
 | `AMRWB_OCTET_ALIGNED` | `true` | Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When `false`, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated. |
 | `AMRNB_MODE` | `7` | AMR-NB (RFC 4867) encoder speech-mode **ceiling** `0..7`: `0`=4.75, `1`=5.15, `2`=5.90, `3`=6.70, `4`=7.40, `5`=7.95, `6`=10.2, `7`=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated `mode-set`. Default `7` is the GSM-EFR-equivalent 12.2 kbit/s, the highest AMR-NB quality and the rate most enterprise PBXes and mobile networks default to. Out-of-range values clamp to `0..7`. |
@@ -192,6 +200,39 @@ addresses, single-label hostnames (`http://minio:9000`) and `.internal` / `.loca
 names are exempt and need no flag, which covers the usual co-located MinIO. This
 is an operator decision and governs per-request `s3_*` uploads too; there is no
 per-request override.
+
+### SmartTurn Deployment
+
+VoiceBlender integrates with [SmartTurn](https://github.com/VoiceBlender/smartturn-go) for in-process ONNX turn detection. SmartTurn runs as a standalone Go microservice exposing HTTP (`/v1/evaluate`) and WebSocket (`/v1/ws/stream`) endpoints.
+
+**Network Security & Isolation:**
+SmartTurn does not include an authentication layer and is designed to operate exclusively within a **trusted, private network** (e.g. private VPC, internal Docker network, or localhost). Do not expose SmartTurn directly to the public Internet without an authenticating reverse proxy.
+
+**Docker Compose Example:**
+```yaml
+services:
+  voiceblender:
+    image: voiceblender/voiceblender:latest
+    environment:
+      - SMART_TURN_ENABLED=true
+      - SMART_TURN_URL=ws://smartturn:8080/v1/ws/stream
+      - SMART_TURN_TRANSPORT=ws
+      - SMART_TURN_THRESHOLD=0.55
+      - SMART_TURN_PAUSE_DURATION_MS=400
+      - SMART_TURN_VAD=silero
+    depends_on:
+      - smartturn
+    ports:
+      - "8080:8080"
+      - "5060:5060/udp"
+
+  smartturn:
+    image: voiceblender/smartturn-go:latest
+    # Internal only — port 8080 is accessible to voiceblender via the bridge network
+    expose:
+      - "8080"
+    restart: unless-stopped
+```
 
 ## Links
 

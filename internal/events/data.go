@@ -289,10 +289,23 @@ type SpeakingData struct {
 type TurnDetectionData struct {
 	LegRoomScope
 	// Transport is "ws" or "http", identifying which SmartTurn backend produced this event.
-	Transport     string  `json:"transport"`
-	Probability   float64 `json:"probability"`
-	Threshold     float64 `json:"threshold"`
-	ProcessingMs  int64   `json:"processing_ms"`
+	Transport   string  `json:"transport"`
+	Probability float64 `json:"probability"`
+	Threshold   float64 `json:"threshold"`
+	// ProcessingMs is the SmartTurn service's internal evaluation latency.
+	ProcessingMs int64 `json:"processing_ms"`
+	// RoundtripMs is VoiceBlender's end-to-end latency: time from triggering
+	// evaluation to receiving the turn decision. Includes network + service time.
+	RoundtripMs int64 `json:"roundtrip_ms,omitempty"`
+}
+
+// TurnErrorData is emitted when SmartTurn evaluation fails or the session dies.
+type TurnErrorData struct {
+	LegRoomScope
+	Transport string `json:"transport"`         // "ws" | "http"
+	Reason    string `json:"reason"`            // e.g. "http_eval_failed", "ws_session_dropped", "ws_reconnect_exhausted", "start_failed"
+	Fatal     bool   `json:"fatal"`             // true = turn detection is now inactive for this leg
+	Message   string `json:"message,omitempty"` // human-readable error description
 }
 
 // --- DTMF ---

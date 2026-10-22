@@ -470,6 +470,8 @@ channels:
                 $ref: '#/components/messages/evt_turn_complete'
             turn.incomplete:
                 $ref: '#/components/messages/evt_turn_incomplete'
+            turn.error:
+                $ref: '#/components/messages/evt_turn_error'
             playback.started:
                 $ref: '#/components/messages/evt_playback_started'
             playback.finished:
@@ -2061,6 +2063,13 @@ operations:
         summary: SmartTurn determined the speaker has not yet completed their turn (still speaking or uncertain)
         messages:
             - $ref: '#/channels/vsi/messages/turn.incomplete'
+    send_turn_error:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: SmartTurn evaluation failed or turn detection session terminated
+        messages:
+            - $ref: '#/channels/vsi/messages/turn.error'
     send_playback_started:
         action: send
         channel:
@@ -5563,6 +5572,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under x-webhooks/turn.incomplete. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/x-webhooks/turn.incomplete/post/requestBody/content/application~1json/schema
+        evt_turn_error:
+            name: evt_turn_error
+            title: SmartTurn evaluation failed or turn detection session terminated
+            summary: SmartTurn evaluation failed or turn detection session terminated
+            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/turn.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/x-webhooks/turn.error/post/requestBody/content/application~1json/schema
         evt_playback_started:
             name: evt_playback_started
             title: Playback began

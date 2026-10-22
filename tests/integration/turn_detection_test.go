@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,7 +45,14 @@ func TestTurnDetection_DisabledByDefault(t *testing.T) {
 
 func TestTurnDetection_EnabledGlobally(t *testing.T) {
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"action":           "TURN_COMPLETE",
+			"is_turn_complete": true,
+			"probability":      0.95,
+			"threshold_used":   0.55,
+			"evaluation_ms":    12,
+		})
 	}))
 	defer mockSrv.Close()
 
@@ -69,7 +77,14 @@ func TestTurnDetection_EnabledGlobally(t *testing.T) {
 
 func TestTurnDetection_PerCallOutboundOverride(t *testing.T) {
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"action":           "TURN_COMPLETE",
+			"is_turn_complete": true,
+			"probability":      0.95,
+			"threshold_used":   0.55,
+			"evaluation_ms":    12,
+		})
 	}))
 	defer mockSrv.Close()
 
@@ -169,6 +184,104 @@ func TestTurnDetection_WSMode_MockConnected(t *testing.T) {
 
 	if !connected.Load() {
 		t.Error("expected mock WebSocket to be connected")
+	}
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+func TestTurnDetection_HTTPMode_EndToEndEvaluation(t *testing.T) {
+	var evaluated atomic.Bool
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/evaluate" {
+			evaluated.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"action":           "TURN_COMPLETE",
+				"is_turn_complete": true,
+				"probability":      0.91,
+				"threshold_used":   0.55,
+				"evaluation_ms":    22,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockSrv.Close()
+
+	instA := newTestInstanceWithOpts(t, "turn-http-a", func(c *config.Config) {
+		c.SmartTurnEnabled = true
+		c.SmartTurnURL = mockSrv.URL
+		c.SmartTurnTransport = "http"
+	})
+	instB := newTestInstance(t, "turn-http-b")
+
+	outboundID, _ := establishCall(t, instA, instB)
+	assertTurnDetector(t, instA, outboundID, true)
+
+	// Write audio frames to the provider, then simulate a speaking pause via bus
+	p, hasP := instA.apiSrv.GetTurnProvider(outboundID)
+	if !hasP {
+		t.Fatalf("turn provider not found for outbound leg %s", outboundID)
+	}
+	_, _ = p.Write(make([]byte, 640*5))
+
+	instA.bus.Publish(events.SpeakingStopped, &events.SpeakingData{
+		LegRoomScope: events.LegRoomScope{LegID: outboundID},
+	})
+
+	ev := instA.collector.waitForMatch(t, events.TurnComplete, nil, 3*time.Second)
+	if ev.Type != events.TurnComplete {
+		t.Fatalf("expected turn.complete event, got %v", ev.Type)
+	}
+	data, ok := ev.Data.(*events.TurnDetectionData)
+	if !ok {
+		t.Fatalf("expected *events.TurnDetectionData, got %T", ev.Data)
+	}
+	if data.Probability != 0.91 || data.Transport != "http" {
+		t.Errorf("unexpected event data: %+v", data)
+	}
+	if !evaluated.Load() {
+		t.Error("expected mock HTTP endpoint to be evaluated")
+	}
+
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
+}
+
+func TestTurnDetection_LiveService_Gated(t *testing.T) {
+	liveURL := os.Getenv("SMART_TURN_TEST_URL")
+	if liveURL == "" {
+		t.Skip("SMART_TURN_TEST_URL not set; skipping live SmartTurn service test")
+	}
+
+	resp, err := http.Get(liveURL + "/health")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Skipf("SmartTurn live service at %s is not reachable (%v); skipping", liveURL, err)
+	}
+	resp.Body.Close()
+
+	instA := newTestInstanceWithOpts(t, "turn-live-a", func(c *config.Config) {
+		c.SmartTurnEnabled = true
+		c.SmartTurnURL = liveURL
+		c.SmartTurnTransport = "http"
+	})
+	instB := newTestInstance(t, "turn-live-b")
+
+	outboundID, _ := establishCall(t, instA, instB)
+	assertTurnDetector(t, instA, outboundID, true)
+
+	p, hasP := instA.apiSrv.GetTurnProvider(outboundID)
+	if !hasP {
+		t.Fatalf("turn provider not found for outbound leg %s", outboundID)
+	}
+	_, _ = p.Write(make([]byte, 32000))
+
+	instA.bus.Publish(events.SpeakingStopped, &events.SpeakingData{
+		LegRoomScope: events.LegRoomScope{LegID: outboundID},
+	})
+
+	ev := instA.collector.waitForMatch(t, events.TurnComplete, nil, 5*time.Second)
+	if ev.Type != events.TurnComplete {
+		t.Fatalf("expected turn decision event from live SmartTurn service, got %v", ev.Type)
 	}
 
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))

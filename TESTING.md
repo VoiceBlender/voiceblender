@@ -132,6 +132,7 @@ go test -v -run TestResolveStorage ./internal/api/
 | `internal/stt` | 51 | Azure framing/full-flow against a mock WS server, transcript and DTMF log-level redaction, and per-provider WebSocket guards covering all five providers: every send loop returns on a wedged write rather than pinning its goroutine, and every recv loop logs the peer's close code and reason. Turn detection: `emitTranscript` sink selection (the detail callback supersedes the positional one and never doubles up); `buildDeepgramV1URL` byte-identical to the pre-tuning URL when no new option is set, `utterance_end_ms` forcing `interim_results=true` on the wire while interims stay suppressed locally unless `partial`; Deepgram dispatch separating `is_final` from `speech_final` and routing `UtteranceEnd` (whose `channel` is an array, not an object) to a turn event with no transcript; Deepgram Flux `buildFluxURL`, the full `StartOfTurn→Update→EagerEndOfTurn→TurnResumed→EndOfTurn` sequence with and without partials, `EagerEndOfTurn` never surfacing as `is_final`, error frames not killing the recv loop, `*FluxTranscriber` deliberately not implementing `Finalizer`, and the 80 ms send cadence held against a 20 ms-granularity reader (plus the partial tail flush). Speechmatics: `buildStartRecognition` mapping and clamping (`utterance_end_ms`→`end_of_utterance_silence_trigger` in seconds capped at 2 with `0` disabling turn detection, `endpointing`→`max_delay` clamped into 0.7–4 with `0` falling back to the vendor default, keyterms→`additional_vocab`, and Flux-only options ignored rather than rejected); an utterance spanning two `AddTranscript` segments joined into one `end_of_turn` transcript with punctuation results excluded from `words` and the accumulator reset between turns; partials suppressed unless `partial` while turn events are emitted regardless; no final ever claiming `speech_final`; an `Error` frame not killing the recv loop and `EndOfTranscript` ending it; `ForceEndOfUtterance` written verbatim with the socket surviving it, erroring before Start and after teardown; and `EndOfStream` carrying a `last_seq_no` equal to the audio frames actually written, on both reader close and context cancel |
 | `internal/agent` | 10 | Per-provider WebSocket guards for Deepgram/ElevenLabs/Pipecat/VAPI agent sessions: send loops unblock on a wedged write (VAPI included, whose write was previously neither serialized nor bounded), and recv loops log the peer's close code and reason |
 | `internal/lkmedia` | 60 | LiveKit signaling and transport: token minting, SDP fixups, audio level parsing, config validation, transport lifecycle — plus signal WebSocket guards: `send` is bounded by a write deadline, control-frame replies from the read goroutine go out under `writeMu` as whole frames, close code/reason are logged, and a normal (1000) closure is classified as a clean disconnect rather than an error |
+| `internal/turndetector` | 8 | HTTP and WebSocket turn detector providers: error callbacks and event publishing (`turn.error` on HTTP eval failure and WS reconnect exhaustion); context cancellation safety; ignored pause_duration query param in HTTP mode; mock integration and live-gated service tests |
 
 ---
 
@@ -486,6 +487,25 @@ go test -tags integration -v -timeout 120s -run TestLiveKit_ ./tests/integration
 ```
 
 The tests use `lkmedia.NewTransport` directly to act as a second LK client joining the same room — no separate LK client SDK or browser is required.
+
+---
+
+### SmartTurn integration tests — env-var setup
+
+The integration test suite in `tests/integration/turn_detection_test.go` validates turn detection across both HTTP and WebSocket transports using built-in mock servers. In addition, an end-to-end live service test is included:
+
+- `TestTurnDetection_LiveService_Gated`: Validates end-to-end audio ingestion, speaking-detector pause triggering, and live turn evaluation against a running SmartTurn service.
+
+To run against a live [smartturn-go](https://github.com/VoiceBlender/smartturn-go) instance:
+
+```bash
+# Start smartturn-go in another terminal (or docker)
+cd ../smartturn-go && go run ./cmd/server
+
+# Run the live-service integration test
+export SMART_TURN_TEST_URL=http://localhost:8080
+go test -tags integration -v -timeout 30s -run TestTurnDetection_LiveService_Gated ./tests/integration/
+```
 
 ## AMD Accuracy Tests
 
