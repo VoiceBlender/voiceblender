@@ -35,3 +35,11 @@ type Callbacks struct {
 	OnUserTranscript func(text string)
 	OnAgentResponse  func(text string)
 }
+
+// discardBuffered drops speech the writer has accepted but not yet played out,
+// when the writer supports it. Providers call it on barge-in.
+func discardBuffered(w io.Writer) {
+	if d, ok := w.(interface{ DiscardBuffered() }); ok {
+		d.DiscardBuffered()
+	}
+}

@@ -693,3 +693,31 @@ func TestResampleWriter_ReusedBufferKeepsStream(t *testing.T) {
 		t.Fatal("resampleWriter output differs from the allocating resampler")
 	}
 }
+
+type discardRecorder struct {
+	bytes.Buffer
+	discards int
+}
+
+func (d *discardRecorder) DiscardBuffered() { d.discards++ }
+
+func TestResampleWriterDiscardBuffered(t *testing.T) {
+	dst := &discardRecorder{}
+	w := NewResampleWriter(dst, 16000, 8000).(*resampleWriter)
+	if _, err := w.Write([]byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.buf) == 0 {
+		t.Fatal("expected a pending partial sample")
+	}
+	w.DiscardBuffered()
+	if len(w.buf) != 0 {
+		t.Fatalf("partial sample not dropped: %v", w.buf)
+	}
+	if dst.discards != 1 {
+		t.Fatalf("DiscardBuffered not forwarded: %d calls", dst.discards)
+	}
+
+	// A destination without DiscardBuffered must not panic.
+	NewResampleWriter(&bytes.Buffer{}, 16000, 8000).(*resampleWriter).DiscardBuffered()
+}
