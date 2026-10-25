@@ -284,6 +284,15 @@ func (w *resampleWriter) Close() error {
 	return closeWriter(w.dst)
 }
 
+// DiscardBuffered drops the pending partial sample and forwards the call to
+// the wrapped writer when it supports it.
+func (w *resampleWriter) DiscardBuffered() {
+	w.buf = nil
+	if d, ok := w.dst.(interface{ DiscardBuffered() }); ok {
+		d.DiscardBuffered()
+	}
+}
+
 func (w *resampleWriter) Write(p []byte) (int, error) {
 	total := len(p)
 

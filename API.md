@@ -2137,6 +2137,7 @@ Attach a Deepgram Voice Agent to a leg. Audio is exchanged as raw binary PCM fra
 - **Standalone leg:** Agent reads/writes audio directly with resampling to 16kHz.
 - **Leg in a room:** Agent hears only that leg (via mixer tap) and speaks to everyone (via playback source).
 - Agent events (`agent.connected`, `agent.disconnected`, `agent.user_transcript`, `agent.agent_response`) are delivered via webhooks.
+- **Barge-in:** when the provider signals that the caller interrupted the agent (ElevenLabs `interruption`, Deepgram `UserStartedSpeaking`), agent speech that is buffered but not yet played is dropped, so the agent stops talking over the caller. Late audio from the interrupted ElevenLabs response is ignored as well.
 
 ---
 
@@ -2175,6 +2176,17 @@ Inject a context message or instruction into a running agent session on a leg. T
 ### DELETE /v1/legs/{id}/agent
 
 Detach the agent from a leg (provider-agnostic).
+
+Agent speech that has been received from the provider but not yet played is discarded, and on a standalone leg the request returns only once the agent has stopped writing to the leg. Audio started right after this call (e.g. `POST /v1/legs/{id}/play` for hold music) therefore never overlaps with the agent:
+
+```bash
+curl -X DELETE http://localhost:8080/v1/legs/$LEG_ID/agent
+curl -X POST http://localhost:8080/v1/legs/$LEG_ID/play \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/hold.wav"}'
+```
+
+When the agent session ends on its own (the provider closes the conversation), buffered speech such as a closing sentence is still played out.
 
 **Response:** `200 OK`
 

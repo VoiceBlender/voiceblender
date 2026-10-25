@@ -128,3 +128,23 @@ func TestStreamBufferReadUnpacedFillsSinkCushion(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamBufferDiscardBuffered(t *testing.T) {
+	sb := newStreamBuffer()
+	writeFrames(t, sb, 10, 0x22)
+	sb.DiscardBuffered()
+	writeFrames(t, sb, 1, 0x33)
+
+	out := make([]byte, sbTestFrame)
+	n, err := sb.ReadUnpaced(out)
+	if err != nil || n != sbTestFrame || out[0] != 0x33 {
+		t.Fatalf("read after discard: n=%d err=%v first=%#x", n, err, out[0])
+	}
+
+	writeFrames(t, sb, 10, 0x44)
+	sb.Close()
+	sb.DiscardBuffered()
+	if _, err := sb.ReadUnpaced(out); err != io.EOF {
+		t.Fatalf("closed+discarded: want io.EOF, got %v", err)
+	}
+}

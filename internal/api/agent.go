@@ -120,11 +120,36 @@ func (sb *streamBuffer) Close() {
 	sb.mu.Unlock()
 }
 
+// DiscardBuffered drops audio that has been written but not yet read.
+func (sb *streamBuffer) DiscardBuffered() {
+	sb.mu.Lock()
+	sb.buf = sb.buf[:0]
+	sb.cond.Broadcast()
+	sb.mu.Unlock()
+}
+
+// forwardSpeech copies agent speech from sb to a standalone leg's writer, one
+// frame at a time, until sb is closed and drained. done is closed on exit.
+func forwardSpeech(sb *streamBuffer, w io.Writer, frameSize int, done chan<- struct{}) {
+	defer close(done)
+	buf := make([]byte, frameSize)
+	for {
+		n, err := sb.ReadUnpaced(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		if _, err := w.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
 type agentInfo struct {
 	session  agent.Provider
 	sourceID string             // mixer playback source / participant ID
 	pipes    []*pipeWriter      // pipes to close on cleanup
 	speakBuf *streamBuffer      // paced speak buffer (closed before RemoveParticipant)
+	fwdDone  chan struct{}      // standalone legs: closed when forwardSpeech exits
 	roomID   string             // for leg agents: which room (if any)
 	cancel   context.CancelFunc // for room agents: dedicated context
 }
@@ -390,20 +415,9 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 		sb := newStreamBuffer()
 		audioOut = mixer.NewResampleWriter(sb, mixer.DefaultSampleRate, l.SampleRate())
 		info.speakBuf = sb
+		info.fwdDone = make(chan struct{})
 
-		frameSize := l.SampleRate() / 50 * 2
-		go func() {
-			buf := make([]byte, frameSize)
-			for {
-				n, err := sb.ReadUnpaced(buf)
-				if err != nil || n == 0 {
-					return
-				}
-				if _, err := aw.Write(buf[:n]); err != nil {
-					return
-				}
-			}
-		}()
+		go forwardSpeech(sb, aw, l.SampleRate()/50*2, info.fwdDone)
 	}
 
 	legAgents.Lock()
@@ -439,7 +453,8 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 	}
 
 	go func() {
-		defer s.cleanupLegAgent(id)
+		// Natural session end: let buffered speech (e.g. a goodbye) play out.
+		defer s.cleanupLegAgent(id, false)
 		err := session.Start(l.Context(), audioIn, audioOut, apiKey, opts, cb)
 		s.Log.Info("agent session exited", "leg_id", id, "error", err)
 	}()
@@ -632,7 +647,7 @@ func (s *Server) doStopAgentLeg(legID string) (*AgentStopResult, error) {
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "no agent attached to this leg")
 	}
-	s.cleanupLegAgent(legID)
+	s.cleanupLegAgent(legID, true)
 	return &AgentStopResult{Status: "agent_stopped"}, nil
 }
 
@@ -646,7 +661,14 @@ func (s *Server) stopAgentLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) cleanupLegAgent(legID string) {
+// legAgentForwarderStopTimeout bounds how long an explicit detach waits for
+// the forwarder's in-flight frame to be accepted by the leg.
+const legAgentForwarderStopTimeout = time.Second
+
+// cleanupLegAgent detaches the leg's agent. With discard set, speech still
+// buffered is dropped and the call returns only once the forwarder has stopped
+// writing to the leg, so audio started afterwards never interleaves with it.
+func (s *Server) cleanupLegAgent(legID string, discard bool) {
 	legAgents.Lock()
 	info, ok := legAgents.m[legID]
 	if ok {
@@ -664,6 +686,16 @@ func (s *Server) cleanupLegAgent(legID string) {
 	// be blocked in streamBuffer.Read) before removing the participant.
 	if info.speakBuf != nil {
 		info.speakBuf.Close()
+		if discard {
+			info.speakBuf.DiscardBuffered()
+		}
+	}
+	if discard && info.fwdDone != nil {
+		select {
+		case <-info.fwdDone:
+		case <-time.After(legAgentForwarderStopTimeout):
+			s.Log.Warn("leg agent forwarder did not stop in time", "leg_id", legID)
+		}
 	}
 
 	// Clear mixer tap and remove playback source if leg was in a room.

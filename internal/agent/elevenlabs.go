@@ -239,6 +239,12 @@ type agentResponseEvent struct {
 	} `json:"agent_response_event"`
 }
 
+type interruptionMessage struct {
+	InterruptionEvent struct {
+		EventID int64 `json:"event_id"`
+	} `json:"interruption_event"`
+}
+
 type pingMessage struct {
 	PingEvent struct {
 		EventID int64 `json:"event_id"`
@@ -268,6 +274,7 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsu
 	stopWatch := wsutilx.WatchCancel(ctx, conn)
 	defer stopWatch()
 
+	var lastInterruptID int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -345,6 +352,11 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsu
 				s.log.Debug("agent audio parse error", "error", err)
 				continue
 			}
+			// Audio from the interrupted response can still arrive after the
+			// interruption event; it must not be played.
+			if msg.AudioEvent.EventID != 0 && msg.AudioEvent.EventID <= lastInterruptID {
+				continue
+			}
 			pcm, err := base64.StdEncoding.DecodeString(msg.AudioEvent.AudioBase64)
 			if err != nil {
 				s.log.Debug("agent audio base64 decode error", "error", err)
@@ -386,7 +398,12 @@ func (s *ElevenLabsSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsu
 			}
 
 		case "interruption":
-			s.log.Info("agent interruption received")
+			var msg interruptionMessage
+			if err := json.Unmarshal(raw, &msg); err == nil && msg.InterruptionEvent.EventID > lastInterruptID {
+				lastInterruptID = msg.InterruptionEvent.EventID
+			}
+			discardBuffered(writer)
+			s.log.Info("agent interruption received", "event_id", lastInterruptID)
 
 		default:
 			s.log.Debug("agent unknown message type", "type", envelope.Type)

@@ -386,6 +386,7 @@ func (s *DeepgramSession) recvLoop(ctx context.Context, conn net.Conn, lw *wsuti
 				}
 
 			case "UserStartedSpeaking":
+				discardBuffered(writer)
 				s.log.Debug("deepgram agent user started speaking")
 
 			case "AgentStartedSpeaking":
