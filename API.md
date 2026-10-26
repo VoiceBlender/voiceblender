@@ -2081,6 +2081,8 @@ Attach a VAPI agent to a leg.
 
 Attach a self-hosted Pipecat bot to a leg. Audio is exchanged as protobuf-encoded binary frames (16kHz 16-bit PCM mono). No API key required.
 
+The bot must use Pipecat's `ProtobufFrameSerializer`. RTVI `user-transcription` / `bot-transcription` messages it sends become `agent.user_transcript` / `agent.agent_response` events, and an `InterruptionFrame` (Pipecat 2026-05 and later) triggers barge-in.
+
 **Request:**
 
 ```json
@@ -2137,7 +2139,7 @@ Attach a Deepgram Voice Agent to a leg. Audio is exchanged as raw binary PCM fra
 - **Standalone leg:** Agent reads/writes audio directly with resampling to 16kHz.
 - **Leg in a room:** Agent hears only that leg (via mixer tap) and speaks to everyone (via playback source).
 - Agent events (`agent.connected`, `agent.disconnected`, `agent.user_transcript`, `agent.agent_response`) are delivered via webhooks.
-- **Barge-in:** when the provider signals that the caller interrupted the agent (ElevenLabs `interruption`, Deepgram `UserStartedSpeaking`), agent speech that is buffered but not yet played is dropped, so the agent stops talking over the caller. Late audio from the interrupted ElevenLabs response is ignored as well.
+- **Barge-in:** when the provider signals that the caller interrupted the agent (ElevenLabs `interruption`, Deepgram `UserStartedSpeaking`, VAPI `user-interrupted`, Pipecat `InterruptionFrame`), agent speech that is buffered but not yet played is dropped, so the agent stops talking over the caller. Late audio from the interrupted ElevenLabs response is ignored as well.
 
 ---
 
@@ -4699,6 +4701,7 @@ All errors return:
 | `WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 signing secret for the global webhook. |
 | `ELEVENLABS_API_KEY` | _(none)_ | Default ElevenLabs API key for TTS, STT, and Agent features (can be overridden per-request via `api_key` in the request body) |
 | `VAPI_API_KEY` | _(none)_ | Default VAPI API key for Agent features when `provider=vapi` (can be overridden per-request via `api_key` in the request body) |
+| `VAPI_BASE_URL` | `https://api.vapi.ai` | VAPI API origin; calls are created at `<origin>/call`. The audio WebSocket is the `listenUrl` VAPI returns per call. |
 | `DEEPGRAM_API_KEY` | _(none)_ | Default Deepgram API key for STT, TTS, and Agent features when `provider=deepgram` (can be overridden per-request via `api_key` in the request body) |
 | `SPEECHMATICS_API_KEY` | _(none)_ | Default Speechmatics API key for STT when `provider=speechmatics` (can be overridden per-request via `api_key` in the request body) |
 | `SPEECHMATICS_URL` | `wss://eu2.rt.speechmatics.com/v2` | Speechmatics realtime WebSocket endpoint. Point it at another region (`eu`, `us`, `global`) for data residency, or at a self-hosted realtime container. |

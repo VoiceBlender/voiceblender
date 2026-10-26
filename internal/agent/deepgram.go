@@ -65,11 +65,12 @@ func (s *DeepgramSession) Start(ctx context.Context, reader io.Reader, writer io
 
 	agentURL := s.cfg.AgentURL()
 	s.log.Info("deepgram agent dialing", "url", agentURL)
-	conn, _, _, err := dialer.Dial(ctx, agentURL)
+	conn, br, _, err := dialer.Dial(ctx, agentURL)
 	if err != nil {
 		s.log.Error("deepgram agent dial failed", "error", err)
 		return err
 	}
+	conn = wsutilx.WithBuffered(conn, br)
 	s.log.Info("deepgram agent websocket connected")
 	defer conn.Close()
 

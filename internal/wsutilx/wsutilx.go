@@ -8,6 +8,7 @@
 package wsutilx
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"sync"
@@ -17,6 +18,23 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
+
+// WithBuffered returns conn with reads served from br first. ws.Dial puts any
+// bytes the server sent alongside its handshake response into br; a server
+// that speaks first loses its opening frame if br is dropped.
+func WithBuffered(conn net.Conn, br *bufio.Reader) net.Conn {
+	if br == nil || br.Buffered() == 0 {
+		return conn
+	}
+	return &bufferedConn{Conn: conn, r: br}
+}
+
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
 // DurationVar is an atomic time.Duration suitable for package-level
 // configuration knobs that may be read concurrently by recv loops while

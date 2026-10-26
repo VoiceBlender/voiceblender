@@ -45,3 +45,17 @@ func TestElevenLabsURLs(t *testing.T) {
 		t.Errorf("eu WSBase = %q", got)
 	}
 }
+
+func TestVAPIURLs(t *testing.T) {
+	tests := []struct{ base, want string }{
+		{"", "https://api.vapi.ai/call"},
+		{"https://api.vapi.ai/", "https://api.vapi.ai/call"},
+		{"vapi-proxy.internal", "https://vapi-proxy.internal/call"},
+		{"http://127.0.0.1:9000", "http://127.0.0.1:9000/call"},
+	}
+	for _, tt := range tests {
+		if got := (VAPI{BaseURL: tt.base}).CallURL(); got != tt.want {
+			t.Errorf("CallURL(%q) = %q, want %q", tt.base, got, tt.want)
+		}
+	}
+}

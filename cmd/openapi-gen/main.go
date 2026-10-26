@@ -454,6 +454,7 @@ func configVars() *seq {
 		{Name: "ELEVENLABS_BASE_URL", Default: "https://api.elevenlabs.io", Description: "ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io"},
 		{Name: "ELEVENLABS_ENABLE_LOGGING", Default: "true", Description: "false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests"},
 		{Name: "VAPI_API_KEY", Default: "", Description: "API key for VAPI Agent provider"},
+		{Name: "VAPI_BASE_URL", Default: "https://api.vapi.ai", Description: "VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call."},
 		{Name: "DEEPGRAM_API_KEY", Default: "", Description: "API key for Deepgram STT, TTS and Voice Agent"},
 		{Name: "DEEPGRAM_BASE_URL", Default: "https://api.deepgram.com", Description: "Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint"},
 		{Name: "DEEPGRAM_MIP_OPT_OUT", Default: "false", Description: "true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program"},

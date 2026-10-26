@@ -521,7 +521,7 @@ func TestLoad_SIPInboundRingTimeoutSeconds(t *testing.T) {
 }
 
 func TestLoad_VendorDataHandling(t *testing.T) {
-	for _, key := range []string{"DEEPGRAM_BASE_URL", "DEEPGRAM_MIP_OPT_OUT", "ELEVENLABS_BASE_URL", "ELEVENLABS_ENABLE_LOGGING"} {
+	for _, key := range []string{"DEEPGRAM_BASE_URL", "DEEPGRAM_MIP_OPT_OUT", "ELEVENLABS_BASE_URL", "ELEVENLABS_ENABLE_LOGGING", "VAPI_BASE_URL"} {
 		t.Setenv(key, "")
 	}
 	cfg := Load()
@@ -531,16 +531,23 @@ func TestLoad_VendorDataHandling(t *testing.T) {
 	if cfg.ElevenLabs.BaseURL != "https://api.elevenlabs.io" || cfg.ElevenLabs.DisableLogging {
 		t.Errorf("ElevenLabs defaults = %+v", cfg.ElevenLabs)
 	}
+	if cfg.VAPI.BaseURL != "https://api.vapi.ai" {
+		t.Errorf("VAPI defaults = %+v", cfg.VAPI)
+	}
 
 	t.Setenv("DEEPGRAM_BASE_URL", "https://api.eu.deepgram.com")
 	t.Setenv("DEEPGRAM_MIP_OPT_OUT", "true")
 	t.Setenv("ELEVENLABS_BASE_URL", "https://api.eu.residency.elevenlabs.io")
 	t.Setenv("ELEVENLABS_ENABLE_LOGGING", "false")
+	t.Setenv("VAPI_BASE_URL", "http://vapi-proxy:9000")
 	cfg = Load()
 	if cfg.Deepgram.BaseURL != "https://api.eu.deepgram.com" || !cfg.Deepgram.MIPOptOut {
 		t.Errorf("Deepgram overrides = %+v", cfg.Deepgram)
 	}
 	if cfg.ElevenLabs.BaseURL != "https://api.eu.residency.elevenlabs.io" || !cfg.ElevenLabs.DisableLogging {
 		t.Errorf("ElevenLabs overrides = %+v", cfg.ElevenLabs)
+	}
+	if cfg.VAPI.BaseURL != "http://vapi-proxy:9000" {
+		t.Errorf("VAPI overrides = %+v", cfg.VAPI)
 	}
 }

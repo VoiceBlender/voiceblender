@@ -243,9 +243,7 @@ func (x *TranscriptionFrame) GetTimestamp() string {
 
 type MessageFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Data          string                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -280,23 +278,61 @@ func (*MessageFrame) Descriptor() ([]byte, []int) {
 	return file_internal_agent_pipecatpb_frames_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *MessageFrame) GetId() uint64 {
+func (x *MessageFrame) GetData() string {
+	if x != nil {
+		return x.Data
+	}
+	return ""
+}
+
+type InterruptionFrame struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InterruptionFrame) Reset() {
+	*x = InterruptionFrame{}
+	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InterruptionFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InterruptionFrame) ProtoMessage() {}
+
+func (x *InterruptionFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InterruptionFrame.ProtoReflect.Descriptor instead.
+func (*InterruptionFrame) Descriptor() ([]byte, []int) {
+	return file_internal_agent_pipecatpb_frames_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *InterruptionFrame) GetId() uint64 {
 	if x != nil {
 		return x.Id
 	}
 	return 0
 }
 
-func (x *MessageFrame) GetName() string {
+func (x *InterruptionFrame) GetName() string {
 	if x != nil {
 		return x.Name
-	}
-	return ""
-}
-
-func (x *MessageFrame) GetMessage() string {
-	if x != nil {
-		return x.Message
 	}
 	return ""
 }
@@ -309,6 +345,7 @@ type Frame struct {
 	//	*Frame_Audio
 	//	*Frame_Transcription
 	//	*Frame_Message
+	//	*Frame_Interruption
 	Frame         isFrame_Frame `protobuf_oneof:"frame"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -316,7 +353,7 @@ type Frame struct {
 
 func (x *Frame) Reset() {
 	*x = Frame{}
-	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[4]
+	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -328,7 +365,7 @@ func (x *Frame) String() string {
 func (*Frame) ProtoMessage() {}
 
 func (x *Frame) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[4]
+	mi := &file_internal_agent_pipecatpb_frames_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -341,7 +378,7 @@ func (x *Frame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Frame.ProtoReflect.Descriptor instead.
 func (*Frame) Descriptor() ([]byte, []int) {
-	return file_internal_agent_pipecatpb_frames_proto_rawDescGZIP(), []int{4}
+	return file_internal_agent_pipecatpb_frames_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Frame) GetFrame() isFrame_Frame {
@@ -387,6 +424,15 @@ func (x *Frame) GetMessage() *MessageFrame {
 	return nil
 }
 
+func (x *Frame) GetInterruption() *InterruptionFrame {
+	if x != nil {
+		if x, ok := x.Frame.(*Frame_Interruption); ok {
+			return x.Interruption
+		}
+	}
+	return nil
+}
+
 type isFrame_Frame interface {
 	isFrame_Frame()
 }
@@ -407,6 +453,10 @@ type Frame_Message struct {
 	Message *MessageFrame `protobuf:"bytes,4,opt,name=message,proto3,oneof"`
 }
 
+type Frame_Interruption struct {
+	Interruption *InterruptionFrame `protobuf:"bytes,5,opt,name=interruption,proto3,oneof"`
+}
+
 func (*Frame_Text) isFrame_Frame() {}
 
 func (*Frame_Audio) isFrame_Frame() {}
@@ -414,6 +464,8 @@ func (*Frame_Audio) isFrame_Frame() {}
 func (*Frame_Transcription) isFrame_Frame() {}
 
 func (*Frame_Message) isFrame_Frame() {}
+
+func (*Frame_Interruption) isFrame_Frame() {}
 
 var File_internal_agent_pipecatpb_frames_proto protoreflect.FileDescriptor
 
@@ -438,16 +490,18 @@ const file_internal_agent_pipecatpb_frames_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x12\x17\n" +
 	"\auser_id\x18\x04 \x01(\tR\x06userId\x12\x1c\n" +
-	"\ttimestamp\x18\x05 \x01(\tR\ttimestamp\"L\n" +
-	"\fMessageFrame\x12\x0e\n" +
+	"\ttimestamp\x18\x05 \x01(\tR\ttimestamp\"\"\n" +
+	"\fMessageFrame\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\tR\x04data\"7\n" +
+	"\x11InterruptionFrame\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xe2\x01\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\xa4\x02\n" +
 	"\x05Frame\x12(\n" +
 	"\x04text\x18\x01 \x01(\v2\x12.pipecat.TextFrameH\x00R\x04text\x12.\n" +
 	"\x05audio\x18\x02 \x01(\v2\x16.pipecat.AudioRawFrameH\x00R\x05audio\x12C\n" +
 	"\rtranscription\x18\x03 \x01(\v2\x1b.pipecat.TranscriptionFrameH\x00R\rtranscription\x121\n" +
-	"\amessage\x18\x04 \x01(\v2\x15.pipecat.MessageFrameH\x00R\amessageB\a\n" +
+	"\amessage\x18\x04 \x01(\v2\x15.pipecat.MessageFrameH\x00R\amessage\x12@\n" +
+	"\finterruption\x18\x05 \x01(\v2\x1a.pipecat.InterruptionFrameH\x00R\finterruptionB\a\n" +
 	"\x05frameB?Z=github.com/VoiceBlender/voiceblender/internal/agent/pipecatpbb\x06proto3"
 
 var (
@@ -462,24 +516,26 @@ func file_internal_agent_pipecatpb_frames_proto_rawDescGZIP() []byte {
 	return file_internal_agent_pipecatpb_frames_proto_rawDescData
 }
 
-var file_internal_agent_pipecatpb_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_internal_agent_pipecatpb_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_internal_agent_pipecatpb_frames_proto_goTypes = []any{
 	(*TextFrame)(nil),          // 0: pipecat.TextFrame
 	(*AudioRawFrame)(nil),      // 1: pipecat.AudioRawFrame
 	(*TranscriptionFrame)(nil), // 2: pipecat.TranscriptionFrame
 	(*MessageFrame)(nil),       // 3: pipecat.MessageFrame
-	(*Frame)(nil),              // 4: pipecat.Frame
+	(*InterruptionFrame)(nil),  // 4: pipecat.InterruptionFrame
+	(*Frame)(nil),              // 5: pipecat.Frame
 }
 var file_internal_agent_pipecatpb_frames_proto_depIdxs = []int32{
 	0, // 0: pipecat.Frame.text:type_name -> pipecat.TextFrame
 	1, // 1: pipecat.Frame.audio:type_name -> pipecat.AudioRawFrame
 	2, // 2: pipecat.Frame.transcription:type_name -> pipecat.TranscriptionFrame
 	3, // 3: pipecat.Frame.message:type_name -> pipecat.MessageFrame
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	4, // 4: pipecat.Frame.interruption:type_name -> pipecat.InterruptionFrame
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_internal_agent_pipecatpb_frames_proto_init() }
@@ -488,11 +544,12 @@ func file_internal_agent_pipecatpb_frames_proto_init() {
 		return
 	}
 	file_internal_agent_pipecatpb_frames_proto_msgTypes[1].OneofWrappers = []any{}
-	file_internal_agent_pipecatpb_frames_proto_msgTypes[4].OneofWrappers = []any{
+	file_internal_agent_pipecatpb_frames_proto_msgTypes[5].OneofWrappers = []any{
 		(*Frame_Text)(nil),
 		(*Frame_Audio)(nil),
 		(*Frame_Transcription)(nil),
 		(*Frame_Message)(nil),
+		(*Frame_Interruption)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -500,7 +557,7 @@ func file_internal_agent_pipecatpb_frames_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_agent_pipecatpb_frames_proto_rawDesc), len(file_internal_agent_pipecatpb_frames_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
