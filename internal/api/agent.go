@@ -182,7 +182,7 @@ func resolveAPIKey(requestKey, envKey, providerName string) (string, string) {
 func newAgentSession(s *Server, provider string) agent.Provider {
 	switch provider {
 	case "vapi":
-		return agent.NewVAPI(s.Log)
+		return agent.NewVAPI(s.Config.VAPI, s.Log)
 	case "pipecat":
 		return agent.NewPipecat(s.Log)
 	case "deepgram":

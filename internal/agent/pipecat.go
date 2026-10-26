@@ -61,11 +61,12 @@ func (p *PipecatSession) Start(ctx context.Context, reader io.Reader, writer io.
 
 	wsURL := opts.AgentID
 	p.log.Info("pipecat dialing", "url", wsURL)
-	conn, _, _, err := ws.Dial(ctx, wsURL)
+	conn, br, _, err := ws.Dial(ctx, wsURL)
 	if err != nil {
 		p.log.Error("pipecat dial failed", "error", err)
 		return err
 	}
+	conn = wsutilx.WithBuffered(conn, br)
 	p.log.Info("pipecat websocket connected")
 	defer conn.Close()
 
@@ -297,9 +298,13 @@ func (p *PipecatSession) recvLoop(ctx context.Context, conn net.Conn, writer io.
 			}
 
 		case *pb.Frame_Message:
-			if f.Message != nil && f.Message.Message != "" {
-				p.handleMessageFrame(f.Message.Message, cb)
+			if f.Message != nil && f.Message.Data != "" {
+				p.handleMessageFrame(f.Message.Data, cb)
 			}
+
+		case *pb.Frame_Interruption:
+			discardBuffered(writer)
+			p.log.Info("pipecat interruption received")
 		}
 	}
 }

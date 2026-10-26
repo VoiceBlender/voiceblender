@@ -42,6 +42,7 @@ type Config struct {
 	ElevenLabsAPIKey   string
 	ElevenLabs         providercfg.ElevenLabs
 	VAPIAPIKey         string
+	VAPI               providercfg.VAPI
 	DeepgramAPIKey     string
 	Deepgram           providercfg.Deepgram
 	AzureSpeechKey     string
@@ -229,6 +230,7 @@ func Load() Config {
 		ElevenLabsAPIKey:          os.Getenv("ELEVENLABS_API_KEY"),
 		ElevenLabs:                elevenLabs,
 		VAPIAPIKey:                os.Getenv("VAPI_API_KEY"),
+		VAPI:                      providercfg.VAPI{BaseURL: envOr("VAPI_BASE_URL", providercfg.VAPIDefaultBaseURL)},
 		DeepgramAPIKey:            os.Getenv("DEEPGRAM_API_KEY"),
 		Deepgram:                  deepgram,
 		AzureSpeechKey:            os.Getenv("AZURE_SPEECH_KEY"),

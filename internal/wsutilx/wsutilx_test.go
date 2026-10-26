@@ -1,10 +1,13 @@
 package wsutilx
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,4 +119,34 @@ func TestWatchCancel_NilCtxIsNoop(t *testing.T) {
 
 	stop := WatchCancel(nil, cli)
 	stop() // must not panic
+}
+
+func TestWithBuffered_DrainsBufferBeforeConn(t *testing.T) {
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	defer srv.Close()
+
+	if got := WithBuffered(cli, nil); got != cli {
+		t.Fatal("nil reader should return conn unchanged")
+	}
+
+	br := bufio.NewReader(io.MultiReader(strings.NewReader("early"), cli))
+	if _, err := br.Peek(5); err != nil {
+		t.Fatal(err)
+	}
+	conn := WithBuffered(cli, br)
+	go func() { _, _ = srv.Write([]byte("late")) }()
+
+	buf := make([]byte, 16)
+	var got []byte
+	for len(got) < len("earlylate") {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		got = append(got, buf[:n]...)
+	}
+	if string(got) != "earlylate" {
+		t.Fatalf("read %q, want %q", got, "earlylate")
+	}
 }

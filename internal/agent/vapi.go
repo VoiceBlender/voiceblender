@@ -11,12 +11,11 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/VoiceBlender/voiceblender/internal/providercfg"
 	"github.com/VoiceBlender/voiceblender/internal/wsutilx"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
-
-const vapiCallURL = "https://api.vapi.ai/call"
 
 // VAPISession manages a WebSocket connection to the VAPI conversational AI API.
 type VAPISession struct {
@@ -26,11 +25,12 @@ type VAPISession struct {
 	conversationID string
 	controlURL     string
 	apiKeyStored   string
+	cfg            providercfg.VAPI
 	log            *slog.Logger
 }
 
-func NewVAPI(log *slog.Logger) *VAPISession {
-	return &VAPISession{log: log}
+func NewVAPI(cfg providercfg.VAPI, log *slog.Logger) *VAPISession {
+	return &VAPISession{cfg: cfg, log: log}
 }
 
 // vapiCallRequest is the payload for POST /call.
@@ -101,11 +101,12 @@ func (v *VAPISession) Start(ctx context.Context, reader io.Reader, writer io.Wri
 	}
 
 	// Connect WebSocket.
-	conn, _, _, err := ws.Dial(ctx, callResp.ListenURL)
+	conn, br, _, err := ws.Dial(ctx, callResp.ListenURL)
 	if err != nil {
 		v.log.Error("vapi websocket dial failed", "error", err)
 		return fmt.Errorf("vapi ws dial: %w", err)
 	}
+	conn = wsutilx.WithBuffered(conn, br)
 	v.log.Info("vapi websocket connected")
 	defer conn.Close()
 
@@ -231,7 +232,7 @@ func (v *VAPISession) createCall(ctx context.Context, apiKey string, opts Option
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vapiCallURL, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.cfg.CallURL(), bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -406,6 +407,10 @@ func (v *VAPISession) recvLoop(ctx context.Context, conn net.Conn, writer io.Wri
 
 			case "speech-update":
 				v.log.Debug("vapi speech update", "raw", string(raw[:min(len(raw), 200)]))
+
+			case "user-interrupted":
+				discardBuffered(writer)
+				v.log.Info("vapi user interrupted")
 
 			default:
 				v.log.Debug("vapi unknown message type", "type", envelope.Type)

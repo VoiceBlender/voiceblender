@@ -68,7 +68,7 @@ func TestAgentSendLoopsUnblockOnWedgedWrite(t *testing.T) {
 			NewPipecat(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 		{"vapi", func(ctx context.Context, lw *wsutilx.LockedWriter) {
-			NewVAPI(slog.Default()).sendLoop(ctx, pcmReader{}, lw)
+			NewVAPI(providercfg.VAPI{}, slog.Default()).sendLoop(ctx, pcmReader{}, lw)
 		}},
 	}
 
@@ -109,7 +109,7 @@ func TestAgentRecvLoopsLogCloseCode(t *testing.T) {
 			NewPipecat(log).recvLoop(ctx, conn, io.Discard, Callbacks{})
 		}},
 		{"vapi", func(ctx context.Context, log *slog.Logger, conn net.Conn) {
-			NewVAPI(log).recvLoop(ctx, conn, io.Discard, Callbacks{})
+			NewVAPI(providercfg.VAPI{}, log).recvLoop(ctx, conn, io.Discard, Callbacks{})
 		}},
 	}
 

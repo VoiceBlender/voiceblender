@@ -154,6 +154,9 @@ info:
         - name: VAPI_API_KEY
           default: ""
           description: API key for VAPI Agent provider
+        - name: VAPI_BASE_URL
+          default: https://api.vapi.ai
+          description: VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call.
         - name: DEEPGRAM_API_KEY
           default: ""
           description: API key for Deepgram STT, TTS and Voice Agent

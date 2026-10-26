@@ -8,6 +8,7 @@ const (
 	DeepgramDefaultBaseURL   = "https://api.deepgram.com"
 	deepgramDefaultAgentURL  = "wss://agent.deepgram.com/v1/agent/converse"
 	ElevenLabsDefaultBaseURL = "https://api.elevenlabs.io"
+	VAPIDefaultBaseURL       = "https://api.vapi.ai"
 )
 
 // Deepgram configures every Deepgram endpoint VoiceBlender talks to.
@@ -49,6 +50,19 @@ func (e ElevenLabs) HTTPBase() string { return httpBase(e.BaseURL, ElevenLabsDef
 
 // WSBase returns the WebSocket origin with no trailing slash.
 func (e ElevenLabs) WSBase() string { return wsBase(e.BaseURL, ElevenLabsDefaultBaseURL) }
+
+// VAPI configures the VAPI REST origin. The media WebSocket is the listenUrl
+// VAPI returns per call, so it does not derive from this origin.
+type VAPI struct {
+	// BaseURL is the API origin. Empty means the default.
+	BaseURL string
+}
+
+// HTTPBase returns the REST origin with no trailing slash.
+func (v VAPI) HTTPBase() string { return httpBase(v.BaseURL, VAPIDefaultBaseURL) }
+
+// CallURL returns the endpoint that creates a call.
+func (v VAPI) CallURL() string { return v.HTTPBase() + "/call" }
 
 func normalize(base, def string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
