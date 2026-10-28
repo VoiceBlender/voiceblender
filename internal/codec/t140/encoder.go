@@ -10,6 +10,12 @@ type Encoder struct {
 	pending    []byte
 }
 
+// RFC 2198 redundant block header limits.
+const (
+	maxREDOffset   = 0x3FFF // 14-bit timestamp offset
+	maxREDBlockLen = 0x3FF  // 10-bit block length
+)
+
 type chunk struct {
 	ts   uint32
 	data []byte
@@ -68,42 +74,40 @@ func (e *Encoder) Flush(ts uint32) (payload []byte, useRED bool) {
 	// RFC 4103 §4.3 / RFC 2198: always emit exactly `e.redundancy` redundant
 	// block headers; leading slots are length-0 placeholders when history is
 	// shallower than the configured depth.
+	// Chunks the RED header can't describe become placeholders; clamping would
+	// make receivers re-emit stale text or misparse the following blocks.
+	slots := make([]*chunk, e.redundancy)
 	emptySlots := e.redundancy - len(e.history)
-	headerLen := 4*e.redundancy + 1
 	totalDataLen := len(primaryData)
-	for _, c := range e.history {
+	for i := emptySlots; i < e.redundancy; i++ {
+		c := &e.history[i-emptySlots]
+		if ts-c.ts > maxREDOffset || len(c.data) > maxREDBlockLen {
+			continue
+		}
+		slots[i] = c
 		totalDataLen += len(c.data)
 	}
-	out := make([]byte, 0, headerLen+totalDataLen)
+	out := make([]byte, 0, 4*e.redundancy+1+totalDataLen)
 
-	for i := 0; i < e.redundancy; i++ {
-		if i < emptySlots {
+	for _, c := range slots {
+		out = append(out, 0x80|(e.t140PT&0x7F))
+		if c == nil {
 			// Length-0 placeholder; offset doesn't matter for an empty body.
-			out = append(out, 0x80|(e.t140PT&0x7F))
 			out = append(out, 0x00, 0x00, 0x00)
 			continue
 		}
-		c := e.history[i-emptySlots]
 		offset := ts - c.ts
-		if offset > 0x3FFF {
-			offset = 0x3FFF
-		}
 		blen := uint16(len(c.data))
-		if blen > 0x3FF {
-			blen = 0x3FF
-		}
-		out = append(out, 0x80|(e.t140PT&0x7F))
 		out = append(out, byte(offset>>6))
 		out = append(out, byte((offset&0x3F)<<2)|byte(blen>>8))
 		out = append(out, byte(blen&0xFF))
 	}
 	out = append(out, e.t140PT&0x7F)
 
-	for i := 0; i < e.redundancy; i++ {
-		if i < emptySlots {
-			continue
+	for _, c := range slots {
+		if c != nil {
+			out = append(out, c.data...)
 		}
-		out = append(out, e.history[i-emptySlots].data...)
 	}
 	out = append(out, primaryData...)
 
