@@ -301,7 +301,7 @@ func TestSpecTagsAreDeclared(t *testing.T) {
 			for _, tag := range tags.Content {
 				used[tag.Value] = true
 				if !declared[tag.Value] {
-					t.Errorf("%s %s is tagged %q, which the root tags list does not declare; add it to tagDescriptions() in cmd/openapi-gen/ and run go generate ./internal/api/", strings.ToUpper(method), path, tag.Value)
+					t.Errorf("%s %s is tagged %q, which the root tags list does not declare; add it to TagDescriptions() in internal/api/openapi_meta.go and run go generate ./internal/api/", strings.ToUpper(method), path, tag.Value)
 				}
 			}
 		}
@@ -366,5 +366,11 @@ func TestCDRReasonSpecIsOpen(t *testing.T) {
 	}
 	if !strings.Contains(desc, "sip_{code}") {
 		t.Error("description no longer documents the sip_{code} open set")
+	}
+}
+
+func TestSectionsAreDeclared(t *testing.T) {
+	for _, p := range SectionProblems() {
+		t.Error(p)
 	}
 }

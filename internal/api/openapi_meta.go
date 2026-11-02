@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -14,6 +16,7 @@ type RouteMeta struct {
 	Summary      string
 	Description  string
 	Tags         []string
+	Section      string      // sub-group within Tags[0]; required when TagSections lists that tag
 	RequestType  interface{} // nil or Go type instance (e.g. CreateLegRequest{})
 	OptionalBody bool        // when true, requestBody is not marked required
 	Responses    map[int]ResponseMeta
@@ -321,6 +324,132 @@ func disconnectReasonDescription() string {
 // QualityDescription is the description for the quality object in leg.disconnected.
 const QualityDescription = "RTP quality metrics. Omitted for WebRTC legs or unanswered legs with no media."
 
+// TagDescriptions supplies the prose for each root-level tag. Every tag used by
+// an operation must have an entry here — openapi-gen fails the generation
+// otherwise, so a new route group cannot silently ship undeclared.
+func TagDescriptions() map[string]string {
+	return map[string]string{
+		"Legs":              "Voice call legs (SIP or WebRTC)",
+		"WebRTC":            "WebRTC peer connection establishment",
+		"Rooms":             "Multi-party audio conference rooms, including audio bridges between room mixers",
+		"SIP Registrations": "Inbound SIP AOR registrations and parked REGISTER attempts",
+		"SIP Trunks":        "SIP trunks to upstream carriers and PBXs (REGISTER or static peering)",
+		"Events":            "Real-time event stream and command channel (VSI)",
+		"Observability":     "Metrics and health endpoints",
+	}
+}
+
+// SectionMeta names a sub-group of a tag's routes.
+type SectionMeta struct {
+	Name        string
+	Description string
+}
+
+// TagSections lists, in display order, the sections that split a large tag.
+// Every route and VSI command on one of these tags must name one of its
+// sections.
+func TagSections() map[string][]SectionMeta {
+	return map[string][]SectionMeta{
+		"Legs": {
+			{"Lifecycle", "Originate, list, inspect and hang up legs"},
+			{"Inbound calls", "Ring, challenge, pre-answer and answer inbound SIP calls"},
+			{"Mute, deafen & hold", "Stop a leg's audio in either direction, or put a SIP call on hold"},
+			{"Transfer", "Send and handle SIP REFER transfers"},
+			{"DTMF & real-time text", "Send DTMF digits and T.140 text, and control their reception"},
+			{"Playback & TTS", "Play audio files and synthesized speech to a leg"},
+			{"Recording & SIPREC", "Record a leg locally or fork it to a SIPREC server"},
+			{"Speech-to-text & AMD", "Transcribe a leg and detect answering machines"},
+			{"AI agents", "Attach a conversational AI agent to a leg"},
+			{"Audio streams", "Manage the additional audio streams of a multi-stream call"},
+			{"Settings", "Routing role, audio filters and custom data"},
+		},
+		"Rooms": {
+			{"Lifecycle", "Create, list, inspect and delete rooms"},
+			{"Participants", "Add, move and remove legs, or join as a WebSocket audio participant"},
+			{"Bridges", "Join two rooms' mixers"},
+			{"Audio routing", "Control who hears whom in a room"},
+			{"Playback & TTS", "Play audio files and synthesized speech into a room"},
+			{"Recording & SIPREC", "Record the room mix locally or fork it to a SIPREC server"},
+			{"Speech-to-text", "Transcribe every participant in a room"},
+			{"AI agents", "Attach a conversational AI agent to a room"},
+		},
+	}
+}
+
+// SectionProblems reports every route, VSI command and event whose section
+// is missing or undeclared, and every declared section nothing uses. The spec
+// generators refuse to run while it reports anything.
+func SectionProblems() []string {
+	var out []string
+	sections := TagSections()
+	inSection := func(secs []SectionMeta, name string) bool {
+		return slices.ContainsFunc(secs, func(s SectionMeta) bool { return s.Name == name })
+	}
+	dupes := func(owner string, secs []SectionMeta) {
+		seen := map[string]bool{}
+		for _, s := range secs {
+			if seen[s.Name] {
+				out = append(out, fmt.Sprintf("%s declares section %q twice", owner, s.Name))
+			}
+			seen[s.Name] = true
+		}
+	}
+	for tag, secs := range sections {
+		dupes(fmt.Sprintf("tag %q", tag), secs)
+	}
+	dupes("EventSections()", EventSections())
+
+	used := map[string]bool{}
+	restTags := map[string]bool{}
+	check := func(what, tag, section string) {
+		secs, sectioned := sections[tag]
+		switch {
+		case !sectioned && section != "":
+			out = append(out, fmt.Sprintf("%s: Section %q, but tag %q has no sections", what, section, tag))
+		case sectioned && !inSection(secs, section):
+			out = append(out, fmt.Sprintf("%s: Section %q is not one of tag %q's sections in TagSections()", what, section, tag))
+		}
+	}
+	for _, r := range RoutesMetadata() {
+		tag := ""
+		if len(r.Tags) > 0 {
+			tag = r.Tags[0]
+		}
+		restTags[tag] = true
+		check(r.Method+" "+r.Path, tag, r.Section)
+		used[tag+"/"+r.Section] = true
+	}
+	for tag, secs := range sections {
+		for _, s := range secs {
+			if !used[tag+"/"+s.Name] {
+				out = append(out, fmt.Sprintf("tag %q declares section %q, but no route uses it", tag, s.Name))
+			}
+		}
+	}
+
+	for _, c := range VSICommandsMetadata() {
+		if !restTags[c.Tag] {
+			out = append(out, fmt.Sprintf("VSI command %s: Tag %q is not a REST route tag", c.Name, c.Tag))
+			continue
+		}
+		check("VSI command "+c.Name, c.Tag, c.Section)
+	}
+
+	usedEv := map[string]bool{}
+	for _, ev := range EventsMetadata() {
+		if !inSection(EventSections(), ev.Section) {
+			out = append(out, fmt.Sprintf("event %s: Section %q is not declared in EventSections()", ev.Type, ev.Section))
+		}
+		usedEv[ev.Section] = true
+	}
+	for _, s := range EventSections() {
+		if !usedEv[s.Name] {
+			out = append(out, fmt.Sprintf("EventSections() declares %q, but no event uses it", s.Name))
+		}
+	}
+	return out
+}
+
 // RoutesMetadata returns the authoritative list of all API routes with their
 // OpenAPI metadata. Used by cmd/openapi-gen to produce openapi.yaml.
 func RoutesMetadata() []RouteMeta {
@@ -343,6 +472,7 @@ func RoutesMetadata() []RouteMeta {
 				"`trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over " +
 				"selecting a trunk by matching `from` against trunk AORs.",
 			Tags:        []string{"Legs"},
+			Section:     "Lifecycle",
 			RequestType: CreateLegRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Leg created", Type: LegView{}},
@@ -354,6 +484,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/legs", OperationID: "listLegs",
 			Summary: "List all active legs",
 			Tags:    []string{"Legs"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of legs", Type: []LegView{}},
 			},
@@ -374,7 +505,8 @@ func RoutesMetadata() []RouteMeta {
 				"Text and control messages always use JSON text frames: `{\"type\":\"text\",\"text\":...}`, " +
 				"`{\"type\":\"ping\",\"event_id\":N}`/`{\"type\":\"pong\",\"event_id\":N}`, and " +
 				"`{\"type\":\"hangup\"}` to terminate from the peer side.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				101: {Description: "Switching Protocols — WebSocket upgrade succeeded"},
 				400: {Description: "Invalid query parameters"},
@@ -402,7 +534,8 @@ func RoutesMetadata() []RouteMeta {
 				"leg's `headers` map and surfaced on `LegView`. The leg goes straight to `connected` (no " +
 				"ringing/answer flow); no DTMF, no RTT, and event parity is limited to `leg.connected` / " +
 				"`leg.disconnected`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "WebTransport extended-CONNECT accepted; MoQ session established (no JSON body — the response is the upgraded WebTransport session)", NoBody: true},
 				400: {Description: "Invalid query parameters or config"},
@@ -414,6 +547,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/legs/{id}", OperationID: "getLeg",
 			Summary: "Get a single leg",
 			Tags:    []string{"Legs"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg details", Type: LegView{}},
 				404: {Description: "Leg not found"},
@@ -433,6 +567,7 @@ func RoutesMetadata() []RouteMeta {
 				"passed through to `leg.disconnected`'s `cdr.reason`.\n\n" +
 				"For connected legs the request body is ignored.",
 			Tags:         []string{"Legs"},
+			Section:      "Lifecycle",
 			RequestType:  DeleteLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -451,6 +586,7 @@ func RoutesMetadata() []RouteMeta {
 				"routes each accepted stream beyond the primary into its own room, applied once the answer " +
 				"is negotiated.",
 			Tags:         []string{"Legs"},
+			Section:      "Inbound calls",
 			RequestType:  AnswerLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -470,6 +606,7 @@ func RoutesMetadata() []RouteMeta {
 				"as soon as the request is validated; SIP-level send failures surface as " +
 				"`leg.command_failed` with `command=\"ring\"`.",
 			Tags:         []string{"Legs"},
+			Section:      "Inbound calls",
 			RequestType:  RingLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -489,6 +626,7 @@ func RoutesMetadata() []RouteMeta {
 				"verifies the response against the supplied credential. Provide either `password` or `ha1`. " +
 				"An invalid retry is answered with 403 Forbidden and never surfaced.",
 			Tags:        []string{"Legs"},
+			Section:     "Inbound calls",
 			RequestType: ChallengeRequest{},
 			Responses: map[int]ResponseMeta{
 				202: {Description: "401 challenge queued"},
@@ -505,6 +643,7 @@ func RoutesMetadata() []RouteMeta {
 				"observable via `leg.early_media`. Setup failures surface as `leg.command_failed` with " +
 				"`command=\"early_media\"`.",
 			Tags:         []string{"Legs"},
+			Section:      "Inbound calls",
 			RequestType:  EarlyMediaLegRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -519,7 +658,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Mute a leg",
 			Description: "A muted leg's audio is excluded from the room mix and speaking events " +
 				"are suppressed. Taps (recording/STT) still receive the muted leg's own audio.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg muted"},
 				404: {Description: "Leg not found"},
@@ -529,6 +669,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/mute", OperationID: "unmuteLeg",
 			Summary: "Unmute a leg",
 			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg unmuted"},
 				404: {Description: "Leg not found"},
@@ -539,7 +680,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Deafen a leg",
 			Description: "A deaf leg stops receiving the room mix. Its own audio is still " +
 				"contributed to the mix and still reaches taps (recording/STT) unless it is also muted.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg deafened"},
 				404: {Description: "Leg not found"},
@@ -549,6 +691,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/deaf", OperationID: "undeafLeg",
 			Summary: "Undeafen a leg",
 			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg undeafened"},
 				404: {Description: "Leg not found"},
@@ -561,7 +704,8 @@ func RoutesMetadata() []RouteMeta {
 				"leg is validated; the re-INVITE is sent in the background and success surfaces as `leg.hold`. " +
 				"Failures surface as `leg.command_failed` with `command=\"hold\"`. The RTP timeout is paused while " +
 				"held, and a 2-hour auto-hangup timer starts.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Hold queued"},
 				400: {Description: "Not a SIP leg"},
@@ -574,7 +718,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Resume a held SIP call (asynchronous)",
 			Description: "Queues a re-INVITE with `sendrecv` SDP direction. The HTTP call returns 202; success surfaces " +
 				"as `leg.unhold`, failures as `leg.command_failed` with `command=\"unhold\"`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Mute, deafen & hold",
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Unhold queued"},
 				400: {Description: "Not a SIP leg"},
@@ -592,6 +737,7 @@ func RoutesMetadata() []RouteMeta {
 				"identity is embedded as a Replaces parameter per RFC 3891). On terminal 2xx the leg (and the replaces leg, " +
 				"if any) is hung up automatically.",
 			Tags:        []string{"Legs"},
+			Section:     "Transfer",
 			RequestType: TransferRequest{},
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Transfer request accepted for processing"},
@@ -608,7 +754,8 @@ func RoutesMetadata() []RouteMeta {
 				"keeping the refer subscription open. `{id}` is the referrer leg (the leg that received the REFER). " +
 				"After accepting, re-bridge as needed and report progress via `.../transfer/progress` and the outcome via " +
 				"`.../transfer/complete`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Transfer",
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Accept queued (202 + NOTIFY 100 sent)"},
 				404: {Description: "No pending transfer for the leg (unknown or already decided)"},
@@ -620,6 +767,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Sends an interim sipfrag `NOTIFY` (e.g. `180 Ringing`) on an accepted inbound transfer so the " +
 				"referrer's UA reflects real progress. The subscription stays active.",
 			Tags:        []string{"Legs"},
+			Section:     "Transfer",
 			RequestType: TransferProgressRequest{},
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Progress NOTIFY queued"},
@@ -634,6 +782,7 @@ func RoutesMetadata() []RouteMeta {
 				"`leg.transfer_completed` (on success) or `leg.transfer_failed`. `success:true` sends `200 OK`; otherwise " +
 				"`status_code`/`reason` (default 500) carry the failure. The referrer leg is left for the app to hang up.",
 			Tags:        []string{"Legs"},
+			Section:     "Transfer",
 			RequestType: TransferCompleteRequest{},
 			Responses: map[int]ResponseMeta{
 				202: {Description: "Terminal NOTIFY queued"},
@@ -646,6 +795,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Rejects a parked (not-yet-accepted) inbound transfer, replying to the referrer with a non-2xx " +
 				"(`603 Decline` by default; override via `code`/`reason`) and emitting `leg.transfer_failed`.",
 			Tags:         []string{"Legs"},
+			Section:      "Transfer",
 			RequestType:  TransferDeclineRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -657,6 +807,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/dtmf", OperationID: "sendDTMF",
 			Summary:     "Send DTMF digits on a leg",
 			Tags:        []string{"Legs"},
+			Section:     "DTMF & real-time text",
 			RequestType: DTMFRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Digits sent"},
@@ -670,7 +821,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Enable DTMF reception on a leg",
 			Description: "Allow this leg to receive DTMF digits broadcast from other legs in the same room. " +
 				"This is the default state for new legs.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "DTMF & real-time text",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "DTMF reception enabled"},
 				404: {Description: "Leg not found"},
@@ -681,7 +833,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Disable DTMF reception on a leg",
 			Description: "Block this leg from receiving DTMF digits broadcast from other legs in the same room. " +
 				"DTMF received from this leg's own far end is still emitted as a leg.dtmf event.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "DTMF & real-time text",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "DTMF reception disabled"},
 				404: {Description: "Leg not found"},
@@ -694,6 +847,7 @@ func RoutesMetadata() []RouteMeta {
 				"Requires that the SDP offer/answer agreed on an m=text section with the remote UA. " +
 				"Enable RTT on the server with RTT_ENABLED=true.",
 			Tags:        []string{"Legs"},
+			Section:     "DTMF & real-time text",
 			RequestType: RTTRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Text sent"},
@@ -708,7 +862,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Enable RTT reception on a leg",
 			Description: "Allow this leg to receive RTT text broadcast from other legs in the same room and to " +
 				"emit rtt.received events for incoming text. Default state for new legs.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "DTMF & real-time text",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "RTT reception enabled"},
 				404: {Description: "Leg not found"},
@@ -719,7 +874,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Disable RTT reception on a leg",
 			Description: "Block this leg from receiving RTT text broadcast from other legs in the same room and " +
 				"suppress rtt.received events for this leg.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "DTMF & real-time text",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "RTT reception disabled"},
 				404: {Description: "Leg not found"},
@@ -729,6 +885,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/play", OperationID: "playLeg",
 			Summary:     "Start audio playback to a leg",
 			Tags:        []string{"Legs"},
+			Section:     "Playback & TTS",
 			RequestType: PlaybackRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Playback started"},
@@ -741,6 +898,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "PATCH", Path: "/legs/{id}/play/{playbackID}", OperationID: "volumePlayLeg",
 			Summary:     "Change the volume of an active leg playback",
 			Tags:        []string{"Legs"},
+			Section:     "Playback & TTS",
 			RequestType: VolumeRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Volume updated"},
@@ -752,6 +910,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/play/{playbackID}", OperationID: "stopPlayLeg",
 			Summary: "Stop audio playback on a leg",
 			Tags:    []string{"Legs"},
+			Section: "Playback & TTS",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Playback stopped"},
 				404: {Description: "No playback in progress"},
@@ -763,6 +922,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Synthesizes the provided text using the configured TTS provider and plays the audio on the leg. " +
 				"When `TTS_CACHE_ENABLED=true`, identical requests (same text, voice, model, language, and prompt) are stored on disk in `TTS_CACHE_DIR` and persist across restarts, without calling the external provider.",
 			Tags:        []string{"Legs"},
+			Section:     "Playback & TTS",
 			RequestType: TTSRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "TTS playback started"},
@@ -780,6 +940,7 @@ func RoutesMetadata() []RouteMeta {
 				"A `tts.staged` event reports when the audio is ready; synthesis failures are reported on `tts.error`. " +
 				"Staged utterances are dropped after `TTS_PREFLIGHT_TTL` or when the leg ends, and at most `TTS_PREFLIGHT_MAX_PER_LEG` may be staged on one leg at a time. Preflight is leg-scoped; use `POST /rooms/{id}/tts` for room announcements.",
 			Tags:        []string{"Legs"},
+			Section:     "Playback & TTS",
 			RequestType: TTSRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "TTS staged"},
@@ -794,7 +955,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Play a staged TTS utterance",
 			Description: "Starts playback of an utterance staged by the preflight endpoint. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on `tts.error`, exactly as for `POST /legs/{id}/tts`. " +
 				"Once committed, stop playback with `DELETE /legs/{id}/play/{playbackID}` using the same `tts_id`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Playback & TTS",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "TTS committed; playback starts as soon as the audio is ready"},
 				404: {Description: "No staged TTS with that id"},
@@ -806,6 +968,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Drop a staged TTS utterance without playing it",
 			Description: "Discards an utterance staged by the preflight endpoint, aborting synthesis if it is still in flight. Already-committed utterances are stopped with `DELETE /legs/{id}/play/{playbackID}` instead.",
 			Tags:        []string{"Legs"},
+			Section:     "Playback & TTS",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Staged TTS discarded"},
 				404: {Description: "No staged TTS with that id"},
@@ -818,6 +981,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "For SIP legs, recording is stereo (left=incoming, right=outgoing). " +
 				"For legs in a room, stereo at 16kHz (left=participant audio, right=mixed-minus-self).",
 			Tags:         []string{"Legs"},
+			Section:      "Recording & SIPREC",
 			RequestType:  RecordRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -832,6 +996,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/record", OperationID: "stopRecordLeg",
 			Summary: "Stop recording a leg",
 			Tags:    []string{"Legs"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording stopped"},
 				404: {Description: "No recording in progress"},
@@ -844,7 +1009,8 @@ func RoutesMetadata() []RouteMeta {
 				"`/record/resume` is called. The WAV's timeline is preserved (silent gap where " +
 				"audio was paused), so reviewers can see exactly when sensitive data was excluded. " +
 				"Idempotent: calling while already paused returns `status: already_paused`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording paused (or already paused)"},
 				404: {Description: "No recording in progress"},
@@ -855,7 +1021,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Resume a paused leg recording",
 			Description: "Resumes writing real audio after a prior `/record/pause`. Idempotent: " +
 				"calling while not paused returns `status: not_paused`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording resumed (or was not paused)"},
 				404: {Description: "No recording in progress"},
@@ -865,6 +1032,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/stt", OperationID: "sttLeg",
 			Summary:      "Start real-time speech-to-text on a leg",
 			Tags:         []string{"Legs"},
+			Section:      "Speech-to-text & AMD",
 			RequestType:  STTRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -878,6 +1046,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/stt", OperationID: "stopSTTLeg",
 			Summary: "Stop speech-to-text on a leg",
 			Tags:    []string{"Legs"},
+			Section: "Speech-to-text & AMD",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT stopped"},
 				404: {Description: "No STT in progress"},
@@ -890,7 +1059,8 @@ func RoutesMetadata() []RouteMeta {
 				"Only the `deepgram` and `speechmatics` providers support this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. " +
 				"On `speechmatics` the flush also emits an stt.turn end_of_turn event, because it is a forced end of utterance. " +
 				"The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Speech-to-text & AMD",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Final transcript requested"},
 				404: {Description: "No STT in progress"},
@@ -903,6 +1073,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach an ElevenLabs ConvAI agent to a leg",
 			Description: "Bridges audio bidirectionally with an ElevenLabs conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.",
 			Tags:        []string{"Legs"},
+			Section:     "AI agents",
 			RequestType: ElevenLabsAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -917,6 +1088,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a VAPI agent to a leg",
 			Description: "Bridges audio bidirectionally with a VAPI conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.",
 			Tags:        []string{"Legs"},
+			Section:     "AI agents",
 			RequestType: VAPIAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -931,6 +1103,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a Pipecat bot to a leg",
 			Description: "Bridges audio bidirectionally with a self-hosted Pipecat bot via WebSocket. Standalone legs use direct audio; legs in a room use mixer taps.",
 			Tags:        []string{"Legs"},
+			Section:     "AI agents",
 			RequestType: PipecatAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -944,6 +1117,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a Deepgram Voice Agent to a leg",
 			Description: "Bridges audio bidirectionally with a Deepgram Voice Agent. Standalone legs use direct audio; legs in a room use mixer taps.",
 			Tags:        []string{"Legs"},
+			Section:     "AI agents",
 			RequestType: DeepgramAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -958,6 +1132,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Inject a message into a running agent session on a leg",
 			Description: "Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.",
 			Tags:        []string{"Legs"},
+			Section:     "AI agents",
 			RequestType: AgentMessageRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Message sent"},
@@ -971,6 +1146,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/agent", OperationID: "stopAgentLeg",
 			Summary: "Detach the agent from a leg",
 			Tags:    []string{"Legs"},
+			Section: "AI agents",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent stopped"},
 				404: {Description: "No agent attached to this leg"},
@@ -980,6 +1156,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/legs/{id}/amd", OperationID: "startAMDLeg",
 			Summary:     "Start answering machine detection on a connected leg",
 			Tags:        []string{"Legs"},
+			Section:     "Speech-to-text & AMD",
 			RequestType: AMDParams{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "AMD started"},
@@ -1028,6 +1205,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/rooms", OperationID: "createRoom",
 			Summary:      "Create a room",
 			Tags:         []string{"Rooms"},
+			Section:      "Lifecycle",
 			RequestType:  CreateRoomRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -1039,6 +1217,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/rooms", OperationID: "listRooms",
 			Summary: "List all rooms with participants",
 			Tags:    []string{"Rooms"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of rooms", Type: []RoomView{}},
 			},
@@ -1047,6 +1226,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/rooms/{id}", OperationID: "getRoom",
 			Summary: "Get a room with participants",
 			Tags:    []string{"Rooms"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Room details", Type: RoomView{}},
 				404: {Description: "Room not found"},
@@ -1058,7 +1238,8 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Hangs up every participant. Outbound SIP legs created with this room's " +
 				"`room_id` that are still ringing, and so not participants yet, are cancelled too. " +
 				"Each affected leg emits `leg.disconnected` with reason `room_deleted`.",
-			Tags: []string{"Rooms"},
+			Tags:    []string{"Rooms"},
+			Section: "Lifecycle",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Room deleted"},
 				404: {Description: "Room not found"},
@@ -1077,6 +1258,7 @@ func RoutesMetadata() []RouteMeta {
 				"Only the leg's primary audio stream joins by default; `streams` additionally mixes named " +
 				"secondary streams of the same leg into this room. A stream currently mixed elsewhere is moved here.",
 			Tags:        []string{"Rooms"},
+			Section:     "Participants",
 			RequestType: AddLegRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg added or moved"},
@@ -1087,6 +1269,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/legs/{legID}", OperationID: "removeLegFromRoom",
 			Summary: "Remove a leg from a room",
 			Tags:    []string{"Rooms"},
+			Section: "Participants",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Leg removed"},
 				400: {Description: "Room or leg not found"},
@@ -1103,6 +1286,7 @@ func RoutesMetadata() []RouteMeta {
 				"a cycle with feedback-enabled directions causes audio feedback — " +
 				"use one-way directions to break loops.",
 			Tags:        []string{"Rooms"},
+			Section:     "Bridges",
 			RequestType: CreateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Bridge created", Type: BridgeView{}},
@@ -1115,6 +1299,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/rooms/{id}/bridges", OperationID: "listRoomBridges",
 			Summary: "List bridges involving this room",
 			Tags:    []string{"Rooms"},
+			Section: "Bridges",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Array of bridges (direction relative to the path room)", Type: []BridgeView{}},
 				404: {Description: "Room not found"},
@@ -1124,6 +1309,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "getRoomBridge",
 			Summary: "Get a bridge involving this room",
 			Tags:    []string{"Rooms"},
+			Section: "Bridges",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge details (direction relative to the path room)", Type: BridgeView{}},
 				404: {Description: "Bridge not found for this room"},
@@ -1134,6 +1320,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Change a bridge's audio flow direction",
 			Description: "Live-updates the direction (relative to the room in the path) without interrupting audio.",
 			Tags:        []string{"Rooms"},
+			Section:     "Bridges",
 			RequestType: UpdateRoomBridgeRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge updated", Type: BridgeView{}},
@@ -1145,6 +1332,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/bridges/{bridgeID}", OperationID: "deleteRoomBridge",
 			Summary: "Tear down a bridge",
 			Tags:    []string{"Rooms"},
+			Section: "Bridges",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Bridge deleted"},
 				404: {Description: "Bridge not found for this room"},
@@ -1156,7 +1344,8 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Returns the per-listener-role source whitelist used by the room's audio mixer. " +
 				"A listener role absent from the matrix defaults to full mesh (hears every other leg). " +
 				"A role with an empty `[]` list is an isolated listener that hears nothing.",
-			Tags: []string{"Rooms"},
+			Tags:    []string{"Rooms"},
+			Section: "Audio routing",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Current matrix", Type: RoomRoutingView{}},
 				404: {Description: "Room not found"},
@@ -1170,6 +1359,7 @@ func RoutesMetadata() []RouteMeta {
 				"reflects the new routing. Roles are operator-supplied strings (e.g. \"customer\", \"agent\", " +
 				"\"supervisor\"). A leg with no role defaults to full mesh.",
 			Tags:        []string{"Rooms"},
+			Section:     "Audio routing",
 			RequestType: RoomRoutingRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
@@ -1183,6 +1373,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Replaces the listed listener-role rows. Pass `\"sources\": null` on an update to " +
 				"clear that row back to full mesh.",
 			Tags:        []string{"Rooms"},
+			Section:     "Audio routing",
 			RequestType: RoomRoutingUpdateRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated matrix", Type: RoomRoutingView{}},
@@ -1200,6 +1391,7 @@ func RoutesMetadata() []RouteMeta {
 				"resulting `siprec_out` leg; delete that leg to end the session. " +
 				"Requires `SIPREC_SRC_ENABLED=true`.",
 			Tags:        []string{"Rooms"},
+			Section:     "Recording & SIPREC",
 			RequestType: StartSIPRECRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Recording session established", Type: LegView{}},
@@ -1218,6 +1410,7 @@ func RoutesMetadata() []RouteMeta {
 				"is involved. `leg_ids` is ignored here — the two sections are fixed. Returns the " +
 				"resulting `siprec_out` leg; delete it to end the session. Requires `SIPREC_SRC_ENABLED=true`.",
 			Tags:        []string{"Legs"},
+			Section:     "Recording & SIPREC",
 			RequestType: StartSIPRECRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Recording session established", Type: LegView{}},
@@ -1236,7 +1429,8 @@ func RoutesMetadata() []RouteMeta {
 				"between them. A stream's `a=label` is what ties the m= section to a participant, so the " +
 				"`streams` entries carry both the leg stream ID and the participant identity. The raw " +
 				"metadata document is returned verbatim in `metadata`.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording session state", Type: SIPRECSessionView{}},
 				400: {Description: "Leg is not a SIPREC recording session"},
@@ -1248,7 +1442,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "List a leg's audio streams",
 			Description: "Returns every negotiated m=audio section on the leg, in m-line order. A single-stream " +
 				"call has exactly one entry, the primary.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Audio streams",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Audio streams in m-line order", Type: []LegStreamView{}},
 				400: {Description: "Not a SIP leg"},
@@ -1264,6 +1459,7 @@ func RoutesMetadata() []RouteMeta {
 				"Set `content` to \"alt\" and `lang` to the feed's language so the peer can tell them apart. " +
 				"A peer that answers the new section with port 0 leaves the call untouched and this returns 409.",
 			Tags:        []string{"Legs"},
+			Section:     "Audio streams",
 			RequestType: AddLegStreamRequest{},
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Stream negotiated", Type: LegStreamView{}},
@@ -1276,6 +1472,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "GET", Path: "/legs/{id}/streams/{streamId}", OperationID: "getLegStream",
 			Summary: "Get one of a leg's audio streams",
 			Tags:    []string{"Legs"},
+			Section: "Audio streams",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Audio stream", Type: LegStreamView{}},
 				400: {Description: "Not a SIP leg"},
@@ -1293,6 +1490,7 @@ func RoutesMetadata() []RouteMeta {
 				"label — are fixed when the stream is negotiated; change them by removing the stream and " +
 				"adding a new one.",
 			Tags:        []string{"Legs"},
+			Section:     "Audio streams",
 			RequestType: UpdateLegStreamRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated stream", Type: LegStreamView{}},
@@ -1307,7 +1505,8 @@ func RoutesMetadata() []RouteMeta {
 				"and releases its RTP port. The m-line slot survives as a tombstone — the m-line count never " +
 				"decreases for the life of a dialog — so a later added stream takes a new position. The " +
 				"primary stream carries the call and cannot be removed.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Audio streams",
 			Responses: map[int]ResponseMeta{
 				204: {Description: "Stream removed"},
 				400: {Description: "Not a SIP leg"},
@@ -1322,6 +1521,7 @@ func RoutesMetadata() []RouteMeta {
 				"leg's own room — that is what lets an original audio stream and a translated one be mixed " +
 				"separately. A leg never hears its own other streams, whatever the routing matrix says.",
 			Tags:        []string{"Legs"},
+			Section:     "Audio streams",
 			RequestType: AttachStreamRoomRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated stream", Type: LegStreamView{}},
@@ -1334,6 +1534,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/legs/{id}/streams/{streamId}/room", OperationID: "detachLegStreamRoom",
 			Summary: "Remove an audio stream from its room",
 			Tags:    []string{"Legs"},
+			Section: "Audio streams",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated stream", Type: LegStreamView{}},
 				400: {Description: "Not a SIP leg"},
@@ -1347,6 +1548,7 @@ func RoutesMetadata() []RouteMeta {
 				"the room's matrix-derived allow-sets atomically (single mixer-mutex acquisition). The next " +
 				"mix tick (≤ 20 ms) reflects the change.",
 			Tags:        []string{"Legs"},
+			Section:     "Settings",
 			RequestType: SetLegRoleRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated leg view", Type: LegView{}},
@@ -1365,6 +1567,7 @@ func RoutesMetadata() []RouteMeta {
 				"audio block, so the response reports the requested chain. The leg must be in a room, " +
 				"since the chain lives on its mixer participant.",
 			Tags:        []string{"Legs"},
+			Section:     "Settings",
 			RequestType: SetLegFiltersRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated leg view, with the chain now running", Type: LegView{}},
@@ -1380,6 +1583,7 @@ func RoutesMetadata() []RouteMeta {
 				"carried at the top level of every event published for this leg from the next event onwards, " +
 				"and is released after `leg.disconnected`. Sending `null` clears it, the same as DELETE.",
 			Tags:        []string{"Legs"},
+			Section:     "Settings",
 			RequestType: SetLegCustomDataRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated leg view", Type: LegView{}},
@@ -1392,7 +1596,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Clear a leg's custom data",
 			Description: "Removes the leg's `custom_data`. Subsequent events for this leg omit the field. " +
 				"Idempotent: clearing a leg that has none succeeds.",
-			Tags: []string{"Legs"},
+			Tags:    []string{"Legs"},
+			Section: "Settings",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Updated leg view", Type: LegView{}},
 				404: {Description: "Leg not found"},
@@ -1402,6 +1607,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/rooms/{id}/play", OperationID: "playRoom",
 			Summary:     "Play audio to a room",
 			Tags:        []string{"Rooms"},
+			Section:     "Playback & TTS",
 			RequestType: PlaybackRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Playback started"},
@@ -1414,6 +1620,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "PATCH", Path: "/rooms/{id}/play/{playbackID}", OperationID: "volumePlayRoom",
 			Summary:     "Change the volume of an active room playback",
 			Tags:        []string{"Rooms"},
+			Section:     "Playback & TTS",
 			RequestType: VolumeRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Volume updated"},
@@ -1425,6 +1632,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/play/{playbackID}", OperationID: "stopPlayRoom",
 			Summary: "Stop room playback",
 			Tags:    []string{"Rooms"},
+			Section: "Playback & TTS",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Playback stopped"},
 				404: {Description: "No playback in progress"},
@@ -1436,6 +1644,7 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Synthesizes the provided text using the configured TTS provider and plays the audio into the room. " +
 				"When `TTS_CACHE_ENABLED=true`, identical requests (same text, voice, model, language, and prompt) are stored on disk in `TTS_CACHE_DIR` and persist across restarts, without calling the external provider.",
 			Tags:        []string{"Rooms"},
+			Section:     "Playback & TTS",
 			RequestType: TTSRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "TTS playback started"},
@@ -1450,6 +1659,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:      "Start recording the room mix to a WAV file",
 			Description:  "Records the full room mix at 16kHz, 16-bit, mono.",
 			Tags:         []string{"Rooms"},
+			Section:      "Recording & SIPREC",
 			RequestType:  RecordRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -1464,6 +1674,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/record", OperationID: "stopRecordRoom",
 			Summary: "Stop room recording",
 			Tags:    []string{"Rooms"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording stopped"},
 				404: {Description: "No recording in progress"},
@@ -1476,7 +1687,8 @@ func RoutesMetadata() []RouteMeta {
 				"`/record/resume` is called. When multi-channel recording is active, every " +
 				"per-participant track is paused too (including tracks for participants who " +
 				"join while paused). Idempotent: returns `status: already_paused` when already paused.",
-			Tags: []string{"Rooms"},
+			Tags:    []string{"Rooms"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording paused (or already paused)"},
 				404: {Description: "No recording in progress"},
@@ -1487,7 +1699,8 @@ func RoutesMetadata() []RouteMeta {
 			Summary: "Resume a paused room recording",
 			Description: "Resumes writing real audio after a prior `/record/pause`. Resumes " +
 				"every per-participant track if multi-channel recording is active. Idempotent.",
-			Tags: []string{"Rooms"},
+			Tags:    []string{"Rooms"},
+			Section: "Recording & SIPREC",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Recording resumed (or was not paused)"},
 				404: {Description: "No recording in progress"},
@@ -1497,6 +1710,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "POST", Path: "/rooms/{id}/stt", OperationID: "sttRoom",
 			Summary:      "Start speech-to-text on all room participants",
 			Tags:         []string{"Rooms"},
+			Section:      "Speech-to-text",
 			RequestType:  STTRequest{},
 			OptionalBody: true,
 			Responses: map[int]ResponseMeta{
@@ -1510,6 +1724,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/stt", OperationID: "stopSTTRoom",
 			Summary: "Stop speech-to-text on a room",
 			Tags:    []string{"Rooms"},
+			Section: "Speech-to-text",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "STT stopped"},
 				404: {Description: "No STT in progress"},
@@ -1520,6 +1735,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach an ElevenLabs ConvAI agent to a room",
 			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
 			Tags:        []string{"Rooms"},
+			Section:     "AI agents",
 			RequestType: ElevenLabsAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -1534,6 +1750,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a VAPI agent to a room",
 			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
 			Tags:        []string{"Rooms"},
+			Section:     "AI agents",
 			RequestType: VAPIAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -1548,6 +1765,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a Pipecat bot to a room",
 			Description: "The bot joins as a virtual participant via WebSocket, hearing all participants (mixed-minus-self) and speaking to everyone.",
 			Tags:        []string{"Rooms"},
+			Section:     "AI agents",
 			RequestType: PipecatAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -1561,6 +1779,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Attach a Deepgram Voice Agent to a room",
 			Description: "The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.",
 			Tags:        []string{"Rooms"},
+			Section:     "AI agents",
 			RequestType: DeepgramAgentRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent started"},
@@ -1575,6 +1794,7 @@ func RoutesMetadata() []RouteMeta {
 			Summary:     "Inject a message into a running agent session on a room",
 			Description: "Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.",
 			Tags:        []string{"Rooms"},
+			Section:     "AI agents",
 			RequestType: AgentMessageRequest{},
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Message sent"},
@@ -1588,6 +1808,7 @@ func RoutesMetadata() []RouteMeta {
 			Method: "DELETE", Path: "/rooms/{id}/agent", OperationID: "stopAgentRoom",
 			Summary: "Detach the agent from a room",
 			Tags:    []string{"Rooms"},
+			Section: "AI agents",
 			Responses: map[int]ResponseMeta{
 				200: {Description: "Agent stopped"},
 				404: {Description: "No agent attached to this room"},
@@ -1600,7 +1821,8 @@ func RoutesMetadata() []RouteMeta {
 				"audio participant. The client sends and receives 16kHz 16-bit signed " +
 				"little-endian PCM audio (mono), base64-encoded in JSON text frames. " +
 				"Each audio frame is 640 bytes (20ms).",
-			Tags: []string{"Rooms"},
+			Tags:    []string{"Rooms"},
+			Section: "Participants",
 			Responses: map[int]ResponseMeta{
 				101: {Description: "WebSocket upgrade successful. Server sends a `connected` message followed by mixed-minus-self audio frames."},
 				404: {Description: "Room not found"},

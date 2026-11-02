@@ -263,6 +263,10 @@ const (
 )
 
 func main() {
+	if problems := api.SectionProblems(); len(problems) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(problems, "\n"))
+		os.Exit(1)
+	}
 	doc := newMap()
 	doc.set("asyncapi", asyncAPIVersion)
 	doc.set("info", buildInfo())
@@ -297,7 +301,85 @@ func buildInfo() *omap {
 				"matching `<command>.result` or `error` frame echoing the request_id.\n\n"+
 				"This file is generated from internal/api/vsi_meta.go — every VSI command and "+
 				"every event in internal/events MUST be present in the registries there or this "+
-				"spec is incomplete.")
+				"spec is incomplete.").
+		set("tags", buildInfoTags())
+}
+
+const (
+	eventsTag     = "Events"
+	connectionTag = "Connection"
+)
+
+// tagOrder lists every operation tag in display order.
+func tagOrder() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, c := range api.VSICommandsMetadata() {
+		if !seen[c.Tag] {
+			seen[c.Tag] = true
+			out = append(out, c.Tag)
+		}
+	}
+	return append(out, eventsTag, connectionTag)
+}
+
+func tagDescription(name string) string {
+	switch name {
+	case eventsTag:
+		return "Server-to-client event frames; each payload matches the webhook of the same name"
+	case connectionTag:
+		return "Connection lifecycle, keepalive and error frames"
+	}
+	return api.TagDescriptions()[name]
+}
+
+func tagSections(name string) []api.SectionMeta {
+	if name == eventsTag {
+		return api.EventSections()
+	}
+	return api.TagSections()[name]
+}
+
+// tagKey is the components.tags key for a tag name, which may contain spaces.
+func tagKey(name string) string {
+	return strings.ReplaceAll(name, " ", "_")
+}
+
+func tagRef(name string) *omap {
+	return newMap().set("$ref", "#/components/tags/"+tagKey(name))
+}
+
+// buildTagComponents defines each tag once. A sectioned tag lists its
+// sections under x-sections; operations name theirs in x-section.
+func buildTagComponents() *omap {
+	tags := newMap()
+	for _, name := range tagOrder() {
+		tag := newMap().set("name", name).set("description", tagDescription(name))
+		if secs := tagSections(name); len(secs) > 0 {
+			list := newSeq()
+			for _, sec := range secs {
+				list.add(newMap().set("name", sec.Name).set("description", sec.Description))
+			}
+			tag.set("x-sections", list)
+		}
+		tags.set(tagKey(name), tag)
+	}
+	return tags
+}
+
+func buildInfoTags() *seq {
+	tags := newSeq()
+	for _, name := range tagOrder() {
+		tags.add(tagRef(name))
+	}
+	return tags
+}
+
+func tagOperation(op *omap, tag, section string) {
+	op.set("tags", newSeq().add(tagRef(tag)))
+	if section != "" {
+		op.set("x-section", section)
+	}
 }
 
 // channelMessageRefs returns the ordered list of $ref entries that go under
@@ -337,6 +419,7 @@ func buildOperations() *omap {
 		if c.Description != "" {
 			op.set("description", c.Description)
 		}
+		tagOperation(op, c.Tag, c.Section)
 		op.set("messages", newSeq().add(newMap().set("$ref",
 			"#/channels/vsi/messages/"+c.Name)))
 		// reply (success or error)
@@ -355,9 +438,10 @@ func buildOperations() *omap {
 		op := newMap().
 			set("action", "send").
 			set("channel", newMap().set("$ref", "#/channels/vsi")).
-			set("summary", ev.Summary).
-			set("messages", newSeq().add(newMap().set("$ref",
-				"#/channels/vsi/messages/"+key)))
+			set("summary", ev.Summary)
+		tagOperation(op, eventsTag, ev.Section)
+		op.set("messages", newSeq().add(newMap().set("$ref",
+			"#/channels/vsi/messages/"+key)))
 		ops.set("send_"+sanitizeOpKey(key), op)
 	}
 
@@ -366,9 +450,10 @@ func buildOperations() *omap {
 		op := newMap().
 			set("action", lf.Direction).
 			set("channel", newMap().set("$ref", "#/channels/vsi")).
-			set("summary", lf.Description).
-			set("messages", newSeq().add(newMap().set("$ref",
-				"#/channels/vsi/messages/"+lf.Name)))
+			set("summary", lf.Description)
+		tagOperation(op, connectionTag, "")
+		op.set("messages", newSeq().add(newMap().set("$ref",
+			"#/channels/vsi/messages/"+lf.Name)))
 		ops.set(lf.Direction+"_"+lf.Name, op)
 	}
 
@@ -379,6 +464,7 @@ func buildComponents() *omap {
 	comps := newMap()
 	comps.set("messages", buildMessages())
 	comps.set("schemas", buildSchemas())
+	comps.set("tags", buildTagComponents())
 	return comps
 }
 

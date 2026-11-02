@@ -396,121 +396,150 @@ func parseJSONTag(f reflect.StructField) (name string, omitempty bool) {
 
 // ── Config vars ─────────────────────────────────────────────────────────
 
+// configGroups orders the sections of the configuration reference; every
+// config var names one.
+var configGroups = []string{
+	"Server",
+	"SIP",
+	"SIP TLS",
+	"SIP registrations",
+	"WebRTC",
+	"Media & codecs",
+	"Webhooks",
+	"Speech & AI providers",
+	"Recording & storage",
+	"SIPREC",
+	"MoQ",
+	"LiveKit",
+}
+
 type configVar struct {
 	Name        string `yaml:"name"`
+	Group       string `yaml:"group"`
 	Default     string `yaml:"default"`
 	Description string `yaml:"description"`
 }
 
 func configVars() *seq {
 	vars := []configVar{
-		{Name: "INSTANCE_ID", Default: "(auto-generated UUID)", Description: "Instance identifier included in all API responses and webhook events"},
-		{Name: "HTTP_ADDR", Default: ":8080", Description: "REST API listen address"},
-		{Name: "ALLOWED_IPS", Default: "(empty = allow all)", Description: "Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS)."},
-		{Name: "TRUST_PROXY_HEADERS", Default: "false", Description: "When true, the client IP used for the ALLOWED_IPS check is taken from the leftmost X-Forwarded-For entry (falling back to the socket peer if absent). Enable only behind a trusted reverse proxy that overwrites the header — otherwise it is client-spoofable."},
-		{Name: "SIP_BIND_IP", Default: "127.0.0.1", Description: "IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)"},
-		{Name: "SIP_LISTEN_IP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address"},
-		{Name: "SIP_BIND_IPV6", Default: "(empty = v4-only)", Description: "IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments"},
-		{Name: "SIP_LISTEN_IPV6", Default: "(same as SIP_BIND_IPV6)", Description: "Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)"},
-		{Name: "SIP_EXTERNAL_IP", Default: "", Description: "Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised."},
-		{Name: "SIP_LOCAL_NETS", Default: "", Description: "Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT. A SIP peer inside one of them is advertised SIP_BIND_IP (or the auto-detected address) in Contact and SDP c=, where every other peer gets SIP_EXTERNAL_IP and SIP_DOMAIN. Empty = every peer is advertised the same address."},
-		{Name: "SIP_ALLOWED_IPS", Default: "(empty = accept all)", Description: "Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) that SIP requests are accepted from, on UDP, TCP and TLS. Empty or any /0 entry accepts every source. A request from any other address is dropped without a SIP response and counted in voiceblender_sip_requests_rejected_total. Covers in-dialog requests too, so peers that are only dialed out to must be listed; responses are not filtered. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup."},
-		{Name: "SIP_PORT", Default: "5060", Description: "SIP listen port"},
-		{Name: "SIP_TLS_PORT", Default: "(disabled)", Description: "SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration."},
-		{Name: "SIP_TLS_CERT", Default: "", Description: "Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN."},
-		{Name: "SIP_TLS_KEY", Default: "", Description: "Path to PEM-encoded TLS private key (e.g. privkey.pem)."},
-		{Name: "SIP_TLS_CA_FILE", Default: "", Description: "Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate."},
-		{Name: "SIP_TLS_INSECURE_SKIP_VERIFY", Default: "false", Description: "When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk tls_insecure_skip_verify (sip_register or ip_ip), which scopes the exemption to one peer. Does not affect the inbound TLS listener."},
-		{Name: "SIP_DEBUG", Default: "false", Description: "When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting."},
-		{Name: "SIP_DOMAIN", Default: "(falls back to advertised IP)", Description: "FQDN advertised in From, Contact and Via on all outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on SIP_TLS_CERT and any allowlist your carrier or Meta keeps."},
-		{Name: "SIP_HOST", Default: "voiceblender", Description: "SIP User-Agent name"},
-		{Name: "SIP_CODECS", Default: "PCMU,PCMA", Description: "Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs and accepts on inbound INVITEs. Recognized names (case-insensitive): PCMU, PCMA, G722, opus, AMR-WB, AMR-NB (bare token AMR resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently."},
-		{Name: "SIP_AUTO_RINGING", Default: "false", Description: "When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer."},
-		{Name: "SIP_INBOUND_RING_TIMEOUT_SECONDS", Default: "180", Description: "How long an inbound SIP, SIPREC or WhatsApp leg may stay unanswered (state ringing or early_media) before it is released. On expiry the INVITE is dropped without any final SIP response and leg.disconnected fires with reason ring_timeout. The limit is server-side only; the INVITE's Expires header is ignored. 0 = unbounded: a caller that never sends CANCEL then holds its leg until it is answered or deleted."},
-		{Name: "SIP_USE_SOURCE_SOCKET", Default: "false", Description: "When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT)."},
-		{Name: "SIP_OUTBOUND_PROXY", Default: "", Description: "Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` / `ip_ip.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only."},
-		{Name: "SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS", Default: "3600", Description: "Expiry used when an inbound REGISTER carries no Expires value."},
-		{Name: "SIP_REGISTRATION_MAX_EXPIRES_SECONDS", Default: "7200", Description: "Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum."},
-		{Name: "SIP_REGISTRATION_SWEEP_INTERVAL_MS", Default: "1000", Description: "Sweeper period (ms) for evicting expired AOR bindings."},
-		{Name: "SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", Default: "true", Description: "When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR."},
-		{Name: "ICE_SERVERS", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},
-		{Name: "WEBRTC_EXTERNAL_IPS", Default: "(empty)", Description: "Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value \"auto\" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal."},
-		{Name: "WEBRTC_ICE_DISCONNECTED_TIMEOUT", Default: "5s", Description: "How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE."},
-		{Name: "WEBRTC_ICE_FAILED_TIMEOUT", Default: "25s", Description: "How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration)."},
-		{Name: "RTP_PORT_MIN", Default: "10000", Description: "Minimum UDP port for RTP/RTCP media"},
-		{Name: "RTP_PORT_MAX", Default: "20000", Description: "Maximum UDP port for RTP/RTCP media"},
-		{Name: "DEFAULT_SAMPLE_RATE", Default: "16000", Description: "Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000."},
-		{Name: "SPEECH_DETECTION_ENABLED", Default: "false", Description: "Emit speaking.started / speaking.stopped events for every connected leg by default. Per-call speech_detection on POST /v1/legs or POST /v1/legs/{id}/answer overrides this."},
-		{Name: "VSI_EVENT_BUFFER_SIZE", Default: "256", Description: "Per-client buffer (in events) on the /v1/vsi WebSocket. When the client falls behind, new events are dropped and the next delivered event carries an events_dropped notification. Clamped to [16, 1000000]. Memory: ~1 KB × buffer per connection at the default."},
-		{Name: "AMRWB_MODE", Default: "2", Description: "AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE."},
-		{Name: "AMRWB_OCTET_ALIGNED", Default: "true", Description: "Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated."},
-		{Name: "AMRNB_MODE", Default: "7", Description: "AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s."},
-		{Name: "AMRNB_OCTET_ALIGNED", Default: "true", Description: "Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated."},
-		{Name: "RECORDING_DIR", Default: "/tmp/recordings", Description: "Local directory for recording output files"},
-		{Name: "LOG_LEVEL", Default: "info", Description: "Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug."},
-		{Name: "WEBHOOK_URL", Default: "", Description: "Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)"},
-		{Name: "WEBHOOK_SECRET", Default: "", Description: "HMAC-SHA256 signing secret for the global webhook"},
-		{Name: "ELEVENLABS_API_KEY", Default: "", Description: "API key for ElevenLabs TTS, STT, and Agent provider"},
-		{Name: "ELEVENLABS_BASE_URL", Default: "https://api.elevenlabs.io", Description: "ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io"},
-		{Name: "ELEVENLABS_ENABLE_LOGGING", Default: "true", Description: "false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests"},
-		{Name: "VAPI_API_KEY", Default: "", Description: "API key for VAPI Agent provider"},
-		{Name: "VAPI_BASE_URL", Default: "https://api.vapi.ai", Description: "VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call."},
-		{Name: "DEEPGRAM_API_KEY", Default: "", Description: "API key for Deepgram STT, TTS and Voice Agent"},
-		{Name: "DEEPGRAM_BASE_URL", Default: "https://api.deepgram.com", Description: "Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint"},
-		{Name: "DEEPGRAM_MIP_OPT_OUT", Default: "false", Description: "true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program"},
-		{Name: "AZURE_SPEECH_KEY", Default: "", Description: "Subscription key for Azure Cognitive Speech Services (TTS and STT)"},
-		{Name: "AZURE_SPEECH_REGION", Default: "eastus", Description: "Azure region for Speech Services (e.g. eastus, westeurope)"},
-		{Name: "SPEECHMATICS_API_KEY", Default: "", Description: "API key for Speechmatics STT"},
-		{Name: "SPEECHMATICS_URL", Default: "wss://eu2.rt.speechmatics.com/v2", Description: "Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container"},
-		{Name: "S3_BUCKET", Default: "", Description: "S3 bucket name for recording uploads"},
-		{Name: "S3_REGION", Default: "us-east-1", Description: "AWS region for S3"},
-		{Name: "S3_ENDPOINT", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},
-		{Name: "S3_PREFIX", Default: "", Description: "Key prefix applied to all S3 objects"},
-		{Name: "S3_ALLOW_INSECURE_ENDPOINT", Default: "false", Description: "Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in."},
-		{Name: "S3_PREFLIGHT_TIMEOUT", Default: "10s", Description: "Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe."},
-		{Name: "S3_REQUEST_PREFLIGHT_TIMEOUT", Default: "2s", Description: "Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe."},
-		{Name: "GCS_BUCKET", Default: "", Description: "Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE."},
-		{Name: "GCS_OBJECT_NAME_PREFIX", Default: "", Description: "Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing."},
-		{Name: "AWS_ACCESS_KEY_ID", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN."},
-		{Name: "AWS_SECRET_ACCESS_KEY", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID."},
-		{Name: "AWS_SESSION_TOKEN", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET."},
-		{Name: "AWS_PROFILE", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Profile name in ~/.aws/credentials to use instead of static AWS_* env vars."},
-		{Name: "AWS_REGION", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty."},
-		{Name: "GOOGLE_APPLICATION_CREDENTIALS", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Consumed by Google's Application Default Credentials chain (env var → gcloud ADC → GCE/GKE metadata / Workload Identity)."},
-		{Name: "TTS_CACHE_ENABLED", Default: "false", Description: "Enable disk-backed TTS audio cache; cached audio persists across restarts"},
-		{Name: "TTS_CACHE_DIR", Default: "/tmp/tts_cache", Description: "Directory for cached TTS audio files (used when TTS_CACHE_ENABLED=true)"},
-		{Name: "TTS_CACHE_INCLUDE_API_KEY", Default: "false", Description: "Include API key in TTS cache key; set true if different keys map to different voice clones"},
-		{Name: "SIP_JITTER_BUFFER_MS", Default: "0", Description: "SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg."},
-		{Name: "SIP_JITTER_BUFFER_MAX_MS", Default: "300", Description: "Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall."},
-		{Name: "WS_JITTER_BUFFER_MS", Default: "0", Description: "WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport's worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency."},
-		{Name: "COMFORT_NOISE_ENABLED", Default: "true", Description: "Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames."},
-		{Name: "SIP_SDP_STRICT_MLINE_ANSWER", Default: "false", Description: "Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video."},
-		{Name: "SIP_REFER_AUTO_DIAL", Default: "false", Description: "When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag."},
-		{Name: "SIP_TCP_ENABLED", Default: "false", Description: "Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session's INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP."},
-		{Name: "SIPREC_ENABLED", Default: "false", Description: "Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call's media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488."},
-		{Name: "SIPREC_AUTO_ANSWER", Default: "true", Description: "Answer an inbound recording session immediately instead of parking it until POST /v1/legs/{id}/answer. A session recording client does not wait for an application decision, so leaving this on is usually correct; turn it off to gate sessions from a controller."},
-		{Name: "SIPREC_MAX_STREAMS", Default: "8", Description: "Maximum number of m=audio sections accepted on one recording session. A session offering more is rejected with 486, bounding the RTP ports and goroutines a single peer can claim."},
-		{Name: "SIPREC_METADATA_MAX_BYTES", Default: "65536", Description: "Maximum size of the rs-metadata XML document in a SIPREC INVITE. A larger document is rejected with 413 rather than parsed."},
-		{Name: "SIPREC_SRC_ENABLED", Default: "false", Description: "Allow POST /v1/rooms/{id}/siprec to originate outbound recording sessions, forking a room's participants to an external session recording server. Off by default: it lets an API caller stream a room's audio to an arbitrary SIP destination."},
-		{Name: "SIPREC_AUTO_RECORD", Default: "false", Description: "Start multi-channel recording automatically when a SIPREC session is accepted, one channel per recorded participant. When false, recording is driven through the usual /v1/legs/{id}/record endpoint."},
-		{Name: "SIPREC_ROOM_MODE", Default: "none", Description: "Where a recording session's audio streams are mixed. \"none\" attaches nothing and leaves placement to the stream API; \"per_session\" creates a room named siprec-<legID> and attaches every stream, which is what makes live STT and agents apply to a recorded call; \"fixed\" attaches every session's streams into SIPREC_ROOM_ID."},
-		{Name: "SIPREC_ROOM_ID", Default: "", Description: "Room every recording session's streams join when SIPREC_ROOM_MODE=fixed. Ignored in the other modes."},
-		{Name: "MOQ_ENABLED", Default: "false", Description: "Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at CONNECT /v1/legs/moq over WebTransport/HTTP/3. PoC quality, tracks IETF draft-11. When enabled, both MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE must be set."},
-		{Name: "MOQ_LISTEN_ADDR", Default: ":8443", Description: "UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of HTTP_ADDR — TCP/:8080 and UDP/:8443 can run side-by-side."},
-		{Name: "MOQ_TLS_CERT_FILE", Default: "", Description: "Path to the TLS certificate used by the HTTP/3 listener. Required when MOQ_ENABLED=true."},
-		{Name: "MOQ_TLS_KEY_FILE", Default: "", Description: "Path to the TLS private key used by the HTTP/3 listener. Required when MOQ_ENABLED=true."},
-		{Name: "MOQ_OPUS_BITRATE", Default: "24000", Description: "Target bitrate (bps) for the Opus encoder feeding the MoQ leg's mix track. Must be in 6000..510000."},
-		{Name: "LIVEKIT_ENABLED", Default: "false", Description: "Enable the livekit_room leg type at POST /v1/legs (type=livekit_room). Lets VoiceBlender join a LiveKit room as a participant and bridge audio between SIP and LiveKit. Speaks the LiveKit signaling protocol directly via livekit/protocol protobufs over the existing pion stack — no LiveKit SDK is used."},
-		{Name: "LIVEKIT_URL", Default: "", Description: "Default LiveKit server endpoint (wss://...). Required when LIVEKIT_ENABLED=true unless every request supplies livekit.url. Overridable per-request."},
-		{Name: "LIVEKIT_OPUS_BITRATE", Default: "24000", Description: "Target bitrate (bps) for the Opus encoder publishing audio into LiveKit. Must be in 6000..510000. Overridable per-request via livekit.opus_bitrate."},
-		{Name: "LIVEKIT_TOKEN_SIGNING_ENABLED", Default: "false", Description: "Opt-in: when true, callers may omit livekit.token and instead pass {room,identity,permissions}; VoiceBlender mints the JWT itself. Security caveat: enabling this stores the LiveKit API secret (a high-privilege credential) in VoiceBlender. Keep off in multi-tenant deployments."},
-		{Name: "LIVEKIT_API_KEY", Default: "", Description: "LiveKit API key used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true."},
-		{Name: "LIVEKIT_API_SECRET", Default: "", Description: "LiveKit API secret used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true. Treat as a high-value secret; redact in logs."},
-		{Name: "LIVEKIT_DEFAULT_TOKEN_TTL", Default: "6h", Description: "Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours."},
+		{Name: "INSTANCE_ID", Group: "Server", Default: "(auto-generated UUID)", Description: "Instance identifier included in all API responses and webhook events"},
+		{Name: "HTTP_ADDR", Group: "Server", Default: ":8080", Description: "REST API listen address"},
+		{Name: "ALLOWED_IPS", Group: "Server", Default: "(empty = allow all)", Description: "Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS)."},
+		{Name: "TRUST_PROXY_HEADERS", Group: "Server", Default: "false", Description: "When true, the client IP used for the ALLOWED_IPS check is taken from the leftmost X-Forwarded-For entry (falling back to the socket peer if absent). Enable only behind a trusted reverse proxy that overwrites the header — otherwise it is client-spoofable."},
+		{Name: "SIP_BIND_IP", Group: "SIP", Default: "127.0.0.1", Description: "IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)"},
+		{Name: "SIP_LISTEN_IP", Group: "SIP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address"},
+		{Name: "SIP_BIND_IPV6", Group: "SIP", Default: "(empty = v4-only)", Description: "IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments"},
+		{Name: "SIP_LISTEN_IPV6", Group: "SIP", Default: "(same as SIP_BIND_IPV6)", Description: "Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)"},
+		{Name: "SIP_EXTERNAL_IP", Group: "SIP", Default: "", Description: "Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised."},
+		{Name: "SIP_LOCAL_NETS", Group: "SIP", Default: "", Description: "Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT. A SIP peer inside one of them is advertised SIP_BIND_IP (or the auto-detected address) in Contact and SDP c=, where every other peer gets SIP_EXTERNAL_IP and SIP_DOMAIN. Empty = every peer is advertised the same address."},
+		{Name: "SIP_ALLOWED_IPS", Group: "SIP", Default: "(empty = accept all)", Description: "Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) that SIP requests are accepted from, on UDP, TCP and TLS. Empty or any /0 entry accepts every source. A request from any other address is dropped without a SIP response and counted in voiceblender_sip_requests_rejected_total. Covers in-dialog requests too, so peers that are only dialed out to must be listed; responses are not filtered. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup."},
+		{Name: "SIP_PORT", Group: "SIP", Default: "5060", Description: "SIP listen port"},
+		{Name: "SIP_TLS_PORT", Group: "SIP TLS", Default: "(disabled)", Description: "SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration."},
+		{Name: "SIP_TLS_CERT", Group: "SIP TLS", Default: "", Description: "Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN."},
+		{Name: "SIP_TLS_KEY", Group: "SIP TLS", Default: "", Description: "Path to PEM-encoded TLS private key (e.g. privkey.pem)."},
+		{Name: "SIP_TLS_CA_FILE", Group: "SIP TLS", Default: "", Description: "Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate."},
+		{Name: "SIP_TLS_INSECURE_SKIP_VERIFY", Group: "SIP TLS", Default: "false", Description: "When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk tls_insecure_skip_verify (sip_register or ip_ip), which scopes the exemption to one peer. Does not affect the inbound TLS listener."},
+		{Name: "SIP_DEBUG", Group: "SIP", Default: "false", Description: "When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting."},
+		{Name: "SIP_DOMAIN", Group: "SIP", Default: "(falls back to advertised IP)", Description: "FQDN advertised in From, Contact and Via on all outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on SIP_TLS_CERT and any allowlist your carrier or Meta keeps."},
+		{Name: "SIP_HOST", Group: "SIP", Default: "voiceblender", Description: "SIP User-Agent name"},
+		{Name: "SIP_CODECS", Group: "SIP", Default: "PCMU,PCMA", Description: "Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs and accepts on inbound INVITEs. Recognized names (case-insensitive): PCMU, PCMA, G722, opus, AMR-WB, AMR-NB (bare token AMR resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently."},
+		{Name: "SIP_AUTO_RINGING", Group: "SIP", Default: "false", Description: "When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer."},
+		{Name: "SIP_INBOUND_RING_TIMEOUT_SECONDS", Group: "SIP", Default: "180", Description: "How long an inbound SIP, SIPREC or WhatsApp leg may stay unanswered (state ringing or early_media) before it is released. On expiry the INVITE is dropped without any final SIP response and leg.disconnected fires with reason ring_timeout. The limit is server-side only; the INVITE's Expires header is ignored. 0 = unbounded: a caller that never sends CANCEL then holds its leg until it is answered or deleted."},
+		{Name: "SIP_USE_SOURCE_SOCKET", Group: "SIP", Default: "false", Description: "When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT)."},
+		{Name: "SIP_OUTBOUND_PROXY", Group: "SIP", Default: "", Description: "Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` / `ip_ip.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only."},
+		{Name: "SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS", Group: "SIP registrations", Default: "3600", Description: "Expiry used when an inbound REGISTER carries no Expires value."},
+		{Name: "SIP_REGISTRATION_MAX_EXPIRES_SECONDS", Group: "SIP registrations", Default: "7200", Description: "Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum."},
+		{Name: "SIP_REGISTRATION_SWEEP_INTERVAL_MS", Group: "SIP registrations", Default: "1000", Description: "Sweeper period (ms) for evicting expired AOR bindings."},
+		{Name: "SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS", Group: "SIP registrations", Default: "true", Description: "When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR."},
+		{Name: "ICE_SERVERS", Group: "WebRTC", Default: "stun:stun.l.google.com:19302", Description: "STUN/TURN URLs for WebRTC ICE, comma-separated"},
+		{Name: "WEBRTC_EXTERNAL_IPS", Group: "WebRTC", Default: "(empty)", Description: "Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value \"auto\" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal."},
+		{Name: "WEBRTC_ICE_DISCONNECTED_TIMEOUT", Group: "WebRTC", Default: "5s", Description: "How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE."},
+		{Name: "WEBRTC_ICE_FAILED_TIMEOUT", Group: "WebRTC", Default: "25s", Description: "How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration)."},
+		{Name: "RTP_PORT_MIN", Group: "Media & codecs", Default: "10000", Description: "Minimum UDP port for RTP/RTCP media"},
+		{Name: "RTP_PORT_MAX", Group: "Media & codecs", Default: "20000", Description: "Maximum UDP port for RTP/RTCP media"},
+		{Name: "DEFAULT_SAMPLE_RATE", Group: "Media & codecs", Default: "16000", Description: "Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000."},
+		{Name: "SPEECH_DETECTION_ENABLED", Group: "Media & codecs", Default: "false", Description: "Emit speaking.started / speaking.stopped events for every connected leg by default. Per-call speech_detection on POST /v1/legs or POST /v1/legs/{id}/answer overrides this."},
+		{Name: "VSI_EVENT_BUFFER_SIZE", Group: "Server", Default: "256", Description: "Per-client buffer (in events) on the /v1/vsi WebSocket. When the client falls behind, new events are dropped and the next delivered event carries an events_dropped notification. Clamped to [16, 1000000]. Memory: ~1 KB × buffer per connection at the default."},
+		{Name: "AMRWB_MODE", Group: "Media & codecs", Default: "2", Description: "AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE."},
+		{Name: "AMRWB_OCTET_ALIGNED", Group: "Media & codecs", Default: "true", Description: "Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated."},
+		{Name: "AMRNB_MODE", Group: "Media & codecs", Default: "7", Description: "AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer's negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s."},
+		{Name: "AMRNB_OCTET_ALIGNED", Group: "Media & codecs", Default: "true", Description: "Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated."},
+		{Name: "RECORDING_DIR", Group: "Recording & storage", Default: "/tmp/recordings", Description: "Local directory for recording output files"},
+		{Name: "LOG_LEVEL", Group: "Server", Default: "info", Description: "Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug."},
+		{Name: "WEBHOOK_URL", Group: "Webhooks", Default: "", Description: "Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)"},
+		{Name: "WEBHOOK_SECRET", Group: "Webhooks", Default: "", Description: "HMAC-SHA256 signing secret for the global webhook"},
+		{Name: "ELEVENLABS_API_KEY", Group: "Speech & AI providers", Default: "", Description: "API key for ElevenLabs TTS, STT, and Agent provider"},
+		{Name: "ELEVENLABS_BASE_URL", Group: "Speech & AI providers", Default: "https://api.elevenlabs.io", Description: "ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io"},
+		{Name: "ELEVENLABS_ENABLE_LOGGING", Group: "Speech & AI providers", Default: "true", Description: "false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests"},
+		{Name: "VAPI_API_KEY", Group: "Speech & AI providers", Default: "", Description: "API key for VAPI Agent provider"},
+		{Name: "VAPI_BASE_URL", Group: "Speech & AI providers", Default: "https://api.vapi.ai", Description: "VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call."},
+		{Name: "DEEPGRAM_API_KEY", Group: "Speech & AI providers", Default: "", Description: "API key for Deepgram STT, TTS and Voice Agent"},
+		{Name: "DEEPGRAM_BASE_URL", Group: "Speech & AI providers", Default: "https://api.deepgram.com", Description: "Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint"},
+		{Name: "DEEPGRAM_MIP_OPT_OUT", Group: "Speech & AI providers", Default: "false", Description: "true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program"},
+		{Name: "AZURE_SPEECH_KEY", Group: "Speech & AI providers", Default: "", Description: "Subscription key for Azure Cognitive Speech Services (TTS and STT)"},
+		{Name: "AZURE_SPEECH_REGION", Group: "Speech & AI providers", Default: "eastus", Description: "Azure region for Speech Services (e.g. eastus, westeurope)"},
+		{Name: "SPEECHMATICS_API_KEY", Group: "Speech & AI providers", Default: "", Description: "API key for Speechmatics STT"},
+		{Name: "SPEECHMATICS_URL", Group: "Speech & AI providers", Default: "wss://eu2.rt.speechmatics.com/v2", Description: "Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container"},
+		{Name: "S3_BUCKET", Group: "Recording & storage", Default: "", Description: "S3 bucket name for recording uploads"},
+		{Name: "S3_REGION", Group: "Recording & storage", Default: "us-east-1", Description: "AWS region for S3"},
+		{Name: "S3_ENDPOINT", Group: "Recording & storage", Default: "", Description: "Custom S3-compatible endpoint (e.g. MinIO)"},
+		{Name: "S3_PREFIX", Group: "Recording & storage", Default: "", Description: "Key prefix applied to all S3 objects"},
+		{Name: "S3_ALLOW_INSECURE_ENDPOINT", Group: "Recording & storage", Default: "false", Description: "Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in."},
+		{Name: "S3_PREFLIGHT_TIMEOUT", Group: "Recording & storage", Default: "10s", Description: "Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe."},
+		{Name: "S3_REQUEST_PREFLIGHT_TIMEOUT", Group: "Recording & storage", Default: "2s", Description: "Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe."},
+		{Name: "GCS_BUCKET", Group: "Recording & storage", Default: "", Description: "Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE."},
+		{Name: "GCS_OBJECT_NAME_PREFIX", Group: "Recording & storage", Default: "", Description: "Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing."},
+		{Name: "AWS_ACCESS_KEY_ID", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN."},
+		{Name: "AWS_SECRET_ACCESS_KEY", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID."},
+		{Name: "AWS_SESSION_TOKEN", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET."},
+		{Name: "AWS_PROFILE", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Profile name in ~/.aws/credentials to use instead of static AWS_* env vars."},
+		{Name: "AWS_REGION", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty."},
+		{Name: "GOOGLE_APPLICATION_CREDENTIALS", Group: "Recording & storage", Default: "", Description: "[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Consumed by Google's Application Default Credentials chain (env var → gcloud ADC → GCE/GKE metadata / Workload Identity)."},
+		{Name: "TTS_CACHE_ENABLED", Group: "Speech & AI providers", Default: "false", Description: "Enable disk-backed TTS audio cache; cached audio persists across restarts"},
+		{Name: "TTS_CACHE_DIR", Group: "Speech & AI providers", Default: "/tmp/tts_cache", Description: "Directory for cached TTS audio files (used when TTS_CACHE_ENABLED=true)"},
+		{Name: "TTS_CACHE_INCLUDE_API_KEY", Group: "Speech & AI providers", Default: "false", Description: "Include API key in TTS cache key; set true if different keys map to different voice clones"},
+		{Name: "SIP_JITTER_BUFFER_MS", Group: "Media & codecs", Default: "0", Description: "SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg."},
+		{Name: "SIP_JITTER_BUFFER_MAX_MS", Group: "Media & codecs", Default: "300", Description: "Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall."},
+		{Name: "WS_JITTER_BUFFER_MS", Group: "Media & codecs", Default: "0", Description: "WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport's worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency."},
+		{Name: "COMFORT_NOISE_ENABLED", Group: "Media & codecs", Default: "true", Description: "Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames."},
+		{Name: "SIP_SDP_STRICT_MLINE_ANSWER", Group: "SIP", Default: "false", Description: "Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video."},
+		{Name: "SIP_REFER_AUTO_DIAL", Group: "SIP", Default: "false", Description: "When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag."},
+		{Name: "SIP_TCP_ENABLED", Group: "SIP", Default: "false", Description: "Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session's INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP."},
+		{Name: "SIPREC_ENABLED", Group: "SIPREC", Default: "false", Description: "Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call's media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488."},
+		{Name: "SIPREC_AUTO_ANSWER", Group: "SIPREC", Default: "true", Description: "Answer an inbound recording session immediately instead of parking it until POST /v1/legs/{id}/answer. A session recording client does not wait for an application decision, so leaving this on is usually correct; turn it off to gate sessions from a controller."},
+		{Name: "SIPREC_MAX_STREAMS", Group: "SIPREC", Default: "8", Description: "Maximum number of m=audio sections accepted on one recording session. A session offering more is rejected with 486, bounding the RTP ports and goroutines a single peer can claim."},
+		{Name: "SIPREC_METADATA_MAX_BYTES", Group: "SIPREC", Default: "65536", Description: "Maximum size of the rs-metadata XML document in a SIPREC INVITE. A larger document is rejected with 413 rather than parsed."},
+		{Name: "SIPREC_SRC_ENABLED", Group: "SIPREC", Default: "false", Description: "Allow POST /v1/rooms/{id}/siprec to originate outbound recording sessions, forking a room's participants to an external session recording server. Off by default: it lets an API caller stream a room's audio to an arbitrary SIP destination."},
+		{Name: "SIPREC_AUTO_RECORD", Group: "SIPREC", Default: "false", Description: "Start multi-channel recording automatically when a SIPREC session is accepted, one channel per recorded participant. When false, recording is driven through the usual /v1/legs/{id}/record endpoint."},
+		{Name: "SIPREC_ROOM_MODE", Group: "SIPREC", Default: "none", Description: "Where a recording session's audio streams are mixed. \"none\" attaches nothing and leaves placement to the stream API; \"per_session\" creates a room named siprec-<legID> and attaches every stream, which is what makes live STT and agents apply to a recorded call; \"fixed\" attaches every session's streams into SIPREC_ROOM_ID."},
+		{Name: "SIPREC_ROOM_ID", Group: "SIPREC", Default: "", Description: "Room every recording session's streams join when SIPREC_ROOM_MODE=fixed. Ignored in the other modes."},
+		{Name: "MOQ_ENABLED", Group: "MoQ", Default: "false", Description: "Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at CONNECT /v1/legs/moq over WebTransport/HTTP/3. PoC quality, tracks IETF draft-11. When enabled, both MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE must be set."},
+		{Name: "MOQ_LISTEN_ADDR", Group: "MoQ", Default: ":8443", Description: "UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of HTTP_ADDR — TCP/:8080 and UDP/:8443 can run side-by-side."},
+		{Name: "MOQ_TLS_CERT_FILE", Group: "MoQ", Default: "", Description: "Path to the TLS certificate used by the HTTP/3 listener. Required when MOQ_ENABLED=true."},
+		{Name: "MOQ_TLS_KEY_FILE", Group: "MoQ", Default: "", Description: "Path to the TLS private key used by the HTTP/3 listener. Required when MOQ_ENABLED=true."},
+		{Name: "MOQ_OPUS_BITRATE", Group: "MoQ", Default: "24000", Description: "Target bitrate (bps) for the Opus encoder feeding the MoQ leg's mix track. Must be in 6000..510000."},
+		{Name: "LIVEKIT_ENABLED", Group: "LiveKit", Default: "false", Description: "Enable the livekit_room leg type at POST /v1/legs (type=livekit_room). Lets VoiceBlender join a LiveKit room as a participant and bridge audio between SIP and LiveKit. Speaks the LiveKit signaling protocol directly via livekit/protocol protobufs over the existing pion stack — no LiveKit SDK is used."},
+		{Name: "LIVEKIT_URL", Group: "LiveKit", Default: "", Description: "Default LiveKit server endpoint (wss://...). Required when LIVEKIT_ENABLED=true unless every request supplies livekit.url. Overridable per-request."},
+		{Name: "LIVEKIT_OPUS_BITRATE", Group: "LiveKit", Default: "24000", Description: "Target bitrate (bps) for the Opus encoder publishing audio into LiveKit. Must be in 6000..510000. Overridable per-request via livekit.opus_bitrate."},
+		{Name: "LIVEKIT_TOKEN_SIGNING_ENABLED", Group: "LiveKit", Default: "false", Description: "Opt-in: when true, callers may omit livekit.token and instead pass {room,identity,permissions}; VoiceBlender mints the JWT itself. Security caveat: enabling this stores the LiveKit API secret (a high-privilege credential) in VoiceBlender. Keep off in multi-tenant deployments."},
+		{Name: "LIVEKIT_API_KEY", Group: "LiveKit", Default: "", Description: "LiveKit API key used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true."},
+		{Name: "LIVEKIT_API_SECRET", Group: "LiveKit", Default: "", Description: "LiveKit API secret used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true. Treat as a high-value secret; redact in logs."},
+		{Name: "LIVEKIT_DEFAULT_TOKEN_TTL", Group: "LiveKit", Default: "6h", Description: "Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours."},
 	}
+	order := map[string]int{}
+	for i, g := range configGroups {
+		order[g] = i
+	}
+	for _, v := range vars {
+		if _, ok := order[v.Group]; !ok {
+			fmt.Fprintf(os.Stderr, "config var %s: group %q is not in configGroups\n", v.Name, v.Group)
+			os.Exit(1)
+		}
+	}
+	sort.SliceStable(vars, func(i, j int) bool { return order[vars[i].Group] < order[vars[j].Group] })
 	s := newSeq()
 	for _, v := range vars {
-		s.add(newMap().set("name", v.Name).set("default", v.Default).set("description", v.Description))
+		s.add(newMap().set("name", v.Name).set("group", v.Group).set("default", v.Default).set("description", v.Description))
 	}
 	return s
 }
@@ -623,6 +652,9 @@ func buildOperation(r *api.RouteMeta) *omap {
 			tags.add(t)
 		}
 		op.set("tags", tags)
+	}
+	if r.Section != "" {
+		op.set("x-section", r.Section)
 	}
 
 	// Request body.
@@ -839,6 +871,10 @@ func main() {
 	webhookNestedFieldDescs = api.WebhookNestedFieldDescriptions()
 
 	routes := api.RoutesMetadata()
+	if problems := api.SectionProblems(); len(problems) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(problems, "\n"))
+		os.Exit(1)
+	}
 
 	// Pre-register core schemas that aren't derived from route types.
 	schemaRegistry["Error"] = newMap().set("type", "object").
@@ -950,26 +986,11 @@ func main() {
 	fmt.Printf("Generated %s (%d bytes)\n", outPath, len(out))
 }
 
-// tagDescriptions supplies the prose for each root-level tag. Every tag used by
-// an operation must have an entry here — buildTags fails the generation
-// otherwise, so a new route group cannot silently ship undeclared.
-func tagDescriptions() map[string]string {
-	return map[string]string{
-		"Legs":              "Voice call legs (SIP or WebRTC)",
-		"WebRTC":            "WebRTC peer connection establishment",
-		"Rooms":             "Multi-party audio conference rooms, including audio bridges between room mixers",
-		"SIP Registrations": "Inbound SIP AOR registrations and parked REGISTER attempts",
-		"SIP Trunks":        "SIP trunks to upstream carriers and PBXs (REGISTER or static peering)",
-		"Events":            "Real-time event stream and command channel (VSI)",
-		"Observability":     "Metrics and health endpoints",
-	}
-}
-
 // buildTags derives the root-level tags list from the tags the operations
 // actually carry, in first-appearance order, so it can never drift from the
 // paths block the way a hand-maintained list does.
 func buildTags(paths *omap) *seq {
-	descs := tagDescriptions()
+	descs := api.TagDescriptions()
 
 	tags := newSeq()
 	seen := map[string]bool{}
@@ -984,11 +1005,19 @@ func buildTags(paths *omap) *seq {
 			missing = append(missing, name)
 			continue
 		}
-		tags.add(newMap().set("name", name).set("description", desc))
+		tag := newMap().set("name", name).set("description", desc)
+		if secs := api.TagSections()[name]; len(secs) > 0 {
+			list := newSeq()
+			for _, sec := range secs {
+				list.add(newMap().set("name", sec.Name).set("description", sec.Description))
+			}
+			tag.set("x-sections", list)
+		}
+		tags.add(tag)
 	}
 
 	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "tag %q used by an operation but has no entry in tagDescriptions()\n",
+		fmt.Fprintf(os.Stderr, "tag %q used by an operation but has no entry in api.TagDescriptions()\n",
 			strings.Join(missing, `", "`))
 		os.Exit(1)
 	}
