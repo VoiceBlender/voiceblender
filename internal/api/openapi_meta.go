@@ -332,7 +332,10 @@ func RoutesMetadata() []RouteMeta {
 			Description: "Originate a new outbound leg. The `type` field selects the transport: " +
 				"`sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; " +
 				"`websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or " +
-				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). " +
+				"`json_base64` framing, with bidirectional text and caller-supplied X-/P- headers); " +
+				"`livekit_room` joins an external LiveKit room as a participant. " +
+				"WebRTC legs are not created here: the browser initiates them by sending its SDP offer " +
+				"to `POST /webrtc/offer`, which answers and returns the new leg's ID. " +
 				"For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose " +
 				"`Route` header, leaving the Request-URI unchanged. It outranks the matched trunk's " +
 				"`outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR " +

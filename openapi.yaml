@@ -349,7 +349,7 @@ paths:
         post:
             operationId: createLeg
             summary: Originate an outbound leg
-            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers). For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact. `trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over selecting a trunk by matching `from` against trunk AORs.'
+            description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers); `livekit_room` joins an external LiveKit room as a participant. WebRTC legs are not created here: the browser initiates them by sending its SDP offer to `POST /webrtc/offer`, which answers and returns the new leg''s ID. For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact. `trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over selecting a trunk by matching `from` against trunk AORs.'
             tags:
                 - Legs
             requestBody:
@@ -3680,7 +3680,7 @@ components:
                     description: Unique leg identifier (UUID)
                 type:
                     type: string
-                    description: Leg type
+                    description: Leg type. Covers inbound and outbound legs of every transport; `POST /legs` creates only some of them (see `CreateLegRequest.type`).
                     enum:
                         - sip_inbound
                         - sip_outbound
@@ -3925,7 +3925,7 @@ components:
             properties:
                 type:
                     type: string
-                    description: Leg type
+                    description: 'Transport to dial out on. WebRTC legs cannot be created here: the browser starts them via `POST /webrtc/offer`.'
                     enum:
                         - sip
                         - whatsapp
