@@ -34,7 +34,7 @@ type ResponseMeta struct {
 }
 
 // WebhookFieldDescriptions maps "event_type.field_name" → description for
-// inline properties in x-webhooks entries.
+// inline properties in webhooks entries.
 func WebhookFieldDescriptions() map[string]string {
 	return map[string]string{
 		// leg.ringing

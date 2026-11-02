@@ -297,7 +297,7 @@ func buildInfo() *omap {
 			"WebSocket protocol for real-time event streaming and command dispatch on /v1/vsi. "+
 				"All frames are JSON text. The server sends a `connected` frame on connect, then "+
 				"event frames whose shape is identical to webhook payloads (see openapi.yaml "+
-				"x-webhooks). Clients may issue commands at any time; each command receives a "+
+				"webhooks). Clients may issue commands at any time; each command receives a "+
 				"matching `<command>.result` or `error` frame echoing the request_id.\n\n"+
 				"This file is generated from internal/api/vsi_meta.go — every VSI command and "+
 				"every event in internal/events MUST be present in the registries there or this "+
@@ -533,12 +533,12 @@ func commandResultMessage(c api.VSICommandMeta) *omap {
 func eventMessage(ev api.EventMeta) *omap {
 	// Events on VSI carry the same JSON shape as webhooks. Reference the
 	// rich schema in openapi.yaml so we don't duplicate every field.
-	openapiPath := "openapi.yaml#/x-webhooks/" + string(ev.Type) + "/post/requestBody/content/application~1json/schema"
+	openapiPath := "openapi.yaml#/webhooks/" + string(ev.Type) + "/post/requestBody/content/application~1json/schema"
 	return newMap().
 		set("name", eventMsgName(string(ev.Type))).
 		set("title", ev.Summary).
 		set("summary", ev.Summary).
-		set("description", "Event payload shape is documented in openapi.yaml under x-webhooks/"+string(ev.Type)+". Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.").
+		set("description", "Event payload shape is documented in openapi.yaml under webhooks/"+string(ev.Type)+". Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.").
 		set("payload", newMap().set("$ref", openapiPath))
 }
 

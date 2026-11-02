@@ -32,6 +32,8 @@ jobs:
         run: go vet ./...
       - name: unit tests
         run: go test ./internal/... -count=1 -timeout=60s
+      - name: lint openapi.yaml
+        run: make lint-specs
 
   docker:
     needs: test

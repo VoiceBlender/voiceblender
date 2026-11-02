@@ -5,7 +5,7 @@ info:
     title: VoiceBlender Streaming Interface (VSI)
     version: 1.0.0
     description: |-
-        WebSocket protocol for real-time event streaming and command dispatch on /v1/vsi. All frames are JSON text. The server sends a `connected` frame on connect, then event frames whose shape is identical to webhook payloads (see openapi.yaml x-webhooks). Clients may issue commands at any time; each command receives a matching `<command>.result` or `error` frame echoing the request_id.
+        WebSocket protocol for real-time event streaming and command dispatch on /v1/vsi. All frames are JSON text. The server sends a `connected` frame on connect, then event frames whose shape is identical to webhook payloads (see openapi.yaml webhooks). Clients may issue commands at any time; each command receives a matching `<command>.result` or `error` frame echoing the request_id.
 
         This file is generated from internal/api/vsi_meta.go — every VSI command and every event in internal/events MUST be present in the registries there or this spec is incomplete.
     tags:
@@ -6090,492 +6090,492 @@ components:
             name: evt_leg_ringing
             title: SIP call ringing (inbound or outbound)
             summary: SIP call ringing (inbound or outbound)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.ringing. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.ringing. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.ringing/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.ringing/post/requestBody/content/application~1json/schema
         evt_leg_early_media:
             name: evt_leg_early_media
             title: Outbound leg received 183 Session Progress with SDP; media pipeline active
             summary: Outbound leg received 183 Session Progress with SDP; media pipeline active
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.early_media. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.early_media. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.early_media/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.early_media/post/requestBody/content/application~1json/schema
         evt_leg_connected:
             name: evt_leg_connected
             title: Leg answered/connected
             summary: Leg answered/connected
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.connected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.connected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.connected/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.connected/post/requestBody/content/application~1json/schema
         evt_leg_disconnected:
             name: evt_leg_disconnected
             title: Leg hung up (CDR-style nested structure)
             summary: Leg hung up (CDR-style nested structure)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.disconnected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.disconnected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.disconnected/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.disconnected/post/requestBody/content/application~1json/schema
         evt_leg_joined_room:
             name: evt_leg_joined_room
             title: Leg added to a room
             summary: Leg added to a room
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.joined_room. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.joined_room. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.joined_room/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.joined_room/post/requestBody/content/application~1json/schema
         evt_leg_left_room:
             name: evt_leg_left_room
             title: Leg removed from a room
             summary: Leg removed from a room
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.left_room. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.left_room. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.left_room/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.left_room/post/requestBody/content/application~1json/schema
         evt_leg_muted:
             name: evt_leg_muted
             title: Leg muted
             summary: Leg muted
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.muted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.muted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.muted/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.muted/post/requestBody/content/application~1json/schema
         evt_leg_unmuted:
             name: evt_leg_unmuted
             title: Leg unmuted
             summary: Leg unmuted
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.unmuted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.unmuted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.unmuted/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.unmuted/post/requestBody/content/application~1json/schema
         evt_leg_deaf:
             name: evt_leg_deaf
             title: Leg deafened (stops receiving room audio)
             summary: Leg deafened (stops receiving room audio)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.deaf. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.deaf. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.deaf/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.deaf/post/requestBody/content/application~1json/schema
         evt_leg_undeaf:
             name: evt_leg_undeaf
             title: Leg undeafened (resumes receiving room audio)
             summary: Leg undeafened (resumes receiving room audio)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.undeaf. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.undeaf. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.undeaf/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.undeaf/post/requestBody/content/application~1json/schema
         evt_leg_hold:
             name: evt_leg_hold
             title: Leg put on hold (local or remote)
             summary: Leg put on hold (local or remote)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.hold. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.hold. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.hold/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.hold/post/requestBody/content/application~1json/schema
         evt_leg_unhold:
             name: evt_leg_unhold
             title: Leg taken off hold (local or remote)
             summary: Leg taken off hold (local or remote)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.unhold. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.unhold. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.unhold/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.unhold/post/requestBody/content/application~1json/schema
         evt_leg_command_failed:
             name: evt_leg_command_failed
             title: An asynchronous leg command (202 Accepted) failed during execution
             summary: An asynchronous leg command (202 Accepted) failed during execution
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.command_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.command_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.command_failed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.command_failed/post/requestBody/content/application~1json/schema
         evt_leg_ice_interrupted:
             name: evt_leg_ice_interrupted
             title: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
             summary: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.ice_interrupted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.ice_interrupted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.ice_interrupted/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.ice_interrupted/post/requestBody/content/application~1json/schema
         evt_leg_ice_restored:
             name: evt_leg_ice_restored
             title: WebRTC leg regained ICE connectivity after leg.ice_interrupted
             summary: WebRTC leg regained ICE connectivity after leg.ice_interrupted
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.ice_restored. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.ice_restored. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.ice_restored/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.ice_restored/post/requestBody/content/application~1json/schema
         evt_leg_stream_added:
             name: evt_leg_stream_added
             title: An additional m=audio stream was negotiated on a live dialog
             summary: An additional m=audio stream was negotiated on a live dialog
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_added. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_added. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_added/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_added/post/requestBody/content/application~1json/schema
         evt_leg_stream_removed:
             name: evt_leg_stream_removed
             title: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
             summary: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_removed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_removed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_removed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_removed/post/requestBody/content/application~1json/schema
         evt_leg_stream_rejected:
             name: evt_leg_stream_rejected
             title: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
             summary: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_rejected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_rejected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_rejected/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_rejected/post/requestBody/content/application~1json/schema
         evt_leg_stream_failed:
             name: evt_leg_stream_failed
             title: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
             summary: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_failed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_failed/post/requestBody/content/application~1json/schema
         evt_leg_stream_room_changed:
             name: evt_leg_stream_room_changed
             title: An audio stream was attached to or detached from a room (an empty room_id means detached)
             summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_room_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_room_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_room_changed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_room_changed/post/requestBody/content/application~1json/schema
         evt_leg_stream_role_changed:
             name: evt_leg_stream_role_changed
             title: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
             summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.stream_role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.stream_role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.stream_role_changed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.stream_role_changed/post/requestBody/content/application~1json/schema
         evt_siprec_session_started:
             name: evt_siprec_session_started
             title: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
             summary: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.session_started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/siprec.session_started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/siprec.session_started/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/siprec.session_started/post/requestBody/content/application~1json/schema
         evt_siprec_session_ended:
             name: evt_siprec_session_ended
             title: A SIPREC recording session ended
             summary: A SIPREC recording session ended
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.session_ended. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/siprec.session_ended. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/siprec.session_ended/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/siprec.session_ended/post/requestBody/content/application~1json/schema
         evt_siprec_metadata_updated:
             name: evt_siprec_metadata_updated
             title: A SIPREC recording session's metadata document was updated on a re-INVITE
             summary: A SIPREC recording session's metadata document was updated on a re-INVITE
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.metadata_updated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/siprec.metadata_updated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/siprec.metadata_updated/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/siprec.metadata_updated/post/requestBody/content/application~1json/schema
         evt_siprec_participant_joined:
             name: evt_siprec_participant_joined
             title: A party joined the call being recorded by a SIPREC session
             summary: A party joined the call being recorded by a SIPREC session
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.participant_joined. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/siprec.participant_joined. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/siprec.participant_joined/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/siprec.participant_joined/post/requestBody/content/application~1json/schema
         evt_siprec_participant_left:
             name: evt_siprec_participant_left
             title: A party left the call being recorded by a SIPREC session
             summary: A party left the call being recorded by a SIPREC session
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/siprec.participant_left. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/siprec.participant_left. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/siprec.participant_left/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/siprec.participant_left/post/requestBody/content/application~1json/schema
         evt_dtmf_received:
             name: evt_dtmf_received
             title: DTMF digit received
             summary: DTMF digit received
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/dtmf.received. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/dtmf.received. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/dtmf.received/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/dtmf.received/post/requestBody/content/application~1json/schema
         evt_rtt_received:
             name: evt_rtt_received
             title: Real-Time Text (T.140 / RFC 4103) chunk received from the remote
             summary: Real-Time Text (T.140 / RFC 4103) chunk received from the remote
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/rtt.received. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/rtt.received. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/rtt.received/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/rtt.received/post/requestBody/content/application~1json/schema
         evt_speaking_started:
             name: evt_speaking_started
             title: Participant started speaking
             summary: Participant started speaking
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/speaking.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/speaking.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/speaking.started/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/speaking.started/post/requestBody/content/application~1json/schema
         evt_speaking_stopped:
             name: evt_speaking_stopped
             title: Participant stopped speaking
             summary: Participant stopped speaking
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/speaking.stopped. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/speaking.stopped. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/speaking.stopped/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/speaking.stopped/post/requestBody/content/application~1json/schema
         evt_playback_started:
             name: evt_playback_started
             title: Playback began
             summary: Playback began
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/playback.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/playback.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/playback.started/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/playback.started/post/requestBody/content/application~1json/schema
         evt_playback_finished:
             name: evt_playback_finished
             title: Playback ended
             summary: Playback ended
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/playback.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/playback.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/playback.finished/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/playback.finished/post/requestBody/content/application~1json/schema
         evt_playback_error:
             name: evt_playback_error
             title: Playback failed
             summary: Playback failed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/playback.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/playback.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/playback.error/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/playback.error/post/requestBody/content/application~1json/schema
         evt_tts_started:
             name: evt_tts_started
             title: TTS synthesis began playing
             summary: TTS synthesis began playing
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/tts.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/tts.started/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/tts.started/post/requestBody/content/application~1json/schema
         evt_tts_finished:
             name: evt_tts_finished
             title: TTS synthesis finished playing
             summary: TTS synthesis finished playing
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/tts.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/tts.finished/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/tts.finished/post/requestBody/content/application~1json/schema
         evt_tts_error:
             name: evt_tts_error
             title: TTS synthesis or playback failed
             summary: TTS synthesis or playback failed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/tts.error. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/tts.error/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/tts.error/post/requestBody/content/application~1json/schema
         evt_tts_staged:
             name: evt_tts_staged
             title: Preflight TTS finished synthesizing and is ready to commit
             summary: Preflight TTS finished synthesizing and is ready to commit
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.staged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/tts.staged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/tts.staged/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/tts.staged/post/requestBody/content/application~1json/schema
         evt_tts_discarded:
             name: evt_tts_discarded
             title: Staged TTS was dropped without being played
             summary: Staged TTS was dropped without being played
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/tts.discarded. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/tts.discarded. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/tts.discarded/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/tts.discarded/post/requestBody/content/application~1json/schema
         evt_recording_started:
             name: evt_recording_started
             title: Recording began
             summary: Recording began
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/recording.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/recording.started. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/recording.started/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/recording.started/post/requestBody/content/application~1json/schema
         evt_recording_finished:
             name: evt_recording_finished
             title: Recording ended
             summary: Recording ended
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/recording.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/recording.finished. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/recording.finished/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/recording.finished/post/requestBody/content/application~1json/schema
         evt_recording_paused:
             name: evt_recording_paused
             title: Recording paused (audio replaced with silence)
             summary: Recording paused (audio replaced with silence)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/recording.paused. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/recording.paused. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/recording.paused/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/recording.paused/post/requestBody/content/application~1json/schema
         evt_recording_resumed:
             name: evt_recording_resumed
             title: Recording resumed from a paused state
             summary: Recording resumed from a paused state
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/recording.resumed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/recording.resumed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/recording.resumed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/recording.resumed/post/requestBody/content/application~1json/schema
         evt_leg_transfer_initiated:
             name: evt_leg_transfer_initiated
             title: We sent a SIP REFER (transfer initiated by the operator)
             summary: We sent a SIP REFER (transfer initiated by the operator)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_initiated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.transfer_initiated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.transfer_initiated/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.transfer_initiated/post/requestBody/content/application~1json/schema
         evt_leg_transfer_requested:
             name: evt_leg_transfer_requested
             title: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
             summary: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_requested. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.transfer_requested. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.transfer_requested/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.transfer_requested/post/requestBody/content/application~1json/schema
         evt_leg_transfer_progress:
             name: evt_leg_transfer_progress
             title: Transfer progress reported via NOTIFY sipfrag
             summary: Transfer progress reported via NOTIFY sipfrag
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_progress. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.transfer_progress. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.transfer_progress/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.transfer_progress/post/requestBody/content/application~1json/schema
         evt_leg_transfer_completed:
             name: evt_leg_transfer_completed
             title: Transfer reached terminal 2xx
             summary: Transfer reached terminal 2xx
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_completed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.transfer_completed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.transfer_completed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.transfer_completed/post/requestBody/content/application~1json/schema
         evt_leg_transfer_failed:
             name: evt_leg_transfer_failed
             title: Transfer failed (REFER rejected, sipfrag non-2xx, or local error)
             summary: Transfer failed (REFER rejected, sipfrag non-2xx, or local error)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.transfer_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.transfer_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.transfer_failed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.transfer_failed/post/requestBody/content/application~1json/schema
         evt_room_created:
             name: evt_room_created
             title: Room created
             summary: Room created
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.created. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.created. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.created/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.created/post/requestBody/content/application~1json/schema
         evt_room_deleted:
             name: evt_room_deleted
             title: Room deleted
             summary: Room deleted
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.deleted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.deleted. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.deleted/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.deleted/post/requestBody/content/application~1json/schema
         evt_room_bridged:
             name: evt_room_bridged
             title: Two rooms' mixers were joined
             summary: Two rooms' mixers were joined
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.bridged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.bridged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.bridged/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.bridged/post/requestBody/content/application~1json/schema
         evt_room_bridge_updated:
             name: evt_room_bridge_updated
             title: A bridge's audio flow direction changed
             summary: A bridge's audio flow direction changed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.bridge_updated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.bridge_updated. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.bridge_updated/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.bridge_updated/post/requestBody/content/application~1json/schema
         evt_room_unbridged:
             name: evt_room_unbridged
             title: A bridge was torn down
             summary: A bridge was torn down
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.unbridged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.unbridged. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.unbridged/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.unbridged/post/requestBody/content/application~1json/schema
         evt_room_routing_changed:
             name: evt_room_routing_changed
             title: The room's audio routing matrix changed
             summary: The room's audio routing matrix changed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/room.routing_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/room.routing_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/room.routing_changed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/room.routing_changed/post/requestBody/content/application~1json/schema
         evt_leg_role_changed:
             name: evt_leg_role_changed
             title: A leg's routing role changed
             summary: A leg's routing role changed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/leg.role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/leg.role_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/leg.role_changed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/leg.role_changed/post/requestBody/content/application~1json/schema
         evt_stt_text:
             name: evt_stt_text
             title: Speech-to-text transcript
             summary: Speech-to-text transcript
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/stt.text. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/stt.text. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/stt.text/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/stt.text/post/requestBody/content/application~1json/schema
         evt_stt_turn:
             name: evt_stt_turn
             title: Speech-to-text turn boundary
             summary: Speech-to-text turn boundary
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/stt.turn. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/stt.turn. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/stt.turn/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/stt.turn/post/requestBody/content/application~1json/schema
         evt_agent_connected:
             name: evt_agent_connected
             title: Agent connected to provider
             summary: Agent connected to provider
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/agent.connected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/agent.connected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/agent.connected/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/agent.connected/post/requestBody/content/application~1json/schema
         evt_agent_disconnected:
             name: evt_agent_disconnected
             title: Agent session ended
             summary: Agent session ended
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/agent.disconnected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/agent.disconnected. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/agent.disconnected/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/agent.disconnected/post/requestBody/content/application~1json/schema
         evt_agent_user_transcript:
             name: evt_agent_user_transcript
             title: User speech transcribed by agent
             summary: User speech transcribed by agent
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/agent.user_transcript. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/agent.user_transcript. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/agent.user_transcript/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/agent.user_transcript/post/requestBody/content/application~1json/schema
         evt_agent_agent_response:
             name: evt_agent_agent_response
             title: Agent generated a response
             summary: Agent generated a response
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/agent.agent_response. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/agent.agent_response. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/agent.agent_response/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/agent.agent_response/post/requestBody/content/application~1json/schema
         evt_amd_result:
             name: evt_amd_result
             title: Answering machine detection completed
             summary: Answering machine detection completed
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/amd.result. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/amd.result. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/amd.result/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/amd.result/post/requestBody/content/application~1json/schema
         evt_amd_beep:
             name: evt_amd_beep
             title: Voicemail beep tone detected after machine classification
             summary: Voicemail beep tone detected after machine classification
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/amd.beep. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/amd.beep. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/amd.beep/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/amd.beep/post/requestBody/content/application~1json/schema
         evt_sip_registration_attempt:
             name: evt_sip_registration_attempt
             title: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
             summary: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_attempt. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.registration_attempt. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.registration_attempt/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.registration_attempt/post/requestBody/content/application~1json/schema
         evt_sip_registration_active:
             name: evt_sip_registration_active
             title: SIP AOR registration created or refreshed (one event per Contact)
             summary: SIP AOR registration created or refreshed (one event per Contact)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_active. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.registration_active. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.registration_active/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.registration_active/post/requestBody/content/application~1json/schema
         evt_sip_registration_expired:
             name: evt_sip_registration_expired
             title: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
             summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.registration_expired/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.registration_expired/post/requestBody/content/application~1json/schema
         evt_sip_outbound_registration_active:
             name: evt_sip_outbound_registration_active
             title: Outbound SIP trunk REGISTER accepted (initial or refresh)
             summary: Outbound SIP trunk REGISTER accepted (initial or refresh)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_active. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.outbound_registration_active. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_active/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.outbound_registration_active/post/requestBody/content/application~1json/schema
         evt_sip_outbound_registration_failed:
             name: evt_sip_outbound_registration_failed
             title: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
             summary: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.outbound_registration_failed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_failed/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.outbound_registration_failed/post/requestBody/content/application~1json/schema
         evt_sip_outbound_registration_expired:
             name: evt_sip_outbound_registration_expired
             title: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
             summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema
         evt_sip_trunk_up:
             name: evt_sip_trunk_up
             title: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
             summary: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.trunk_up. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.trunk_up. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.trunk_up/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.trunk_up/post/requestBody/content/application~1json/schema
         evt_sip_trunk_down:
             name: evt_sip_trunk_down
             title: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
             summary: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
-            description: 'Event payload shape is documented in openapi.yaml under x-webhooks/sip.trunk_down. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.trunk_down. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
-                $ref: openapi.yaml#/x-webhooks/sip.trunk_down/post/requestBody/content/application~1json/schema
+                $ref: openapi.yaml#/webhooks/sip.trunk_down/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.
