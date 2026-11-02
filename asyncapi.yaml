@@ -8,6 +8,14 @@ info:
         WebSocket protocol for real-time event streaming and command dispatch on /v1/vsi. All frames are JSON text. The server sends a `connected` frame on connect, then event frames whose shape is identical to webhook payloads (see openapi.yaml x-webhooks). Clients may issue commands at any time; each command receives a matching `<command>.result` or `error` frame echoing the request_id.
 
         This file is generated from internal/api/vsi_meta.go — every VSI command and every event in internal/events MUST be present in the registries there or this spec is incomplete.
+    tags:
+        - $ref: '#/components/tags/Legs'
+        - $ref: '#/components/tags/WebRTC'
+        - $ref: '#/components/tags/Rooms'
+        - $ref: '#/components/tags/SIP_Registrations'
+        - $ref: '#/components/tags/SIP_Trunks'
+        - $ref: '#/components/tags/Events'
+        - $ref: '#/components/tags/Connection'
 channels:
     vsi:
         address: /v1/vsi
@@ -584,6 +592,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List all active legs
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/list_legs'
         reply:
@@ -597,6 +608,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get a single leg by id
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/get_leg'
         reply:
@@ -611,6 +625,9 @@ operations:
             $ref: '#/channels/vsi'
         summary: Originate an outbound leg
         description: 'Originates an outbound leg, mirroring POST /v1/legs, and returns the leg view. Supports all leg types: "sip", "websocket", "whatsapp", and "livekit_room". For "livekit_room", custom headers come from the request''s `headers` map (there is no HTTP request over the WebSocket).'
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/create_leg'
         reply:
@@ -624,6 +641,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Answer a ringing inbound leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Inbound calls
         messages:
             - $ref: '#/channels/vsi/messages/answer_leg'
         reply:
@@ -637,6 +657,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Hang up a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/delete_leg'
         reply:
@@ -650,6 +673,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Mute a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/mute_leg'
         reply:
@@ -663,6 +689,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Unmute a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/unmute_leg'
         reply:
@@ -676,6 +705,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Deafen a leg (stop receiving room audio)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/deaf_leg'
         reply:
@@ -689,6 +721,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Undeafen a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/undeaf_leg'
         reply:
@@ -702,6 +737,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Put a SIP leg on hold
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/hold_leg'
         reply:
@@ -715,6 +753,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Resume a held SIP leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/unhold_leg'
         reply:
@@ -728,6 +769,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send DTMF digits on a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/send_leg_dtmf'
         reply:
@@ -741,6 +785,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Enable DTMF reception
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/accept_leg_dtmf'
         reply:
@@ -754,6 +801,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Disable DTMF reception
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/reject_leg_dtmf'
         reply:
@@ -767,6 +817,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send Real-Time Text (T.140) on a SIP leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/send_leg_rtt'
         reply:
@@ -780,6 +833,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Enable RTT reception
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/accept_leg_rtt'
         reply:
@@ -793,6 +849,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Disable RTT reception
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/reject_leg_rtt'
         reply:
@@ -807,6 +866,8 @@ operations:
             $ref: '#/channels/vsi'
         summary: Establish a WebRTC leg via SDP offer/answer
         description: Accepts a browser SDP offer, allocates a peer connection, returns the local SDP answer plus the new leg id. Subsequent ICE candidates from the browser are delivered via webrtc_add_candidate; server-side candidates are drained via webrtc_get_candidates.
+        tags:
+            - $ref: '#/components/tags/WebRTC'
         messages:
             - $ref: '#/channels/vsi/messages/webrtc_offer'
         reply:
@@ -820,6 +881,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Add a remote ICE candidate to a WebRTC leg
+        tags:
+            - $ref: '#/components/tags/WebRTC'
         messages:
             - $ref: '#/channels/vsi/messages/webrtc_add_candidate'
         reply:
@@ -834,6 +897,8 @@ operations:
             $ref: '#/channels/vsi'
         summary: Drain server-gathered ICE candidates for a WebRTC leg
         description: Returns any local ICE candidates that have been gathered since the last call, plus a `done` flag indicating ICE gathering has completed. Clients should poll until `done` is true.
+        tags:
+            - $ref: '#/components/tags/WebRTC'
         messages:
             - $ref: '#/channels/vsi/messages/webrtc_get_candidates'
         reply:
@@ -848,6 +913,8 @@ operations:
             $ref: '#/channels/vsi'
         summary: Restart ICE on a WebRTC leg
         description: 'Applies a new SDP offer carrying fresh ICE credentials (browser `restartIce()`) to the existing leg and returns the answer; the leg id, media session and room membership are kept. Send the client''s new candidates with webrtc_add_candidate only after this result arrives, and poll webrtc_get_candidates again: its `done` flag restarts at false.'
+        tags:
+            - $ref: '#/components/tags/WebRTC'
         messages:
             - $ref: '#/channels/vsi/messages/webrtc_ice_restart'
         reply:
@@ -861,6 +928,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List all rooms
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/list_rooms'
         reply:
@@ -874,6 +944,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get a single room by id
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/get_room'
         reply:
@@ -887,6 +960,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Create a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/create_room'
         reply:
@@ -900,6 +976,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Delete a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Lifecycle
         messages:
             - $ref: '#/channels/vsi/messages/delete_room'
         reply:
@@ -913,6 +992,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Add or move a leg into a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Participants
         messages:
             - $ref: '#/channels/vsi/messages/add_leg_to_room'
         reply:
@@ -926,6 +1008,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Remove a leg from a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Participants
         messages:
             - $ref: '#/channels/vsi/messages/remove_leg_from_room'
         reply:
@@ -939,6 +1024,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Join two rooms' mixers
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Bridges
         messages:
             - $ref: '#/channels/vsi/messages/bridge_create'
         reply:
@@ -952,6 +1040,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List bridges involving a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Bridges
         messages:
             - $ref: '#/channels/vsi/messages/bridge_list'
         reply:
@@ -965,6 +1056,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get a bridge involving a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Bridges
         messages:
             - $ref: '#/channels/vsi/messages/bridge_get'
         reply:
@@ -978,6 +1072,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Change a bridge's direction
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Bridges
         messages:
             - $ref: '#/channels/vsi/messages/bridge_update'
         reply:
@@ -991,6 +1088,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Tear down a bridge
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Bridges
         messages:
             - $ref: '#/channels/vsi/messages/bridge_delete'
         reply:
@@ -1004,6 +1104,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get a room's audio routing matrix
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Audio routing
         messages:
             - $ref: '#/channels/vsi/messages/room_routing_get'
         reply:
@@ -1017,6 +1120,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Replace a room's audio routing matrix
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Audio routing
         messages:
             - $ref: '#/channels/vsi/messages/room_routing_set'
         reply:
@@ -1030,6 +1136,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Update selected rows of a room's audio routing matrix
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Audio routing
         messages:
             - $ref: '#/channels/vsi/messages/room_routing_update'
         reply:
@@ -1043,6 +1152,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Change a leg's routing role (recomputes the room matrix if the leg is in a room)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Settings
         messages:
             - $ref: '#/channels/vsi/messages/set_leg_role'
         reply:
@@ -1056,6 +1168,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Replace the audio filter chain running on a live leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Settings
         messages:
             - $ref: '#/channels/vsi/messages/set_leg_filters'
         reply:
@@ -1069,6 +1184,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Replace a leg's custom_data (carried on every subsequent event for the leg)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Settings
         messages:
             - $ref: '#/channels/vsi/messages/set_leg_custom_data'
         reply:
@@ -1082,6 +1200,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Clear a leg's custom_data
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Settings
         messages:
             - $ref: '#/channels/vsi/messages/delete_leg_custom_data'
         reply:
@@ -1095,6 +1216,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List a SIP leg's negotiated audio streams
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_list'
         reply:
@@ -1108,6 +1232,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get one of a SIP leg's audio streams
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_get'
         reply:
@@ -1121,6 +1248,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Negotiate an additional m=audio section on a live dialog via re-INVITE
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_add'
         reply:
@@ -1134,6 +1264,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Change one of a leg's audio streams' routing role in place
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_update'
         reply:
@@ -1147,6 +1280,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Disable one of a leg's audio streams with a port-0 re-INVITE
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_remove'
         reply:
@@ -1160,6 +1296,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Mix one of a leg's audio streams into a room (may differ from the leg's own room)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_attach_room'
         reply:
@@ -1173,6 +1312,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Remove one of a leg's audio streams from whichever room mixes it
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg_stream_detach_room'
         reply:
@@ -1186,6 +1328,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Fork a single call to an external SIPREC recording server
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/leg_siprec_start'
         reply:
@@ -1199,6 +1344,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Fork a room's participants to an external SIPREC recording server
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/room_siprec_start'
         reply:
@@ -1212,6 +1360,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get an inbound SIPREC recording session's participants, streams and metadata
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec_get'
         reply:
@@ -1225,6 +1376,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send a 180 Ringing on a SIP inbound leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Inbound calls
         messages:
             - $ref: '#/channels/vsi/messages/leg_ring'
         reply:
@@ -1238,6 +1392,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Enable early media (183 Session Progress) on a SIP inbound leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Inbound calls
         messages:
             - $ref: '#/channels/vsi/messages/leg_early_media'
         reply:
@@ -1251,6 +1408,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start Answering Machine Detection on a connected SIP leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Speech-to-text & AMD
         messages:
             - $ref: '#/channels/vsi/messages/leg_amd_start'
         reply:
@@ -1264,6 +1424,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start recording a leg (stereo when in a room or SIP, mono otherwise)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/leg_record_start'
         reply:
@@ -1277,6 +1440,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start recording the full room mix (mono; multi_channel adds per-participant tracks)
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/room_record_start'
         reply:
@@ -1290,6 +1456,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Pause a leg recording
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/leg_record_pause'
         reply:
@@ -1303,6 +1472,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Resume a paused leg recording
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/leg_record_resume'
         reply:
@@ -1316,6 +1488,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop a leg recording
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/leg_record_stop'
         reply:
@@ -1329,6 +1504,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop a room recording
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/room_record_stop'
         reply:
@@ -1342,6 +1520,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Pause a room recording
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/room_record_pause'
         reply:
@@ -1355,6 +1536,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Resume a paused room recording
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/room_record_resume'
         reply:
@@ -1368,6 +1552,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start audio playback on a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_play_start'
         reply:
@@ -1381,6 +1568,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop a leg playback
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_play_stop'
         reply:
@@ -1394,6 +1584,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start audio playback on a room mix
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/room_play_start'
         reply:
@@ -1407,6 +1600,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop a room playback
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/room_play_stop'
         reply:
@@ -1420,6 +1616,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Adjust the volume of an active leg playback
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_play_volume'
         reply:
@@ -1433,6 +1632,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Adjust the volume of an active room playback
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/room_play_volume'
         reply:
@@ -1446,6 +1648,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start speech-to-text on a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Speech-to-text & AMD
         messages:
             - $ref: '#/channels/vsi/messages/leg_stt_start'
         reply:
@@ -1459,6 +1664,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Start speech-to-text on every participant of a room (auto-extends to legs that join later)
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Speech-to-text
         messages:
             - $ref: '#/channels/vsi/messages/room_stt_start'
         reply:
@@ -1472,6 +1680,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop speech-to-text on a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Speech-to-text & AMD
         messages:
             - $ref: '#/channels/vsi/messages/leg_stt_stop'
         reply:
@@ -1485,6 +1696,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Stop speech-to-text on a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Speech-to-text
         messages:
             - $ref: '#/channels/vsi/messages/room_stt_stop'
         reply:
@@ -1498,6 +1712,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Flush the speech-to-text buffer on a leg and emit a final transcript without stopping STT
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Speech-to-text & AMD
         messages:
             - $ref: '#/channels/vsi/messages/leg_stt_finalize'
         reply:
@@ -1511,6 +1728,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Synthesize speech and play it on a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_tts'
         reply:
@@ -1525,6 +1745,9 @@ operations:
             $ref: '#/channels/vsi'
         summary: Synthesize speech and hold it for a later commit
         description: 'Stages a speculative reply: the audio is synthesized and buffered but not played, so that committing it starts playback with no synthesis delay. Use with the eager_end_of_turn stt.turn event to begin generating a reply before the caller has finished speaking, then commit on end_of_turn or discard on turn_resumed. A tts.staged event reports when the audio is ready. Staged utterances are dropped after TTS_PREFLIGHT_TTL or when the leg ends.'
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_tts_preflight'
         reply:
@@ -1539,6 +1762,9 @@ operations:
             $ref: '#/channels/vsi'
         summary: Play a staged TTS utterance
         description: Starts playback of an utterance staged by leg_tts_preflight. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on tts.error, exactly as for leg_tts. Once committed, stop it with leg_play_stop using the same tts_id.
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_tts_commit'
         reply:
@@ -1552,6 +1778,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Drop a staged TTS utterance without playing it
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/leg_tts_discard'
         reply:
@@ -1565,6 +1794,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Synthesize speech and play it into a room mix
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/room_tts'
         reply:
@@ -1578,6 +1810,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Initiate a SIP REFER transfer (blind or attended)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg_transfer'
         reply:
@@ -1591,6 +1826,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Accept a parked inbound REFER (send 202 + NOTIFY 100 Trying)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/accept_transfer'
         reply:
@@ -1604,6 +1842,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send an interim sipfrag NOTIFY (e.g. 180 Ringing) on an accepted inbound transfer
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/progress_transfer'
         reply:
@@ -1617,6 +1858,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Terminate an accepted inbound transfer with a final sipfrag NOTIFY (200 OK or failure)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/complete_transfer'
         reply:
@@ -1630,6 +1874,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Reject a parked (not-yet-accepted) inbound REFER (603 by default)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/decline_transfer'
         reply:
@@ -1643,6 +1890,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach an ElevenLabs Conversational AI agent to a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_elevenlabs'
         reply:
@@ -1656,6 +1906,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a VAPI agent to a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_vapi'
         reply:
@@ -1669,6 +1922,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a Pipecat bot to a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_pipecat'
         reply:
@@ -1682,6 +1938,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a Deepgram Voice Agent to a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_deepgram'
         reply:
@@ -1695,6 +1954,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach an ElevenLabs Conversational AI agent to a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_elevenlabs'
         reply:
@@ -1708,6 +1970,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a VAPI agent to a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_vapi'
         reply:
@@ -1721,6 +1986,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a Pipecat bot to a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_pipecat'
         reply:
@@ -1734,6 +2002,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Attach a Deepgram Voice Agent to a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_deepgram'
         reply:
@@ -1747,6 +2018,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Detach the agent attached to a leg
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_stop'
         reply:
@@ -1760,6 +2034,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Detach the agent attached to a room
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_stop'
         reply:
@@ -1773,6 +2050,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Inject a text message into a leg agent session
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/leg_agent_message'
         reply:
@@ -1786,6 +2066,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Inject a text message into a room agent session
+        tags:
+            - $ref: '#/components/tags/Rooms'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/room_agent_message'
         reply:
@@ -1799,6 +2082,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List active SIP AOR registrations
+        tags:
+            - $ref: '#/components/tags/SIP_Registrations'
         messages:
             - $ref: '#/channels/vsi/messages/list_sip_registrations'
         reply:
@@ -1812,6 +2097,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Force-unbind an AOR (or a single contact under it)
+        tags:
+            - $ref: '#/components/tags/SIP_Registrations'
         messages:
             - $ref: '#/channels/vsi/messages/delete_sip_registration'
         reply:
@@ -1825,6 +2112,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send a 401 digest challenge on a ringing inbound SIP leg (INVITE)
+        tags:
+            - $ref: '#/components/tags/Legs'
+        x-section: Inbound calls
         messages:
             - $ref: '#/channels/vsi/messages/challenge_leg'
         reply:
@@ -1838,6 +2128,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Send a 401 digest challenge for a parked inbound REGISTER attempt
+        tags:
+            - $ref: '#/components/tags/SIP_Registrations'
         messages:
             - $ref: '#/channels/vsi/messages/challenge_registration'
         reply:
@@ -1851,6 +2143,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Accept a parked inbound REGISTER attempt (bind and reply 200 OK)
+        tags:
+            - $ref: '#/components/tags/SIP_Registrations'
         messages:
             - $ref: '#/channels/vsi/messages/accept_registration'
         reply:
@@ -1864,6 +2158,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Reject a parked inbound REGISTER attempt (reply 403 by default)
+        tags:
+            - $ref: '#/components/tags/SIP_Registrations'
         messages:
             - $ref: '#/channels/vsi/messages/reject_registration'
         reply:
@@ -1877,6 +2173,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Create a SIP trunk (REGISTER or static peering)
+        tags:
+            - $ref: '#/components/tags/SIP_Trunks'
         messages:
             - $ref: '#/channels/vsi/messages/create_sip_trunk'
         reply:
@@ -1890,6 +2188,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: List configured SIP trunks
+        tags:
+            - $ref: '#/components/tags/SIP_Trunks'
         messages:
             - $ref: '#/channels/vsi/messages/list_sip_trunks'
         reply:
@@ -1903,6 +2203,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Get a single SIP trunk
+        tags:
+            - $ref: '#/components/tags/SIP_Trunks'
         messages:
             - $ref: '#/channels/vsi/messages/get_sip_trunk'
         reply:
@@ -1916,6 +2218,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Remove a SIP trunk
+        tags:
+            - $ref: '#/components/tags/SIP_Trunks'
         messages:
             - $ref: '#/channels/vsi/messages/delete_sip_trunk'
         reply:
@@ -1929,6 +2233,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: SIP call ringing (inbound or outbound)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Call progress
         messages:
             - $ref: '#/channels/vsi/messages/leg.ringing'
     send_leg_early_media:
@@ -1936,6 +2243,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Outbound leg received 183 Session Progress with SDP; media pipeline active
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Call progress
         messages:
             - $ref: '#/channels/vsi/messages/leg.early_media'
     send_leg_connected:
@@ -1943,6 +2253,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg answered/connected
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Call progress
         messages:
             - $ref: '#/channels/vsi/messages/leg.connected'
     send_leg_disconnected:
@@ -1950,6 +2263,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg hung up (CDR-style nested structure)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Call progress
         messages:
             - $ref: '#/channels/vsi/messages/leg.disconnected'
     send_leg_joined_room:
@@ -1957,6 +2273,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg added to a room
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/leg.joined_room'
     send_leg_left_room:
@@ -1964,6 +2283,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg removed from a room
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/leg.left_room'
     send_leg_muted:
@@ -1971,6 +2293,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg muted
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.muted'
     send_leg_unmuted:
@@ -1978,6 +2303,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg unmuted
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.unmuted'
     send_leg_deaf:
@@ -1985,6 +2313,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg deafened (stops receiving room audio)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.deaf'
     send_leg_undeaf:
@@ -1992,6 +2323,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg undeafened (resumes receiving room audio)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.undeaf'
     send_leg_hold:
@@ -1999,6 +2333,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg put on hold (local or remote)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.hold'
     send_leg_unhold:
@@ -2006,6 +2343,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Leg taken off hold (local or remote)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Mute, deafen & hold
         messages:
             - $ref: '#/channels/vsi/messages/leg.unhold'
     send_leg_command_failed:
@@ -2013,6 +2353,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An asynchronous leg command (202 Accepted) failed during execution
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Call progress
         messages:
             - $ref: '#/channels/vsi/messages/leg.command_failed'
     send_leg_ice_interrupted:
@@ -2020,6 +2363,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: WebRTC leg lost ICE connectivity; the leg is kept so the peer can restart ICE
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: WebRTC
         messages:
             - $ref: '#/channels/vsi/messages/leg.ice_interrupted'
     send_leg_ice_restored:
@@ -2027,6 +2373,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: WebRTC leg regained ICE connectivity after leg.ice_interrupted
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: WebRTC
         messages:
             - $ref: '#/channels/vsi/messages/leg.ice_restored'
     send_leg_stream_added:
@@ -2034,6 +2383,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An additional m=audio stream was negotiated on a live dialog
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_added'
     send_leg_stream_removed:
@@ -2041,6 +2393,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An audio stream was disabled with a port-0 re-INVITE; its m-line slot survives as a tombstone
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_removed'
     send_leg_stream_rejected:
@@ -2048,6 +2403,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: The peer refused an additional audio stream, or it could not be negotiated; the call is unaffected
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_rejected'
     send_leg_stream_failed:
@@ -2055,6 +2413,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An audio stream's media loop failed and the stream was torn down; the call continues on its remaining streams
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_failed'
     send_leg_stream_room_changed:
@@ -2062,6 +2423,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An audio stream was attached to or detached from a room (an empty room_id means detached)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_room_changed'
     send_leg_stream_role_changed:
@@ -2069,6 +2433,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An audio stream's routing role changed; the room's allow-sets were recomputed atomically
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Audio streams
         messages:
             - $ref: '#/channels/vsi/messages/leg.stream_role_changed'
     send_siprec_session_started:
@@ -2076,6 +2443,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: An inbound SIPREC recording session was accepted; carries the participants and the stream-to-participant bindings
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec.session_started'
     send_siprec_session_ended:
@@ -2083,6 +2453,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A SIPREC recording session ended
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec.session_ended'
     send_siprec_metadata_updated:
@@ -2090,6 +2463,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A SIPREC recording session's metadata document was updated on a re-INVITE
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec.metadata_updated'
     send_siprec_participant_joined:
@@ -2097,6 +2473,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A party joined the call being recorded by a SIPREC session
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec.participant_joined'
     send_siprec_participant_left:
@@ -2104,6 +2483,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A party left the call being recorded by a SIPREC session
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/siprec.participant_left'
     send_dtmf_received:
@@ -2111,6 +2493,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: DTMF digit received
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/dtmf.received'
     send_rtt_received:
@@ -2118,6 +2503,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Real-Time Text (T.140 / RFC 4103) chunk received from the remote
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: DTMF & real-time text
         messages:
             - $ref: '#/channels/vsi/messages/rtt.received'
     send_speaking_started:
@@ -2125,6 +2513,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Participant started speaking
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/speaking.started'
     send_speaking_stopped:
@@ -2132,6 +2523,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Participant stopped speaking
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/speaking.stopped'
     send_playback_started:
@@ -2139,6 +2533,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Playback began
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/playback.started'
     send_playback_finished:
@@ -2146,6 +2543,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Playback ended
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/playback.finished'
     send_playback_error:
@@ -2153,6 +2553,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Playback failed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/playback.error'
     send_tts_started:
@@ -2160,6 +2563,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: TTS synthesis began playing
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/tts.started'
     send_tts_finished:
@@ -2167,6 +2573,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: TTS synthesis finished playing
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/tts.finished'
     send_tts_error:
@@ -2174,6 +2583,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: TTS synthesis or playback failed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/tts.error'
     send_tts_staged:
@@ -2181,6 +2593,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Preflight TTS finished synthesizing and is ready to commit
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/tts.staged'
     send_tts_discarded:
@@ -2188,6 +2603,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Staged TTS was dropped without being played
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Playback & TTS
         messages:
             - $ref: '#/channels/vsi/messages/tts.discarded'
     send_recording_started:
@@ -2195,6 +2613,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Recording began
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/recording.started'
     send_recording_finished:
@@ -2202,6 +2623,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Recording ended
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/recording.finished'
     send_recording_paused:
@@ -2209,6 +2633,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Recording paused (audio replaced with silence)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/recording.paused'
     send_recording_resumed:
@@ -2216,6 +2643,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Recording resumed from a paused state
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Recording & SIPREC
         messages:
             - $ref: '#/channels/vsi/messages/recording.resumed'
     send_leg_transfer_initiated:
@@ -2223,6 +2653,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: We sent a SIP REFER (transfer initiated by the operator)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_initiated'
     send_leg_transfer_requested:
@@ -2230,6 +2663,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: We received a SIP REFER from the peer; decide via accept_transfer/decline_transfer (unless SIP_REFER_AUTO_DIAL=true)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_requested'
     send_leg_transfer_progress:
@@ -2237,6 +2673,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Transfer progress reported via NOTIFY sipfrag
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_progress'
     send_leg_transfer_completed:
@@ -2244,6 +2683,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Transfer reached terminal 2xx
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_completed'
     send_leg_transfer_failed:
@@ -2251,6 +2693,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Transfer failed (REFER rejected, sipfrag non-2xx, or local error)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Transfer
         messages:
             - $ref: '#/channels/vsi/messages/leg.transfer_failed'
     send_room_created:
@@ -2258,6 +2703,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Room created
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.created'
     send_room_deleted:
@@ -2265,6 +2713,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Room deleted
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.deleted'
     send_room_bridged:
@@ -2272,6 +2723,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Two rooms' mixers were joined
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.bridged'
     send_room_bridge_updated:
@@ -2279,6 +2733,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A bridge's audio flow direction changed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.bridge_updated'
     send_room_unbridged:
@@ -2286,6 +2743,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A bridge was torn down
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.unbridged'
     send_room_routing_changed:
@@ -2293,6 +2753,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: The room's audio routing matrix changed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/room.routing_changed'
     send_leg_role_changed:
@@ -2300,6 +2763,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: A leg's routing role changed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Rooms & routing
         messages:
             - $ref: '#/channels/vsi/messages/leg.role_changed'
     send_stt_text:
@@ -2307,6 +2773,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Speech-to-text transcript
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/stt.text'
     send_stt_turn:
@@ -2314,6 +2783,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Speech-to-text turn boundary
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/stt.turn'
     send_agent_connected:
@@ -2321,6 +2793,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Agent connected to provider
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/agent.connected'
     send_agent_disconnected:
@@ -2328,6 +2803,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Agent session ended
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/agent.disconnected'
     send_agent_user_transcript:
@@ -2335,6 +2813,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: User speech transcribed by agent
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/agent.user_transcript'
     send_agent_agent_response:
@@ -2342,6 +2823,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Agent generated a response
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: AI agents
         messages:
             - $ref: '#/channels/vsi/messages/agent.agent_response'
     send_amd_result:
@@ -2349,6 +2833,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Answering machine detection completed
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/amd.result'
     send_amd_beep:
@@ -2356,6 +2843,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Voicemail beep tone detected after machine classification
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Speech & AMD
         messages:
             - $ref: '#/channels/vsi/messages/amd.beep'
     send_sip_registration_attempt:
@@ -2363,6 +2853,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Inbound REGISTER surfaced for a challenge/accept/reject decision (auto-accepts on consult timeout)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.registration_attempt'
     send_sip_registration_active:
@@ -2370,6 +2863,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: SIP AOR registration created or refreshed (one event per Contact)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.registration_active'
     send_sip_registration_expired:
@@ -2377,6 +2873,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.registration_expired'
     send_sip_outbound_registration_active:
@@ -2384,6 +2883,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Outbound SIP trunk REGISTER accepted (initial or refresh)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.outbound_registration_active'
     send_sip_outbound_registration_failed:
@@ -2391,6 +2893,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.outbound_registration_failed'
     send_sip_outbound_registration_expired:
@@ -2398,6 +2903,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.outbound_registration_expired'
     send_sip_trunk_up:
@@ -2405,6 +2913,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.trunk_up'
     send_sip_trunk_down:
@@ -2412,6 +2923,9 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.trunk_down'
     send_connected:
@@ -2419,6 +2933,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: First frame the server sends after the WebSocket upgrade completes. Carries no data.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/connected'
     send_ping:
@@ -2426,6 +2942,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Periodic application-level keepalive (every ~30 s), carrying a monotonic per-connection counter in `seq`. Clients may reply with `pong` or ignore.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/ping'
     receive_pong:
@@ -2433,6 +2951,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Optional client keepalive reply to a `ping`. Currently a no-op on the server side.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/pong'
     receive_stop:
@@ -2440,6 +2960,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Client-initiated graceful close. The server stops the recv loop and closes the connection.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/stop'
     send_events_dropped:
@@ -2447,6 +2969,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Sent when the per-connection event buffer overflowed. The accompanying `count` indicates how many events were dropped since the last notification. Clients should resync via REST after seeing this.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/events_dropped'
     send_error:
@@ -2454,6 +2978,8 @@ operations:
         channel:
             $ref: '#/channels/vsi'
         summary: Generic error frame for invalid JSON, unknown command types, or command handler failures. Echoes `request_id` when the offending message had one. `data` carries `{code, message}`.
+        tags:
+            - $ref: '#/components/tags/Connection'
         messages:
             - $ref: '#/channels/vsi/messages/error'
 components:
@@ -7452,3 +7978,90 @@ components:
             required:
                 - id
                 - sdp
+    tags:
+        Legs:
+            name: Legs
+            description: Voice call legs (SIP or WebRTC)
+            x-sections:
+                - name: Lifecycle
+                  description: Originate, list, inspect and hang up legs
+                - name: Inbound calls
+                  description: Ring, challenge, pre-answer and answer inbound SIP calls
+                - name: Mute, deafen & hold
+                  description: Stop a leg's audio in either direction, or put a SIP call on hold
+                - name: Transfer
+                  description: Send and handle SIP REFER transfers
+                - name: DTMF & real-time text
+                  description: Send DTMF digits and T.140 text, and control their reception
+                - name: Playback & TTS
+                  description: Play audio files and synthesized speech to a leg
+                - name: Recording & SIPREC
+                  description: Record a leg locally or fork it to a SIPREC server
+                - name: Speech-to-text & AMD
+                  description: Transcribe a leg and detect answering machines
+                - name: AI agents
+                  description: Attach a conversational AI agent to a leg
+                - name: Audio streams
+                  description: Manage the additional audio streams of a multi-stream call
+                - name: Settings
+                  description: Routing role, audio filters and custom data
+        WebRTC:
+            name: WebRTC
+            description: WebRTC peer connection establishment
+        Rooms:
+            name: Rooms
+            description: Multi-party audio conference rooms, including audio bridges between room mixers
+            x-sections:
+                - name: Lifecycle
+                  description: Create, list, inspect and delete rooms
+                - name: Participants
+                  description: Add, move and remove legs, or join as a WebSocket audio participant
+                - name: Bridges
+                  description: Join two rooms' mixers
+                - name: Audio routing
+                  description: Control who hears whom in a room
+                - name: Playback & TTS
+                  description: Play audio files and synthesized speech into a room
+                - name: Recording & SIPREC
+                  description: Record the room mix locally or fork it to a SIPREC server
+                - name: Speech-to-text
+                  description: Transcribe every participant in a room
+                - name: AI agents
+                  description: Attach a conversational AI agent to a room
+        SIP_Registrations:
+            name: SIP Registrations
+            description: Inbound SIP AOR registrations and parked REGISTER attempts
+        SIP_Trunks:
+            name: SIP Trunks
+            description: SIP trunks to upstream carriers and PBXs (REGISTER or static peering)
+        Events:
+            name: Events
+            description: Server-to-client event frames; each payload matches the webhook of the same name
+            x-sections:
+                - name: Call progress
+                  description: Ringing, answer, hang-up and failed asynchronous commands
+                - name: Mute, deafen & hold
+                  description: Changes to a leg's mute, deaf and hold state
+                - name: Transfer
+                  description: SIP REFER transfers sent or received
+                - name: WebRTC
+                  description: ICE connectivity of WebRTC legs
+                - name: Audio streams
+                  description: Additional audio streams of a multi-stream call
+                - name: Rooms & routing
+                  description: Room membership, bridges, routing roles and the routing matrix
+                - name: DTMF & real-time text
+                  description: DTMF digits and T.140 text received from the remote
+                - name: Playback & TTS
+                  description: Audio file and synthesized speech playback
+                - name: Recording & SIPREC
+                  description: Local recordings and SIPREC sessions
+                - name: Speech & AMD
+                  description: Speaking detection, transcripts and answering machine detection
+                - name: AI agents
+                  description: Conversational AI agent sessions
+                - name: SIP registrations & trunks
+                  description: Inbound registrations and outbound trunk state
+        Connection:
+            name: Connection
+            description: Connection lifecycle, keepalive and error frames

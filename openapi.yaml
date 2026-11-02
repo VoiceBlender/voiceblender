@@ -5,312 +5,415 @@ info:
         VoiceBlender bridges SIP and WebRTC voice calls with multi-party audio mixing, real-time speech-to-text, text-to-speech, AI agent integration, recording, and webhook-based event delivery.
     x-config-vars:
         - name: INSTANCE_ID
+          group: Server
           default: (auto-generated UUID)
           description: Instance identifier included in all API responses and webhook events
         - name: HTTP_ADDR
+          group: Server
           default: :8080
           description: REST API listen address
         - name: ALLOWED_IPS
+          group: Server
           default: (empty = allow all)
           description: Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS).
         - name: TRUST_PROXY_HEADERS
+          group: Server
           default: "false"
           description: When true, the client IP used for the ALLOWED_IPS check is taken from the leftmost X-Forwarded-For entry (falling back to the socket peer if absent). Enable only behind a trusted reverse proxy that overwrites the header — otherwise it is client-spoofable.
+        - name: VSI_EVENT_BUFFER_SIZE
+          group: Server
+          default: "256"
+          description: 'Per-client buffer (in events) on the /v1/vsi WebSocket. When the client falls behind, new events are dropped and the next delivered event carries an events_dropped notification. Clamped to [16, 1000000]. Memory: ~1 KB × buffer per connection at the default.'
+        - name: LOG_LEVEL
+          group: Server
+          default: info
+          description: 'Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug.'
         - name: SIP_BIND_IP
+          group: SIP
           default: 127.0.0.1
           description: IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)
         - name: SIP_LISTEN_IP
+          group: SIP
           default: (same as SIP_BIND_IP)
           description: UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address
         - name: SIP_BIND_IPV6
+          group: SIP
           default: (empty = v4-only)
           description: IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments
         - name: SIP_LISTEN_IPV6
+          group: SIP
           default: (same as SIP_BIND_IPV6)
           description: Optional separate IPv6 socket bind address (used when running with both 0.0.0.0 and a specific v6 literal)
         - name: SIP_EXTERNAL_IP
+          group: SIP
           default: ""
           description: Public IPv4 address for NAT/Docker deployments. When set, used in SIP Contact headers and SDP media (c=) lines instead of the bind IP. IPv6 has no equivalent — set SIP_BIND_IPV6 to the address you want advertised.
         - name: SIP_LOCAL_NETS
+          group: SIP
           default: ""
           description: Comma-separated IPv4 CIDR ranges or addresses of the networks that reach VoiceBlender directly rather than through NAT. A SIP peer inside one of them is advertised SIP_BIND_IP (or the auto-detected address) in Contact and SDP c=, where every other peer gets SIP_EXTERNAL_IP and SIP_DOMAIN. Empty = every peer is advertised the same address.
         - name: SIP_ALLOWED_IPS
+          group: SIP
           default: (empty = accept all)
           description: Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) that SIP requests are accepted from, on UDP, TCP and TLS. Empty or any /0 entry accepts every source. A request from any other address is dropped without a SIP response and counted in voiceblender_sip_requests_rejected_total. Covers in-dialog requests too, so peers that are only dialed out to must be listed; responses are not filtered. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup.
         - name: SIP_PORT
+          group: SIP
           default: "5060"
           description: SIP listen port
-        - name: SIP_TLS_PORT
-          default: (disabled)
-          description: SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration.
-        - name: SIP_TLS_CERT
-          default: ""
-          description: Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN.
-        - name: SIP_TLS_KEY
-          default: ""
-          description: Path to PEM-encoded TLS private key (e.g. privkey.pem).
-        - name: SIP_TLS_CA_FILE
-          default: ""
-          description: Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate.
-        - name: SIP_TLS_INSECURE_SKIP_VERIFY
-          default: "false"
-          description: When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk tls_insecure_skip_verify (sip_register or ip_ip), which scopes the exemption to one peer. Does not affect the inbound TLS listener.
         - name: SIP_DEBUG
+          group: SIP
           default: "false"
           description: When true, log the full RFC 3261 wire form of every inbound and outbound SIP request and response. Very verbose — use only for troubleshooting.
         - name: SIP_DOMAIN
+          group: SIP
           default: (falls back to advertised IP)
           description: FQDN advertised in From, Contact and Via on all outbound SIP signalling (classic trunks and WhatsApp). Should match the SAN on SIP_TLS_CERT and any allowlist your carrier or Meta keeps.
         - name: SIP_HOST
+          group: SIP
           default: voiceblender
           description: SIP User-Agent name
         - name: SIP_CODECS
+          group: SIP
           default: PCMU,PCMA
           description: 'Comma-separated, preference-ordered list of codecs the SIP engine offers on outbound INVITEs and accepts on inbound INVITEs. Recognized names (case-insensitive): PCMU, PCMA, G722, opus, AMR-WB, AMR-NB (bare token AMR resolves to AMR-NB per RFC 4867 §8.1). Unknown names and duplicates are dropped silently.'
         - name: SIP_AUTO_RINGING
+          group: SIP
           default: "false"
           description: When true, the server sends 180 Ringing automatically after 100 Trying. Default sends only 100 Trying; the API caller drives ringing via /ring, /early-media, or /answer.
         - name: SIP_INBOUND_RING_TIMEOUT_SECONDS
+          group: SIP
           default: "180"
           description: 'How long an inbound SIP, SIPREC or WhatsApp leg may stay unanswered (state ringing or early_media) before it is released. On expiry the INVITE is dropped without any final SIP response and leg.disconnected fires with reason ring_timeout. The limit is server-side only; the INVITE''s Expires header is ignored. 0 = unbounded: a caller that never sends CANCEL then holds its leg until it is answered or deleted.'
         - name: SIP_USE_SOURCE_SOCKET
+          group: SIP
           default: "false"
           description: When true, route SIP responses and in-dialog requests (BYE, re-INVITE, UPDATE, INFO, NOTIFY, REFER) back to the request's source UDP socket instead of the peer's Contact / Via sent-by. Enable when peers advertise unroutable addresses (e.g. private IPs in Contact from behind NAT).
         - name: SIP_OUTBOUND_PROXY
+          group: SIP
           default: ""
           description: 'Default next-hop SIP proxy for outbound REGISTERs and INVITEs, attached as a loose Route header (`Route: <sip:proxy;lr>`) with the Request-URI left unchanged. Overridden per-trunk by `sip_register.outbound_proxy` / `ip_ip.outbound_proxy` on POST /v1/sip/trunks and per-call by `outbound_proxy` on POST /v1/legs. Not applied when the dialed URI resolves to an AOR registered to this server, nor to SIPREC SRC or WhatsApp legs. Digest authentication still targets the registrar, not the proxy. A malformed value fails startup. Note that when several trunks share one proxy, the `trunk_id` tag on inbound legs becomes ambiguous — it is informational only.'
-        - name: SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS
-          default: "3600"
-          description: Expiry used when an inbound REGISTER carries no Expires value.
-        - name: SIP_REGISTRATION_MAX_EXPIRES_SECONDS
-          default: "7200"
-          description: Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum.
-        - name: SIP_REGISTRATION_SWEEP_INTERVAL_MS
-          default: "1000"
-          description: Sweeper period (ms) for evicting expired AOR bindings.
-        - name: SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS
-          default: "true"
-          description: When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR.
-        - name: ICE_SERVERS
-          default: stun:stun.l.google.com:19302
-          description: STUN/TURN URLs for WebRTC ICE, comma-separated
-        - name: WEBRTC_EXTERNAL_IPS
-          default: (empty)
-          description: Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value "auto" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal.
-        - name: WEBRTC_ICE_DISCONNECTED_TIMEOUT
-          default: 5s
-          description: How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE.
-        - name: WEBRTC_ICE_FAILED_TIMEOUT
-          default: 25s
-          description: How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration).
-        - name: RTP_PORT_MIN
-          default: "10000"
-          description: Minimum UDP port for RTP/RTCP media
-        - name: RTP_PORT_MAX
-          default: "20000"
-          description: Maximum UDP port for RTP/RTCP media
-        - name: DEFAULT_SAMPLE_RATE
-          default: "16000"
-          description: 'Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000.'
-        - name: SPEECH_DETECTION_ENABLED
-          default: "false"
-          description: Emit speaking.started / speaking.stopped events for every connected leg by default. Per-call speech_detection on POST /v1/legs or POST /v1/legs/{id}/answer overrides this.
-        - name: VSI_EVENT_BUFFER_SIZE
-          default: "256"
-          description: 'Per-client buffer (in events) on the /v1/vsi WebSocket. When the client falls behind, new events are dropped and the next delivered event carries an events_dropped notification. Clamped to [16, 1000000]. Memory: ~1 KB × buffer per connection at the default.'
-        - name: AMRWB_MODE
-          default: "2"
-          description: 'AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE.'
-        - name: AMRWB_OCTET_ALIGNED
-          default: "true"
-          description: Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
-        - name: AMRNB_MODE
-          default: "7"
-          description: 'AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s.'
-        - name: AMRNB_OCTET_ALIGNED
-          default: "true"
-          description: Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
-        - name: RECORDING_DIR
-          default: /tmp/recordings
-          description: Local directory for recording output files
-        - name: LOG_LEVEL
-          default: info
-          description: 'Log verbosity: debug, info, warn, error. Transcript text, DTMF digits and event payloads are logged only at debug.'
-        - name: WEBHOOK_URL
-          default: ""
-          description: Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)
-        - name: WEBHOOK_SECRET
-          default: ""
-          description: HMAC-SHA256 signing secret for the global webhook
-        - name: ELEVENLABS_API_KEY
-          default: ""
-          description: API key for ElevenLabs TTS, STT, and Agent provider
-        - name: ELEVENLABS_BASE_URL
-          default: https://api.elevenlabs.io
-          description: ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io
-        - name: ELEVENLABS_ENABLE_LOGGING
-          default: "true"
-          description: false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests
-        - name: VAPI_API_KEY
-          default: ""
-          description: API key for VAPI Agent provider
-        - name: VAPI_BASE_URL
-          default: https://api.vapi.ai
-          description: VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call.
-        - name: DEEPGRAM_API_KEY
-          default: ""
-          description: API key for Deepgram STT, TTS and Voice Agent
-        - name: DEEPGRAM_BASE_URL
-          default: https://api.deepgram.com
-          description: Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint
-        - name: DEEPGRAM_MIP_OPT_OUT
-          default: "false"
-          description: true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program
-        - name: AZURE_SPEECH_KEY
-          default: ""
-          description: Subscription key for Azure Cognitive Speech Services (TTS and STT)
-        - name: AZURE_SPEECH_REGION
-          default: eastus
-          description: Azure region for Speech Services (e.g. eastus, westeurope)
-        - name: SPEECHMATICS_API_KEY
-          default: ""
-          description: API key for Speechmatics STT
-        - name: SPEECHMATICS_URL
-          default: wss://eu2.rt.speechmatics.com/v2
-          description: Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container
-        - name: S3_BUCKET
-          default: ""
-          description: S3 bucket name for recording uploads
-        - name: S3_REGION
-          default: us-east-1
-          description: AWS region for S3
-        - name: S3_ENDPOINT
-          default: ""
-          description: Custom S3-compatible endpoint (e.g. MinIO)
-        - name: S3_PREFIX
-          default: ""
-          description: Key prefix applied to all S3 objects
-        - name: S3_ALLOW_INSECURE_ENDPOINT
-          default: "false"
-          description: 'Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in.'
-        - name: S3_PREFLIGHT_TIMEOUT
-          default: 10s
-          description: Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe.
-        - name: S3_REQUEST_PREFLIGHT_TIMEOUT
-          default: 2s
-          description: Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe.
-        - name: GCS_BUCKET
-          default: ""
-          description: Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE.
-        - name: GCS_OBJECT_NAME_PREFIX
-          default: ""
-          description: Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing.
-        - name: AWS_ACCESS_KEY_ID
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'
-        - name: AWS_SECRET_ACCESS_KEY
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID.'
-        - name: AWS_SESSION_TOKEN
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET.'
-        - name: AWS_PROFILE
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] Profile name in ~/.aws/credentials to use instead of static AWS_* env vars.'
-        - name: AWS_REGION
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty.'
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          default: ""
-          description: '[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Consumed by Google''s Application Default Credentials chain (env var → gcloud ADC → GCE/GKE metadata / Workload Identity).'
-        - name: TTS_CACHE_ENABLED
-          default: "false"
-          description: Enable disk-backed TTS audio cache; cached audio persists across restarts
-        - name: TTS_CACHE_DIR
-          default: /tmp/tts_cache
-          description: Directory for cached TTS audio files (used when TTS_CACHE_ENABLED=true)
-        - name: TTS_CACHE_INCLUDE_API_KEY
-          default: "false"
-          description: Include API key in TTS cache key; set true if different keys map to different voice clones
-        - name: SIP_JITTER_BUFFER_MS
-          default: "0"
-          description: SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg.
-        - name: SIP_JITTER_BUFFER_MAX_MS
-          default: "300"
-          description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
-        - name: WS_JITTER_BUFFER_MS
-          default: "0"
-          description: 'WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport''s worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency.'
-        - name: COMFORT_NOISE_ENABLED
-          default: "true"
-          description: Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames.
         - name: SIP_SDP_STRICT_MLINE_ANSWER
+          group: SIP
           default: "false"
           description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.
         - name: SIP_REFER_AUTO_DIAL
+          group: SIP
           default: "false"
           description: 'When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag.'
         - name: SIP_TCP_ENABLED
+          group: SIP
           default: "false"
           description: 'Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session''s INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP.'
+        - name: SIP_TLS_PORT
+          group: SIP TLS
+          default: (disabled)
+          description: SIP-over-TLS listen port (typically 5061). When set, SIP_TLS_CERT and SIP_TLS_KEY must also be provided. Required for WhatsApp Business Calling integration.
+        - name: SIP_TLS_CERT
+          group: SIP TLS
+          default: ""
+          description: Path to PEM-encoded TLS certificate (e.g. fullchain.pem). Meta rejects self-signed certs — use a CA-signed cert matching a public FQDN.
+        - name: SIP_TLS_KEY
+          group: SIP TLS
+          default: ""
+          description: Path to PEM-encoded TLS private key (e.g. privkey.pem).
+        - name: SIP_TLS_CA_FILE
+          group: SIP TLS
+          default: ""
+          description: Path to a PEM bundle of extra CA certificates trusted when dialing a remote peer over TLS (registrar, outbound proxy, SBC), in addition to the system trust store. A peer's own self-signed certificate can be pinned by pointing at it. Affects outbound dials only — it is not a client certificate.
+        - name: SIP_TLS_INSECURE_SKIP_VERIFY
+          group: SIP TLS
+          default: "false"
+          description: When true, any certificate a remote peer presents on an outbound TLS dial is accepted, unverified. Server-wide escape hatch — prefer SIP_TLS_CA_FILE, or the per-trunk tls_insecure_skip_verify (sip_register or ip_ip), which scopes the exemption to one peer. Does not affect the inbound TLS listener.
+        - name: SIP_REGISTRATION_DEFAULT_EXPIRES_SECONDS
+          group: SIP registrations
+          default: "3600"
+          description: Expiry used when an inbound REGISTER carries no Expires value.
+        - name: SIP_REGISTRATION_MAX_EXPIRES_SECONDS
+          group: SIP registrations
+          default: "7200"
+          description: Upper clamp on the granted REGISTER expiry. Requests above this value are honored at this maximum.
+        - name: SIP_REGISTRATION_SWEEP_INTERVAL_MS
+          group: SIP registrations
+          default: "1000"
+          description: Sweeper period (ms) for evicting expired AOR bindings.
+        - name: SIP_REGISTRATION_ALLOW_MULTIPLE_CONTACTS
+          group: SIP registrations
+          default: "true"
+          description: When true, the same AOR may be bound from multiple Contacts simultaneously (and POST /v1/legs parallel-forks to every bound contact). When false, each REGISTER replaces any prior Contacts for the AOR.
+        - name: ICE_SERVERS
+          group: WebRTC
+          default: stun:stun.l.google.com:19302
+          description: STUN/TURN URLs for WebRTC ICE, comma-separated
+        - name: WEBRTC_EXTERNAL_IPS
+          group: WebRTC
+          default: (empty)
+          description: Comma-separated public IPs advertised as host ICE candidates (pion SetNAT1To1IPs). Required when VB runs behind NAT/Docker so peers behind firewalls can reach it; supports IPv4 and IPv6 literals. The literal value "auto" triggers STUN-based public-IP discovery at startup using the configured ICE_SERVERS; failure is non-fatal.
+        - name: WEBRTC_ICE_DISCONNECTED_TIMEOUT
+          group: WebRTC
+          default: 5s
+          description: How long a WebRTC leg may receive nothing before it is reported as leg.ice_interrupted (Go duration). The leg stays up and the peer may restart ICE.
+        - name: WEBRTC_ICE_FAILED_TIMEOUT
+          group: WebRTC
+          default: 25s
+          description: How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration).
+        - name: RTP_PORT_MIN
+          group: Media & codecs
+          default: "10000"
+          description: Minimum UDP port for RTP/RTCP media
+        - name: RTP_PORT_MAX
+          group: Media & codecs
+          default: "20000"
+          description: Maximum UDP port for RTP/RTCP media
+        - name: DEFAULT_SAMPLE_RATE
+          group: Media & codecs
+          default: "16000"
+          description: 'Default mixer sample rate (Hz) for new rooms when sample_rate is not specified. Allowed: 8000, 16000, 48000.'
+        - name: SPEECH_DETECTION_ENABLED
+          group: Media & codecs
+          default: "false"
+          description: Emit speaking.started / speaking.stopped events for every connected leg by default. Per-call speech_detection on POST /v1/legs or POST /v1/legs/{id}/answer overrides this.
+        - name: AMRWB_MODE
+          group: Media & codecs
+          default: "2"
+          description: 'AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE.'
+        - name: AMRWB_OCTET_ALIGNED
+          group: Media & codecs
+          default: "true"
+          description: Offer octet-aligned AMR-WB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
+        - name: AMRNB_MODE
+          group: Media & codecs
+          default: "7"
+          description: 'AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s.'
+        - name: AMRNB_OCTET_ALIGNED
+          group: Media & codecs
+          default: "true"
+          description: Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
+        - name: SIP_JITTER_BUFFER_MS
+          group: Media & codecs
+          default: "0"
+          description: SIP ingress jitter buffer target delay in ms (0 = disabled passthrough). Applies to every SIP leg.
+        - name: SIP_JITTER_BUFFER_MAX_MS
+          group: Media & codecs
+          default: "300"
+          description: Maximum depth of the SIP ingress jitter buffer in ms. Frames beyond this are dropped oldest-first to catch up after a stall.
+        - name: WS_JITTER_BUFFER_MS
+          group: Media & codecs
+          default: "0"
+          description: 'WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport''s worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency.'
+        - name: COMFORT_NOISE_ENABLED
+          group: Media & codecs
+          default: "true"
+          description: Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames.
+        - name: WEBHOOK_URL
+          group: Webhooks
+          default: ""
+          description: Global webhook URL for event delivery (fallback when no per-leg or per-room webhook is set)
+        - name: WEBHOOK_SECRET
+          group: Webhooks
+          default: ""
+          description: HMAC-SHA256 signing secret for the global webhook
+        - name: ELEVENLABS_API_KEY
+          group: Speech & AI providers
+          default: ""
+          description: API key for ElevenLabs TTS, STT, and Agent provider
+        - name: ELEVENLABS_BASE_URL
+          group: Speech & AI providers
+          default: https://api.elevenlabs.io
+          description: ElevenLabs API origin for TTS, STT and Agent; set a data-residency host such as https://api.eu.residency.elevenlabs.io
+        - name: ELEVENLABS_ENABLE_LOGGING
+          group: Speech & AI providers
+          default: "true"
+          description: false sends enable_logging=false (zero retention mode) on ElevenLabs TTS and STT requests
+        - name: VAPI_API_KEY
+          group: Speech & AI providers
+          default: ""
+          description: API key for VAPI Agent provider
+        - name: VAPI_BASE_URL
+          group: Speech & AI providers
+          default: https://api.vapi.ai
+          description: VAPI API origin; calls are created at <origin>/call. The audio WebSocket is the listenUrl VAPI returns per call.
+        - name: DEEPGRAM_API_KEY
+          group: Speech & AI providers
+          default: ""
+          description: API key for Deepgram STT, TTS and Voice Agent
+        - name: DEEPGRAM_BASE_URL
+          group: Speech & AI providers
+          default: https://api.deepgram.com
+          description: Deepgram API origin for STT, TTS and Voice Agent; set https://api.eu.deepgram.com for the EU endpoint
+        - name: DEEPGRAM_MIP_OPT_OUT
+          group: Speech & AI providers
+          default: "false"
+          description: true opts every Deepgram STT, TTS and Voice Agent request out of the Model Improvement Program
+        - name: AZURE_SPEECH_KEY
+          group: Speech & AI providers
+          default: ""
+          description: Subscription key for Azure Cognitive Speech Services (TTS and STT)
+        - name: AZURE_SPEECH_REGION
+          group: Speech & AI providers
+          default: eastus
+          description: Azure region for Speech Services (e.g. eastus, westeurope)
+        - name: SPEECHMATICS_API_KEY
+          group: Speech & AI providers
+          default: ""
+          description: API key for Speechmatics STT
+        - name: SPEECHMATICS_URL
+          group: Speech & AI providers
+          default: wss://eu2.rt.speechmatics.com/v2
+          description: Speechmatics realtime WebSocket endpoint; change it for another region (eu, us, global) or a self-hosted realtime container
+        - name: TTS_CACHE_ENABLED
+          group: Speech & AI providers
+          default: "false"
+          description: Enable disk-backed TTS audio cache; cached audio persists across restarts
+        - name: TTS_CACHE_DIR
+          group: Speech & AI providers
+          default: /tmp/tts_cache
+          description: Directory for cached TTS audio files (used when TTS_CACHE_ENABLED=true)
+        - name: TTS_CACHE_INCLUDE_API_KEY
+          group: Speech & AI providers
+          default: "false"
+          description: Include API key in TTS cache key; set true if different keys map to different voice clones
+        - name: RECORDING_DIR
+          group: Recording & storage
+          default: /tmp/recordings
+          description: Local directory for recording output files
+        - name: S3_BUCKET
+          group: Recording & storage
+          default: ""
+          description: S3 bucket name for recording uploads
+        - name: S3_REGION
+          group: Recording & storage
+          default: us-east-1
+          description: AWS region for S3
+        - name: S3_ENDPOINT
+          group: Recording & storage
+          default: ""
+          description: Custom S3-compatible endpoint (e.g. MinIO)
+        - name: S3_PREFIX
+          group: Recording & storage
+          default: ""
+          description: Key prefix applied to all S3 objects
+        - name: S3_ALLOW_INSECURE_ENDPOINT
+          group: Recording & storage
+          default: "false"
+          description: 'Allow a plaintext http:// S3_ENDPOINT on a non-local host, rather than refusing to ship recording audio in cleartext (startup: exit 1; per request: 400). Loopback, private and link-local addresses, single-label hostnames and .internal/.local names are exempt and need no opt-in.'
+        - name: S3_PREFLIGHT_TIMEOUT
+          group: Recording & storage
+          default: 10s
+          description: Budget for the HeadBucket probe run at startup. A bucket the store reports absent exits 1; any other probe failure (403 without s3:ListBucket, 5xx, unreachable) is warned about and startup continues. 0 disables the probe.
+        - name: S3_REQUEST_PREFLIGHT_TIMEOUT
+          group: Recording & storage
+          default: 2s
+          description: Budget for the HeadBucket probe run when a request supplies s3_bucket. A bucket the store reports absent returns 400; any other probe failure is warned about and the recording proceeds. Kept short because it runs inside record-start, which on VSI occupies the connection's command loop. 0 disables the probe.
+        - name: GCS_BUCKET
+          group: Recording & storage
+          default: ""
+          description: Google Cloud Storage bucket for recording uploads via the native GCS API (storage=gcs). Uses Application Default Credentials / Workload Identity — preferred over S3_ENDPOINT=https://storage.googleapis.com on GKE.
+        - name: GCS_OBJECT_NAME_PREFIX
+          group: Recording & storage
+          default: ""
+          description: Object name prefix applied to all GCS uploads (e.g. recordings or a bare workspace id). A trailing slash is added automatically when missing.
+        - name: AWS_ACCESS_KEY_ID
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS access key for S3 uploads and AWS Polly TTS. Consumed by the AWS SDK default credential chain alongside AWS_SECRET_ACCESS_KEY and the optional AWS_SESSION_TOKEN.'
+        - name: AWS_SECRET_ACCESS_KEY
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS secret key paired with AWS_ACCESS_KEY_ID.'
+        - name: AWS_SESSION_TOKEN
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Optional temporary-credential session token (STS / SSO) used together with AWS_ACCESS_KEY_ID/SECRET.'
+        - name: AWS_PROFILE
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Profile name in ~/.aws/credentials to use instead of static AWS_* env vars.'
+        - name: AWS_REGION
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] AWS region used by S3 and Polly when S3_REGION is empty.'
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          group: Recording & storage
+          default: ""
+          description: '[SDK-resolved, not read by VoiceBlender] Path to a Google Cloud service-account JSON file used by Google Cloud TTS and by GCS recording uploads when no other credential source is available. Consumed by Google''s Application Default Credentials chain (env var → gcloud ADC → GCE/GKE metadata / Workload Identity).'
         - name: SIPREC_ENABLED
+          group: SIPREC
           default: "false"
           description: 'Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call''s media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488.'
         - name: SIPREC_AUTO_ANSWER
+          group: SIPREC
           default: "true"
           description: Answer an inbound recording session immediately instead of parking it until POST /v1/legs/{id}/answer. A session recording client does not wait for an application decision, so leaving this on is usually correct; turn it off to gate sessions from a controller.
         - name: SIPREC_MAX_STREAMS
+          group: SIPREC
           default: "8"
           description: Maximum number of m=audio sections accepted on one recording session. A session offering more is rejected with 486, bounding the RTP ports and goroutines a single peer can claim.
         - name: SIPREC_METADATA_MAX_BYTES
+          group: SIPREC
           default: "65536"
           description: Maximum size of the rs-metadata XML document in a SIPREC INVITE. A larger document is rejected with 413 rather than parsed.
         - name: SIPREC_SRC_ENABLED
+          group: SIPREC
           default: "false"
           description: 'Allow POST /v1/rooms/{id}/siprec to originate outbound recording sessions, forking a room''s participants to an external session recording server. Off by default: it lets an API caller stream a room''s audio to an arbitrary SIP destination.'
         - name: SIPREC_AUTO_RECORD
+          group: SIPREC
           default: "false"
           description: Start multi-channel recording automatically when a SIPREC session is accepted, one channel per recorded participant. When false, recording is driven through the usual /v1/legs/{id}/record endpoint.
         - name: SIPREC_ROOM_MODE
+          group: SIPREC
           default: none
           description: Where a recording session's audio streams are mixed. "none" attaches nothing and leaves placement to the stream API; "per_session" creates a room named siprec-<legID> and attaches every stream, which is what makes live STT and agents apply to a recorded call; "fixed" attaches every session's streams into SIPREC_ROOM_ID.
         - name: SIPREC_ROOM_ID
+          group: SIPREC
           default: ""
           description: Room every recording session's streams join when SIPREC_ROOM_MODE=fixed. Ignored in the other modes.
         - name: MOQ_ENABLED
+          group: MoQ
           default: "false"
           description: Enable the experimental MoQ (Media over QUIC) inbound leg endpoint at CONNECT /v1/legs/moq over WebTransport/HTTP/3. PoC quality, tracks IETF draft-11. When enabled, both MOQ_TLS_CERT_FILE and MOQ_TLS_KEY_FILE must be set.
         - name: MOQ_LISTEN_ADDR
+          group: MoQ
           default: :8443
           description: UDP address for the HTTP/3 listener that backs the MoQ leg. Independent of HTTP_ADDR — TCP/:8080 and UDP/:8443 can run side-by-side.
         - name: MOQ_TLS_CERT_FILE
+          group: MoQ
           default: ""
           description: Path to the TLS certificate used by the HTTP/3 listener. Required when MOQ_ENABLED=true.
         - name: MOQ_TLS_KEY_FILE
+          group: MoQ
           default: ""
           description: Path to the TLS private key used by the HTTP/3 listener. Required when MOQ_ENABLED=true.
         - name: MOQ_OPUS_BITRATE
+          group: MoQ
           default: "24000"
           description: Target bitrate (bps) for the Opus encoder feeding the MoQ leg's mix track. Must be in 6000..510000.
         - name: LIVEKIT_ENABLED
+          group: LiveKit
           default: "false"
           description: Enable the livekit_room leg type at POST /v1/legs (type=livekit_room). Lets VoiceBlender join a LiveKit room as a participant and bridge audio between SIP and LiveKit. Speaks the LiveKit signaling protocol directly via livekit/protocol protobufs over the existing pion stack — no LiveKit SDK is used.
         - name: LIVEKIT_URL
+          group: LiveKit
           default: ""
           description: Default LiveKit server endpoint (wss://...). Required when LIVEKIT_ENABLED=true unless every request supplies livekit.url. Overridable per-request.
         - name: LIVEKIT_OPUS_BITRATE
+          group: LiveKit
           default: "24000"
           description: Target bitrate (bps) for the Opus encoder publishing audio into LiveKit. Must be in 6000..510000. Overridable per-request via livekit.opus_bitrate.
         - name: LIVEKIT_TOKEN_SIGNING_ENABLED
+          group: LiveKit
           default: "false"
           description: 'Opt-in: when true, callers may omit livekit.token and instead pass {room,identity,permissions}; VoiceBlender mints the JWT itself. Security caveat: enabling this stores the LiveKit API secret (a high-privilege credential) in VoiceBlender. Keep off in multi-tenant deployments.'
         - name: LIVEKIT_API_KEY
+          group: LiveKit
           default: ""
           description: LiveKit API key used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true.
         - name: LIVEKIT_API_SECRET
+          group: LiveKit
           default: ""
           description: LiveKit API secret used to sign minted JWTs. Required only when LIVEKIT_TOKEN_SIGNING_ENABLED=true. Treat as a high-value secret; redact in logs.
         - name: LIVEKIT_DEFAULT_TOKEN_TTL
+          group: LiveKit
           default: 6h
           description: Default TTL applied to minted JWTs when the request omits livekit.token_ttl. Go duration string. LiveKit recommends ≤ 6 hours.
     version: 1.0.0
@@ -322,10 +425,50 @@ servers:
 tags:
     - name: Legs
       description: Voice call legs (SIP or WebRTC)
+      x-sections:
+        - name: Lifecycle
+          description: Originate, list, inspect and hang up legs
+        - name: Inbound calls
+          description: Ring, challenge, pre-answer and answer inbound SIP calls
+        - name: Mute, deafen & hold
+          description: Stop a leg's audio in either direction, or put a SIP call on hold
+        - name: Transfer
+          description: Send and handle SIP REFER transfers
+        - name: DTMF & real-time text
+          description: Send DTMF digits and T.140 text, and control their reception
+        - name: Playback & TTS
+          description: Play audio files and synthesized speech to a leg
+        - name: Recording & SIPREC
+          description: Record a leg locally or fork it to a SIPREC server
+        - name: Speech-to-text & AMD
+          description: Transcribe a leg and detect answering machines
+        - name: AI agents
+          description: Attach a conversational AI agent to a leg
+        - name: Audio streams
+          description: Manage the additional audio streams of a multi-stream call
+        - name: Settings
+          description: Routing role, audio filters and custom data
     - name: WebRTC
       description: WebRTC peer connection establishment
     - name: Rooms
       description: Multi-party audio conference rooms, including audio bridges between room mixers
+      x-sections:
+        - name: Lifecycle
+          description: Create, list, inspect and delete rooms
+        - name: Participants
+          description: Add, move and remove legs, or join as a WebSocket audio participant
+        - name: Bridges
+          description: Join two rooms' mixers
+        - name: Audio routing
+          description: Control who hears whom in a room
+        - name: Playback & TTS
+          description: Play audio files and synthesized speech into a room
+        - name: Recording & SIPREC
+          description: Record the room mix locally or fork it to a SIPREC server
+        - name: Speech-to-text
+          description: Transcribe every participant in a room
+        - name: AI agents
+          description: Attach a conversational AI agent to a room
     - name: SIP Registrations
       description: Inbound SIP AOR registrations and parked REGISTER attempts
     - name: SIP Trunks
@@ -342,6 +485,7 @@ paths:
             description: 'Originate a new outbound leg. The `type` field selects the transport: `sip` originates a SIP INVITE; `whatsapp` originates a WhatsApp call through Meta; `websocket` dials a remote WebSocket endpoint (audio is PCM in either binary or `json_base64` framing, with bidirectional text and caller-supplied X-/P- headers); `livekit_room` joins an external LiveKit room as a participant. WebRTC legs are not created here: the browser initiates them by sending its SDP offer to `POST /webrtc/offer`, which answers and returns the new leg''s ID. For `sip` legs, `outbound_proxy` sets the next hop for this INVITE as a loose `Route` header, leaving the Request-URI unchanged. It outranks the matched trunk''s `outbound_proxy` and `SIP_OUTBOUND_PROXY`; a `to` that resolves to an AOR registered to this server outranks all three and is delivered to the bound contact. `trunk_id` places a `sip` leg through a specific SIP trunk; it takes precedence over selecting a trunk by matching `from` against trunk AORs.'
             tags:
                 - Legs
+            x-section: Lifecycle
             requestBody:
                 required: true
                 content:
@@ -372,6 +516,7 @@ paths:
             summary: List all active legs
             tags:
                 - Legs
+            x-section: Lifecycle
             responses:
                 '200':
                     description: Array of legs
@@ -388,6 +533,7 @@ paths:
             description: 'Upgrades the HTTP request to a WebSocket and creates a `websocket_in` leg. Query parameters: `sample_rate` (8000/16000/24000/48000; default 16000); `wire_format` (`binary` default, or `json_base64`); `sample_format` (`s16le` only in v1); `room_id` to auto-add the leg to a room; `app_id` for event filtering; `rtt=true` to enable the bidirectional text channel; `webhook_url`/`webhook_secret` for per-leg event routing. X-* and P-* request headers (plus Authorization) are captured into the leg''s `headers` map and surfaced on `leg.ringing` and in `LegView`. The leg goes straight to `connected` (no ringing/answer flow). Audio frames carry PCM16-LE mono at `sample_rate`; with `wire_format=binary` each WebSocket binary frame is exactly one 20ms PCM frame, with `json_base64` the same payload is wrapped as `{"type":"audio","audio":"<base64>"}`. Text and control messages always use JSON text frames: `{"type":"text","text":...}`, `{"type":"ping","event_id":N}`/`{"type":"pong","event_id":N}`, and `{"type":"hangup"}` to terminate from the peer side.'
             tags:
                 - Legs
+            x-section: Lifecycle
             responses:
                 '101':
                     description: Switching Protocols — WebSocket upgrade succeeded
@@ -413,6 +559,7 @@ paths:
                 **Experimental / PoC.** Upgrades an HTTP/3 extended-CONNECT request to a WebTransport session and creates an inbound MoQ leg. Reachable only over HTTP/3 on the MoQ listener (not on the regular HTTP/1.1 chi listener). Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 clients (moqtail, moq.dev) is not expected to work. Media is bidirectional within a single MoQ session per leg: the server publishes namespace `mix`/track `audio` (downlink, room mix) and subscribes to namespace `mic`/track `audio` (uplink, leg mic). Audio is Opus framed one frame per MoQ Object (LOC-style) at 48 kHz mono, 20 ms frames. Query parameters: `sample_rate` (only `48000` is accepted — the encoder/decoder are hard-wired to 48 kHz; default 48000); `room_id` to auto-add the leg to a room; `app_id` for event filtering; `webhook_url`/`webhook_secret` for per-leg event routing. X-* and P-* request headers (plus Authorization) are captured into the leg's `headers` map and surfaced on `LegView`. The leg goes straight to `connected` (no ringing/answer flow); no DTMF, no RTT, and event parity is limited to `leg.connected` / `leg.disconnected`.
             tags:
                 - Legs
+            x-section: Lifecycle
             responses:
                 '200':
                     description: WebTransport extended-CONNECT accepted; MoQ session established (no JSON body — the response is the upgraded WebTransport session)
@@ -443,6 +590,7 @@ paths:
             summary: Get a single leg
             tags:
                 - Legs
+            x-section: Lifecycle
             responses:
                 '200':
                     description: Leg details
@@ -469,6 +617,7 @@ paths:
                 For connected legs the request body is ignored.
             tags:
                 - Legs
+            x-section: Lifecycle
             requestBody:
                 content:
                     application/json:
@@ -498,6 +647,7 @@ paths:
             description: Signals the inbound-call goroutine to send 200 OK. The HTTP call returns 202 immediately; the actual SIP 200 OK is sent in the background, and the leg's transition is observed via `leg.connected`. Pre-condition failures (wrong state, unknown codec) still return 4xx synchronously. When the caller offers several m=audio sections they are all accepted; `streams` optionally routes each accepted stream beyond the primary into its own room, applied once the answer is negotiated.
             tags:
                 - Legs
+            x-section: Inbound calls
             requestBody:
                 content:
                     application/json:
@@ -533,6 +683,7 @@ paths:
             description: 'Queues a SIP 180 Ringing provisional response with no SDP. Use when `SIP_AUTO_RINGING=false` (the default) and you want to indicate alerting before deciding to early-media or answer. Idempotent: each call emits another 180 — receivers tolerate re-sends. The HTTP call returns 202 as soon as the request is validated; SIP-level send failures surface as `leg.command_failed` with `command="ring"`.'
             tags:
                 - Legs
+            x-section: Inbound calls
             requestBody:
                 content:
                     application/json:
@@ -568,6 +719,7 @@ paths:
             description: Sends a SIP 401 Unauthorized carrying a `WWW-Authenticate` digest challenge on an unanswered inbound INVITE. The current leg is torn down (a `leg.disconnected` with `reason="challenged"` is published); the UAC's credentialed re-INVITE arrives as a new inbound call surfaced via `leg.ringing` with `authenticated=true` once VoiceBlender verifies the response against the supplied credential. Provide either `password` or `ha1`. An invalid retry is answered with 403 Forbidden and never surfaced.
             tags:
                 - Legs
+            x-section: Inbound calls
             requestBody:
                 required: true
                 content:
@@ -604,6 +756,7 @@ paths:
             description: Queues a SIP 183 Session Progress with SDP and the RTP/codec setup. The HTTP call returns 202 as soon as the request is validated; the leg transitions to `early_media` state asynchronously, observable via `leg.early_media`. Setup failures surface as `leg.command_failed` with `command="early_media"`.
             tags:
                 - Legs
+            x-section: Inbound calls
             requestBody:
                 content:
                     application/json:
@@ -639,6 +792,7 @@ paths:
             description: A muted leg's audio is excluded from the room mix and speaking events are suppressed. Taps (recording/STT) still receive the muted leg's own audio.
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '200':
                     description: Leg muted
@@ -657,6 +811,7 @@ paths:
             summary: Unmute a leg
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '200':
                     description: Leg unmuted
@@ -679,6 +834,7 @@ paths:
             description: A deaf leg stops receiving the room mix. Its own audio is still contributed to the mix and still reaches taps (recording/STT) unless it is also muted.
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '200':
                     description: Leg deafened
@@ -697,6 +853,7 @@ paths:
             summary: Undeafen a leg
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '200':
                     description: Leg undeafened
@@ -719,6 +876,7 @@ paths:
             description: Queues a re-INVITE with `sendonly` SDP direction. The HTTP call returns 202 as soon as the leg is validated; the re-INVITE is sent in the background and success surfaces as `leg.hold`. Failures surface as `leg.command_failed` with `command="hold"`. The RTP timeout is paused while held, and a 2-hour auto-hangup timer starts.
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '202':
                     description: Hold queued
@@ -746,6 +904,7 @@ paths:
             description: Queues a re-INVITE with `sendrecv` SDP direction. The HTTP call returns 202; success surfaces as `leg.unhold`, failures as `leg.command_failed` with `command="unhold"`.
             tags:
                 - Legs
+            x-section: Mute, deafen & hold
             responses:
                 '202':
                     description: Unhold queued
@@ -776,6 +935,7 @@ paths:
             description: Asynchronously transfers a SIP leg. The HTTP call returns 202 as soon as the request is validated; the REFER is sent in the background and its outcome is surfaced through `leg.transfer_initiated` / `leg.transfer_progress` / `leg.transfer_completed` / `leg.transfer_failed` events. Blind transfer when `replaces_leg_id` is omitted; attended transfer when present (the named leg's dialog identity is embedded as a Replaces parameter per RFC 3891). On terminal 2xx the leg (and the replaces leg, if any) is hung up automatically.
             tags:
                 - Legs
+            x-section: Transfer
             requestBody:
                 required: true
                 content:
@@ -812,6 +972,7 @@ paths:
             description: Accepts an inbound transfer surfaced via `leg.transfer_requested` (default app-driven model, `SIP_REFER_AUTO_DIAL=false`). Sends `202 Accepted` to the referrer and a `NOTIFY` sipfrag `100 Trying`, keeping the refer subscription open. `{id}` is the referrer leg (the leg that received the REFER). After accepting, re-bridge as needed and report progress via `.../transfer/progress` and the outcome via `.../transfer/complete`.
             tags:
                 - Legs
+            x-section: Transfer
             responses:
                 '202':
                     description: Accept queued (202 + NOTIFY 100 sent)
@@ -830,6 +991,7 @@ paths:
             description: Sends an interim sipfrag `NOTIFY` (e.g. `180 Ringing`) on an accepted inbound transfer so the referrer's UA reflects real progress. The subscription stays active.
             tags:
                 - Legs
+            x-section: Transfer
             requestBody:
                 required: true
                 content:
@@ -860,6 +1022,7 @@ paths:
             description: Terminates an accepted inbound transfer with a final sipfrag `NOTIFY` and emits `leg.transfer_completed` (on success) or `leg.transfer_failed`. `success:true` sends `200 OK`; otherwise `status_code`/`reason` (default 500) carry the failure. The referrer leg is left for the app to hang up.
             tags:
                 - Legs
+            x-section: Transfer
             requestBody:
                 required: true
                 content:
@@ -884,6 +1047,7 @@ paths:
             description: Rejects a parked (not-yet-accepted) inbound transfer, replying to the referrer with a non-2xx (`603 Decline` by default; override via `code`/`reason`) and emitting `leg.transfer_failed`.
             tags:
                 - Legs
+            x-section: Transfer
             requestBody:
                 content:
                     application/json:
@@ -906,6 +1070,7 @@ paths:
             summary: Send DTMF digits on a leg
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             requestBody:
                 required: true
                 content:
@@ -946,6 +1111,7 @@ paths:
             description: Allow this leg to receive DTMF digits broadcast from other legs in the same room. This is the default state for new legs.
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             responses:
                 '200':
                     description: DTMF reception enabled
@@ -968,6 +1134,7 @@ paths:
             description: Block this leg from receiving DTMF digits broadcast from other legs in the same room. DTMF received from this leg's own far end is still emitted as a leg.dtmf event.
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             responses:
                 '200':
                     description: DTMF reception disabled
@@ -990,6 +1157,7 @@ paths:
             description: Sends UTF-8 text on the leg's RTT (T.140 / RFC 4103) media stream. Requires that the SDP offer/answer agreed on an m=text section with the remote UA. Enable RTT on the server with RTT_ENABLED=true.
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             requestBody:
                 required: true
                 content:
@@ -1036,6 +1204,7 @@ paths:
             description: Allow this leg to receive RTT text broadcast from other legs in the same room and to emit rtt.received events for incoming text. Default state for new legs.
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             responses:
                 '200':
                     description: RTT reception enabled
@@ -1058,6 +1227,7 @@ paths:
             description: Block this leg from receiving RTT text broadcast from other legs in the same room and suppress rtt.received events for this leg.
             tags:
                 - Legs
+            x-section: DTMF & real-time text
             responses:
                 '200':
                     description: RTT reception disabled
@@ -1079,6 +1249,7 @@ paths:
             summary: Start audio playback to a leg
             tags:
                 - Legs
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -1119,6 +1290,7 @@ paths:
             summary: Change the volume of an active leg playback
             tags:
                 - Legs
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -1149,6 +1321,7 @@ paths:
             summary: Stop audio playback on a leg
             tags:
                 - Legs
+            x-section: Playback & TTS
             responses:
                 '200':
                     description: Playback stopped
@@ -1171,6 +1344,7 @@ paths:
             description: Synthesizes the provided text using the configured TTS provider and plays the audio on the leg. When `TTS_CACHE_ENABLED=true`, identical requests (same text, voice, model, language, and prompt) are stored on disk in `TTS_CACHE_DIR` and persist across restarts, without calling the external provider.
             tags:
                 - Legs
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -1217,6 +1391,7 @@ paths:
             description: 'Stages a speculative reply. The audio is synthesized and buffered in memory but not played, so that committing it starts playback with no synthesis delay. Intended for the turn-taking loop of a voice agent: start a draft reply on the `eager_end_of_turn` `stt.turn` event, then commit it on `end_of_turn` or discard it on `turn_resumed`. A `tts.staged` event reports when the audio is ready; synthesis failures are reported on `tts.error`. Staged utterances are dropped after `TTS_PREFLIGHT_TTL` or when the leg ends, and at most `TTS_PREFLIGHT_MAX_PER_LEG` may be staged on one leg at a time. Preflight is leg-scoped; use `POST /rooms/{id}/tts` for room announcements.'
             tags:
                 - Legs
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -1268,6 +1443,7 @@ paths:
             description: Starts playback of an utterance staged by the preflight endpoint. Returns immediately, before synthesis has necessarily finished; failure is reported asynchronously on `tts.error`, exactly as for `POST /legs/{id}/tts`. Once committed, stop playback with `DELETE /legs/{id}/play/{playbackID}` using the same `tts_id`.
             tags:
                 - Legs
+            x-section: Playback & TTS
             responses:
                 '200':
                     description: TTS committed; playback starts as soon as the audio is ready
@@ -1301,6 +1477,7 @@ paths:
             description: Discards an utterance staged by the preflight endpoint, aborting synthesis if it is still in flight. Already-committed utterances are stopped with `DELETE /legs/{id}/play/{playbackID}` instead.
             tags:
                 - Legs
+            x-section: Playback & TTS
             responses:
                 '200':
                     description: Staged TTS discarded
@@ -1329,6 +1506,7 @@ paths:
             description: For SIP legs, recording is stereo (left=incoming, right=outgoing). For legs in a room, stereo at 16kHz (left=participant audio, right=mixed-minus-self).
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             requestBody:
                 content:
                     application/json:
@@ -1370,6 +1548,7 @@ paths:
             summary: Stop recording a leg
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording stopped
@@ -1392,6 +1571,7 @@ paths:
             description: 'Replaces incoming audio with silence on the active recording until `/record/resume` is called. The WAV''s timeline is preserved (silent gap where audio was paused), so reviewers can see exactly when sensitive data was excluded. Idempotent: calling while already paused returns `status: already_paused`.'
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording paused (or already paused)
@@ -1414,6 +1594,7 @@ paths:
             description: 'Resumes writing real audio after a prior `/record/pause`. Idempotent: calling while not paused returns `status: not_paused`.'
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording resumed (or was not paused)
@@ -1435,6 +1616,7 @@ paths:
             summary: Start real-time speech-to-text on a leg
             tags:
                 - Legs
+            x-section: Speech-to-text & AMD
             requestBody:
                 content:
                     application/json:
@@ -1470,6 +1652,7 @@ paths:
             summary: Stop speech-to-text on a leg
             tags:
                 - Legs
+            x-section: Speech-to-text & AMD
             responses:
                 '200':
                     description: STT stopped
@@ -1492,6 +1675,7 @@ paths:
             description: Forces the provider to emit a final transcript for the audio buffered so far while the session keeps running, so a caller that knows the speaker has finished does not have to wait for the provider's own endpointing. Only the `deepgram` and `speechmatics` providers support this; `deepgram_flux`, `azure` and `elevenlabs` answer 501 — /v2/listen has no flush message, and Flux reports turn ends itself on stt.turn. On `speechmatics` the flush also emits an stt.turn end_of_turn event, because it is a forced end of utterance. The flushed transcript arrives on the usual stt.text event with is_final true — a segment containing no speech produces no event at all, so do not block on one.
             tags:
                 - Legs
+            x-section: Speech-to-text & AMD
             responses:
                 '200':
                     description: Final transcript requested
@@ -1526,6 +1710,7 @@ paths:
             description: Bridges audio bidirectionally with an ElevenLabs conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.
             tags:
                 - Legs
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -1572,6 +1757,7 @@ paths:
             description: Bridges audio bidirectionally with a VAPI conversational AI agent. Standalone legs use direct audio; legs in a room use mixer taps.
             tags:
                 - Legs
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -1618,6 +1804,7 @@ paths:
             description: Bridges audio bidirectionally with a self-hosted Pipecat bot via WebSocket. Standalone legs use direct audio; legs in a room use mixer taps.
             tags:
                 - Legs
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -1658,6 +1845,7 @@ paths:
             description: Bridges audio bidirectionally with a Deepgram Voice Agent. Standalone legs use direct audio; legs in a room use mixer taps.
             tags:
                 - Legs
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -1704,6 +1892,7 @@ paths:
             description: Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.
             tags:
                 - Legs
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -1749,6 +1938,7 @@ paths:
             summary: Detach the agent from a leg
             tags:
                 - Legs
+            x-section: AI agents
             responses:
                 '200':
                     description: Agent stopped
@@ -1770,6 +1960,7 @@ paths:
             summary: Start answering machine detection on a connected leg
             tags:
                 - Legs
+            x-section: Speech-to-text & AMD
             requestBody:
                 required: true
                 content:
@@ -1904,6 +2095,7 @@ paths:
             summary: Create a room
             tags:
                 - Rooms
+            x-section: Lifecycle
             requestBody:
                 content:
                     application/json:
@@ -1927,6 +2119,7 @@ paths:
             summary: List all rooms with participants
             tags:
                 - Rooms
+            x-section: Lifecycle
             responses:
                 '200':
                     description: Array of rooms
@@ -1944,6 +2137,7 @@ paths:
             summary: Get a room with participants
             tags:
                 - Rooms
+            x-section: Lifecycle
             responses:
                 '200':
                     description: Room details
@@ -1963,6 +2157,7 @@ paths:
             description: Hangs up every participant. Outbound SIP legs created with this room's `room_id` that are still ringing, and so not participants yet, are cancelled too. Each affected leg emits `leg.disconnected` with reason `room_deleted`.
             tags:
                 - Rooms
+            x-section: Lifecycle
             responses:
                 '200':
                     description: Room deleted
@@ -1985,6 +2180,7 @@ paths:
             description: Add a leg to a room (auto-creates room if it doesn't exist). If the leg is already in a different room, it is atomically moved to the target room. A ringing inbound SIP leg is automatically answered before being added — in this case the response status is `adding` and the actual room join happens asynchronously, observable via `leg.joined_room`. Auto-answer failures surface as `leg.command_failed` with `command="add_to_room"`. Only the leg's primary audio stream joins by default; `streams` additionally mixes named secondary streams of the same leg into this room. A stream currently mixed elsewhere is moved here.
             tags:
                 - Rooms
+            x-section: Participants
             requestBody:
                 required: true
                 content:
@@ -2018,6 +2214,7 @@ paths:
             summary: Remove a leg from a room
             tags:
                 - Rooms
+            x-section: Participants
             responses:
                 '200':
                     description: Leg removed
@@ -2040,6 +2237,7 @@ paths:
             description: 'Joins the room in the path with `room_id` so audio flows between their mixers. Both rooms must exist and share a sample rate. `direction` is relative to the room in the path: `bidirectional`, `send` (path room → other), `receive` (other → path room), or `none` (allocated but silent). Bridging rooms into a cycle with feedback-enabled directions causes audio feedback — use one-way directions to break loops.'
             tags:
                 - Rooms
+            x-section: Bridges
             requestBody:
                 required: true
                 content:
@@ -2076,6 +2274,7 @@ paths:
             summary: List bridges involving this room
             tags:
                 - Rooms
+            x-section: Bridges
             responses:
                 '200':
                     description: Array of bridges (direction relative to the path room)
@@ -2104,6 +2303,7 @@ paths:
             summary: Get a bridge involving this room
             tags:
                 - Rooms
+            x-section: Bridges
             responses:
                 '200':
                     description: Bridge details (direction relative to the path room)
@@ -2123,6 +2323,7 @@ paths:
             description: Live-updates the direction (relative to the room in the path) without interrupting audio.
             tags:
                 - Rooms
+            x-section: Bridges
             requestBody:
                 required: true
                 content:
@@ -2153,6 +2354,7 @@ paths:
             summary: Tear down a bridge
             tags:
                 - Rooms
+            x-section: Bridges
             responses:
                 '200':
                     description: Bridge deleted
@@ -2175,6 +2377,7 @@ paths:
             description: Returns the per-listener-role source whitelist used by the room's audio mixer. A listener role absent from the matrix defaults to full mesh (hears every other leg). A role with an empty `[]` list is an isolated listener that hears nothing.
             tags:
                 - Rooms
+            x-section: Audio routing
             responses:
                 '200':
                     description: Current matrix
@@ -2194,6 +2397,7 @@ paths:
             description: Atomically replaces the room's audio routing matrix and recomputes every leg's per-listener source whitelist in one mixer-mutex acquisition. The next mix tick (≤ 20 ms) reflects the new routing. Roles are operator-supplied strings (e.g. "customer", "agent", "supervisor"). A leg with no role defaults to full mesh.
             tags:
                 - Rooms
+            x-section: Audio routing
             requestBody:
                 required: true
                 content:
@@ -2225,6 +2429,7 @@ paths:
             description: 'Replaces the listed listener-role rows. Pass `"sources": null` on an update to clear that row back to full mesh.'
             tags:
                 - Rooms
+            x-section: Audio routing
             requestBody:
                 required: true
                 content:
@@ -2259,6 +2464,7 @@ paths:
             description: Originates a SIPREC recording session (RFC 7866) to the given recording server, offering one `sendonly` `m=audio` section per room participant and carrying an RFC 7865 metadata document that names each party and binds it to a section's `a=label`. Each participant's own audio is forked to its own section — not the room mix. Returns the resulting `siprec_out` leg; delete that leg to end the session. Requires `SIPREC_SRC_ENABLED=true`.
             tags:
                 - Rooms
+            x-section: Recording & SIPREC
             requestBody:
                 required: true
                 content:
@@ -2311,6 +2517,7 @@ paths:
             description: 'Originates a SIPREC recording session (RFC 7866) carrying one call as two `sendonly` sections: what the far end says, and what this server sends them. No room is involved. `leg_ids` is ignored here — the two sections are fixed. Returns the resulting `siprec_out` leg; delete it to end the session. Requires `SIPREC_SRC_ENABLED=true`.'
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             requestBody:
                 required: true
                 content:
@@ -2360,6 +2567,7 @@ paths:
             description: 'Returns the RFC 7865 recording metadata of an inbound SIPREC session (leg type `siprec_in`): every recorded participant, every negotiated media stream, and the binding between them. A stream''s `a=label` is what ties the m= section to a participant, so the `streams` entries carry both the leg stream ID and the participant identity. The raw metadata document is returned verbatim in `metadata`.'
             tags:
                 - Legs
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording session state
@@ -2388,6 +2596,7 @@ paths:
             description: Returns every negotiated m=audio section on the leg, in m-line order. A single-stream call has exactly one entry, the primary.
             tags:
                 - Legs
+            x-section: Audio streams
             responses:
                 '200':
                     description: Audio streams in m-line order
@@ -2415,6 +2624,7 @@ paths:
             description: Negotiates an additional m=audio section with a re-INVITE (RFC 3264 §8.1). The new section is appended below the existing ones and binds its own RTP port. Use it to carry a second independent audio stream — a translated feed, for example — alongside the original. Set `content` to "alt" and `lang` to the feed's language so the peer can tell them apart. A peer that answers the new section with port 0 leaves the call untouched and this returns 409.
             tags:
                 - Legs
+            x-section: Audio streams
             requestBody:
                 required: true
                 content:
@@ -2459,6 +2669,7 @@ paths:
             summary: Get one of a leg's audio streams
             tags:
                 - Legs
+            x-section: Audio streams
             responses:
                 '200':
                     description: Audio stream
@@ -2487,6 +2698,7 @@ paths:
                 Only the role is mutable here. The SDP-level attributes — direction, lang, content, label — are fixed when the stream is negotiated; change them by removing the stream and adding a new one.
             tags:
                 - Legs
+            x-section: Audio streams
             requestBody:
                 required: true
                 content:
@@ -2518,6 +2730,7 @@ paths:
             description: Disables the stream with a re-INVITE carrying port 0 for its section (RFC 3264 §8.2) and releases its RTP port. The m-line slot survives as a tombstone — the m-line count never decreases for the life of a dialog — so a later added stream takes a new position. The primary stream carries the call and cannot be removed.
             tags:
                 - Legs
+            x-section: Audio streams
             responses:
                 '204':
                     description: Stream removed
@@ -2553,6 +2766,7 @@ paths:
             description: Attaches one of the leg's secondary streams to a room, which may differ from the leg's own room — that is what lets an original audio stream and a translated one be mixed separately. A leg never hears its own other streams, whatever the routing matrix says.
             tags:
                 - Legs
+            x-section: Audio streams
             requestBody:
                 required: true
                 content:
@@ -2589,6 +2803,7 @@ paths:
             summary: Remove an audio stream from its room
             tags:
                 - Legs
+            x-section: Audio streams
             responses:
                 '200':
                     description: Updated stream
@@ -2617,6 +2832,7 @@ paths:
             description: Updates the leg's routing role and, if the leg is currently in a room, recomputes the room's matrix-derived allow-sets atomically (single mixer-mutex acquisition). The next mix tick (≤ 20 ms) reflects the change.
             tags:
                 - Legs
+            x-section: Settings
             requestBody:
                 required: true
                 content:
@@ -2651,6 +2867,7 @@ paths:
             description: Replaces the ingress audio processing running on a live leg. Any chain can be swapped for any other, including enabling or disabling `denoise`, which runs at the rate the leg and room already agreed on and so adds no resampling. A change that did alter the chain's working rate is handled by rebuilding it behind a short fade rather than being refused. An empty array stops all processing. The change is staged and lands on the next audio block, so the response reports the requested chain. The leg must be in a room, since the chain lives on its mixer participant.
             tags:
                 - Legs
+            x-section: Settings
             requestBody:
                 required: true
                 content:
@@ -2691,6 +2908,7 @@ paths:
             description: Replaces the leg's `custom_data` outright — there is no merge. The new value is carried at the top level of every event published for this leg from the next event onwards, and is released after `leg.disconnected`. Sending `null` clears it, the same as DELETE.
             tags:
                 - Legs
+            x-section: Settings
             requestBody:
                 required: true
                 content:
@@ -2722,6 +2940,7 @@ paths:
             description: 'Removes the leg''s `custom_data`. Subsequent events for this leg omit the field. Idempotent: clearing a leg that has none succeeds.'
             tags:
                 - Legs
+            x-section: Settings
             responses:
                 '200':
                     description: Updated leg view
@@ -2743,6 +2962,7 @@ paths:
             summary: Play audio to a room
             tags:
                 - Rooms
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -2783,6 +3003,7 @@ paths:
             summary: Change the volume of an active room playback
             tags:
                 - Rooms
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -2813,6 +3034,7 @@ paths:
             summary: Stop room playback
             tags:
                 - Rooms
+            x-section: Playback & TTS
             responses:
                 '200':
                     description: Playback stopped
@@ -2835,6 +3057,7 @@ paths:
             description: Synthesizes the provided text using the configured TTS provider and plays the audio into the room. When `TTS_CACHE_ENABLED=true`, identical requests (same text, voice, model, language, and prompt) are stored on disk in `TTS_CACHE_DIR` and persist across restarts, without calling the external provider.
             tags:
                 - Rooms
+            x-section: Playback & TTS
             requestBody:
                 required: true
                 content:
@@ -2881,6 +3104,7 @@ paths:
             description: Records the full room mix at 16kHz, 16-bit, mono.
             tags:
                 - Rooms
+            x-section: Recording & SIPREC
             requestBody:
                 content:
                     application/json:
@@ -2922,6 +3146,7 @@ paths:
             summary: Stop room recording
             tags:
                 - Rooms
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording stopped
@@ -2944,6 +3169,7 @@ paths:
             description: 'Replaces the room mix with silence on the active recording until `/record/resume` is called. When multi-channel recording is active, every per-participant track is paused too (including tracks for participants who join while paused). Idempotent: returns `status: already_paused` when already paused.'
             tags:
                 - Rooms
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording paused (or already paused)
@@ -2966,6 +3192,7 @@ paths:
             description: Resumes writing real audio after a prior `/record/pause`. Resumes every per-participant track if multi-channel recording is active. Idempotent.
             tags:
                 - Rooms
+            x-section: Recording & SIPREC
             responses:
                 '200':
                     description: Recording resumed (or was not paused)
@@ -2987,6 +3214,7 @@ paths:
             summary: Start speech-to-text on all room participants
             tags:
                 - Rooms
+            x-section: Speech-to-text
             requestBody:
                 content:
                     application/json:
@@ -3022,6 +3250,7 @@ paths:
             summary: Stop speech-to-text on a room
             tags:
                 - Rooms
+            x-section: Speech-to-text
             responses:
                 '200':
                     description: STT stopped
@@ -3044,6 +3273,7 @@ paths:
             description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
             tags:
                 - Rooms
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -3090,6 +3320,7 @@ paths:
             description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
             tags:
                 - Rooms
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -3136,6 +3367,7 @@ paths:
             description: The bot joins as a virtual participant via WebSocket, hearing all participants (mixed-minus-self) and speaking to everyone.
             tags:
                 - Rooms
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -3176,6 +3408,7 @@ paths:
             description: The agent joins as a virtual participant, hearing all participants (mixed-minus-self) and speaking to everyone.
             tags:
                 - Rooms
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -3222,6 +3455,7 @@ paths:
             description: Sends a context message or instruction to the running agent. Supported by Deepgram (InjectAgentMessage), Pipecat (TextFrame), and VAPI (control URL). Returns 501 for ElevenLabs.
             tags:
                 - Rooms
+            x-section: AI agents
             requestBody:
                 required: true
                 content:
@@ -3267,6 +3501,7 @@ paths:
             summary: Detach the agent from a room
             tags:
                 - Rooms
+            x-section: AI agents
             responses:
                 '200':
                     description: Agent stopped
@@ -3289,6 +3524,7 @@ paths:
             description: Upgrades to a WebSocket connection and joins the room as a bidirectional audio participant. The client sends and receives 16kHz 16-bit signed little-endian PCM audio (mono), base64-encoded in JSON text frames. Each audio frame is 640 bytes (20ms).
             tags:
                 - Rooms
+            x-section: Participants
             responses:
                 '101':
                     description: WebSocket upgrade successful. Server sends a `connected` message followed by mixed-minus-self audio frames.
