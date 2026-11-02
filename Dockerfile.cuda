@@ -1,0 +1,33 @@
+# VoiceBlender with the voxlock filter on an NVIDIA GPU. The CUDA loader links
+# the binary dynamically, so it needs a glibc base rather than Alpine. Run it
+# with the NVIDIA Container Toolkit (docker run --gpus all); the host's driver
+# must be R570 or newer.
+#
+# The CUDA runtime image carries cuBLAS, which doubles the calls a GPU takes;
+# --build-arg RUNTIME=debian:bookworm-slim gives a far smaller image without.
+ARG RUNTIME=nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+# glibc's, so the binary names glibc's loader.
+FROM golang:1.26-bookworm AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -tags cuda -o /voiceblender ./cmd/voiceblender
+
+FROM ${RUNTIME}
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+	&& rm -rf /var/lib/apt/lists/*
+COPY --from=builder /voiceblender /usr/local/bin/voiceblender
+
+RUN mkdir -p /tmp/recordings /tmp/tts_cache
+
+ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+EXPOSE 8080/tcp
+EXPOSE 5060/udp
+EXPOSE 10000-20000/udp
+
+ENTRYPOINT ["voiceblender"]
