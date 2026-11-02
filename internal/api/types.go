@@ -122,7 +122,7 @@ type LiveKitPermissions struct {
 }
 
 var createLegRequestFields = map[string]FieldEnrichment{
-	"type":             {Description: "Leg type", Enum: []string{"sip", "whatsapp", "websocket", "livekit_room"}},
+	"type":             {Description: "Transport to dial out on. WebRTC legs cannot be created here: the browser starts them via `POST /webrtc/offer`.", Enum: []string{"sip", "whatsapp", "websocket", "livekit_room"}},
 	"to":               {Description: "Destination. For sip legs, a SIP URI (e.g. \"sip:alice@example.com\"); a \"sips:\" URI or a \";transport=tls\" param sends the INVITE over TLS, and \";transport=tcp\" over TCP. For whatsapp legs, an E.164 phone number (with or without '+')."},
 	"uri":              {Description: "Deprecated alias for `to` (sip legs only). Prefer `to`."},
 	"from":             {Description: `Caller ID. A bare user-part (e.g. "+15551234567", "alice") sets the user of the SIP From header. A full SIP URI (e.g. "sip:alice@pbx.example.com") sets both the user and the host; otherwise the host comes from the matched trunk's AOR realm, falling back to SIP_DOMAIN.`},
@@ -307,7 +307,7 @@ type LegView struct {
 
 var legViewFields = map[string]FieldEnrichment{
 	"id":          {Description: "Unique leg identifier (UUID)"},
-	"type":        {Description: "Leg type", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out", "websocket_in", "websocket_out", "moq_in", "livekit_publish", "livekit_participant"}},
+	"type":        {Description: "Leg type. Covers inbound and outbound legs of every transport; `POST /legs` creates only some of them (see `CreateLegRequest.type`).", Enum: []string{"sip_inbound", "sip_outbound", "webrtc", "whatsapp_in", "whatsapp_out", "websocket_in", "websocket_out", "moq_in", "livekit_publish", "livekit_participant"}},
 	"state":       {Description: "Leg state", Enum: []string{"ringing", "early_media", "connected", "held", "hung_up"}},
 	"room_id":     {Description: "Room ID if the leg is in a room, empty otherwise"},
 	"muted":       {Description: "Whether the leg is muted (cannot be heard by others)"},

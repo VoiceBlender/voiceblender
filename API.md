@@ -70,7 +70,7 @@ A **leg** represents one side of a voice call — a SIP dialog, a WebRTC peer co
 | Field | Type | Values |
 |-------|------|--------|
 | `id` | string | UUID |
-| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out`, `moq_in`, `livekit_publish`, `livekit_participant` |
+| `type` | string | `sip_inbound`, `sip_outbound`, `webrtc`, `whatsapp_in`, `whatsapp_out`, `websocket_in`, `websocket_out`, `moq_in`, `livekit_publish`, `livekit_participant`. This lists every leg the server can hold, inbound included; it is not the set of types accepted by [`POST /v1/legs`](#post-v1legs). |
 | `state` | string | `ringing`, `early_media`, `connected`, `held`, `hung_up` |
 | `room_id` | string | Room ID if assigned, empty otherwise |
 | `muted` | boolean | `true` if the leg is muted (cannot be heard by others) |
@@ -137,9 +137,11 @@ its own identifiers through the call without maintaining a `leg_id → external 
 
 ### POST /v1/legs
 
-Originate an outbound SIP call.
+Originate an outbound leg — one VoiceBlender dials out itself. `type` selects the transport: `sip`, `whatsapp`, `websocket` or `livekit_room`.
 
-**Request:**
+> **WebRTC legs are not created here.** The server has no address to dial a browser at, so the browser has to start the call: it creates an `RTCPeerConnection`, makes an SDP offer and sends it to [`POST /v1/webrtc/offer`](#post-v1webrtcoffer) (or the VSI `webrtc_offer` command). That call answers the offer and returns the new `leg_id`, which then works with every `/v1/legs` and `/v1/rooms` endpoint like any other leg. Inbound SIP, WhatsApp and WebSocket legs are likewise created by the remote side, not by this endpoint.
+
+**Request** (outbound SIP call):
 
 ```json
 {
@@ -4097,7 +4099,7 @@ The VSI equivalent is `room_siprec_start`.
 
 ### POST /v1/webrtc/offer
 
-Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP offer and receives an SDP answer plus a leg ID. The answer is returned immediately without waiting for ICE gathering to complete — use the trickle ICE endpoints below to exchange candidates incrementally.
+Establish a WebRTC leg via SDP offer/answer exchange. The browser sends an SDP offer and receives an SDP answer plus a leg ID. This is the only way to create a `webrtc` leg — `POST /v1/legs` does not accept it. The answer is returned immediately without waiting for ICE gathering to complete — use the trickle ICE endpoints below to exchange candidates incrementally.
 
 **Request:**
 
