@@ -1,9 +1,10 @@
-.PHONY: build run openapi asyncapi specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
 IMAGE    = voiceblender
 TAG      = $(shell git describe --tags --always)
+REDOCLY_IMAGE ?= redocly/cli:2.2.0
 
 build:
 	go build -o $(BINARY) ./cmd/voiceblender
@@ -16,6 +17,10 @@ run: build
 # routes, request/response types, VSI command registry, or event types.
 openapi asyncapi specs:
 	go generate ./internal/api/
+
+# Lints openapi.yaml with Redocly CLI against the rules in redocly.yaml.
+lint-specs:
+	docker run --rm -v "$(CURDIR)":/spec:ro -w /spec $(REDOCLY_IMAGE) lint openapi.yaml
 
 vet:
 	go vet ./...

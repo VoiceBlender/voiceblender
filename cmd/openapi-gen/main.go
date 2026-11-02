@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
@@ -260,8 +261,8 @@ func enrichedFieldSchema(parentType, jsonName string, f reflect.StructField) *om
 		return wrapper
 	}
 
-	// If the schema uses nullable+allOf (pointer-to-struct), add description at top.
-	if hasAllOf(schema) {
+	// A pointer-to-struct is anyOf [$ref, null]; put the description on the wrapper.
+	if hasKey(schema, "anyOf") {
 		if enrich.Description != "" {
 			// Insert description before the allOf node.
 			insertDescription(schema, enrich.Description)
@@ -273,11 +274,7 @@ func enrichedFieldSchema(parentType, jsonName string, f reflect.StructField) *om
 		schema.set("description", enrich.Description)
 	}
 	if len(enrich.Enum) > 0 {
-		enumSeq := newSeq()
-		for _, v := range enrich.Enum {
-			enumSeq.add(v)
-		}
-		schema.set("enum", enumSeq)
+		schema.set("enum", enumValues(key, schemaType(schema), enrich.Enum))
 	}
 	if enrich.Format != "" {
 		schema.set("format", enrich.Format)
@@ -310,14 +307,48 @@ func isRef(m *omap) bool {
 	return false
 }
 
-// hasAllOf checks if a schema has an allOf key.
-func hasAllOf(m *omap) bool {
+// hasKey checks if a mapping node has the given key.
+func hasKey(m *omap, key string) bool {
 	for i := 0; i < len(m.node.Content)-1; i += 2 {
-		if m.node.Content[i].Value == "allOf" {
+		if m.node.Content[i].Value == key {
 			return true
 		}
 	}
 	return false
+}
+
+// schemaType returns a schema's scalar `type`, or "" if it has none.
+func schemaType(m *omap) string {
+	for i := 0; i < len(m.node.Content)-1; i += 2 {
+		if m.node.Content[i].Value == "type" && m.node.Content[i+1].Kind == yaml.ScalarNode {
+			return m.node.Content[i+1].Value
+		}
+	}
+	return ""
+}
+
+// enumValues emits enum members typed to match the schema, so an integer
+// field's enum holds integers rather than strings.
+func enumValues(field, typ string, values []string) *seq {
+	out := newSeq()
+	for _, v := range values {
+		switch typ {
+		case "integer":
+			if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+				fmt.Fprintf(os.Stderr, "openapi-gen: %s: enum value %q is not an integer\n", field, v)
+				os.Exit(1)
+			}
+			out.node.Content = append(out.node.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: v, Tag: "!!int"})
+		default:
+			out.add(v)
+		}
+	}
+	return out
+}
+
+// nullType is the OpenAPI 3.1 schema matching only JSON null.
+func nullType() *omap {
+	return newMap().set("type", "null")
 }
 
 // insertDescription adds a description node right after any existing first node pairs.
@@ -355,7 +386,7 @@ func fieldSchema(f reflect.StructField) *omap {
 		registerSchema(ft)
 		s := schemaRef(ft.Name())
 		if isPtr {
-			return newMap().set("nullable", true).set("allOf", newSeq().add(s))
+			return newMap().set("anyOf", newSeq().add(s).add(nullType()))
 		}
 		return s
 	}
@@ -794,9 +825,11 @@ func flattenDataFields(t reflect.Type, props *omap, evtType string) {
 // in webhook event data (e.g. cdr, quality).
 // parentFieldName is the JSON name of the parent field (e.g. "cdr").
 func webhookNestedSchema(t reflect.Type, nullable bool, parentFieldName string) *omap {
-	schema := newMap().set("type", "object")
+	schema := newMap()
 	if nullable {
-		schema.set("nullable", true)
+		schema.set("type", newSeq().add("object").add("null"))
+	} else {
+		schema.set("type", "object")
 	}
 	requiredSeq := newSeq()
 	hasRequired := false
@@ -896,11 +929,16 @@ func main() {
 		"recording, and webhook-based event delivery.\n")
 	info.set("x-config-vars", configVars())
 	info.set("version", "1.0.0")
-	info.set("license", newMap().set("name", "MIT"))
+	info.set("license", newMap().set("name", "MIT").set("identifier", "MIT"))
 	doc.set("info", info)
 
 	// Servers.
-	servers := newSeq().add(newMap().set("url", "http://localhost:8080/v1").set("description", "Local development server"))
+	servers := newSeq().add(newMap().
+		set("url", "{scheme}://{host}/v1").
+		set("description", "VoiceBlender instance (HTTP_ADDR)").
+		set("variables", newMap().
+			set("scheme", newMap().set("default", "http").set("enum", newSeq().add("http").add("https"))).
+			set("host", newMap().set("default", "localhost:8080").set("description", "Host and port of the REST API"))))
 	doc.set("servers", servers)
 
 	// Tags.
@@ -925,7 +963,7 @@ func main() {
 	doc.set("components", components)
 
 	// Webhooks.
-	doc.set("x-webhooks", webhooks)
+	doc.set("webhooks", webhooks)
 
 	// Write output.
 	out, err := yaml.Marshal(&doc.node)

@@ -316,9 +316,19 @@ info:
     version: 1.0.0
     license:
         name: MIT
+        identifier: MIT
 servers:
-    - url: http://localhost:8080/v1
-      description: Local development server
+    - url: '{scheme}://{host}/v1'
+      description: VoiceBlender instance (HTTP_ADDR)
+      variables:
+        scheme:
+            default: http
+            enum:
+                - http
+                - https
+        host:
+            default: localhost:8080
+            description: Host and port of the REST API
 tags:
     - name: Legs
       description: Voice call legs (SIP or WebRTC)
@@ -3969,9 +3979,9 @@ components:
                     description: Room ID to auto-add the leg to once media is ready (early_media or connected). If the room does not exist, it is automatically created.
                 auth:
                     description: Digest auth credentials. Required for whatsapp legs (Meta-issued password; username defaults to `from` with '+' stripped). Optional for sip legs (sipgo retries on 401/407 challenge).
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/SIPAuth'
+                        - type: "null"
                 webhook_url:
                     type: string
                     description: Route all events for this leg exclusively to this URL instead of global webhooks.
@@ -3981,9 +3991,9 @@ components:
                     description: HMAC-SHA256 signing secret for the per-leg webhook.
                 amd:
                     description: Enable Answering Machine Detection on outbound calls. Include the object (even empty) to enable with defaults; omit to disable.
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/AMDParams'
+                        - type: "null"
                 accept_dtmf:
                     type: boolean
                     description: If false, this leg will not receive DTMF digits broadcast from other legs in the same room. Defaults to true.
@@ -4018,10 +4028,10 @@ components:
                     type: integer
                     description: PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.
                     enum:
-                        - "8000"
-                        - "16000"
-                        - "24000"
-                        - "48000"
+                        - 8000
+                        - 16000
+                        - 24000
+                        - 48000
                     default: 16000
                 wire_format:
                     type: string
@@ -4038,9 +4048,9 @@ components:
                     default: s16le
                 livekit:
                     description: LiveKit room join parameters (only used when type=livekit_room).
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/LiveKitParams'
+                        - type: "null"
             required:
                 - type
         CreateRoomBridgeRequest:
@@ -4083,9 +4093,9 @@ components:
                     type: integer
                     description: 'Mixer sample rate in Hz. Allowed values: 8000, 16000, 48000. Default: 16000.'
                     enum:
-                        - "8000"
-                        - "16000"
-                        - "48000"
+                        - 8000
+                        - 16000
+                        - 48000
                     default: 16000
                 comfort_noise:
                     type: boolean
@@ -4106,14 +4116,14 @@ components:
                     description: Application identifier carried through to every event emitted by this trunk.
                 sip_register:
                     description: Required when type == "sip_register". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry).
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/SIPRegisterTrunkSpec'
+                        - type: "null"
                 ip_ip:
                     description: Required when type == "ip_ip". Configures static peering with a fixed upstream (peer URI, optional digest credentials, inbound source addresses, OPTIONS health check).
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/IPIPTrunkSpec'
+                        - type: "null"
             required:
                 - type
         DTMFRequest:
@@ -4907,9 +4917,9 @@ components:
                     description: Display name for the participant; surfaces in LK Room UIs.
                 permissions:
                     description: LiveKit grant flags. Nil pointers default to publish=true, subscribe=true, data=false, admin=false.
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/LiveKitPermissions'
+                        - type: "null"
                 token_ttl:
                     type: string
                     description: Go duration string (e.g. "30m", "6h"). Used only when minting. Defaults to LIVEKIT_DEFAULT_TOKEN_TTL (6h).
@@ -5241,13 +5251,13 @@ components:
                 created_at:
                     type: string
                 sip_register:
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/SIPRegisterTrunkView'
+                        - type: "null"
                 ip_ip:
-                    nullable: true
-                    allOf:
+                    anyOf:
                         - $ref: '#/components/schemas/IPIPTrunkView'
+                        - type: "null"
             required:
                 - id
                 - type
@@ -5392,7 +5402,7 @@ components:
                     description: Index of the media description
             required:
                 - candidate
-x-webhooks:
+webhooks:
     leg.ringing:
         post:
             summary: SIP call ringing (inbound or outbound)
@@ -5506,8 +5516,9 @@ x-webhooks:
                                             - duration_answered
                                     quality:
                                         description: RTP quality metrics. Omitted for WebRTC legs or unanswered legs with no media.
-                                        type: object
-                                        nullable: true
+                                        type:
+                                            - object
+                                            - "null"
                                         properties:
                                             mos_score:
                                                 type: number

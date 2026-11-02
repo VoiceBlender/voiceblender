@@ -248,7 +248,7 @@ type EventMeta struct {
 }
 
 // EventsMetadata returns every event published over the bus. asyncapi-gen
-// emits one channel per entry; openapi-gen emits one x-webhooks entry per
+// emits one channel per entry; openapi-gen emits one webhooks entry per
 // entry. Keeping a single list ensures the two specs cannot drift apart.
 func EventsMetadata() []EventMeta {
 	return []EventMeta{
