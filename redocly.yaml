@@ -1,0 +1,7 @@
+extends:
+  - recommended
+rules:
+  # The REST API has no authentication; access is gated by ALLOWED_IPS.
+  security-defined: off
+  # /debug/pprof/ is net/http/pprof's own index path.
+  no-path-trailing-slash: off
