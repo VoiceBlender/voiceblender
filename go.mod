@@ -7,6 +7,7 @@ toolchain go1.26.10
 require (
 	cloud.google.com/go/storage v1.56.0
 	cloud.google.com/go/texttospeech v1.16.0
+	github.com/MoQ-it/moqt v0.2.0
 	github.com/VoiceBlender/goamr-nb v1.1.0
 	github.com/VoiceBlender/goamr-wb v1.4.0
 	github.com/VoiceBlender/gtcrn-go v0.1.0
@@ -26,7 +27,6 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/icholy/digest v1.1.0
 	github.com/livekit/protocol v1.46.6
-	github.com/mengelbart/moqtransport v0.5.0
 	github.com/pion/interceptor v0.1.51
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtp v1.10.6
@@ -100,7 +100,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 // indirect
 	github.com/livekit/psrpc v0.7.1 // indirect
-	github.com/mengelbart/qlog v0.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nats-io/nats.go v1.43.0 // indirect
 	github.com/nats-io/nkeys v0.4.11 // indirect

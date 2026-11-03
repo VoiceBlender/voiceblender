@@ -20,6 +20,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
+	"github.com/VoiceBlender/voiceblender/internal/moqmedia"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
 	"github.com/VoiceBlender/voiceblender/internal/storage"
@@ -311,7 +312,8 @@ func main() {
 			// PoC: accept any Origin. Browser demos served from a different
 			// host/port than the MoQ endpoint would otherwise fail the
 			// same-origin check. Tighten before any production use.
-			CheckOrigin: func(*http.Request) bool { return true },
+			ApplicationProtocols: []string{moqmedia.ALPN},
+			CheckOrigin:          func(*http.Request) bool { return true },
 		}
 		apiSrv.MoQWebTransport = moqSrv
 	}

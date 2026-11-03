@@ -185,6 +185,7 @@ go test -v -run TestResolveStorage ./internal/api/
 | `internal/providercfg` | 8 | Vendor origin handling: default, EU, bare-host, `wss://` and plain-`http` proxy origins map to the right REST and WebSocket bases with trailing slashes trimmed; the Deepgram Voice Agent stays on `agent.deepgram.com` for the default origin and moves under the API host otherwise; the VAPI call endpoint is `<origin>/call` for the default, bare-host and plain-`http` origins. |
 | `internal/tts` (vendor URLs) | 2 | Deepgram `/v1/speak` and ElevenLabs `text-to-speech` URLs follow the configured origin and carry `mip_opt_out=true` / `enable_logging=false` only when configured. |
 | `internal/lkmedia` | 60 | LiveKit signaling and transport: token minting, SDP fixups, audio level parsing, config validation, transport lifecycle — plus signal WebSocket guards: `send` is bounded by a write deadline, control-frame replies from the read goroutine go out under `writeMu` as whole frames, close code/reason are logged, and a normal (1000) closure is classified as a clean disconnect rather than an error |
+| `internal/moqmedia` | 14 | MoQ leg transport (draft-22, `MoQ-it/moqt`) against a real loopback HTTP/3 + WebTransport server and a moqt client: room audio fed to `Start` arrives as audible Opus on the client's `mix` subscription; after the client publishes `mic` the server subscribes and the client's Opus tone comes out of `AudioReader` as PCM; an unknown track is rejected with `DOES_NOT_EXIST` and a second `mix` subscription with `REQUEST_ERROR`; the transport finishes when the client closes, with `Err()` nil for a clean session close or a QUIC close with `H3_NO_ERROR` and non-nil when the client closes with `PROTOCOL_VIOLATION`; `isCleanClose` classification; config defaults and validation |
 
 ---
 
@@ -255,6 +256,7 @@ go test -tags integration -v -timeout 60s -run TestMute ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestDTMFBroadcast ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestRTT ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestWSEvents ./tests/integration/
+go test -tags integration -v -timeout 60s -run MoQ ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestSIPInboundAuth ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestS3Preflight ./tests/integration/
 go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integration/
@@ -399,6 +401,9 @@ go test -tags integration -v -timeout 60s -run TestGCSRecording ./tests/integrat
 | `TestVSI_WebRTC_OfferInvalidSDP` | VSI `webrtc_offer` with malformed SDP returns a 400 error frame |
 | `TestVSI_WebRTC_AddCandidateNotFound` | VSI `webrtc_add_candidate` for an unknown leg returns a 404 error frame |
 | `TestVSI_WebRTC_ICERestart` | VSI `webrtc_ice_restart` returns an answer with new ICE credentials for the same leg; unknown leg, unchanged credentials and malformed SDP return 404/400 error frames |
+| `TestMoQLegInbound_AudioRoundTrip` | A draft-22 MoQ client (WebTransport protocol `moqt-22`) dials `CONNECT /v1/legs/moq`, publishes `mic`, answers the server's `SUBSCRIBE mic/audio` with Opus frames, subscribes to `mix` and receives a mix Object; `leg.connected` fires |
+| `TestMoQLeg_TwoLegsExchangeAudio` | Two MoQ legs in one room: a 440 Hz tone published on leg A's `mic` is audible (RMS above threshold) in leg B's decoded `mix` |
+| `TestMoQLeg_ClientCloseDisconnects` | Closing the client MoQ session ends the leg with `leg.disconnected` and `cdr.reason: hangup` |
 | `TestWSEvents_ConnectedAndEvents` | Connect to `/v1/vsi`, originate a call, verify `leg.ringing` event arrives |
 | `TestWSEvents_UnknownCommand` | Send unknown command with `request_id`, verify error response echoes it |
 | `TestWSEvents_StopCommand` | Send `stop`, verify server closes the connection |

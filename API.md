@@ -480,7 +480,7 @@ Both `leg.ringing` and `leg.connected` are emitted back-to-back on upgrade. `leg
 
 A **MoQ leg** (`moq_in`) carries **bidirectional** Opus audio over a single Media-over-QUIC session inside a WebTransport/HTTP/3 connection. Only the connection direction is fixed (client-initiated, hence `moq_in`); media flows both ways. The leg goes straight to `connected` (no ringing/answer flow), and event parity is limited to `leg.connected` / `leg.disconnected` — no DTMF, no RTT, no hold/transfer.
 
-Reachable only on the HTTP/3 MoQ listener (`MOQ_LISTEN_ADDR`, default `:8443`), not on the regular HTTP/1.1 listener. Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 clients (moqtail, moq.dev) is not expected to work.
+Reachable only on the HTTP/3 MoQ listener (`MOQ_LISTEN_ADDR`, default `:8443`), not on the regular HTTP/1.1 listener. Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. Speaks IETF [draft-ietf-moq-transport-22](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/22/) via [`MoQ-it/moqt`](https://github.com/MoQ-it/moqt). Clients should offer the WebTransport application protocol `moqt-22` (the `protocols` option of the browser `WebTransport` constructor); clients speaking other drafts do not interoperate.
 
 #### Wire format
 
@@ -489,7 +489,13 @@ One MoQ session per leg, with two fixed tracks:
 - **Downlink** (server → client): server publishes namespace `mix`, track `audio` — the room mix sent to the leg.
 - **Uplink** (client → server): server subscribes to namespace `mic`, track `audio` — the leg's mic into the room.
 
-Audio is Opus, one frame per MoQ Object (LOC-style), at 48 kHz mono with a 20 ms frame size. The encoder/decoder are hard-wired to 48 kHz — the `sample_rate` query param exists but only `48000` is accepted; the room mixer handles any rate conversion. The Opus bitrate is server-controlled via the `MOQ_OPUS_BITRATE` env var (default 24000 bps).
+Session flow after SETUP:
+
+1. The server sends `PUBLISH_NAMESPACE mix`. Accept it; rejecting it only produces a server-side warning.
+2. The client sends `PUBLISH_NAMESPACE mic`; the server accepts it and replies with `SUBSCRIBE mic/audio`. Accept that and publish the mic audio on it.
+3. The client sends `SUBSCRIBE mix/audio` to receive the room mix. Only one subscription to `mix` is served per session; a second one gets `REQUEST_ERROR`, and an unknown track gets `DOES_NOT_EXIST`.
+
+Audio is Opus, one frame per MoQ Object (LOC-style), at 48 kHz mono with a 20 ms frame size. The server sends each frame as its own Group on its own subgroup stream. On the uplink it accepts Objects on subgroup streams or as datagrams. The encoder/decoder are hard-wired to 48 kHz — the `sample_rate` query param exists but only `48000` is accepted; the room mixer handles any rate conversion. The Opus bitrate is server-controlled via the `MOQ_OPUS_BITRATE` env var (default 24000 bps).
 
 #### Inbound: CONNECT /v1/legs/moq (WebTransport extended-CONNECT)
 
@@ -512,13 +518,42 @@ Use a WebTransport-capable HTTP/3 client. Standard HTTP/1.1 clients (e.g. `curl 
 
 `X-*` and `P-*` request headers (plus `Authorization`) are captured into the leg's `headers` map and surfaced on `LegView`.
 
+**Example (browser, using the `moqt` client bundled at `examples/moq-web/vendor/moqt.js`):**
+
+```js
+import { Session, ObjectStatus } from './vendor/moqt.js';
+
+const session = await Session.connect({   // offers WebTransport protocol moqt-22
+  url: 'https://voiceblender.example.com:8443/v1/legs/moq?room_id=room-789',
+  handler: {
+    onPublishNamespace: (req) => req.accept(),        // the server's `mix`
+    onSubscribe: async (req) => {                     // the server's SUBSCRIBE mic/audio
+      const mic = await req.accept();
+      let group = 0;
+      onOpusFrame(async (payload) => {                // your 20 ms Opus encoder output
+        const sg = mic.openSubgroup(group++, 0, { endOfGroup: true, firstObject: true });
+        await sg.writeObject({ id: 0, status: ObjectStatus.Normal, payload });
+        await sg.close();
+      });
+    },
+  },
+});
+await session.publishNamespace(['mic']);
+const mix = await session.subscribe({ namespace: ['mix'], name: 'audio' });
+for await (const group of mix) {
+  for await (const obj of group) playOpus(obj.payload);
+}
+```
+
+See `examples/moq-web/` for a complete page with WebCodecs capture and playback.
+
 **Response:**
 - `200 OK` — WebTransport extended-CONNECT accepted; MoQ session established. No JSON body — the response is the upgraded WebTransport session.
 - `400` — Invalid query parameters or config.
 - `500` — Room create failure.
 - `503` — MoQ endpoint is not enabled (`MOQ_ENABLED=false`).
 
-`leg.connected` fires on session establishment. `leg.disconnected` fires when the MoQ session closes — reasons: `hangup`, `moq_error`.
+`leg.connected` fires on session establishment. `leg.disconnected` fires when the MoQ session closes — reasons: `hangup`, `moq_error`. `moq_error` means the session was closed with a MoQ error code, either by the server (for example after a protocol violation) or by the client (a non-zero WebTransport session close code). A clean close by either side, or a dropped QUIC connection, reports `hangup`.
 
 > **OpenAPI note:** OpenAPI 3.1 does not define `connect` as a path-item method, so this operation is documented in `openapi.yaml` under `post` with an `x-actual-method: CONNECT` extension. The actual wire method is HTTP/3 extended-CONNECT.
 
