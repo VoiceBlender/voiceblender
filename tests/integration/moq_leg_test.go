@@ -43,7 +43,7 @@ func startMoQListener(t *testing.T, inst *testInstance) string {
 	}
 
 	moqSrv := &webtransport.Server{
-		H3: http3.Server{
+		H3: &http3.Server{
 			Handler: inst.apiSrv.Router,
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert},
@@ -54,7 +54,7 @@ func startMoQListener(t *testing.T, inst *testInstance) string {
 	inst.apiSrv.MoQWebTransport = moqSrv
 
 	go func() {
-		if err := moqSrv.Serve(udpConn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := moqSrv.Serve(udpConn); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.Canceled) {
 			t.Logf("moq Serve exit: %v", err)
 		}
 	}()
@@ -114,7 +114,7 @@ func TestMoQLegInbound_AudioRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	dialer := webtransport.Dialer{
+	dialer := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{"h3"},

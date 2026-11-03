@@ -300,7 +300,7 @@ func main() {
 			os.Exit(1)
 		}
 		moqSrv = &webtransport.Server{
-			H3: http3.Server{
+			H3: &http3.Server{
 				Addr:    cfg.MoQListenAddr,
 				Handler: apiSrv.Router,
 				TLSConfig: &tls.Config{
@@ -363,7 +363,8 @@ func main() {
 		g.Go(func() error {
 			log.Info("starting MoQ (WebTransport/H3) server", "addr", cfg.MoQListenAddr)
 			err := moqSrv.ListenAndServe()
-			if err != nil && err != http.ErrServerClosed {
+			// Close() surfaces as context.Canceled rather than http.ErrServerClosed.
+			if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.Canceled) {
 				return err
 			}
 			return nil
