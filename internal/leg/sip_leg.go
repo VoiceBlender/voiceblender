@@ -857,9 +857,12 @@ func (l *SIPLeg) configureAMRWB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remo
 		s.amrwbMode = l.engine.AMRWBMode()
 	}
 	s.amrwbModeSet = ""
+	s.amrModeChangePeriod, s.amrModeChangeNeighbor = 1, false
 	if remoteSDP != nil {
 		fmtp := remoteSDP.CodecFmtp[codec.CodecAMRWB]
 		s.amrwbOctetAligned = sipmod.AMRWBOctetAligned(fmtp)
+		s.amrModeChangePeriod = sipmod.AMRModeChangePeriod(fmtp)
+		s.amrModeChangeNeighbor = sipmod.AMRModeChangeNeighbor(fmtp)
 		// Honor the peer's mode-set: clamp our (ceiling) transmit mode to it and
 		// echo it back in our answer per RFC 4867.
 		if modeSet := sipmod.AMRWBModeSet(fmtp); len(modeSet) > 0 {
@@ -881,9 +884,12 @@ func (l *SIPLeg) configureAMRNB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remo
 		s.amrnbMode = l.engine.AMRNBMode()
 	}
 	s.amrnbModeSet = ""
+	s.amrModeChangePeriod, s.amrModeChangeNeighbor = 1, false
 	if remoteSDP != nil {
 		fmtp := remoteSDP.CodecFmtp[codec.CodecAMRNB]
 		s.amrnbOctetAligned = sipmod.AMRNBOctetAligned(fmtp)
+		s.amrModeChangePeriod = sipmod.AMRModeChangePeriod(fmtp)
+		s.amrModeChangeNeighbor = sipmod.AMRModeChangeNeighbor(fmtp)
 		if modeSet := sipmod.AMRNBModeSet(fmtp); len(modeSet) > 0 {
 			s.amrnbMode = sipmod.ClampAMRNBMode(s.amrnbMode, modeSet)
 			s.amrnbModeSet = sipmod.FormatAMRNBModeSet(modeSet)
@@ -1072,6 +1078,15 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 	// the decoded samples.
 	pkt := &rtp.Packet{}
 	var decoded []int16
+	// The gap filler follows the live decoder; it runs only without a jitter
+	// buffer, which orders by sequence number and has no slot for a frame
+	// that never had a packet.
+	var (
+		gapDec codec.Decoder
+		gaps   *gapFiller
+	)
+	emit := func(samples []int16) { l.deliverInbound(s, 0, samples) }
+	lastRead := time.Now()
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -1079,13 +1094,39 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		l.mu.RLock()
 		isHeld := l.held
 		l.mu.RUnlock()
+		var gapDue bool
 		if isHeld {
 			s.rtpSess.SetReadDeadline(time.Now().Add(2*time.Hour + time.Minute))
 		} else {
-			s.rtpSess.SetReadDeadline(time.Now().Add(rtpTimeout))
+			deadline := lastRead.Add(rtpTimeout)
+			if gaps != nil {
+				if at, ok := gaps.deadline(); ok && at.Before(deadline) {
+					deadline, gapDue = at, true
+				}
+			}
+			s.rtpSess.SetReadDeadline(deadline)
 		}
 
-		if err := s.rtpSess.ReadRTPInto(pkt); err != nil {
+		err := s.rtpSess.ReadRTPInto(pkt)
+		var netErr net.Error
+		if err != nil && errors.As(err, &netErr) && netErr.Timeout() && gapDue {
+			select {
+			case <-l.ctx.Done():
+				return
+			default:
+			}
+			// A renegotiation may have replaced the decoder, and its rate.
+			if lc := s.live(); lc != nil && lc.decoder == gapDec {
+				gaps.tick(time.Now(), emit)
+			} else {
+				gaps = nil
+			}
+			continue
+		}
+		if err == nil || errors.Is(err, sipmod.ErrNotRTP) {
+			lastRead = time.Now()
+		}
+		if err != nil {
 			select {
 			case <-l.ctx.Done():
 				return
@@ -1096,7 +1137,6 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 				continue
 			}
 			// Check for read deadline timeout (no RTP received).
-			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				l.log.Info("RTP timeout", "leg_id", l.id, "stream_id", s.id, "timeout", rtpTimeout)
 				// Only the primary stream's silence means the call is dead; a
@@ -1168,6 +1208,16 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		// timestamps, which would spike the jitter estimate).
 		l.updateRTPJitter(s, pkt)
 
+		if lc.decoder != gapDec {
+			gapDec, gaps = lc.decoder, nil
+			if s.jb == nil {
+				gaps = newGapFiller(lc.decoder, lc.samplesPerFrame)
+			}
+		}
+		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, emit) {
+			continue
+		}
+
 		// Decode audio payload
 		samples, err := codec.DecodeInto(lc.decoder, decoded, pkt.Payload)
 		if err != nil {
@@ -1183,46 +1233,51 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		}
 
 		decoded = samples
+		if gaps != nil {
+			gaps.after(pkt.SSRC, pkt.Timestamp, len(samples), time.Now())
+		}
+		l.deliverInbound(s, pkt.SequenceNumber, samples)
+	}
+}
 
-		// Convert decoded samples at native rate to PCM bytes
-		pcm := samplesToBytes(samples)
+// deliverInbound hands decoded native-rate samples to the incoming taps and
+// then to the jitter buffer (keyed by seq) or straight to inFrames.
+func (l *SIPLeg) deliverInbound(s *mediaStream, seq uint16, samples []int16) {
+	pcm := samplesToBytes(samples)
 
-		// Write to incoming taps before pushing to inFrames.
-		l.mu.RLock()
-		tap := s.inTap
-		at := s.amdTap
-		srcTap := s.srcInTap
-		st := s.speakingTap
-		l.mu.RUnlock()
-		if tap != nil {
-			tap.Write(pcm)
-		}
-		if at != nil {
-			at.Write(pcm)
-		}
-		if srcTap != nil {
-			srcTap.Write(pcm)
-		}
-		if st != nil {
-			st.Write(pcm)
-		}
+	l.mu.RLock()
+	tap := s.inTap
+	at := s.amdTap
+	srcTap := s.srcInTap
+	st := s.speakingTap
+	l.mu.RUnlock()
+	if tap != nil {
+		tap.Write(pcm)
+	}
+	if at != nil {
+		at.Write(pcm)
+	}
+	if srcTap != nil {
+		srcTap.Write(pcm)
+	}
+	if st != nil {
+		st.Write(pcm)
+	}
 
-		// Route to jitter buffer if enabled, otherwise push directly to
-		// inFrames with drop-oldest-on-overflow (preserves legacy
-		// passthrough behavior).
-		if s.jb != nil {
-			s.jb.Push(pkt.SequenceNumber, pcm)
-			continue
-		}
+	// Route to jitter buffer if enabled, otherwise push directly to
+	// inFrames with drop-oldest-on-overflow.
+	if s.jb != nil {
+		s.jb.Push(seq, pcm)
+		return
+	}
+	select {
+	case s.inFrames <- pcm:
+	default:
 		select {
-		case s.inFrames <- pcm:
+		case <-s.inFrames:
 		default:
-			select {
-			case <-s.inFrames:
-			default:
-			}
-			s.inFrames <- pcm
 		}
+		s.inFrames <- pcm
 	}
 }
 
@@ -1417,10 +1472,20 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 			return
 		}
 		encoded = out
+		if len(encoded) == 0 {
+			// DTX: nothing is sent for this frame, but its 20 ms still elapse.
+			timestamp += samplesPerFrame
+			continue
+		}
+		var marker bool
+		if d, ok := lc.encoder.(codec.DTXEncoder); ok {
+			marker = d.Talkspurt()
+		}
 
 		pkt = rtp.Packet{
 			Header: rtp.Header{
 				Version:        2,
+				Marker:         marker,
 				PayloadType:    pt,
 				SequenceNumber: seqNum,
 				Timestamp:      timestamp,

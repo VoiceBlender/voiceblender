@@ -5,8 +5,8 @@ go 1.26
 require (
 	cloud.google.com/go/storage v1.56.0
 	cloud.google.com/go/texttospeech v1.16.0
-	github.com/VoiceBlender/goamr-nb v1.0.0
-	github.com/VoiceBlender/goamr-wb v1.1.1
+	github.com/VoiceBlender/goamr-nb v1.1.0
+	github.com/VoiceBlender/goamr-wb v1.4.0
 	github.com/VoiceBlender/rnnoise-go v0.3.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.11

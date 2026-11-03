@@ -175,7 +175,7 @@ info:
         - name: AMRWB_MODE
           group: Media & codecs
           default: "2"
-          description: 'AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 2 matches GSMA IR.92 / VoLTE.'
+          description: 'AMR-WB (G.722.2) encoder speech-mode ceiling 0..8: 0=6.60, 1=8.85, 2=12.65, 3=14.25, 4=15.85, 5=18.25, 6=19.85, 7=23.05, 8=23.85 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set; the peer''s codec mode requests (CMR) can lower it during the call, never above the ceiling. Default 2 matches GSMA IR.92 / VoLTE.'
         - name: AMRWB_OCTET_ALIGNED
           group: Media & codecs
           default: "true"
@@ -183,7 +183,7 @@ info:
         - name: AMRNB_MODE
           group: Media & codecs
           default: "7"
-          description: 'AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set. Default 7 is GSM-EFR-equivalent 12.2 kbit/s.'
+          description: 'AMR-NB (RFC 4867) encoder speech-mode ceiling 0..7: 0=4.75, 1=5.15, 2=5.90, 3=6.70, 4=7.40, 5=7.95, 6=10.2, 7=12.2 kbit/s. The actual transmit mode is this ceiling clamped to the peer''s negotiated mode-set; the peer''s codec mode requests (CMR) can lower it during the call, never above the ceiling. Default 7 is GSM-EFR-equivalent 12.2 kbit/s.'
         - name: AMRNB_OCTET_ALIGNED
           group: Media & codecs
           default: "true"

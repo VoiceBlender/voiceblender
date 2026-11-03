@@ -74,12 +74,10 @@ func TestAMRWBFactoryRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAMRWBAmplitudePreserved guards the encoder's 6 dB pre-attenuation
-// (added in goamr-wb to keep the LPC synthesis filter from saturating at the
-// remote decoder) and that no later change re-introduces unbounded gain.
-// Feeds 1 s of a 1 kHz sine at -6 dBFS through encode→decode for every mode
-// and both payload formats. Expected decoded peak is roughly -12 dBFS
-// (input was -6, encoder attenuates 6 dB, decoder roughly preserves).
+// TestAMRWBAmplitudePreserved checks that encode→decode is close to unity
+// gain: neither attenuating the signal nor amplifying it toward saturation.
+// Feeds 1 s of a 1 kHz sine at -6 dBFS through every mode and both payload
+// formats.
 func TestAMRWBAmplitudePreserved(t *testing.T) {
 	const (
 		sampleRate   = 16000
@@ -88,8 +86,8 @@ func TestAMRWBAmplitudePreserved(t *testing.T) {
 		inputPeak    = 16384 // ~ -6 dBFS for int16
 		samplesPerFr = 320   // 20 ms at 16 kHz
 		framesPerSec = sampleRate / samplesPerFr
-		minAllowed   = 3000  // ~ -20 dBFS — catches gross attenuation
-		maxAllowed   = 16000 // ~ -6 dBFS — catches the original blow-up bug
+		minAllowed   = 13800 // ~ -1.5 dB from the input
+		maxAllowed   = 19500 // ~ +1.5 dB from the input
 	)
 
 	in := make([]int16, sampleRate*seconds)
@@ -142,7 +140,7 @@ func TestAMRWBAmplitudePreserved(t *testing.T) {
 						mode, label, peak, minAllowed, inputPeak)
 				}
 				if peak > maxAllowed {
-					t.Errorf("mode=%d %s: decoded peak %d above %d (input was %d) — encoder/decoder amplifying signal, likely the Microsip 'loud/clipping' bug",
+					t.Errorf("mode=%d %s: decoded peak %d above %d (input was %d) — encoder/decoder amplifying signal",
 						mode, label, peak, maxAllowed, inputPeak)
 				}
 			})
