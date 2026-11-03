@@ -49,21 +49,18 @@ async function connect() {
 
   try {
     log('opening WebTransport: ' + url);
-    const opts = {};
+    let serverCertificateHashes;
     if (certHashHex) {
       if (certHashHex.length !== 64 || !/^[0-9a-fA-F]+$/.test(certHashHex)) {
         throw new Error('cert hash must be 64 hex chars (SHA-256)');
       }
       const bytes = new Uint8Array(32);
       for (let i = 0; i < 32; i++) bytes[i] = parseInt(certHashHex.slice(i * 2, i * 2 + 2), 16);
-      opts.serverCertificateHashes = [{ algorithm: 'sha-256', value: bytes }];
+      serverCertificateHashes = [bytes];
       log('using serverCertificateHashes for self-signed cert');
     }
-    const wt = new WebTransport(url, opts);
-    await wt.ready;
-    log('WebTransport ready');
 
-    session = new MoqSession(wt);
+    session = new MoqSession({ url, serverCertificateHashes });
     session.addEventListener('log', (e) => log(e.detail));
     session.addEventListener('error', (e) => log('ERR ' + e.detail));
 
@@ -77,11 +74,7 @@ async function connect() {
     await speaker.start();
     session.addEventListener('object', (e) => speaker.feed(e.detail));
 
-    const subOk = await session.subscribeMix();
-    log('mix subscribed: ' + JSON.stringify({
-      expires: String(subOk.expiresMs),
-      groupOrder: subOk.groupOrder,
-    }));
+    await session.subscribeMix();
 
     const publish = await session.waitForMicPublisher();
     log('server subscribed to mic — starting capture');

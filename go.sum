@@ -42,6 +42,8 @@ github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapp
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0/go.mod h1:cSgYe11MCNYunTnRXrKiR/tHc0eoKjICUuWpNZoVCOo=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
+github.com/MoQ-it/moqt v0.2.0 h1:lKVfjPUdu9lXzz9XszKEwHHhX2qFgVhns4l5SBLVf68=
+github.com/MoQ-it/moqt v0.2.0/go.mod h1:QrkOHEoLIx5yv2q3LtNaFM3qXaFNyeT5YwkZZeN5mgQ=
 github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 h1:TngWCqHvy9oXAN6lEVMRuU21PR1EtLVZJmdB18Gu3Rw=
 github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5/go.mod h1:lmUJ/7eu/Q8D7ML55dXQrVaamCz2vxCfdQBasLZfHKk=
 github.com/VoiceBlender/goamr-nb v1.1.0 h1:gyvPfSZRbIFSIBj6ta8bystjTjokmkehwd+RKP/EZfw=
@@ -200,10 +202,6 @@ github.com/livekit/protocol v1.46.6 h1:lIYlUTDScJQSx6yME+bCprEh/HwKf0aVJ04tscxty
 github.com/livekit/protocol v1.46.6/go.mod h1:KEPIJ/ZdMFQ9tmmfv/uT9TjQEuEcZupCZBabuRGEC1k=
 github.com/livekit/psrpc v0.7.1 h1:ms37az0QTD3UXIWuUC5D/SkmKOlRMVRsI261eBWu/Vw=
 github.com/livekit/psrpc v0.7.1/go.mod h1:bZ4iHFQptTkbPnB0LasvRNu/OBYXEu1NA6O5BMFo9kk=
-github.com/mengelbart/moqtransport v0.5.0 h1:OwFfqNcUtAqO9KtMyMMQfL1N7qhnwTpWPh4XQEMs+ps=
-github.com/mengelbart/moqtransport v0.5.0/go.mod h1:jewuWhaNRQ+MUoZ1ncaX8cxo4V6zF8/1Vgj0+ld0RxM=
-github.com/mengelbart/qlog v0.1.0 h1:8cDMuCMcKtzkPXUU5FF7OBwqKiy+De0GKvIvNawifoA=
-github.com/mengelbart/qlog v0.1.0/go.mod h1:nIlGcUugkfDu41B8LKdAwjHQ1NxAF54D9hS2EDOlVyk=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=

@@ -523,11 +523,12 @@ func RoutesMetadata() []RouteMeta {
 				"**Experimental / PoC.** Upgrades an HTTP/3 extended-CONNECT request to a WebTransport session " +
 				"and creates an inbound MoQ leg. Reachable only over HTTP/3 on the MoQ listener (not on the regular " +
 				"HTTP/1.1 chi listener). Requires `MOQ_ENABLED=true` plus `MOQ_TLS_CERT_FILE` and `MOQ_TLS_KEY_FILE`. " +
-				"Speaks IETF draft-11 of moq-transport (via `mengelbart/moqtransport`); browser interop with draft-16 " +
-				"clients (moqtail, moq.dev) is not expected to work. Media is bidirectional within a single MoQ " +
-				"session per leg: the server publishes namespace `mix`/track `audio` (downlink, room mix) and " +
-				"subscribes to namespace `mic`/track `audio` (uplink, leg mic). Audio is Opus framed one frame per " +
-				"MoQ Object (LOC-style) at 48 kHz mono, 20 ms frames. Query parameters: `sample_rate` (only " +
+				"Speaks IETF draft-22 of moq-transport (via `MoQ-it/moqt`); clients should offer WebTransport " +
+				"application protocol `moqt-22`, and clients speaking other drafts do not interoperate. Media is " +
+				"bidirectional within a single MoQ session per leg: the server publishes namespace `mix`/track " +
+				"`audio` (downlink, room mix) and, once the client publishes namespace `mic`, subscribes to " +
+				"`mic`/track `audio` (uplink, leg mic). Audio is Opus framed one frame per MoQ Object (LOC-style) " +
+				"at 48 kHz mono, 20 ms frames. Query parameters: `sample_rate` (only " +
 				"`48000` is accepted — the encoder/decoder are hard-wired to 48 kHz; default 48000); `room_id` to " +
 				"auto-add the leg to a room; `app_id` for event filtering; `webhook_url`/`webhook_secret` for " +
 				"per-leg event routing. X-* and P-* request headers (plus Authorization) are captured into the " +

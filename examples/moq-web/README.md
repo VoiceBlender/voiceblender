@@ -1,18 +1,16 @@
 # VoiceBlender MoQ — browser demo
 
-A minimal, hand-rolled MoQ (Media over QUIC) client that talks to
-VoiceBlender's `CONNECT /v1/legs/moq` endpoint from a browser via
-WebTransport. Bidirectional Opus audio: mic captured and published
+A minimal MoQ (Media over QUIC) client that talks to VoiceBlender's
+`CONNECT /v1/legs/moq` endpoint from a browser via WebTransport, built on
+the [`moqt`](https://github.com/MoQ-it/moqt) TypeScript client. Bidirectional Opus audio: mic captured and published
 on the `mic` namespace, room mix subscribed on the `mix` namespace.
 
 ## Status: experimental / PoC
 
-- Speaks IETF **draft-ietf-moq-transport-11**, matching
-  `mengelbart/moqtransport@v0.5.0` on the server side.
-- **Will not interop with moq.dev / moqtail browser clients** — those
-  speak draft-16 (incompatible wire format).
-- Tested against Chrome 121+. Firefox does not ship WebTransport as of
-  this writing. Safari ships behind a flag and lacks WebCodecs Opus.
+- Speaks IETF **draft-ietf-moq-transport-22** (WebTransport protocol
+  `moqt-22`), the same draft as the server (`MoQ-it/moqt`).
+- Tested with Chrome. Other browsers need WebTransport plus WebCodecs
+  Opus encode/decode; they have not been tried with this page.
 - Files served from `file://` cannot use WebTransport (Chrome requires
   a secure context). Serve them over HTTP/HTTPS (instructions below).
 
@@ -20,8 +18,8 @@ on the `mic` namespace, room mix subscribed on the `mix` namespace.
 
 | File | What it does |
 | ---- | ------------ |
-| `moq-wire.js`    | QUIC varint codec + draft-11 message framing (the subset we use). |
-| `moq-session.js` | Drives one MoQ session: handshake, ANNOUNCE mic, SUBSCRIBE mix, accept the server's SUBSCRIBE for our mic. |
+| `vendor/moqt.js` | The `moqt` browser client (draft-22), bundled from its TypeScript sources. Generated — rebuild with `make moq-web-client`, which also refreshes `vendor/LICENSE` (MIT). |
+| `moq-session.js` | Drives one MoQ session: SETUP, PUBLISH_NAMESPACE mic, SUBSCRIBE mix, accept the server's SUBSCRIBE for our mic. |
 | `audio.js`       | `MicCapture` (mic → WebCodecs Opus → publish) and `Speaker` (incoming Opus → WebCodecs decode → AudioContext). |
 | `main.js`        | Wires the UI to the session + audio modules. |
 | `index.html`     | Two inputs, two buttons, a log pane. |
@@ -92,13 +90,13 @@ If you use a different port or host, that's fine — the server has
    exchange audio with you (try connecting a WebSocket leg or playing
    TTS into the room via `POST /v1/rooms/{id}/tts`).
 5. Click **Connect**. Grant mic permission. You should see:
-   - `WebTransport ready`
-   - `sent CLIENT_SETUP` → `got SERVER_SETUP`
-   - `sent ANNOUNCE mic` → `got ANNOUNCE_OK`
-   - `sent SUBSCRIBE mix` → `got SUBSCRIBE_OK`
-   - `got SUBSCRIBE` (server subscribing to your mic)
-   - `subgroup header` / `got object` lines as audio flows.
-5. **Disconnect** stops the mic, decoder, and the WebTransport session,
+   - `SETUP done, protocol moqt-22`
+   - `server published namespace mix`
+   - `PUBLISH_NAMESPACE mic accepted` and `server subscribed to mic`
+   - `SUBSCRIBE mix ok, track alias 0`
+   - `server subscribed to mic — starting capture`, after which the
+     rx/tx counters climb at about 50 objects/s each.
+6. **Disconnect** stops the mic, decoder, and the WebTransport session,
    which triggers `leg.disconnected` on the server side.
 
 ## Hearing real audio
@@ -125,8 +123,8 @@ your mic.
 
 ## Troubleshooting
 
-- **"WebTransport not supported"** — Chrome 97+ or Edge 97+ required.
-  Firefox/Safari do not currently ship WebTransport.
+- **"WebTransport not supported"** — the browser lacks WebTransport;
+  use a current Chrome or Edge.
 - **"WebCodecs not supported"** — newer browser needed, or you're not on
   a secure context (HTTPS or localhost).
 - **"Opening handshake failed" / `net::ERR_QUIC_PROTOCOL_ERROR`** —
@@ -134,23 +132,22 @@ your mic.
   recompute the hash and paste it into the cert-hash field. Also
   verify the cert is **ECDSA P-256** (RSA certs are rejected by
   Chrome's WebTransport, even with a correct hash).
-- **`SUBSCRIBE_ERROR: unknown track`** — the server didn't recognise the
-  namespace/track name. The demo hard-codes `mix`/`audio` (downlink)
+- **`unknown track`** (REQUEST_ERROR, DOES_NOT_EXIST) — the server
+  didn't recognise the namespace/track name. The demo hard-codes `mix`/`audio` (downlink)
   and `mic`/`audio` (uplink); make sure you're running the matching
   server version with `internal/moqmedia/transport.go` from this repo.
 - **Handshake succeeds, no objects** — try the curl-into-room
   instructions above to push real audio through the mixer. An empty
   room just produces silence frames (still valid, just inaudible).
-- **Connect button disabled** — the page reports the missing feature in
-  the log pane. Almost always a Firefox/Safari issue.
+- **Connect button disabled** — the page reports the missing feature
+  (WebTransport or WebCodecs) in the log pane.
+- **`server negotiated …, not moqt-22`** — the endpoint is not a
+  draft-22 MoQ server, e.g. an older VoiceBlender build.
 
 ## Known sharp edges
 
 - The audio module uses the deprecated `ScriptProcessorNode`. Suitable
   for a PoC; for production migrate to `AudioWorklet`.
-- `ContentExists=true` SUBSCRIBE_OK responses are decoded but the
-  `largest` location is informational only — the demo doesn't catch up
-  on history.
 - The decoder's clock-drift handling is naive (~50 ms playhead
   cushion). You'll hear pops if the connection stalls; this is a
   PoC-grade decoder, not a jitter buffer.

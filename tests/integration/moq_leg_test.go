@@ -12,26 +12,31 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
 	"net/url"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/MoQ-it/moqt"
+	"github.com/MoQ-it/moqt/transport/wt"
+	v22 "github.com/MoQ-it/moqt/wire/v22"
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/moqmedia"
-	"github.com/mengelbart/moqtransport"
-	"github.com/mengelbart/moqtransport/webtransportmoq"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 )
 
+var (
+	moqMicTrack = v22.FullTrackName{Namespace: v22.Namespace{moqmedia.MicNamespace}, Name: moqmedia.AudioTrack}
+	moqMixTrack = v22.FullTrackName{Namespace: v22.Namespace{moqmedia.MixNamespace}, Name: moqmedia.AudioTrack}
+)
+
 // startMoQListener attaches a WebTransport+HTTP/3 listener to inst and
-// wires it into the api.Server. Returns the listen address and a cleanup
-// that closes the listener.
+// wires it into the api.Server. Returns the listen address.
 func startMoQListener(t *testing.T, inst *testInstance) string {
 	t.Helper()
 
@@ -50,6 +55,7 @@ func startMoQListener(t *testing.T, inst *testInstance) string {
 				NextProtos:   []string{"h3"},
 			},
 		},
+		ApplicationProtocols: []string{moqmedia.ALPN},
 	}
 	inst.apiSrv.MoQWebTransport = moqSrv
 
@@ -101,12 +107,142 @@ func generateMoQTestCert(t *testing.T) tls.Certificate {
 	return cert
 }
 
-// TestMoQLegInbound_AudioRoundTrip dials a MoQ-over-WebTransport client
-// against a running VoiceBlender, completes the MoQ handshake, publishes a
-// few Opus frames on `mic`, subscribes to `mix`, and verifies at least one
-// mix object flows back (mixed-minus-self silence in a single-leg room).
-// This proves the WebTransport accept, MoQ session setup, ANNOUNCE +
-// SUBSCRIBE handshake, and bidirectional Object flow all work end-to-end.
+// moqTestClient answers the server's PUBLISH_NAMESPACE for mix and, when
+// the server subscribes to mic, publishes one Opus frame of pcm every
+// 20 ms until the subscription or session ends.
+type moqTestClient struct {
+	moqt.RejectAll
+	t   *testing.T
+	pcm []int16
+}
+
+func (c *moqTestClient) HandlePublishNamespace(r *moqt.PublishNamespaceRequest) { _, _ = r.Accept() }
+
+func (c *moqTestClient) HandleSubscribe(r *moqt.SubscribeRequest) {
+	if r.Track.Key() != moqMicTrack.Key() {
+		_ = r.Reject(v22.ReqErrDoesNotExist, "unknown track")
+		return
+	}
+	tw, err := r.Accept(moqt.AcceptOptions{})
+	if err != nil {
+		c.t.Logf("client accept SUBSCRIBE mic: %v", err)
+		return
+	}
+	enc, err := codec.NewOpusEncoder()
+	if err != nil {
+		c.t.Logf("client opus encoder: %v", err)
+		return
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for group := uint64(0); ; group++ {
+		frame, err := enc.Encode(c.pcm)
+		if err != nil {
+			c.t.Logf("client opus encode: %v", err)
+			return
+		}
+		sg := tw.OpenSubgroup(group, 0, moqt.SubgroupOptions{EndOfGroup: true, FirstObject: true})
+		if err := sg.WriteObject(&v22.Object{ID: 0, Payload: frame}); err != nil {
+			return
+		}
+		_ = sg.Close()
+		select {
+		case <-tw.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// dialMoQLeg opens a MoQ leg into roomID, publishes the mic namespace so
+// the server subscribes to it, and subscribes to the room mix.
+func dialMoQLeg(t *testing.T, ctx context.Context, addr, roomID string, micPCM []int16) (*moqt.Session, *moqt.Subscription) {
+	t.Helper()
+	tr := &webtransport.Transport{
+		ApplicationProtocols: []string{moqmedia.ALPN},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h3"},
+		},
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	wtURL := (&url.URL{
+		Scheme:   "https",
+		Host:     addr,
+		Path:     "/v1/legs/moq",
+		RawQuery: "room_id=" + url.QueryEscape(roomID),
+	}).String()
+
+	_, wtSess, err := tr.Dial(ctx, wtURL, nil)
+	if err != nil {
+		t.Fatalf("webtransport dial: %v", err)
+	}
+	if p := wtSess.SessionState().ApplicationProtocol; p != moqmedia.ALPN {
+		t.Fatalf("negotiated WebTransport protocol %q, want %q", p, moqmedia.ALPN)
+	}
+
+	sess, err := moqt.NewSession(ctx, wt.New(wtSess), moqt.Client, moqt.Config{
+		Handler: &moqTestClient{t: t, pcm: micPCM},
+	})
+	if err != nil {
+		t.Fatalf("moqt client session: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	if _, err := sess.PublishNamespace(ctx, moqMicTrack.Namespace, nil); err != nil {
+		t.Fatalf("publish mic namespace: %v", err)
+	}
+	sub, err := sess.Subscribe(ctx, moqMixTrack, nil)
+	if err != nil {
+		t.Fatalf("subscribe mix: %v", err)
+	}
+	return sess, sub
+}
+
+// awaitMixAudio decodes mix Objects until one has an RMS above minRMS.
+// minRMS 0 accepts the first decodable Object.
+func awaitMixAudio(t *testing.T, ctx context.Context, sub *moqt.Subscription, minRMS float64) {
+	t.Helper()
+	dec, err := codec.NewOpusDecoder()
+	if err != nil {
+		t.Fatalf("opus decoder: %v", err)
+	}
+	for {
+		g, err := sub.AcceptSubgroup(ctx)
+		if err != nil {
+			t.Fatalf("waiting for mix audio (rms > %.0f): %v", minRMS, err)
+		}
+		for {
+			o, err := g.Next()
+			if err != nil {
+				break
+			}
+			samples, err := dec.Decode(o.Payload)
+			if err != nil {
+				t.Fatalf("decode mix object: %v", err)
+			}
+			if minRMS == 0 || moqRMS(samples) > minRMS {
+				return
+			}
+		}
+	}
+}
+
+func moqRMS(s []int16) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range s {
+		sum += float64(v) * float64(v)
+	}
+	return math.Sqrt(sum / float64(len(s)))
+}
+
+// TestMoQLegInbound_AudioRoundTrip dials a draft-22 MoQ client against a
+// running VoiceBlender, publishes the mic namespace, answers the server's
+// SUBSCRIBE with Opus frames, subscribes to the mix and verifies a mix
+// Object flows back.
 func TestMoQLegInbound_AudioRoundTrip(t *testing.T) {
 	inst := newTestInstance(t, "moq-inbound")
 	moqAddr := startMoQListener(t, inst)
@@ -114,118 +250,53 @@ func TestMoQLegInbound_AudioRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	dialer := &webtransport.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-			NextProtos:         []string{"h3"},
-		},
-	}
-	wtURL := (&url.URL{
-		Scheme:   "https",
-		Host:     moqAddr,
-		Path:     "/v1/legs/moq",
-		RawQuery: "room_id=moq-room",
-	}).String()
+	_, sub := dialMoQLeg(t, ctx, moqAddr, "moq-room", make([]int16, 960))
 
-	_, wtSess, err := dialer.Dial(ctx, wtURL, nil)
-	if err != nil {
-		t.Fatalf("webtransport dial: %v", err)
-	}
-	defer wtSess.CloseWithError(0, "test done")
-
-	conn := webtransportmoq.NewClient(wtSess)
-
-	gotMixObject := make(chan struct{}, 1)
-	var subscribeOK atomic.Bool
-
-	clientSess := &moqtransport.Session{
-		InitialMaxRequestID: 100,
-		Handler: moqtransport.HandlerFunc(func(w moqtransport.ResponseWriter, m *moqtransport.Message) {
-			if m.Method == moqtransport.MessageAnnounce {
-				// Server doesn't ANNOUNCE to us in our protocol, but be polite.
-				_ = w.Accept()
-			}
-		}),
-		// Handle the server's SUBSCRIBE for our mic namespace.
-		SubscribeHandler: moqtransport.SubscribeHandlerFunc(func(w *moqtransport.SubscribeResponseWriter, m *moqtransport.SubscribeMessage) {
-			if !subscribeOK.CompareAndSwap(false, true) {
-				_ = w.Reject(0, "duplicate")
-				return
-			}
-			if err := w.Accept(); err != nil {
-				t.Logf("client accept SUBSCRIBE: %v", err)
-				return
-			}
-			// Publish one Opus-encoded silence frame so the server's recv
-			// loop has something to decode and the mixer sees a tick.
-			go publishOneOpusFrame(t, w)
-		}),
-	}
-
-	if err := clientSess.Run(conn); err != nil {
-		t.Fatalf("client Session.Run: %v", err)
-	}
-	defer clientSess.Close()
-
-	// Announce mic so the server subscribes back.
-	if err := clientSess.Announce(ctx, []string{moqmedia.MicNamespace}); err != nil {
-		t.Fatalf("client Announce mic: %v", err)
-	}
-
-	// Subscribe to mix; this triggers the server's send loop.
-	rt, err := clientSess.Subscribe(ctx, []string{moqmedia.MixNamespace}, moqmedia.AudioTrack)
-	if err != nil {
-		t.Fatalf("client Subscribe mix: %v", err)
-	}
-
-	// Drain mix objects in a goroutine; signal on the first one.
-	go func() {
-		for {
-			obj, err := rt.ReadObject(ctx)
-			if err != nil {
-				return
-			}
-			_ = obj
-			select {
-			case gotMixObject <- struct{}{}:
-			default:
-			}
-		}
-	}()
-
-	// Confirm LegConnected fires while the session is up.
 	inst.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
 		return e.Data.GetLegID() != ""
 	}, 5*time.Second)
 
-	select {
-	case <-gotMixObject:
-		// good — first mix object arrived
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for mix object from server")
-	}
+	awaitMixAudio(t, ctx, sub, 0)
 }
 
-func publishOneOpusFrame(t *testing.T, pub *moqtransport.SubscribeResponseWriter) {
-	enc, err := codec.NewOpusEncoder()
-	if err != nil {
-		t.Logf("client opus encoder: %v", err)
-		return
-	}
-	silence := make([]int16, 960) // 20 ms @ 48 kHz
-	frame, err := enc.Encode(silence)
-	if err != nil {
-		t.Logf("client opus encode: %v", err)
-		return
-	}
-	sg, err := pub.OpenSubgroup(0, 0, 0)
-	if err != nil {
-		t.Logf("client OpenSubgroup: %v", err)
-		return
-	}
-	defer sg.Close()
-	if _, err := sg.WriteObject(0, frame); err != nil {
-		t.Logf("client WriteObject: %v", err)
-		return
+// TestMoQLeg_TwoLegsExchangeAudio puts two MoQ legs in one room: a tone
+// published on leg A's mic must be audible in leg B's mix.
+func TestMoQLeg_TwoLegsExchangeAudio(t *testing.T) {
+	inst := newTestInstance(t, "moq-pair")
+	moqAddr := startMoQListener(t, inst)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	tone := generateSineSamples(48000, 440, 20*time.Millisecond, 0.3)
+	dialMoQLeg(t, ctx, moqAddr, "moq-pair-room", tone)
+	_, subB := dialMoQLeg(t, ctx, moqAddr, "moq-pair-room", make([]int16, 960))
+
+	awaitMixAudio(t, ctx, subB, 1000)
+}
+
+// TestMoQLeg_ClientCloseDisconnects closes the client session and expects
+// leg.disconnected with reason "hangup".
+func TestMoQLeg_ClientCloseDisconnects(t *testing.T) {
+	inst := newTestInstance(t, "moq-close")
+	moqAddr := startMoQListener(t, inst)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	sess, sub := dialMoQLeg(t, ctx, moqAddr, "moq-close-room", make([]int16, 960))
+	connected := inst.collector.waitForMatch(t, events.LegConnected, func(e events.Event) bool {
+		return e.Data.GetLegID() != ""
+	}, 5*time.Second)
+	legID := connected.Data.GetLegID()
+	awaitMixAudio(t, ctx, sub, 0)
+
+	_ = sess.Close()
+
+	disc := inst.collector.waitForMatch(t, events.LegDisconnected, func(e events.Event) bool {
+		return e.Data.GetLegID() == legID
+	}, 5*time.Second)
+	if got := disc.Data.(*events.LegDisconnectedData).CDR.Reason; got != "hangup" {
+		t.Fatalf("disconnect reason = %q, want hangup", got)
 	}
 }

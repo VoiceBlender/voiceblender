@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push
+.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push moq-web-client
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -65,6 +65,19 @@ gen-noisy-greetings:
 gen-human-greetings:
 	@test -n "$$ELEVENLABS_API_KEY" || (echo "Error: ELEVENLABS_API_KEY is required" && exit 1)
 	go run ./cmd/gen-greetings -out $(GREETINGS_DIR)/human
+
+# Rebuilds examples/moq-web/vendor/moqt.js, the browser MoQ client used by
+# the demo, from the TypeScript sources of the pinned moqt release, and
+# copies moqt's LICENSE alongside it.
+MOQT_VERSION    ?= v0.2.0
+ESBUILD_VERSION ?= 0.28.2
+moq-web-client:
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	git clone -q --depth 1 --branch $(MOQT_VERSION) https://github.com/MoQ-it/moqt.git "$$tmp/moqt" && \
+	cp "$$tmp/moqt/LICENSE" "$(CURDIR)/examples/moq-web/vendor/LICENSE" && \
+	cd "$$tmp/moqt/ts" && npx --yes esbuild@$(ESBUILD_VERSION) src/index.ts --bundle --format=esm --target=es2022 \
+		--banner:js="// Generated from github.com/MoQ-it/moqt $(MOQT_VERSION) (ts/src) by 'make moq-web-client'. MIT License, see LICENSE. Do not edit." \
+		--outfile="$(CURDIR)/examples/moq-web/vendor/moqt.js"
 
 docker:
 	docker build -t vpbx/$(IMAGE):$(TAG) -t vpbx/$(IMAGE):latest .
