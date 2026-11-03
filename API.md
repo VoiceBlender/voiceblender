@@ -4638,6 +4638,12 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `rtp_packets_lost` | integer | Estimated lost packets based on sequence number gaps |
 | `rtp_jitter_ms` | float | Inter-arrival jitter in milliseconds (RFC 3550 §A.8) |
 
+AMR-WB and AMR-NB legs send with discontinuous transmission (DTX): during silence only a
+SID update goes out every 160 ms instead of a packet every 20 ms, and the receiving side
+plays comfort noise in between. With an AMR peer that does the same, `rtp_packets_received`
+can be well below 50 per second of call; DTX does not show up in `rtp_packets_lost`, since
+sequence numbers stay contiguous.
+
 **Disconnect Reasons:**
 
 | Reason | Description |
@@ -4764,8 +4770,9 @@ Notes and limits:
 - A re-offer naming the **same** codec — which is what hold, unhold and most SBC
   re-anchors send — changes nothing: the pipeline is left alone and the room is not
   rebuilt.
-- A **bitrate-only** change (an AMR-WB/AMR-NB peer narrowing its `mode-set`) rebuilds
-  the encoder but moves no rates, so nothing downstream is touched.
+- A **bitrate-only** change (an AMR-WB/AMR-NB peer narrowing its `mode-set`, or changing
+  `mode-change-period`/`mode-change-neighbor`) rebuilds the encoder but moves no rates, so
+  nothing downstream is touched.
 - Re-offers **VoiceBlender itself sends** advertise only the codec already running, so a
   compliant peer cannot switch codecs in its answer to them.
 - A codec the leg did not offer cannot be selected; negotiation is still bounded by the

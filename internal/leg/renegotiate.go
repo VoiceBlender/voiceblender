@@ -1,6 +1,9 @@
 package leg
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
 
@@ -32,10 +35,14 @@ type liveCodec struct {
 
 	// The encoder-shaping AMR parameters, kept so a mode (bitrate) change is
 	// detected even when the codec itself is unchanged.
-	amrwbMode         int
-	amrwbOctetAligned bool
-	amrnbMode         int
-	amrnbOctetAligned bool
+	amrwbMode             int
+	amrwbOctetAligned     bool
+	amrwbModeSet          string
+	amrnbMode             int
+	amrnbOctetAligned     bool
+	amrnbModeSet          string
+	amrModeChangePeriod   int
+	amrModeChangeNeighbor bool
 }
 
 // sampleRate is the PCM rate this configuration produces and consumes.
@@ -68,10 +75,14 @@ func snapshotCodec(s *mediaStream, enc codec.Encoder, dec codec.Decoder) *liveCo
 		dtmfSendPT:        telephoneEventPT,
 		dtmfSamplesPerPkt: dtmfSamples,
 
-		amrwbMode:         s.amrwbMode,
-		amrwbOctetAligned: s.amrwbOctetAligned,
-		amrnbMode:         s.amrnbMode,
-		amrnbOctetAligned: s.amrnbOctetAligned,
+		amrwbMode:             s.amrwbMode,
+		amrwbOctetAligned:     s.amrwbOctetAligned,
+		amrwbModeSet:          s.amrwbModeSet,
+		amrnbMode:             s.amrnbMode,
+		amrnbOctetAligned:     s.amrnbOctetAligned,
+		amrnbModeSet:          s.amrnbModeSet,
+		amrModeChangePeriod:   s.amrModeChangePeriod,
+		amrModeChangeNeighbor: s.amrModeChangeNeighbor,
 	}
 }
 
@@ -87,13 +98,27 @@ func (c *liveCodec) needsRebuild(s *mediaStream) bool {
 	if c.codecType != s.codecType {
 		return true
 	}
+	modeChange := c.amrModeChangePeriod != s.amrModeChangePeriod || c.amrModeChangeNeighbor != s.amrModeChangeNeighbor
 	switch s.codecType {
 	case codec.CodecAMRWB:
-		return c.amrwbMode != s.amrwbMode || c.amrwbOctetAligned != s.amrwbOctetAligned
+		return c.amrwbMode != s.amrwbMode || c.amrwbOctetAligned != s.amrwbOctetAligned ||
+			c.amrwbModeSet != s.amrwbModeSet || modeChange
 	case codec.CodecAMRNB:
-		return c.amrnbMode != s.amrnbMode || c.amrnbOctetAligned != s.amrnbOctetAligned
+		return c.amrnbMode != s.amrnbMode || c.amrnbOctetAligned != s.amrnbOctetAligned ||
+			c.amrnbModeSet != s.amrnbModeSet || modeChange
 	}
 	return false
+}
+
+// parseModeSet reads back a mode-set as formatted for the SDP ("0,2,8").
+func parseModeSet(s string) []int {
+	var modes []int
+	for _, tok := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(tok)); err == nil {
+			modes = append(modes, n)
+		}
+	}
+	return modes
 }
 
 // changed reports whether anything the loops read differs, including the
@@ -192,17 +217,21 @@ func drain(ch chan []byte) {
 func (l *SIPLeg) buildCodecPair(s *mediaStream) (codec.Encoder, codec.Decoder, error) {
 	switch s.codecType {
 	case codec.CodecAMRWB:
-		enc, err := codec.NewAMRWBEncoder(s.amrwbMode, s.amrwbOctetAligned)
-		if err != nil {
-			return nil, nil, err
-		}
-		return enc, codec.NewAMRWBDecoder(s.amrwbOctetAligned), nil
+		return codec.NewAMRWBSession(codec.AMRConfig{
+			Mode:               s.amrwbMode,
+			OctetAligned:       s.amrwbOctetAligned,
+			ModeSet:            parseModeSet(s.amrwbModeSet),
+			ModeChangePeriod:   s.amrModeChangePeriod,
+			ModeChangeNeighbor: s.amrModeChangeNeighbor,
+		})
 	case codec.CodecAMRNB:
-		enc, err := codec.NewAMRNBEncoder(s.amrnbMode, s.amrnbOctetAligned)
-		if err != nil {
-			return nil, nil, err
-		}
-		return enc, codec.NewAMRNBDecoder(s.amrnbOctetAligned), nil
+		return codec.NewAMRNBSession(codec.AMRConfig{
+			Mode:               s.amrnbMode,
+			OctetAligned:       s.amrnbOctetAligned,
+			ModeSet:            parseModeSet(s.amrnbModeSet),
+			ModeChangePeriod:   s.amrModeChangePeriod,
+			ModeChangeNeighbor: s.amrModeChangeNeighbor,
+		})
 	default:
 		enc, err := codec.NewEncoder(s.codecType)
 		if err != nil {

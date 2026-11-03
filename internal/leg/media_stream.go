@@ -77,6 +77,10 @@ type mediaStream struct {
 	amrnbMode         int
 	amrnbModeSet      string
 
+	// Peer's mode-change rules for whichever AMR variant is negotiated.
+	amrModeChangePeriod   int
+	amrModeChangeNeighbor bool
+
 	inFrames  chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
 

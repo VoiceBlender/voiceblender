@@ -191,3 +191,25 @@ func TestTelephoneEventClockRateAMRNB(t *testing.T) {
 		t.Errorf("TelephoneEventClockRate(AMR-NB) = %d, want 8000", got)
 	}
 }
+
+func TestAMRModeChangeParams(t *testing.T) {
+	for _, c := range []struct {
+		fmtp     string
+		period   int
+		neighbor bool
+	}{
+		{"", 1, false},
+		{"octet-align=1", 1, false},
+		{"octet-align=1; mode-change-period=2", 2, false},
+		{"mode-change-period=1;mode-change-neighbor=1", 1, true},
+		{"Mode-Change-Period = 2 ; mode-change-neighbor=0", 2, false},
+		{"mode-change-period=3", 1, false},
+	} {
+		if got := AMRModeChangePeriod(c.fmtp); got != c.period {
+			t.Errorf("AMRModeChangePeriod(%q) = %d, want %d", c.fmtp, got, c.period)
+		}
+		if got := AMRModeChangeNeighbor(c.fmtp); got != c.neighbor {
+			t.Errorf("AMRModeChangeNeighbor(%q) = %v, want %v", c.fmtp, got, c.neighbor)
+		}
+	}
+}

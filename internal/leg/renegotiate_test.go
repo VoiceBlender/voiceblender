@@ -216,3 +216,44 @@ func TestReInviteChangesBitrateWithoutRateChange(t *testing.T) {
 	t.Logf("AMR-WB mode %d -> %d: encoder rebuilt, rate unchanged, room left alone",
 		before.amrwbMode, after.amrwbMode)
 }
+
+// TestReInviteModeChangeRulesRebuildEncoder: mode-change-period and
+// mode-change-neighbor shape how the encoder follows the peer's mode requests,
+// so a re-offer that only changes them must still rebuild it.
+func TestReInviteModeChangeRulesRebuildEncoder(t *testing.T) {
+	l := newRunningLeg(t, codec.CodecAMRNB, codec.CodecAMRNB)
+	l.prim.rtpPT = 97
+	l.prim.amrnbMode = defaultAMRNBEncoderMode
+	l.prim.amrnbOctetAligned = true
+	l.prim.amrModeChangePeriod = 1
+	l.setupStreamMedia(l.prim)
+	before := l.prim.live()
+	if _, ok := before.encoder.(codec.DTXEncoder); !ok {
+		t.Fatalf("AMR-NB stream runs %T, want the DTX session encoder", before.encoder)
+	}
+	if _, ok := before.decoder.(codec.GapDecoder); !ok {
+		t.Fatalf("AMR-NB stream runs %T, want the session decoder", before.decoder)
+	}
+
+	l.ApplyRemoteOffer(offerSDP(41000, "97",
+		"a=rtpmap:97 AMR/8000",
+		"a=fmtp:97 octet-align=1; mode-change-period=2; mode-change-neighbor=1"))
+
+	after := l.prim.live()
+	if after.amrModeChangePeriod != 2 || !after.amrModeChangeNeighbor {
+		t.Errorf("mode-change rules = (%d, %v), want (2, true)", after.amrModeChangePeriod, after.amrModeChangeNeighbor)
+	}
+	if after.encoder == before.encoder {
+		t.Error("changed mode-change rules kept the old encoder")
+	}
+}
+
+func TestParseModeSet(t *testing.T) {
+	if got := parseModeSet(""); got != nil {
+		t.Errorf("parseModeSet(\"\") = %v, want nil", got)
+	}
+	got := parseModeSet("0, 2,8")
+	if len(got) != 3 || got[0] != 0 || got[1] != 2 || got[2] != 8 {
+		t.Errorf("parseModeSet = %v, want [0 2 8]", got)
+	}
+}

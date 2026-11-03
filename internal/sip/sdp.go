@@ -333,6 +333,34 @@ func ClampAMRNBMode(ceiling int, modeSet []int) int {
 	return best
 }
 
+// AMRModeChangePeriod returns the AMR (NB or WB) "mode-change-period" fmtp
+// parameter: 2 when the peer only accepts mode changes every second frame,
+// otherwise 1 (RFC 4867 §8.1).
+func AMRModeChangePeriod(fmtp string) int {
+	if v, ok := amrFmtpParam(fmtp, "mode-change-period"); ok && v == "2" {
+		return 2
+	}
+	return 1
+}
+
+// AMRModeChangeNeighbor reports whether the AMR (NB or WB) fmtp carries
+// "mode-change-neighbor=1": mode changes must step through neighboring modes
+// of the mode-set (RFC 4867 §8.1).
+func AMRModeChangeNeighbor(fmtp string) bool {
+	v, ok := amrFmtpParam(fmtp, "mode-change-neighbor")
+	return ok && v == "1"
+}
+
+func amrFmtpParam(fmtp, name string) (string, bool) {
+	for _, p := range strings.Split(fmtp, ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(p), "=")
+		if ok && strings.EqualFold(strings.TrimSpace(k), name) {
+			return strings.TrimSpace(v), true
+		}
+	}
+	return "", false
+}
+
 // buildSessionDescription creates the common session-level SDP fields. The
 // SDP address-type token (IP4/IP6) is derived from localIP — empty or
 // non-literal input falls back to IP4 for backward compatibility.
