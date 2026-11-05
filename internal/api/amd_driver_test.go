@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/amd"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 )
 
@@ -447,5 +448,52 @@ func TestAMDDriver_DeadlinePublishesAccumulatedVerdict(t *testing.T) {
 	}
 	if got := rec.count(events.AMDResult); got != 1 {
 		t.Errorf("expected no republish after the deadline, got %d", got)
+	}
+}
+
+// TestAMDDriver_VerdictThroughFilterChainDoesNotDeadlock feeds the driver the
+// way a roomless filtered leg does: through an audiofilter.Writer whose Write
+// holds its lock while the driver reaches a verdict and clears the tap.
+func TestAMDDriver_VerdictThroughFilterChainDoesNotDeadlock(t *testing.T) {
+	s := newTestServer(t)
+	rec := recordAMDEvents(t, s)
+	params := amd.DefaultParams()
+	params.GreetingDuration = 1500 * time.Millisecond
+	params.AfterGreetingSilence = 300 * time.Millisecond
+
+	l := &amdFakeLeg{}
+	d := &amdDriver{s: s, l: l, analyzer: amd.New(params)}
+	tap, err := audiofilter.NewWriter(d, 16000, 16000, []audiofilter.Spec{{Type: "bandpass"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tap.(*audiofilter.Writer); !ok {
+		t.Fatalf("expected a filtering writer, got %T", tap)
+	}
+	d.tap = tap
+	l.mu.Lock()
+	l.installed = tap
+	l.mu.Unlock()
+
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		for i := 0; i < 15; i++ {
+			_, _ = tap.Write(amdSpeechFrame())
+		}
+		for i := 0; i < 100 && l.liveTap() != nil; i++ {
+			_, _ = tap.Write(amdSilentFrame())
+		}
+	}()
+	select {
+	case <-fed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tap Write blocked: the verdict deadlocked the leg's read loop")
+	}
+	if rec.count(events.AMDResult) != 1 || l.clearedCount() != 1 {
+		t.Fatalf("results=%d cleared=%d, want 1 and 1", rec.count(events.AMDResult), l.clearedCount())
+	}
+	if got := rec.resultData()[0].Result; got != string(amd.ResultHuman) {
+		t.Fatalf("result = %s, want human", got)
 	}
 }
