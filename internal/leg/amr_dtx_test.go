@@ -101,7 +101,7 @@ func TestWriteLoopAMRDTX(t *testing.T) {
 		t.Errorf("%d packets in 1 s of speech, want close to 50", len(pkts)-silent)
 	}
 
-	var jumped, marked bool
+	var jumped bool
 	for i := 1; i < len(pkts); i++ {
 		if pkts[i].SequenceNumber != pkts[i-1].SequenceNumber+1 {
 			t.Fatalf("sequence gap %d -> %d: DTX must not consume sequence numbers",
@@ -114,16 +114,40 @@ func TestWriteLoopAMRDTX(t *testing.T) {
 		if d > 320 {
 			jumped = true
 		}
-		if i >= silent && pkts[i].Marker && d > 320 {
-			marked = true
-		}
 	}
 	if !jumped {
 		t.Error("no timestamp jump: silent frames were not skipped")
 	}
-	if !marked {
+
+	// A SID can land just before or after the window boundary, so the
+	// talkspurt is found by frame type rather than by position or timestamp gap.
+	start := -1
+	for i := silent; i < len(pkts); i++ {
+		if amrwbOctetFT(pkts[i].Payload) < amrwbFTSID {
+			start = i
+			break
+		}
+	}
+	if start < 1 {
+		t.Fatal("no speech frame after silence")
+	}
+	if prev := amrwbOctetFT(pkts[start-1].Payload); prev != amrwbFTSID {
+		t.Fatalf("frame before the talkspurt has FT %d, want SID", prev)
+	}
+	if !pkts[start].Marker {
 		t.Error("no marker bit on the talkspurt that ended DTX")
 	}
+}
+
+const amrwbFTSID = 9
+
+// amrwbOctetFT returns the frame type of the first ToC entry of an
+// octet-aligned AMR-WB payload.
+func amrwbOctetFT(payload []byte) byte {
+	if len(payload) < 2 {
+		return 0xff
+	}
+	return (payload[1] >> 3) & 0x0f
 }
 
 // TestReadLoopAMRComfortNoise: a DTX peer sends only SID updates during
