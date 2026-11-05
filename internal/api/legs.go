@@ -1867,7 +1867,8 @@ func (d *amdDriver) clearTap() bool {
 	cleared := d.l.ClearAMDTapIf(d.tap)
 	if cleared {
 		if c, ok := d.tap.(io.Closer); ok {
-			_ = c.Close()
+			// Off this goroutine: a verdict is reached inside the tap's own Write, which holds its lock.
+			go func() { _ = c.Close() }()
 		}
 	}
 	return cleared

@@ -15,9 +15,10 @@ import (
 // Those paths are taps, which are io.Writers, so the chain has to be driven
 // from the write side.
 type Writer struct {
-	mu  sync.Mutex
-	dst io.Writer
-	c   *chain
+	mu     sync.Mutex
+	dst    io.Writer
+	c      *chain
+	closed bool
 
 	carryArr [1]byte
 	hasCarry bool
@@ -55,16 +56,25 @@ func NewWriter(dst io.Writer, srcRate, dstRate int, specs []Spec) (io.WriteClose
 }
 
 // Close releases the stages, handing any denoise state back to the pool. It
-// does not close dst: the chain does not own it.
+// does not close dst: the chain does not own it. Writes after Close are
+// discarded. Close blocks while a Write is in progress, so it must not be
+// called from dst's Write.
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
 	return w.c.Close()
 }
 
 func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return len(p), nil
+	}
 
 	total := len(p)
 	w.inSamp = w.inSamp[:0]
