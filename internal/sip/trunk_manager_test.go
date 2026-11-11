@@ -30,6 +30,7 @@ func (f *fakeTrunk) ContactUser() string                 { return f.contact }
 func (f *fakeTrunk) AppID() string                       { return f.appID }
 func (f *fakeTrunk) OutboundRoute(sip.Uri) OutboundRoute { return OutboundRoute{} }
 func (f *fakeTrunk) Snapshot() TrunkView                 { return TrunkView{ID: f.id, Type: f.typ} }
+func (f *fakeTrunk) SRTPMode() SRTPMode                  { return "" }
 func (f *fakeTrunk) Start(context.Context)               {}
 func (f *fakeTrunk) Stop(context.Context) error {
 	f.stopMu.Lock()

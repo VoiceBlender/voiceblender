@@ -50,6 +50,11 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	if len(opts.Codecs) > 0 {
 		codecs = opts.Codecs
 	}
+	offerCrypto, err := e.offerCrypto(opts.SRTPMode, opts.SRTP)
+	if err != nil {
+		rtpSess.Close()
+		return nil, err
+	}
 	// Branches can sit on different networks, so each gets its own
 	// advertised address in Contact and SDP.
 	branchIP := func(target ForkTarget) (string, bool) {
@@ -86,6 +91,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 			RTPPort:           rtpSess.LocalPort(),
 			Codecs:            codecs,
 			AMRWBOctetAligned: e.amrwbOctetAligned,
+			Crypto:            offerCrypto,
 		}))
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 		req.AppendHeader(e.AllowHeader())
@@ -236,6 +242,11 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		ds.Bye(context.Background())
 		rtpSess.Close()
 		return nil, fmt.Errorf("parse answer SDP: %w", err)
+	}
+	if err := applyAnswerSRTP([]*RTPSession{rtpSess}, [][]SDESCrypto{offerCrypto}, remoteSDP); err != nil {
+		ds.Bye(context.Background())
+		rtpSess.Close()
+		return nil, err
 	}
 	if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
 		ds.Bye(context.Background())

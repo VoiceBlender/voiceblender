@@ -534,6 +534,8 @@ func configVars() *seq {
 		{Name: "WS_JITTER_BUFFER_MS", Group: "Media & codecs", Default: "0", Description: "WebSocket ingress playout lead in ms (0 = disabled passthrough). Applies to every websocket leg and room WS participant. Non-zero also enables clock-drift compensation, which absorbs the producer/mixer rate difference during pauses instead of punching a 20ms hole in the mix. Size it to the transport's worst-case stall, not to the drift: 40-80 suits a healthy link, and every millisecond is added one-way latency."},
 		{Name: "COMFORT_NOISE_ENABLED", Group: "Media & codecs", Default: "true", Description: "Inject low-level comfort noise (~-75 dBFS) into otherwise silent mixer frames."},
 		{Name: "SIP_SDP_STRICT_MLINE_ANSWER", Group: "SIP", Default: "false", Description: "Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video."},
+		{Name: "SIP_SRTP", Group: "SIP", Default: "optional", Description: "SDES-SRTP (RFC 4568) policy for classic SIP legs. optional: an offer on RTP/SAVP with a supported a=crypto suite is answered with SRTP and a plain offer with plain RTP; outbound calls offer SRTP only when the leg sets srtp. required: every audio stream must be SRTP; plain-RTP offers are rejected with 488 and every outbound call offers SRTP. disabled: plain RTP only; SRTP offers are rejected with 488. Answers accept AES_CM_128_HMAC_SHA1_80/_32, AES_256_CM_HMAC_SHA1_80/_32 and AEAD_AES_128/256_GCM; offers carry AES_CM_128_HMAC_SHA1_80 and _32. The keys travel in the SDP, so pair SRTP with SIP over TLS. DTLS-SRTP is not accepted on classic SIP legs. The policy applies to a real-time text section the same way, with keys of its own; an outbound SRTP call with rtt offers text on RTP/SAVP too. A trunk created with its own srtp replaces this setting, stricter or looser, for calls through that trunk in both directions."},
+		{Name: "SIP_RTCP", Group: "SIP", Default: "true", Description: "Send RTCP (RFC 3550) on SIP audio streams: a sender or receiver report with SDES CNAME every 5 s (randomised ±50%), and a BYE when the stream closes. Reports go only where offer/answer settled on a=rtcp-mux (RFC 5761), so a peer that does not multiplex RTCP onto the RTP port gets none. On an SRTP call they are sent as SRTCP. The peer's reports on our stream fill quality.outbound on leg.disconnected. Incoming RTCP is read whatever this is set to."},
 		{Name: "SIP_REFER_AUTO_DIAL", Group: "SIP", Default: "false", Description: "When true, accept incoming SIP REFER requests and automatically originate the transferred call. Default-deny: stays off unless the SIP edge is locked down (IP allow-lists, digest auth) because auto-dialing arbitrary Refer-To URIs is a classic toll-fraud vector. Outbound transfers initiated via the REST API are unaffected by this flag."},
 		{Name: "SIP_TCP_ENABLED", Group: "SIP", Default: "false", Description: "Listen for SIP over TCP on SIP_PORT alongside the UDP listener. Recommended with SIPREC: a recording session's INVITE carries the metadata document alongside the SDP and is larger than RFC 3261 section 18.1.1 allows over UDP."},
 		{Name: "SIPREC_ENABLED", Group: "SIPREC", Default: "false", Description: "Accept inbound SIPREC recording sessions (RFC 7866), where an SBC or PBX forks a call's media to this server. Off by default: when off, an INVITE carrying Require: siprec is rejected with 420 Bad Extension and one that only hints at SIPREC with 488."},
@@ -876,7 +878,12 @@ func webhookNestedSchema(t reflect.Type, nullable bool, parentFieldName string) 
 		if jsonName == "-" {
 			continue
 		}
-		fieldSchema := goTypeToSchema(f.Type)
+		var fieldSchema *omap
+		if ft := f.Type; ft.Kind() == reflect.Ptr && ft.Elem().Kind() == reflect.Struct {
+			fieldSchema = webhookNestedSchema(ft.Elem(), true, jsonName)
+		} else {
+			fieldSchema = goTypeToSchema(f.Type)
+		}
 		// Apply nested field description if available.
 		descKey := typeName + "." + jsonName
 		if desc, ok := webhookNestedFieldDescs[descKey]; ok {

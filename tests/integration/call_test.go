@@ -85,6 +85,7 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		RecordingDir:                         recDir,
 		DefaultSampleRate:                    16000,
 		SIPRegistrationAllowMultipleContacts: true,
+		SIPRTCP:                              true,
 		// Pion's ephemeral range for WebRTC/LiveKit/WhatsApp/MoQ legs. Below the
 		// OS ephemeral pool and disjoint from the SIP RTP pool. See ports_test.go.
 		RTPPortMin: pionPortMin,
@@ -139,6 +140,8 @@ func newTestInstanceFull(t *testing.T, name string, mutate func(*config.Config),
 		TCPEnabled:        cfg.SIPTCPEnabled,
 		Registrar:         registrar,
 		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
+		SRTPMode:          sipmod.SRTPMode(cfg.SIPSRTP),
+		RTCPInterval:      harnessRTCPInterval(cfg),
 		ClientTLS: sipmod.ClientTLSConfig{
 			CAFile:             cfg.SIPTLSCAFile,
 			InsecureSkipVerify: cfg.SIPTLSInsecure,
@@ -2181,4 +2184,11 @@ func TestSessionTimer_NoTimerWithoutHeader(t *testing.T) {
 	// Cleanup.
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), outboundID))
 	_ = inboundID
+}
+
+func harnessRTCPInterval(cfg config.Config) time.Duration {
+	if !cfg.SIPRTCP {
+		return 0
+	}
+	return sipmod.DefaultRTCPInterval
 }

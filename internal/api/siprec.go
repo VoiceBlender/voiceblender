@@ -59,7 +59,7 @@ func (s *Server) dropSIPRECSession(legID string) (*siprecSession, bool) {
 // Contact hint or a stray metadata part does not, so an INVITE carrying one of
 // those keeps the behaviour it had before SIPREC existed rather than being
 // refused by a server that was never asked to be a recording server.
-func (s *Server) ClaimSIPREC(call *sipmod.InboundCall) bool {
+func (s *Server) ClaimSIPREC(call *sipmod.InboundCall, srtpMode sipmod.SRTPMode) bool {
 	signals := sipmod.DetectSIPREC(call)
 	if !signals.Claimed() {
 		return false
@@ -71,14 +71,14 @@ func (s *Server) ClaimSIPREC(call *sipmod.InboundCall) bool {
 		s.rejectSIPREC(call, signals)
 		return true
 	}
-	s.HandleSIPRECInbound(call, signals)
+	s.HandleSIPRECInbound(call, signals, srtpMode)
 	return true
 }
 
 // HandleSIPRECInbound answers an inbound SIPREC recording session (RFC 7866).
 // It mirrors HandleInboundCall but with recording-session policy: no ringing,
 // answer without waiting for the API, and never transmit.
-func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SIPRECSignals) {
+func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SIPRECSignals, srtpMode sipmod.SRTPMode) {
 	// A claimed recording session with no metadata cannot be bound to
 	// participants, which is the entire point of accepting it.
 	md, ok := call.Body.RSMetadata()
@@ -117,6 +117,7 @@ func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SI
 	sess.state.SetRaw(md)
 
 	l := leg.NewSIPRECInboundLeg(call, s.SIPEngine, s.Log)
+	l.SetSRTPMode(srtpMode)
 	// After the leg exists, so a warning carries the leg it came from.
 	s.verifySIPRECMetadata(sess, l.ID())
 	if appID, ok := sipmod.LookupHeader(l.SIPHeaders(), "X-App-ID"); ok {

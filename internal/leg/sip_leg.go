@@ -88,6 +88,7 @@ type SIPLeg struct {
 	mlines sipmod.MLineTable
 	// Negotiation policy, copied from the engine at construction.
 	strictMLines bool
+	srtpMode     sipmod.SRTPMode
 
 	// maxAnswerDirection caps every answered section's direction. Empty for an
 	// ordinary call; DirRecvOnly for a recording session, which never transmits.
@@ -122,6 +123,11 @@ type SIPLeg struct {
 	rttRedundancy int
 	rttBufferMs   int
 	rttLocalPort  int // bound local UDP port for the text session
+	// textProto is the SRTP profile we answered the text section on, echoed
+	// in later SDP; nil means the RTP/AVP or RTP/SAVP default. textRTCPMux
+	// is set once we answered an offer of a=rtcp-mux on it.
+	textProto   []string
+	textRTCPMux bool
 
 	// Terminate-once gates: racing termination paths converge here.
 	byeOnce        sync.Once
@@ -273,6 +279,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 	}
 	l.initPrimaryStream()
 	l.prim.rtpSess = call.RTPSess
+	setPrimaryRTCPMux(call.RTPSess, call.RemoteSDP)
 	l.supportedCodecs = engine.Codecs()
 	l.acceptDTMF.Store(true)
 
@@ -347,6 +354,7 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 		return fmt.Errorf("no common codec with remote")
 	}
 
+	setPrimaryRTCPMux(rtpSess, remoteSDP)
 	l.mu.Lock()
 	l.prim.rtpSess = rtpSess
 	l.prim.codecType = negotiated
@@ -378,6 +386,7 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	if st == StateRinging {
 		l.prim.rtpSess = call.RTPSess
 	}
+	setPrimaryRTCPMux(l.prim.rtpSess, call.RemoteSDP)
 	// Extract Call-ID for re-INVITE matching.
 	if call.Dialog.InviteRequest != nil {
 		if cid := call.Dialog.InviteRequest.CallID(); cid != nil {
@@ -547,6 +556,15 @@ func (l *SIPLeg) TrunkID() string { return l.trunkID }
 // SetTrunkID records the leg's trunk association. Must be called during setup,
 // before the leg is added to the manager.
 func (l *SIPLeg) SetTrunkID(id string) { l.trunkID = id }
+
+// SetSRTPMode replaces the server's SDES-SRTP policy for this leg, as a
+// trunk's srtp setting does. Empty keeps the server's. Call it before the
+// leg negotiates.
+func (l *SIPLeg) SetSRTPMode(m sipmod.SRTPMode) {
+	if m != "" {
+		l.srtpMode = m
+	}
+}
 
 // AnswerCh returns the channel that is closed when the REST answer endpoint is called.
 func (l *SIPLeg) AnswerCh() <-chan struct{} {
@@ -936,6 +954,12 @@ func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 	// only here: a second copy on the stream would drift from it the first time
 	// a re-INVITE renegotiated.
 	s.liveCodec.Store(snapshotCodec(s, enc, dec))
+	if s.rtpSess != nil {
+		s.rtpSess.SetClockRate(s.codecType.ClockRate())
+		if l.engine != nil {
+			s.rtpSess.StartRTCP(l.engine.RTCPInterval())
+		}
+	}
 
 	s.inFrames = make(chan []byte, 5)
 	s.outFrames = make(chan []byte, 5)
@@ -1123,7 +1147,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 			}
 			continue
 		}
-		if err == nil || errors.Is(err, sipmod.ErrNotRTP) {
+		if err == nil || (errors.Is(err, sipmod.ErrNotRTP) && !errors.Is(err, sipmod.ErrSRTPAuth)) {
 			lastRead = time.Now()
 		}
 		if err != nil {
@@ -1330,6 +1354,20 @@ func (l *SIPLeg) RTPStats() RTPStats {
 	if !hasFirst || received < 2 {
 		return RTPStats{}
 	}
+	var outbound *OutboundRTPStats
+	l.mu.RLock()
+	sess := l.prim.rtpSess
+	l.mu.RUnlock()
+	if sess != nil {
+		if rep, ok := sess.RTCPReport(); ok {
+			outbound = &OutboundRTPStats{
+				PacketsSent: rep.PacketsSent,
+				PacketsLost: rep.PacketsLost,
+				JitterMs:    math.Round(rep.JitterMs*100) / 100,
+				RTTMs:       math.Round(float64(rep.RTT)/float64(time.Millisecond)*100) / 100,
+			}
+		}
+	}
 
 	expected := uint32(lastSeq-firstSeq) + 1
 	var lost uint32
@@ -1344,6 +1382,7 @@ func (l *SIPLeg) RTPStats() RTPStats {
 		PacketsLost:     lost,
 		JitterMs:        math.Round(jitterMs*100) / 100,
 		MOSScore:        calculateMOS(lossRate, jitterMs),
+		Outbound:        outbound,
 	}
 }
 
@@ -1752,7 +1791,14 @@ func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string)
 	// it section for section either way.
 	textIdx := -1
 	if l.textRtpSess != nil {
-		textIdx = offeredTextMLine(remote)
+		textIdx = offeredTextMLine(remote, l.srtpMode)
+	}
+	if textIdx >= 0 && remote.Text != nil {
+		if err := l.keyTextFromOffer(l.textRtpSess, remote.Text); err != nil {
+			l.log.Warn("re-offer: text SRTP keying failed, dropping the text section",
+				"leg_id", l.id, "error", err)
+			textIdx = -1
+		}
 	}
 	plans := sipmod.PlanAnswer(remote, l.answerOptions(codec.CodecUnknown, textIdx))
 	sections := l.buildAnswerStreams(remote, plans)
@@ -1769,10 +1815,7 @@ func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string)
 		Streams: sections,
 	}
 	if textIdx >= 0 {
-		cfg.TextRTPPort = l.textRtpSess.LocalPort()
-		cfg.TextT140PT = l.textT140PT
-		cfg.TextREDPT = l.textREDPT
-		cfg.RTTRedundancy = l.rttRedundancy
+		l.fillTextConfig(&cfg)
 	}
 	selected, pt := l.prim.codecType, l.prim.rtpPT
 	l.mu.RUnlock()
@@ -1794,6 +1837,103 @@ func (l *SIPLeg) applyAnswer(body []byte) {
 		return
 	}
 	l.applyRemoteAudio(remote)
+	l.applyAnswerSRTP(remote)
+	l.applyAnswerText(remote)
+}
+
+// applyAnswerText re-keys the text session from the peer's answer to our
+// offer and settles RTCP multiplexing on it.
+func (l *SIPLeg) applyAnswerText(remote *sipmod.SDPMedia) {
+	l.mu.RLock()
+	rs, mux := l.textRtpSess, l.textRTCPMux
+	l.mu.RUnlock()
+	if rs == nil || remote.Text == nil {
+		return
+	}
+	rs.SetRTCPMux(mux && remote.Text.RTCPMux)
+	local := rs.LocalCrypto()
+	if local == nil {
+		return
+	}
+	lc, rc, ok := sipmod.AnswerCryptoFor([]sipmod.SDESCrypto{*local}, remote.Text.Crypto)
+	if !ok {
+		l.log.Warn("re-INVITE answer carries no matching text SRTP key; keeping the current one", "leg_id", l.id)
+		return
+	}
+	if err := rs.SetSRTP(lc, rc); err != nil {
+		l.log.Warn("re-INVITE answer: text SRTP keying failed", "leg_id", l.id, "error", err)
+	}
+}
+
+// keyTextFromOffer keys rs for our answer to the offered text section and
+// records what later SDP for the section must echo.
+func (l *SIPLeg) keyTextFromOffer(rs *sipmod.RTPSession, t *sipmod.SDPTextMedia) error {
+	offered, reason := sipmod.SelectAnswerCrypto(t.Proto, t.Crypto, l.srtpMode)
+	if reason != "" {
+		return fmt.Errorf("text section: %s", reason)
+	}
+	crypto, err := keyStreamSRTP(rs, offered)
+	if err != nil {
+		return err
+	}
+	var proto []string
+	if crypto != nil {
+		proto = t.Proto
+	}
+	rs.SetRTCPMux(t.RTCPMux)
+	l.mu.Lock()
+	l.textProto = proto
+	l.textRTCPMux = t.RTCPMux
+	l.mu.Unlock()
+	return nil
+}
+
+// fillTextConfig adds the leg's m=text section to cfg. Callers hold l.mu.
+func (l *SIPLeg) fillTextConfig(cfg *sipmod.SDPConfig) {
+	if l.textRtpSess == nil {
+		return
+	}
+	cfg.TextRTPPort = l.textRtpSess.LocalPort()
+	cfg.TextT140PT = l.textT140PT
+	cfg.TextREDPT = l.textREDPT
+	cfg.RTTRedundancy = l.rttRedundancy
+	cfg.TextCrypto = sessCrypto(l.textRtpSess)
+	cfg.TextProto = l.textProto
+	cfg.TextRTCPMux = l.textRTCPMux
+}
+
+// applyAnswerSRTP re-keys each SRTP stream from the peer's answer to our
+// offer: the answerer may change its own key on every answer (RFC 4568
+// §7.1.4). A stream we just offered SRTP on is keyed here for the first time.
+func (l *SIPLeg) applyAnswerSRTP(remote *sipmod.SDPMedia) {
+	for _, s := range l.audioStreams() {
+		if s.rtpSess == nil {
+			continue
+		}
+		l.mu.RLock()
+		offered := s.offeredCrypto
+		l.mu.RUnlock()
+		if c := s.rtpSess.LocalCrypto(); c != nil {
+			offered = []sipmod.SDESCrypto{*c}
+		}
+		if len(offered) == 0 {
+			continue
+		}
+		ra := l.matchRemoteStream(s, remote)
+		if ra == nil || ra.RemotePort == 0 {
+			continue
+		}
+		local, rc, ok := sipmod.AnswerCryptoFor(offered, ra.Crypto)
+		if !ok {
+			l.log.Warn("re-INVITE answer carries no matching SRTP key; keeping the current one",
+				"leg_id", l.id, "stream_id", s.id)
+			continue
+		}
+		if err := s.rtpSess.SetSRTP(local, rc); err != nil {
+			l.log.Warn("re-INVITE answer: SRTP keying failed",
+				"leg_id", l.id, "stream_id", s.id, "error", err)
+		}
+	}
 }
 
 // applyRemoteAudio re-points each live stream at the address the peer's latest
@@ -1816,8 +1956,20 @@ func (l *SIPLeg) applyRemoteAudio(remote *sipmod.SDPMedia) {
 		}
 		l.mu.Lock()
 		s.negotiatedDir = sipmod.MirrorDirection(ra.EffectiveDirection())
+		mux := ra.RTCPMux && !s.omitRTCPMux
 		l.mu.Unlock()
+		s.rtpSess.SetRTCPMux(mux)
 	}
+}
+
+// setPrimaryRTCPMux records whether the peer's answer to our offer, which
+// always carries a=rtcp-mux, accepted multiplexing on its first audio section.
+func setPrimaryRTCPMux(sess *sipmod.RTPSession, remote *sipmod.SDPMedia) {
+	if sess == nil || remote == nil {
+		return
+	}
+	p := remote.PrimaryStream()
+	sess.SetRTCPMux(p != nil && p.RTCPMux)
 }
 
 // matchRemoteStream finds the offered audio section describing s.
@@ -1867,13 +2019,10 @@ func (l *SIPLeg) sdpConfig() sipmod.SDPConfig {
 		DTMFPT:            l.prim.dtmfSendPT,
 		DTMFClockRate:     l.prim.dtmfClockRate,
 		OmitRTCPMux:       l.prim.omitRTCPMux,
+		Crypto:            sessCrypto(l.prim.rtpSess),
+		Proto:             l.prim.proto,
 	}
-	if l.textRtpSess != nil {
-		cfg.TextRTPPort = l.textRtpSess.LocalPort()
-		cfg.TextT140PT = l.textT140PT
-		cfg.TextREDPT = l.textREDPT
-		cfg.RTTRedundancy = l.rttRedundancy
-	}
+	l.fillTextConfig(&cfg)
 	return cfg
 }
 
@@ -2200,13 +2349,18 @@ func (l *SIPLeg) setupInboundTextMedia(remote *sipmod.SDPMedia) (port int, t140P
 		return 0, 0, 0, true
 	}
 
-	rs, err := sipmod.NewRTPSessionFromAllocator(l.engine.PortAllocator())
+	rs, err := l.newRTPSession()
 	if err != nil {
 		l.log.Warn("RTT: allocate text RTP session failed", "leg_id", l.id, "error", err)
 		return 0, 0, 0, true
 	}
 	if err := rs.SetRemote(remote.Text.RemoteIP, remote.Text.RemotePort); err != nil {
 		l.log.Warn("RTT: set remote on text RTP session failed", "leg_id", l.id, "error", err)
+		rs.Close()
+		return 0, 0, 0, true
+	}
+	if err := l.keyTextFromOffer(rs, remote.Text); err != nil {
+		l.log.Warn("RTT: text SRTP keying failed", "leg_id", l.id, "error", err)
 		rs.Close()
 		return 0, 0, 0, true
 	}
@@ -2252,6 +2406,10 @@ func (l *SIPLeg) setupTextMedia() {
 	}
 	if redPT == 0 {
 		redundancy = 0
+	}
+	rs.SetClockRate(1000)
+	if l.engine != nil {
+		rs.StartRTCP(l.engine.RTCPInterval())
 	}
 	l.textEncoder = t140.NewEncoder(redundancy, t140PT)
 	l.textDecoder = t140.NewDecoder()
