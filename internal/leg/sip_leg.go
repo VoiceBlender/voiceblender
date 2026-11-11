@@ -1078,14 +1078,15 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 	// the decoded samples.
 	pkt := &rtp.Packet{}
 	var decoded []int16
-	// The gap filler follows the live decoder; it runs only without a jitter
-	// buffer, which orders by sequence number and has no slot for a frame
-	// that never had a packet.
+	// The gap filler follows the live decoder. A jitter buffer orders by
+	// sequence number and has no slot for a frame that never had a packet, so
+	// with one the filler runs for Opus only: its decoder must be told of a
+	// loss, and a lost packet does have a slot.
 	var (
 		gapDec codec.Decoder
 		gaps   *gapFiller
 	)
-	emit := func(samples []int16) { l.deliverInbound(s, 0, samples) }
+	emit := func(seq uint16, samples []int16) { l.deliverInbound(s, seq, samples) }
 	lastRead := time.Now()
 	for {
 		// Set read deadline for RTP timeout detection.
@@ -1210,11 +1211,11 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 
 		if lc.decoder != gapDec {
 			gapDec, gaps = lc.decoder, nil
-			if s.jb == nil {
+			if s.jb == nil || lc.codecType == codec.CodecOpus {
 				gaps = newGapFiller(lc.decoder, lc.samplesPerFrame)
 			}
 		}
-		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, emit) {
+		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, pkt.SequenceNumber, pkt.Payload, emit) {
 			continue
 		}
 

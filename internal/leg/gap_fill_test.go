@@ -34,16 +34,16 @@ func TestGapFillerOnlyForGapDecoders(t *testing.T) {
 
 func TestGapFillerConcealsShortHoleOnArrival(t *testing.T) {
 	g, dec, emitted := newTestGapFiller(false)
-	emit := func([]int16) { *emitted++ }
+	emit := func(uint16, []int16) { *emitted++ }
 	now := time.Now()
 
-	if g.before(1, 1000, emit) {
+	if g.before(1, 1000, 0, nil, emit) {
 		t.Fatal("first packet dropped")
 	}
 	g.after(1, 1000, 160, now)
 
 	// Two frames (1160, 1320) lost before 1480.
-	if g.before(1, 1480, emit) {
+	if g.before(1, 1480, 0, nil, emit) {
 		t.Fatal("packet after a hole dropped")
 	}
 	if dec.gaps != 2 || *emitted != 2 {
@@ -59,36 +59,36 @@ func TestGapFillerConcealsShortHoleOnArrival(t *testing.T) {
 
 func TestGapFillerDropsLateAndDuplicatePackets(t *testing.T) {
 	g, _, _ := newTestGapFiller(false)
-	emit := func([]int16) {}
+	emit := func(uint16, []int16) {}
 	g.after(1, 1000, 160, time.Now())
-	if !g.before(1, 1000, emit) {
+	if !g.before(1, 1000, 0, nil, emit) {
 		t.Error("duplicate packet not dropped")
 	}
 	g.after(1, 1160, 160, time.Now())
-	if !g.before(1, 1000, emit) {
+	if !g.before(1, 1000, 0, nil, emit) {
 		t.Error("late packet not dropped")
 	}
 }
 
 func TestGapFillerResyncsOnDiscontinuity(t *testing.T) {
 	g, dec, _ := newTestGapFiller(false)
-	emit := func([]int16) {}
+	emit := func(uint16, []int16) {}
 	g.after(1, 1000, 160, time.Now())
 
 	// A long jump is not concealed.
-	if g.before(1, 1000+160*50, emit) || dec.gaps != 0 {
+	if g.before(1, 1000+160*50, 0, nil, emit) || dec.gaps != 0 {
 		t.Fatalf("long jump: dropped or filled %d frames", dec.gaps)
 	}
 	// A new SSRC restarts the timeline, even backwards.
 	g.after(1, 1000, 160, time.Now())
-	if g.before(2, 10, emit) || dec.gaps != 0 {
+	if g.before(2, 10, 0, nil, emit) || dec.gaps != 0 {
 		t.Fatalf("new SSRC: dropped or filled %d frames", dec.gaps)
 	}
 }
 
 func TestGapFillerComfortNoiseInDTX(t *testing.T) {
 	g, dec, emitted := newTestGapFiller(true)
-	emit := func([]int16) { *emitted++ }
+	emit := func(uint16, []int16) { *emitted++ }
 	start := time.Now()
 	g.after(1, 0, 160, start)
 
@@ -108,7 +108,7 @@ func TestGapFillerComfortNoiseInDTX(t *testing.T) {
 
 	// The next SID update arrives on time for interval 8 (1280): interval 7
 	// is filled on arrival and the SID is decoded.
-	if g.before(1, 8*160, emit) {
+	if g.before(1, 8*160, 0, nil, emit) {
 		t.Fatal("on-time SID update dropped")
 	}
 	if *emitted != 7 {
