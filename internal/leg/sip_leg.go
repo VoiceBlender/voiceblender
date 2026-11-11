@@ -974,24 +974,22 @@ func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 }
 
 // popLoop drains the jitter buffer at a fixed 20 ms cadence and pushes the
-// resulting PCM frame (or silence on underrun) into inFrames. Runs only
-// when an ingress jitter buffer is enabled; otherwise readLoop pushes
-// directly.
+// resulting PCM frame (or concealment, then silence, on underrun) into
+// inFrames. Runs only when an ingress jitter buffer is enabled; otherwise
+// readLoop pushes directly.
 func (l *SIPLeg) popLoop(s *mediaStream) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	var plc playoutConcealer
 	for {
 		select {
 		case <-l.ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		pcm, ok := s.jb.Pop()
-		if !ok {
-			// Warm-up or underrun — push a silence frame so the mixer's
-			// downstream pull still finds something at this tick.
-			pcm = make([]byte, s.jbFrameBytes)
-		}
+		// On warm-up or underrun pop still returns a frame, concealed or
+		// silent, so the mixer's downstream pull finds something at this tick.
+		pcm := plc.pop(s)
 		select {
 		case s.inFrames <- pcm:
 		default:
