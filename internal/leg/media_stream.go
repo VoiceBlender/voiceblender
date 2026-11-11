@@ -98,10 +98,9 @@ type mediaStream struct {
 	// into jb keyed by RTP sequence number, and popLoop drains jb at a fixed
 	// cadence into inFrames. When nil, readLoop pushes directly to inFrames
 	// (passthrough — zero added latency, no reordering).
-	jb           *jitter.Buffer
-	jbTargetMs   int // target delay in ms; 0 = disabled
-	jbMaxMs      int // max queue depth in ms
-	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
+	jb         *jitter.Buffer
+	jbTargetMs int // target delay in ms; 0 = disabled
+	jbMaxMs    int // max queue depth in ms
 
 	inTap       io.Writer // copy of decoded incoming PCM (before inFrames)
 	outTap      io.Writer // copy of outgoing PCM (from writeLoop, including silence)

@@ -235,3 +235,51 @@ func TestReInviteMovesDTMFPayloadType(t *testing.T) {
 	press('4', 96)
 	expect('4')
 }
+
+// TestReInviteRateChangeWithJitterBuffer: with a jitter buffer and no audio
+// arriving, the pop loop fills every tick with silence sized for the running
+// codec. A re-offer that changes the rate must change that size, and must not
+// rewrite anything the pop loop reads unguarded.
+func TestReInviteRateChangeWithJitterBuffer(t *testing.T) {
+	l, peer := newStreamingLeg(t, 60)
+
+	nextFrame := func() int {
+		t.Helper()
+		select {
+		case f := <-l.prim.inFrames:
+			return len(f)
+		case <-time.After(time.Second):
+			t.Fatal("the pop loop stopped producing frames")
+			return 0
+		}
+	}
+	// A frame sized before the switch may still be queued behind it.
+	expectFrames := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for nextFrame() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("no %d byte silence frame after the re-offer", want)
+			}
+		}
+		for i := 0; i < 3; i++ {
+			if got := nextFrame(); got != want {
+				t.Fatalf("silence frame is %d bytes, want %d", got, want)
+			}
+		}
+	}
+
+	expectFrames(320)
+	for i := 0; i < 3; i++ {
+		// Leave the pop loop to run a few ticks on its own between offers.
+		time.Sleep(50 * time.Millisecond)
+		l.ApplyRemoteOffer(peer.offer(sipmod.DirSendRecv, "9 G722/8000", "101 telephone-event/8000"))
+		time.Sleep(50 * time.Millisecond)
+		expectFrames(640)
+
+		time.Sleep(50 * time.Millisecond)
+		l.ApplyRemoteOffer(peer.offer(sipmod.DirSendRecv, "0 PCMU/8000", "96 telephone-event/8000"))
+		time.Sleep(50 * time.Millisecond)
+		expectFrames(320)
+	}
+}

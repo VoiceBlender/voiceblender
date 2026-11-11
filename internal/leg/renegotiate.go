@@ -185,11 +185,6 @@ func (l *SIPLeg) renegotiateStreamMedia(s *mediaStream) (rate int, rateChanged b
 	next := snapshotCodec(s, enc, dec)
 	rateChanged = next.sampleRate() != cur.sampleRate()
 
-	l.mu.Lock()
-	s.jbFrameBytes = next.pcmFrameBytes
-	jb := s.jb
-	l.mu.Unlock()
-
 	// Publish before draining, so anything the loops push from here on is at
 	// the new rate.
 	s.liveCodec.Store(next)
@@ -201,8 +196,8 @@ func (l *SIPLeg) renegotiateStreamMedia(s *mediaStream) (rate int, rateChanged b
 		// Queued PCM is at the old rate. Handing it to a room that has just
 		// been told the rate changed would play it back at the wrong speed, so
 		// drop it: at most 5 frames, 100 ms.
-		if jb != nil {
-			jb.Reset()
+		if s.jb != nil {
+			s.jb.Reset()
 		}
 		drain(s.inFrames)
 		drain(s.outFrames)

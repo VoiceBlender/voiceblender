@@ -975,9 +975,6 @@ func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 	s.outFrames = make(chan []byte, 5)
 	s.dtmfCh = make(chan string, 5)
 
-	// 20 ms of samples at the codec's native rate, 16-bit mono LE.
-	s.jbFrameBytes = s.codecType.SampleRate() / 50 * 2
-
 	// Construct the jitter buffer if enabled.
 	if s.jbTargetMs > 0 {
 		s.jb = jitter.NewMs(s.jbTargetMs, s.jbMaxMs, 20)
@@ -1024,7 +1021,7 @@ func (l *SIPLeg) popLoop(s *mediaStream) {
 		if !ok {
 			// Warm-up or underrun — push a silence frame so the mixer's
 			// downstream pull still finds something at this tick.
-			pcm = make([]byte, s.jbFrameBytes)
+			pcm = make([]byte, s.live().pcmFrameBytes)
 		}
 		select {
 		case s.inFrames <- pcm:
