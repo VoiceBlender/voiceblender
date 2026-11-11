@@ -782,17 +782,6 @@ func (s *mediaStream) receives() bool {
 	}
 }
 
-// acceptsDTMFPT reports whether an ingress RTP payload type is a negotiated
-// telephone-event. Absent negotiation it falls back to the conventional PTs so
-// behaviour matches what the leg did before the PTs were tracked.
-func (s *mediaStream) acceptsDTMFPT(pt uint8) bool {
-	if len(s.dtmfRecvPTs) == 0 {
-		return pt == 100 || pt == 101
-	}
-	_, ok := s.dtmfRecvPTs[pt]
-	return ok
-}
-
 // close releases the stream's RTP socket, returning its port to the allocator.
 func (s *mediaStream) close() {
 	if s.rtpSess != nil {

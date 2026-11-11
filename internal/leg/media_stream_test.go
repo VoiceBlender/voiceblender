@@ -32,13 +32,13 @@ func TestStream_DirectionGatesLoops(t *testing.T) {
 func TestStream_DTMFDefaultPTsUnchanged(t *testing.T) {
 	// A peer that advertised no telephone-event must still have the historical
 	// 100/101 pair accepted, or this refactor would silently break DTMF.
-	s := &mediaStream{}
+	lc := snapshotCodec(&mediaStream{}, nil, nil)
 	for _, pt := range []uint8{100, 101} {
-		if !s.acceptsDTMFPT(pt) {
+		if !lc.acceptsDTMFPT(pt) {
 			t.Errorf("PT %d must be accepted when the peer advertised none", pt)
 		}
 	}
-	if s.acceptsDTMFPT(96) {
+	if lc.acceptsDTMFPT(96) {
 		t.Error("PT 96 must not be accepted without negotiation")
 	}
 }
@@ -47,12 +47,13 @@ func TestStream_DTMFUsesNegotiatedPT(t *testing.T) {
 	l := newTestSIPLeg(codec.CodecPCMU)
 	remote := &sipmod.SDPMedia{DTMFEventPTs: map[uint8]int{96: 8000}}
 	l.configureDTMF(l.prim, remote)
+	lc := snapshotCodec(l.prim, nil, nil)
 
-	if !l.prim.acceptsDTMFPT(96) {
+	if !lc.acceptsDTMFPT(96) {
 		t.Error("a peer advertising telephone-event on PT 96 must have its DTMF accepted")
 	}
 	// Once the peer has named its PTs, the conventional defaults no longer apply.
-	if l.prim.acceptsDTMFPT(101) {
+	if lc.acceptsDTMFPT(101) {
 		t.Error("PT 101 must not be accepted when the peer advertised only 96")
 	}
 	if l.prim.dtmfSendPT != 96 || l.prim.dtmfClockRate != 8000 {
@@ -66,10 +67,11 @@ func TestStream_ConfigureDTMFResetsRecvPTs(t *testing.T) {
 	// A renegotiation to a peer with no telephone-event must not leave the
 	// previous PT set behind.
 	l.configureDTMF(l.prim, &sipmod.SDPMedia{})
-	if l.prim.acceptsDTMFPT(96) {
+	lc := snapshotCodec(l.prim, nil, nil)
+	if lc.acceptsDTMFPT(96) {
 		t.Error("stale negotiated PT survived renegotiation")
 	}
-	if !l.prim.acceptsDTMFPT(101) {
+	if !lc.acceptsDTMFPT(101) {
 		t.Error("defaults must be restored when the peer advertises none")
 	}
 }
