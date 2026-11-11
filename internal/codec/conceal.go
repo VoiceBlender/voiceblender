@@ -214,3 +214,38 @@ func clampInt16(v float32) int16 {
 	}
 	return int16(math.Round(float64(v)))
 }
+
+// concealingDecoder gives a decoder that has no loss concealment of its own a
+// DecodeGap, by running a Concealer over what it decodes.
+type concealingDecoder struct {
+	Decoder
+	plc   *Concealer
+	frame int // samples in 20 ms
+}
+
+func withConcealment(dec Decoder, rate int) *concealingDecoder {
+	return &concealingDecoder{Decoder: dec, plc: NewConcealer(rate), frame: rate / 50}
+}
+
+func (d *concealingDecoder) Decode(data []byte) ([]int16, error) {
+	return d.DecodeInto(nil, data)
+}
+
+func (d *concealingDecoder) DecodeInto(dst []int16, data []byte) ([]int16, error) {
+	out, err := DecodeInto(d.Decoder, dst, data)
+	if err == nil {
+		d.plc.Good(out)
+	}
+	return out, err
+}
+
+func (d *concealingDecoder) DecodeGap(dst []int16) ([]int16, error) {
+	return d.plc.Conceal(dst, d.frame), nil
+}
+
+func (d *concealingDecoder) InDTX() bool { return false }
+
+func (d *concealingDecoder) Reset() {
+	d.Decoder.Reset()
+	d.plc.Reset()
+}

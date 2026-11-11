@@ -64,7 +64,8 @@ func (e *OpusEncoder) SetBitrate(bps int) error {
 // OpusDecoder wraps a gopus Decoder for 48kHz mono.
 type OpusDecoder struct {
 	dec    *gopus.Decoder
-	pcmBuf []int16 // reusable decode buffer
+	pcmBuf []int16   // reusable decode buffer
+	fecBuf []float32 // reusable DecodeFEC buffer
 }
 
 // NewOpusDecoder creates a new Opus decoder configured for 48kHz mono.
@@ -136,6 +137,54 @@ func opusFrameSizeMs(config uint8) int {
 		return 20
 	}
 }
+
+// opusGapSamples is the 20 ms a gap decoder fills, at 48 kHz.
+const opusGapSamples = 960
+
+// DecodeGap conceals one lost 20 ms frame with the decoder's own concealment.
+func (d *OpusDecoder) DecodeGap(dst []int16) (out []int16, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("opus decoder panic: %v\n%s", r, debug.Stack())
+			out = nil
+		}
+	}()
+	out = growInt16(dst, opusGapSamples)
+	n, err := d.dec.DecodeInt16(nil, out)
+	if err != nil {
+		return nil, err
+	}
+	return out[:n], nil
+}
+
+// DecodeFEC rebuilds the 20 ms before the packet next from its in-band
+// redundancy. A packet that carries none gives concealment instead.
+func (d *OpusDecoder) DecodeFEC(dst []int16, next []byte) (out []int16, err error) {
+	if len(next) < 2 {
+		return d.DecodeGap(dst)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("opus decoder panic: %v\n%s", r, debug.Stack())
+			out = nil
+		}
+	}()
+	if d.fecBuf == nil {
+		d.fecBuf = make([]float32, opusGapSamples)
+	}
+	n, err := d.dec.DecodeWithFEC(next, d.fecBuf, true)
+	if err != nil {
+		return nil, err
+	}
+	out = growInt16(dst, n)
+	for i, v := range d.fecBuf[:n] {
+		out[i] = clampInt16(v * 32768)
+	}
+	return out, nil
+}
+
+// InDTX is always false: silence in Opus DTX is not filled on a timer.
+func (d *OpusDecoder) InDTX() bool { return false }
 
 // Reset resets the decoder state.
 func (d *OpusDecoder) Reset() {

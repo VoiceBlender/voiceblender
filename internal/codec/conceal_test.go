@@ -216,3 +216,61 @@ func TestConcealerWithNoHistoryIsSilent(t *testing.T) {
 		}
 	}
 }
+
+func TestG711DecodersConcealGaps(t *testing.T) {
+	for _, ct := range []CodecType{CodecPCMU, CodecPCMA} {
+		t.Run(ct.String(), func(t *testing.T) {
+			enc, _ := NewEncoder(ct)
+			dec, _ := NewDecoder(ct)
+			gd, ok := dec.(GapDecoder)
+			if !ok {
+				t.Fatal("decoder does not implement GapDecoder")
+			}
+			if gd.InDTX() {
+				t.Error("G.711 reports DTX")
+			}
+			clean := voiced(8000, 0, 30*160)
+			var out []int16
+			for f := range 30 {
+				if f == 13 || f == 14 {
+					pcm, err := gd.DecodeGap(nil)
+					if err != nil || len(pcm) != 160 {
+						t.Fatalf("DecodeGap: %d samples, error %v", len(pcm), err)
+					}
+					out = append(out, pcm...)
+					continue
+				}
+				payload, _ := enc.Encode(clean[f*160 : (f+1)*160])
+				pcm, err := dec.Decode(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, pcm...)
+			}
+			// Companding adds a little to the steps of the signal itself.
+			bound := maxStep(clean)*3/2 + 200
+			if got := maxStep(out[12*160 : 16*160]); got > bound {
+				t.Errorf("largest step around the gap %d, bound %d", got, bound)
+			}
+			if got := rms(out[13*160 : 14*160]); got < 0.5*rms(clean[12*160:13*160]) {
+				t.Errorf("first concealed frame at %.0f rms, the signal was at %.0f", got, rms(clean[12*160:13*160]))
+			}
+		})
+	}
+}
+
+func TestG711DecodersWithNoLossMatchThePlainDecoders(t *testing.T) {
+	plain := map[CodecType]Decoder{CodecPCMU: &PCMUDecoder{}, CodecPCMA: &PCMADecoder{}}
+	for ct, want := range plain {
+		enc, _ := NewEncoder(ct)
+		dec, _ := NewDecoder(ct)
+		for f := range 100 {
+			payload, _ := enc.Encode(voiced(8000, f*160, 160))
+			a, _ := dec.Decode(payload)
+			b, _ := want.Decode(payload)
+			if !slices.Equal(a, b) {
+				t.Fatalf("%s frame %d: output differs from the plain decoder", ct, f)
+			}
+		}
+	}
+}

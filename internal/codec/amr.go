@@ -27,6 +27,14 @@ type GapDecoder interface {
 	InDTX() bool
 }
 
+// FECDecoder is implemented by gap decoders that can rebuild the frame before
+// a packet from redundancy that packet carries.
+type FECDecoder interface {
+	// DecodeFEC returns the 20 ms before the packet next: from its redundancy
+	// when it has any, by concealment otherwise.
+	DecodeFEC(dst []int16, next []byte) ([]int16, error)
+}
+
 // AMRConfig configures an AMR-NB or AMR-WB encoder/decoder pair for one RTP
 // session. The fields mirror the negotiated RFC 4867 fmtp.
 type AMRConfig struct {

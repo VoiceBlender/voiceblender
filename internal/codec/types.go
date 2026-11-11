@@ -234,9 +234,9 @@ func NewAMRNBDecoder(octetAligned bool) Decoder {
 func NewDecoder(ct CodecType) (Decoder, error) {
 	switch ct {
 	case CodecPCMU:
-		return &PCMUDecoder{}, nil
+		return withConcealment(&PCMUDecoder{}, 8000), nil
 	case CodecPCMA:
-		return &PCMADecoder{}, nil
+		return withConcealment(&PCMADecoder{}, 8000), nil
 	case CodecG722:
 		return NewG722Decoder(), nil
 	case CodecOpus:
