@@ -823,15 +823,15 @@ func (e *Engine) SendReInvite(ctx context.Context, dialog interface{}, sdpBody [
 // SendReInviteAnswer sends a re-INVITE and returns the peer's answer body from
 // the 200 OK. When apply is non-nil it is invoked with that body *before* the
 // ACK is written, so local media state is already consistent by the time the
-// peer is cleared to send.
-func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdpBody []byte, apply func(answer []byte)) ([]byte, error) {
-	return e.SendReInviteBody(ctx, dialog, sdpBody, nil, apply)
+// peer is cleared to send. Any headers given are added to the request.
+func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdpBody []byte, apply func(answer []byte), headers ...sip.Header) ([]byte, error) {
+	return e.SendReInviteBody(ctx, dialog, sdpBody, nil, apply, headers...)
 }
 
 // SendReInviteBody is SendReInviteAnswer with extra body parts appended, so a
 // re-INVITE can carry an updated SIPREC metadata document alongside the offer.
 // With no extra parts the request is byte-identical to the plain SDP form.
-func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBody []byte, extra []BodyPart, apply func(answer []byte)) ([]byte, error) {
+func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBody []byte, extra []BodyPart, apply func(answer []byte), headers ...sip.Header) ([]byte, error) {
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
 		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
@@ -840,6 +840,9 @@ func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBo
 			return nil, err
 		}
 		req.AppendHeader(e.AllowHeader())
+		for _, h := range headers {
+			req.AppendHeader(h)
+		}
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
@@ -869,6 +872,9 @@ func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBo
 			return nil, err
 		}
 		req.AppendHeader(e.AllowHeader())
+		for _, h := range headers {
+			req.AppendHeader(h)
+		}
 
 		res, err := d.Do(ctx, req)
 		if err != nil {
