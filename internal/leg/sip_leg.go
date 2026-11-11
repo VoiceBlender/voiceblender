@@ -2288,32 +2288,32 @@ func (l *SIPLeg) sessionRefreshSDP() []byte {
 }
 
 // startSessionTimer starts the session refresh or expiry timer after the call
-// is answered. Must only be called once.
+// is answered.
 func (l *SIPLeg) startSessionTimer() {
-	l.mu.RLock()
-	interval := l.sessionInterval
-	refreshes := l.refreshesSessionLocked()
-	l.mu.RUnlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	if interval == 0 {
+	if l.sessionInterval == 0 {
 		return
 	}
+	l.log.Info("session timer started", "leg_id", l.id, "interval", l.sessionInterval, "local_refresher", l.refreshesSessionLocked())
+	l.armSessionTimerLocked()
+}
 
-	if refreshes {
-		// We are the refresher — send re-INVITE at half the interval.
-		refreshAt := time.Duration(interval) * time.Second / 2
-		l.log.Info("session timer: local refresher", "leg_id", l.id, "interval", interval, "refresh_at", refreshAt)
-		l.mu.Lock()
-		l.sessionTimer = time.AfterFunc(refreshAt, l.sessionRefresh)
-		l.mu.Unlock()
+// armSessionTimerLocked starts the timer for the current interval and role, in
+// place of any timer already running. Caller holds l.mu.
+func (l *SIPLeg) armSessionTimerLocked() {
+	if l.sessionTimer != nil {
+		l.sessionTimer.Stop()
+	}
+	interval := time.Duration(l.sessionInterval) * time.Second
+	if l.refreshesSessionLocked() {
+		// We are the refresher: send a re-INVITE at half the interval.
+		l.sessionTimer = time.AfterFunc(interval/2, l.sessionRefresh)
 	} else {
-		// Remote is the refresher — guard timer at full interval + 32s grace
+		// The far end is the refresher: guard at the interval plus 32 s
 		// (RFC 4028 §10 recommends a grace period of at least 32 seconds).
-		guardAt := time.Duration(interval)*time.Second + 32*time.Second
-		l.log.Info("session timer: remote refresher", "leg_id", l.id, "interval", interval, "guard_at", guardAt)
-		l.mu.Lock()
-		l.sessionTimer = time.AfterFunc(guardAt, l.sessionExpired)
-		l.mu.Unlock()
+		l.sessionTimer = time.AfterFunc(interval+32*time.Second, l.sessionExpired)
 	}
 }
 
@@ -2322,9 +2322,12 @@ func (l *SIPLeg) sessionRefresh() {
 	l.mu.RLock()
 	st := l.state
 	interval := l.sessionInterval
+	refreshes := l.refreshesSessionLocked()
 	l.mu.RUnlock()
 
-	if st == StateHungUp {
+	// The far end may have taken the role after this timer fired. A refresh
+	// from us now would name us refresher again.
+	if st == StateHungUp || !refreshes {
 		return
 	}
 
@@ -2361,10 +2364,9 @@ func (l *SIPLeg) sessionRefresh() {
 		return
 	}
 
-	// Schedule next refresh.
-	refreshAt := time.Duration(interval) * time.Second / 2
+	// Schedule the next refresh.
 	l.mu.Lock()
-	l.sessionTimer = time.AfterFunc(refreshAt, l.sessionRefresh)
+	l.armSessionTimerLocked()
 	l.mu.Unlock()
 }
 
@@ -2379,27 +2381,37 @@ func (l *SIPLeg) sessionExpired() {
 	}
 }
 
-// ResetSessionTimer resets the session timer, called when a refresh re-INVITE
-// is received from the remote UA.
-func (l *SIPLeg) ResetSessionTimer() {
+// ResetSessionTimer restarts the session timer when the far end sends a
+// re-INVITE or UPDATE. timer is what that request and our 200 OK agreed, and
+// replaces the interval and refresher. It is nil when the request named none.
+func (l *SIPLeg) ResetSessionTimer(timer *sipmod.SessionTimerParams) {
 	l.mu.Lock()
-	interval := l.sessionInterval
-	refresher := l.sessionRefresher
-	refreshes := l.refreshesSessionLocked()
-	t := l.sessionTimer
-	l.mu.Unlock()
+	defer l.mu.Unlock()
 
-	if interval == 0 || t == nil {
+	// Before the answer, the 200 OK to the INVITE still sets the timer.
+	if l.state != StateConnected && l.state != StateHeld {
 		return
 	}
 
-	l.log.Debug("session timer reset", "leg_id", l.id, "interval", interval, "refresher", refresher)
-
-	if refreshes {
-		t.Reset(time.Duration(interval) * time.Second / 2)
-	} else {
-		t.Reset(time.Duration(interval)*time.Second + 32*time.Second)
+	if timer != nil {
+		l.sessionInterval = timer.Interval
+		l.sessionRefresher = timer.Refresher
+		// The far end sent this request. On an outbound leg that puts the
+		// roles the other way round from the initial INVITE.
+		if l.inbound == nil {
+			if timer.Refresher == "uas" {
+				l.sessionRefresher = "uac"
+			} else {
+				l.sessionRefresher = "uas"
+			}
+		}
 	}
+	if l.sessionInterval == 0 {
+		return
+	}
+
+	l.log.Debug("session timer reset", "leg_id", l.id, "interval", l.sessionInterval, "local_refresher", l.refreshesSessionLocked())
+	l.armSessionTimerLocked()
 }
 
 // stopSessionTimer stops the session timer. Called on hangup.

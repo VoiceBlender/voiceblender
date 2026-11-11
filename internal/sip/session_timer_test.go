@@ -1,6 +1,10 @@
 package sip
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/emiago/sipgo/sip"
+)
 
 func TestParseSessionExpires(t *testing.T) {
 	tests := []struct {
@@ -51,5 +55,46 @@ func TestFormatSessionExpires(t *testing.T) {
 	want := "1800;refresher=uac"
 	if got != want {
 		t.Errorf("FormatSessionExpires(1800, uac) = %q, want %q", got, want)
+	}
+}
+
+func TestRequestedSessionTimer(t *testing.T) {
+	tests := []struct {
+		name      string
+		header    string // "-" for no header
+		supported string
+		want      *SessionTimerParams
+	}{
+		{"no header", "-", "timer", nil},
+		{"refresher named", "1800;refresher=uas", "timer", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
+		{"refresher named, no Supported", "1800;refresher=uac", "", &SessionTimerParams{Interval: 1800, Refresher: "uac"}},
+		{"none named, sender supports timer", "1800", "replaces, timer", &SessionTimerParams{Interval: 1800, Refresher: "uac"}},
+		{"none named, sender does not", "1800", "replaces", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
+		{"none named, no Supported", "1800", "", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
+		{"zero interval", "0", "timer", nil},
+		{"not a number", "abc", "timer", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sip.NewRequest(sip.UPDATE, sip.Uri{Scheme: "sip", Host: "192.0.2.1"})
+			if tt.header != "-" {
+				req.AppendHeader(sip.NewHeader("Session-Expires", tt.header))
+			}
+			if tt.supported != "" {
+				req.AppendHeader(sip.NewHeader("Supported", tt.supported))
+			}
+
+			got := requestedSessionTimer(req)
+			if got == nil || tt.want == nil {
+				if got != tt.want {
+					t.Fatalf("requestedSessionTimer() = %v, want %v", got, tt.want)
+				}
+				return
+			}
+			if *got != *tt.want {
+				t.Errorf("requestedSessionTimer() = %+v, want %+v", *got, *tt.want)
+			}
+		})
 	}
 }

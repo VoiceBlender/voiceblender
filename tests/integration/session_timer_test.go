@@ -213,3 +213,101 @@ func TestSessionTimer_RefreshKeepsHold(t *testing.T) {
 		httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
 	})
 }
+
+// TestSessionTimer_FollowsFarEndRequest: a re-INVITE or UPDATE from the far
+// end can name a new refresher or interval, and the 200 OK agrees to it. The
+// leg must then do what was agreed, or nobody refreshes.
+func TestSessionTimer_FollowsFarEndRequest(t *testing.T) {
+	cases := []struct {
+		name        string
+		answer      string // Session-Expires in the 200 OK that sets up the call
+		method      sip.RequestMethod
+		request     string // Session-Expires in the far end's request
+		wantRefresh bool   // VoiceBlender refreshes afterwards
+	}{
+		{"UPDATE hands the role to VoiceBlender", "2;refresher=uas", sip.UPDATE, "2;refresher=uas", true},
+		{"re-INVITE hands the role to VoiceBlender", "2;refresher=uas", sip.INVITE, "2;refresher=uas", true},
+		{"far end takes the role", "4;refresher=uac", sip.UPDATE, "4;refresher=uac", false},
+		{"far end shortens the interval", "90;refresher=uac", sip.UPDATE, "2;refresher=uas", true},
+		{"timer starts in mid call", "", sip.UPDATE, "2;refresher=uas", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := newTestInstance(t, "st-follow")
+			cli := newRawSIPClient(t, "st-follow-ua")
+			legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, tc.answer)
+
+			// In this request the far end is the UAC and VoiceBlender the UAS.
+			var offer []byte
+			if tc.method == sip.INVITE {
+				offer = cli.audioSDP(sipmod.DirSendRecv)
+			}
+			resp := cli.sendInDialog(t, tc.method, inv.req, okRes, offer, tc.request)
+			if resp.StatusCode != sip.StatusOK {
+				t.Fatalf("%s status = %d %s, want 200", tc.method, resp.StatusCode, resp.Reason)
+			}
+			if se := resp.GetHeader("Session-Expires"); se == nil || se.Value() != tc.request {
+				t.Fatalf("200 OK Session-Expires = %v, want %s", se, tc.request)
+			}
+
+			// Every case leaves a refresh from VoiceBlender due in 1 or 2 s,
+			// or not at all.
+			select {
+			case e := <-cli.invites:
+				if !tc.wantRefresh {
+					t.Fatal("leg sent a session refresh, but the far end took the role")
+				}
+				se := e.req.GetHeader("Session-Expires")
+				if se == nil {
+					t.Fatal("refresh re-INVITE has no Session-Expires header")
+				}
+				if interval, refresher := sipmod.ParseSessionExpires(se.Value()); interval != 2 || refresher != "uac" {
+					t.Errorf("refresh Session-Expires = %q, want 2;refresher=uac", se.Value())
+				}
+				cli.answerWith(t, e, sipmod.DirSendRecv, "2;refresher=uac")
+			case <-time.After(3 * time.Second):
+				if tc.wantRefresh {
+					t.Fatal("leg did not send a session refresh after it agreed to")
+				}
+			}
+
+			waitForLegState(t, inst.baseURL(), legID, "connected", 2*time.Second)
+			httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+		})
+	}
+}
+
+// A request refused with 488 must leave the session timer as it was: the far
+// end, which got no 200 OK, still expects VoiceBlender to refresh.
+func TestSessionTimer_RefusedOfferLeavesTimer(t *testing.T) {
+	inst := newTestInstance(t, "st-refused")
+	cli := newRawSIPClient(t, "st-refused-ua")
+	legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, "4;refresher=uac")
+
+	// G.729 only: the leg offers PCMU and PCMA, so no audio section is acceptable.
+	offer := []byte(strings.Join([]string{
+		"v=0",
+		fmt.Sprintf("o=raw 1 2 IN IP4 %s", cli.host),
+		"s=-",
+		fmt.Sprintf("c=IN IP4 %s", cli.host),
+		"t=0 0",
+		"m=audio 40000 RTP/AVP 18",
+		"a=rtpmap:18 G729/8000",
+		"a=sendrecv",
+		"",
+	}, "\r\n"))
+	resp := cli.sendInDialog(t, sip.INVITE, inv.req, okRes, offer, "90;refresher=uac")
+	if resp.StatusCode != sip.StatusNotAcceptableHere {
+		t.Fatalf("re-INVITE status = %d %s, want 488", resp.StatusCode, resp.Reason)
+	}
+
+	select {
+	case e := <-cli.invites:
+		cli.answerWith(t, e, sipmod.DirSendRecv, "4;refresher=uac")
+	case <-time.After(3 * time.Second):
+		t.Fatal("leg stopped refreshing after a re-INVITE that it refused")
+	}
+
+	waitForLegState(t, inst.baseURL(), legID, "connected", 2*time.Second)
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+}

@@ -4909,7 +4909,7 @@ Notes and limits:
 - Minimum session interval: 90 seconds (`Min-SE`)
 - Supports both `refresher=uac` and `refresher=uas` roles. The role is read against the leg's direction: VoiceBlender is the UAS on an inbound leg and the UAC on an outbound leg. If the answer to an outbound call names no refresher, VoiceBlender refreshes
 - As refresher, VoiceBlender sends a re-INVITE at half the interval. It carries `Supported: timer` and `Session-Expires`, and repeats the call's current direction, so a held call stays on hold
-- Re-INVITEs (including hold/unhold) reset the session timer
+- A re-INVITE or UPDATE from the remote UA (including hold/unhold) resets the session timer. One whose offer is refused with 488 leaves the timer as it was. If it carries `Session-Expires`, the 200 OK echoes it and VoiceBlender follows it: the new interval applies, and the refresher role moves if the request names the other side. In such a request the remote UA is the UAC, so `refresher=uas` asks VoiceBlender to refresh. With no refresher named, the remote UA refreshes if the request carries `Supported: timer`, and VoiceBlender refreshes if it does not. A call set up with no session timer starts one this way
 - When the remote UA is the refresher and no refresh arrives within the interval plus 32 seconds, the leg disconnects with reason `session_expired`
 - An outbound call whose `Session-Expires` header is below the peer's minimum gets `422 Session Interval Too Small`; VoiceBlender then re-sends the INVITE once with `Session-Expires` and `Min-SE` raised to the `Min-SE` the peer named (RFC 4028 §6)
 - Every SDP VoiceBlender sends in a call keeps the same `o=` session id, and the version increases each time the SDP changes (RFC 3264 §8)

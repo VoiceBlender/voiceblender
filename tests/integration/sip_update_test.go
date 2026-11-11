@@ -20,6 +20,13 @@ import (
 // response from the peer.
 func (c *rawSIPClient) sendInDialogUpdate(t *testing.T, inv *sip.Request, okRes *sip.Response, sdp []byte, sessionExpires string) *sip.Response {
 	t.Helper()
+	return c.sendInDialog(t, sip.UPDATE, inv, okRes, sdp, sessionExpires)
+}
+
+// sendInDialog is sendInDialogUpdate for any method. It ACKs the answer to a
+// re-INVITE.
+func (c *rawSIPClient) sendInDialog(t *testing.T, method sip.RequestMethod, inv *sip.Request, okRes *sip.Response, sdp []byte, sessionExpires string) *sip.Response {
+	t.Helper()
 
 	peerContact := inv.Contact()
 	if peerContact == nil {
@@ -33,7 +40,7 @@ func (c *rawSIPClient) sendInDialogUpdate(t *testing.T, inv *sip.Request, okRes 
 		t.Fatal("dialog headers missing")
 	}
 
-	req := sip.NewRequest(sip.UPDATE, peerContact.Address)
+	req := sip.NewRequest(method, peerContact.Address)
 	// Swap From/To for an in-dialog UAS-originated request.
 	fromHdr := &sip.FromHeader{Address: to.Address, Params: to.Params.Clone()}
 	toHdr := &sip.ToHeader{Address: from.Address, Params: from.Params.Clone()}
@@ -54,7 +61,17 @@ func (c *rawSIPClient) sendInDialogUpdate(t *testing.T, inv *sip.Request, okRes 
 	defer cancel()
 	resp, err := c.client.Do(ctx, req)
 	if err != nil {
-		t.Fatalf("UPDATE Do: %v", err)
+		t.Fatalf("%s Do: %v", method, err)
+	}
+	if method == sip.INVITE && resp.IsSuccess() {
+		ack := sip.NewRequest(sip.ACK, peerContact.Address)
+		ack.AppendHeader(sip.HeaderClone(fromHdr))
+		ack.AppendHeader(sip.HeaderClone(toHdr))
+		ack.AppendHeader(sip.HeaderClone(callID))
+		ack.AppendHeader(&sip.CSeqHeader{SeqNo: req.CSeq().SeqNo, MethodName: sip.ACK})
+		if err := c.client.WriteRequest(ack); err != nil {
+			t.Fatalf("ACK: %v", err)
+		}
 	}
 	return resp
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 const (
@@ -69,4 +71,27 @@ func ParseMinSE(value string) uint32 {
 // FormatSessionExpires formats a Session-Expires header value.
 func FormatSessionExpires(interval uint32, refresher string) string {
 	return fmt.Sprintf("%d;refresher=%s", interval, refresher)
+}
+
+// requestedSessionTimer returns the session timer that a re-INVITE or UPDATE
+// asks for, as the 200 OK echoes it, or nil when the request names none.
+func requestedSessionTimer(req *sip.Request) *SessionTimerParams {
+	h := req.GetHeader("Session-Expires")
+	if h == nil {
+		return nil
+	}
+	interval, refresher := ParseSessionExpires(h.Value())
+	if interval == 0 {
+		return nil
+	}
+	if refresher == "" {
+		// The choice is ours. A proxy may have added the header for a sender
+		// that cannot refresh, so the sender gets the role only if it says
+		// it supports the timer (RFC 4028 §9).
+		refresher = "uas"
+		if sup := req.GetHeader("Supported"); sup != nil && containsToken(sup.Value(), "timer") {
+			refresher = "uac"
+		}
+	}
+	return &SessionTimerParams{Interval: interval, Refresher: refresher}
 }
