@@ -296,6 +296,7 @@ func (l *SIPLeg) offerFromTable() []byte {
 	defer l.mu.RUnlock()
 
 	cfg := sipmod.SDPConfig{
+		Origin:  l.origin(),
 		LocalIP: l.localIP,
 		Codecs:  l.supportedCodecs,
 		Streams: l.mlines.LocalStreams(l.held, nil),

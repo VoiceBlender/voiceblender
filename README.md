@@ -157,7 +157,7 @@ Denoise can be chained with `bandpass`, `gain` and voice effects -- see
 
 - [API.md](API.md) -- REST API, webhooks and event reference
 - [CONFIGURATION.md](CONFIGURATION.md) -- every environment variable
-- [TESTING.md](TESTING.md) -- unit, integration and benchmark tests
+- [TESTING.md](TESTING.md) -- unit, integration, interop and benchmark tests
 - [openapi.yaml](openapi.yaml) / [asyncapi.yaml](asyncapi.yaml) -- machine-readable specs
 - [voiceblender.org/docs](https://voiceblender.org/docs) -- online documentation
 
@@ -179,6 +179,7 @@ Complete reference applications built on VoiceBlender live in
 ```bash
 go test ./internal/...                                              # unit tests
 go test -tags integration -v -timeout 60s ./tests/integration/      # integration tests
+make test-interop                                                   # interop vs FreeSWITCH (Docker)
 ```
 
 See [TESTING.md](TESTING.md) for setup and benchmarks.

@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<document type="freeswitch/xml">
+  <section name="configuration">
+    <configuration name="switch.conf">
+      <settings>
+        <param name="rtp-start-port" value="{{.RTPMin}}"/>
+        <param name="rtp-end-port" value="{{.RTPMax}}"/>
+        <param name="max-sessions" value="500"/>
+        <param name="sessions-per-second" value="200"/>
+        <param name="loglevel" value="debug"/>
+        <param name="colorize-console" value="false"/>
+        <param name="dump-cores" value="no"/>
+      </settings>
+    </configuration>
+    <configuration name="modules.conf">
+      <modules>
+        <load module="mod_console"/>
+        <load module="mod_logfile"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_commands"/>
+        <load module="mod_dptools"/>
+        <load module="mod_dialplan_xml"/>
+        <load module="mod_tone_stream"/>
+        <load module="mod_sndfile"/>
+        <load module="mod_native_file"/>
+        <load module="mod_opus"/>
+        <load module="mod_spandsp"/>
+      </modules>
+    </configuration>
+    <configuration name="console.conf">
+      <mappings>
+        <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="{{.LogLevel}}"/>
+      </settings>
+    </configuration>
+    <configuration name="logfile.conf">
+      <settings>
+        <param name="rotate-on-hup" value="true"/>
+      </settings>
+      <profiles>
+        <profile name="default">
+          <settings>
+            <param name="logfile" value="/var/log/freeswitch/freeswitch.log"/>
+            <param name="rollover" value="104857600"/>
+            <param name="maximum-rotate" value="2"/>
+          </settings>
+          <mappings>
+            <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+          </mappings>
+        </profile>
+      </profiles>
+    </configuration>
+    <configuration name="event_socket.conf">
+      <settings>
+        <param name="listen-ip" value="{{.IP}}"/>
+        <param name="listen-port" value="{{.ESLPort}}"/>
+        <param name="password" value="{{.ESLPassword}}"/>
+      </settings>
+    </configuration>
+    <configuration name="opus.conf">
+      <settings>
+        <param name="use-vbr" value="1"/>
+        <param name="complexity" value="10"/>
+      </settings>
+    </configuration>
+    <configuration name="spandsp.conf">
+      <modem-settings/>
+      <fax-settings/>
+    </configuration>
+    <configuration name="sofia.conf">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="interop">
+          <gateways>
+            <X-PRE-PROCESS cmd="include" data="gateways/*.xml"/>
+          </gateways>
+          <settings>
+            <param name="context" value="interop"/>
+            <param name="dialplan" value="XML"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="sip-ip" value="{{.IP}}"/>
+            <param name="rtp-ip" value="{{.IP}}"/>
+            <param name="sip-port" value="{{.SIPPort}}"/>
+            <param name="codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
+            <param name="inbound-codec-negotiation" value="generous"/>
+            <param name="inbound-late-negotiation" value="true"/>
+            <param name="dtmf-type" value="rfc2833"/>
+            <param name="rfc2833-pt" value="101"/>
+            <param name="auth-calls" value="false"/>
+            <param name="manage-presence" value="false"/>
+            <param name="enable-timer" value="true"/>
+            <param name="update-refresher" value="true"/>
+            <param name="rtcp-audio-interval-msec" value="1000"/>
+            <param name="tls" value="true"/>
+            <param name="tls-sip-port" value="{{.TLSPort}}"/>
+            <param name="tls-cert-dir" value="/etc/freeswitch/tls"/>
+            <param name="tls-version" value="tlsv1.2"/>
+            <param name="tls-bind-params" value="transport=tls"/>
+          </settings>
+        </profile>
+        <profile name="interop-auth">
+          <settings>
+            <param name="context" value="interop"/>
+            <param name="dialplan" value="XML"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="sip-ip" value="{{.IP}}"/>
+            <param name="rtp-ip" value="{{.IP}}"/>
+            <param name="sip-port" value="{{.AuthPort}}"/>
+            <param name="codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
+            <param name="inbound-late-negotiation" value="true"/>
+            <param name="dtmf-type" value="rfc2833"/>
+            <param name="auth-calls" value="true"/>
+            <param name="challenge-realm" value="auto_to"/>
+            <param name="force-register-domain" value="{{.Domain}}"/>
+            <param name="force-register-db-domain" value="{{.Domain}}"/>
+            <param name="manage-presence" value="false"/>
+          </settings>
+        </profile>
+        <profile name="interop-flap">
+          <settings>
+            <param name="context" value="interop"/>
+            <param name="dialplan" value="XML"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="sip-ip" value="{{.IP}}"/>
+            <param name="rtp-ip" value="{{.IP}}"/>
+            <param name="sip-port" value="{{.FlapPort}}"/>
+            <param name="auth-calls" value="false"/>
+            <param name="manage-presence" value="false"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+  <section name="dialplan">
+    <context name="interop">
+      <extension name="tone">
+        <condition field="destination_number" expression="^tone-(\d+)$">
+          <action application="answer"/>
+          <action application="playback" data="tone_stream://%(1000,0,$1);loops=-1"/>
+        </condition>
+      </extension>
+      <extension name="bridged">
+        <condition field="destination_number" expression="^bridged-(\d+)$">
+          <action application="bridge" data="sofia/{{.FlapProfile}}/sip:tone-$1@{{.IP}}:{{.SIPPort}}"/>
+        </condition>
+      </extension>
+      <extension name="park">
+        <condition field="destination_number" expression="^.*$">
+          <action application="set" data="rtp_secure_media=optional"/>
+          <action application="ring_ready"/>
+          <action application="park"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+  <section name="directory">
+    <domain name="{{.Domain}}">
+      <params>
+        <param name="dial-string" value="{presence_id=${dialed_user}@${dialed_domain}}${sofia_contact(${dialed_user}@${dialed_domain})}"/>
+      </params>
+      <groups>
+        <group name="default">
+          <users>
+{{- range $u, $p := .Users}}
+            <user id="{{$u}}"><params><param name="password" value="{{$p}}"/></params></user>
+{{- end}}
+          </users>
+        </group>
+      </groups>
+    </domain>
+  </section>
+</document>

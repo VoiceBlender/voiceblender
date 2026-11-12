@@ -180,7 +180,7 @@ Originate an outbound leg — one VoiceBlender dials out itself. `type` selects 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | `"sip"`, `"whatsapp"` (see [WhatsApp Business Calling](#whatsapp-business-calling) below), `"websocket"` (see [WebSocket Legs](#websocket-legs)), or `"livekit_room"` (see [LiveKit Room Legs](#livekit-room-legs)) |
-| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`); the transport comes from the URI — `sips:` or `;transport=tls` dials over TLS, `;transport=tcp` over TCP, otherwise UDP. An `outbound_proxy`, when present, is the hop actually contacted and its transport wins. For `whatsapp` legs, an E.164 phone number (with or without `+`). |
+| `to` | string | yes | Destination. For `sip` legs, a SIP URI (e.g. `"sip:alice@example.com"`); the transport comes from the URI — `sips:` or `;transport=tls` dials over TLS, `;transport=tcp` over TCP, otherwise UDP. An `outbound_proxy`, when present, is the hop actually contacted and its transport wins. Once answered, the call's in-dialog requests (ACK, BYE, re-INVITE) use the transport the peer's `Contact` names, when it names one; a call to a `sips:` URI always stays on TLS. For `whatsapp` legs, an E.164 phone number (with or without `+`). |
 | `uri` | string | no | Deprecated alias for `to` (sip legs only). Kept for backward compat; prefer `to`. |
 | `from` | string | no | Caller ID. A bare user-part (e.g. `"+15551234567"`, `"alice"`) sets the user of the SIP From header. A full SIP URI (e.g. `"sip:alice@pbx.example.com"`) sets both the user and the host; otherwise the host comes from the trunk's AOR realm, falling back to `SIP_DOMAIN`. When omitted on a call placed with `trunk_id`, the trunk's AOR is used. |
 | `trunk_id` | string | no | SIP legs only. ID of the [SIP trunk](#sip-trunks) to place the call through. The trunk supplies the route to its upstream, its digest credentials and — unless `from` names a host — the From realm. Takes precedence over selecting a trunk by matching `from` against trunk AORs. An unknown ID is rejected with `404`. |
@@ -996,6 +996,8 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 
 **Asynchronous.** Queue a re-INVITE with `sendrecv` SDP direction. Successful resume is observed via `leg.unhold`; failures surface as `leg.command_failed` with `command="unhold"`.
 
+Hold and unhold requests take effect in the order they were made. An unhold sent while a hold re-INVITE is still waiting for the peer's answer is applied once that answer arrives, so the leg ends in the last requested state.
+
 **Response:** `202 Accepted`
 
 ```json
@@ -1137,7 +1139,7 @@ The REST call returns immediately after validating the request. The REFER is sen
 When a peer sends **us** a REFER (asks us to transfer its call), the handling depends on `SIP_REFER_AUTO_DIAL`:
 
 - **`SIP_REFER_AUTO_DIAL=true`** — the server accepts (`202`) and **dials the target itself**, driving the NOTIFY sipfrag progress. The app is notified via `leg.transfer_requested` but does nothing.
-- **`SIP_REFER_AUTO_DIAL=false` (default)** — the REFER is **parked** and surfaced as `leg.transfer_requested` (a *decision request*). The app drives the outcome with the commands below, keyed by the **referrer leg** (`{id}` = the leg that received the REFER). If no decision arrives within `SIP_REFER_CONSULT_TIMEOUT_MS` (default 2000 ms), the REFER auto-declines with `603` (fail-closed) and `leg.transfer_failed` fires.
+- **`SIP_REFER_AUTO_DIAL=false` (default)** — the REFER is **parked** and surfaced as `leg.transfer_requested` (a *decision request*). The app drives the outcome with the commands below, keyed by the **referrer leg** (`{id}` = the leg that received the REFER). If no decision arrives within `SIP_REFER_CONSULT_TIMEOUT_MS` (default 2000 ms), the REFER auto-declines with `603` (fail-closed) and `leg.transfer_failed` fires. The REFER's SIP transaction stays open while it is parked (up to 32 s), so retransmissions from a UDP peer are absorbed rather than reported as further `leg.transfer_requested` events.
 
 The typical app flow: on `leg.transfer_requested`, call **accept**, perform the re-bridge (route the other party to the target), optionally report **progress**, then **complete**. If the app can't perform the transfer, call **decline** instead.
 
@@ -1147,6 +1149,8 @@ The typical app flow: on `leg.transfer_requested`, call **accept**, perform the 
 - Otherwise the leg's own identity is reused — the caller's `From` for an inbound leg, the `from` the leg was created with for an outbound one.
 
 The resulting leg's `leg.ringing` reports both, as `from` (a full SIP URI when the host is known) and `trunk_id`.
+
+**Headers from the Refer-To URI.** Headers the referrer embedded in the Refer-To URI (`<sip:bob@example.com?User-to-User=...>`, RFC 3261 §19.1.5) are added to the auto-dialled INVITE. Dialog and routing headers, `body` and `Replaces` (which drives attended transfer) are not copied.
 
 All four return `202 Accepted` on success, or `404` when there is no matching parked/accepted transfer for the leg. The same actions are available over VSI as `accept_transfer`, `progress_transfer`, `complete_transfer`, and `decline_transfer` (payload `{ "id": "<referrer_leg_id>", ... }`).
 
@@ -4559,8 +4563,8 @@ All event data uses typed structs with consistent field names. Events scoped to 
 | `leg.unmuted` | Leg unmuted | `leg_id` |
 | `leg.deaf` | Leg deafened | `leg_id` |
 | `leg.undeaf` | Leg undeafened | `leg_id` |
-| `leg.hold` | Leg put on hold (local or remote) | `leg_id`, `leg_type` |
-| `leg.unhold` | Leg taken off hold (local or remote) | `leg_id`, `leg_type` |
+| `leg.hold` | Leg put on hold (local or remote). Fires only on a change of hold state | `leg_id`, `leg_type` |
+| `leg.unhold` | Leg taken off hold (local or remote). Fires only on a change of hold state, so a re-offer that keeps the call active (a codec change, a remote offer with no direction attribute, which means `sendrecv`) does not emit it | `leg_id`, `leg_type` |
 | `leg.command_failed` | An asynchronous leg command failed after the HTTP 202 was returned | `leg_id`, `command` (e.g. `ring`, `early_media`, `hold`, `unhold`, `add_to_room`), `error` |
 | `leg.ice_interrupted` | WebRTC leg lost ICE connectivity; the leg is kept alive so the peer can [restart ICE](#post-v1legsidice-restart) | `leg_id`, `leg_type` (`webrtc`) |
 | `leg.ice_restored` | WebRTC leg regained ICE connectivity after `leg.ice_interrupted`, with or without an ICE restart | `leg_id`, `leg_type` (`webrtc`) |
@@ -4907,6 +4911,8 @@ Notes and limits:
 - As refresher, VoiceBlender sends a re-INVITE at half the interval. It carries `Supported: timer` and `Session-Expires`, and repeats the call's current direction, so a held call stays on hold
 - Re-INVITEs (including hold/unhold) reset the session timer
 - When the remote UA is the refresher and no refresh arrives within the interval plus 32 seconds, the leg disconnects with reason `session_expired`
+- An outbound call whose `Session-Expires` header is below the peer's minimum gets `422 Session Interval Too Small`; VoiceBlender then re-sends the INVITE once with `Session-Expires` and `Min-SE` raised to the `Min-SE` the peer named (RFC 4028 §6)
+- Every SDP VoiceBlender sends in a call keeps the same `o=` session id, and the version increases each time the SDP changes (RFC 3264 §8)
 
 ---
 

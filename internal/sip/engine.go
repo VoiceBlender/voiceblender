@@ -219,6 +219,28 @@ func (e *Engine) contactForInvite(req *sip.Request) *sip.ContactHeader {
 	return &sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: host, Port: e.bindPort}}
 }
 
+// outboundContact is the Contact for an INVITE we send, or nil to keep the
+// dialog default. An INVITE over TLS advertises the TLS listener: the peer
+// takes the dialog's transport from our Contact and sends its in-dialog
+// requests there. host overrides the advertised host when non-empty.
+func (e *Engine) outboundContact(req *sip.Request, host string) *sip.ContactHeader {
+	if strings.EqualFold(req.Transport(), "TLS") && e.tlsPort != 0 {
+		if host == "" {
+			host = e.publicHost
+		}
+		if strings.EqualFold(req.Recipient.Scheme, "sips") {
+			return &sip.ContactHeader{Address: sip.Uri{Scheme: "sips", Host: host, Port: e.tlsPort}}
+		}
+		uri := sip.Uri{Scheme: "sip", Host: host, Port: e.tlsPort, UriParams: sip.NewParams()}
+		uri.UriParams.Add("transport", "tls")
+		return &sip.ContactHeader{Address: uri}
+	}
+	if host != "" {
+		return e.contactWithHost(host)
+	}
+	return nil
+}
+
 // contactHostForRequest picks the Contact host for an inbound request based
 // on the address family of the request's source. Falls back to publicHost
 // when no family-specific advertised IP is configured.
@@ -322,6 +344,9 @@ type OutboundCall struct {
 	// LocalIP is the address advertised in the offer's c= line; later offers
 	// and answers on this call must keep using it.
 	LocalIP string
+
+	// Origin is the o= line the offer used; later SDPs in the dialog continue it.
+	Origin *SDPOrigin
 }
 
 // resolveExternalIPs probes the preferred outbound LAN IPs for both address
@@ -1177,7 +1202,16 @@ func (e *Engine) handleRefer(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		return
 	}
-	e.onRefer(callID, target, replaces, req, tx)
+	if tx == nil {
+		e.onRefer(callID, target, replaces, req, tx)
+		return
+	}
+	// sipgo ends the transaction when this handler returns. A REFER parked
+	// for the application's decision would then be answered outside it, and
+	// its retransmissions taken for new REFERs, so stay until it is answered.
+	rtx := newReferTx(tx)
+	e.onRefer(callID, target, replaces, req, rtx)
+	rtx.wait(referAnswerWait)
 }
 
 // handleNotify acks any in-dialog NOTIFY and dispatches "refer" sipfrag bodies.
@@ -1442,6 +1476,19 @@ func (e *Engine) fromIdentity(opts InviteOptions) (*sip.FromHeader, sip.Header) 
 // (RFC 3261 §16); the first branch to reach a 2xx response wins and the others
 // are CANCELled.
 func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptions) (*OutboundCall, error) {
+	call, err := e.invite(ctx, recipient, opts)
+	if err == nil {
+		return call, nil
+	}
+	if headers, minSE, ok := raiseSessionExpires(err, opts.Headers); ok {
+		e.log.Info("422 Session Interval Too Small, retrying with the peer's Min-SE", "recipient", recipient.String(), "min_se", minSE)
+		opts.Headers = headers
+		return e.invite(ctx, recipient, opts)
+	}
+	return nil, err
+}
+
+func (e *Engine) invite(ctx context.Context, recipient sip.Uri, opts InviteOptions) (*OutboundCall, error) {
 	if len(opts.ForkTargets) > 1 {
 		return e.inviteFork(ctx, recipient, opts)
 	}
@@ -1495,6 +1542,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		AMRWBOctetAligned: e.amrwbOctetAligned,
 		AMRNBOctetAligned: e.amrnbOctetAligned,
 		Crypto:            offerCrypto,
+		Origin:            NewSDPOrigin(),
 	}
 	extraSess, offered, oerr := e.buildOfferStreams(&cfg, rtpSess, codecs, opts.Streams)
 	if oerr != nil {
@@ -1597,8 +1645,12 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		}
 	}
 
+	contactHost := ""
 	if localPeer {
-		req.AppendHeader(e.contactWithHost(localIP))
+		contactHost = localIP
+	}
+	if c := e.outboundContact(req, contactHost); c != nil {
+		req.AppendHeader(c)
 	}
 
 	e.logSIPMessage("outbound", req)
@@ -1659,7 +1711,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		e.logSIPMessage("inbound", ds.InviteResponse)
 	}
 
-	// Send ACK
+	adoptRemoteTargetTransport(ds)
 	if err := ds.Ack(ctx); err != nil {
 		return nil, fmt.Errorf("ack: %w", err)
 	}
@@ -1736,6 +1788,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		TextRTPSess:    textRtpSess,
 		SessionTimer:   sessionTimer,
 		LocalIP:        localIP,
+		Origin:         cfg.Origin,
 	}, nil
 }
 

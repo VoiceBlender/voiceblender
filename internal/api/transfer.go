@@ -289,7 +289,11 @@ func (s *Server) HandleIncomingRefer(callID, target string, replaces *sipmod.Rep
 			ReplacesCallID: replacesCallID,
 			Declined:       false,
 		})
-		go s.originateForRefer(sl, target, replaces)
+		var referToHeaders []sip.Header
+		if h := req.GetHeader("Refer-To"); h != nil {
+			referToHeaders = sipmod.ReferToHeaders(h.Value())
+		}
+		go s.originateForRefer(sl, target, replaces, referToHeaders)
 		return
 	}
 
@@ -361,8 +365,9 @@ func (s *Server) referIdentity(referrer *leg.SIPLeg) string {
 	}
 }
 
-// originateForRefer dials the REFER target and NOTIFYs sipfrag back to referrer.
-func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces *sipmod.ReplacesParams) {
+// originateForRefer dials the REFER target and NOTIFYs sipfrag back to
+// referrer. headers are the ones the Refer-To URI embedded for the target.
+func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces *sipmod.ReplacesParams, headers []sip.Header) {
 	recipient := sip.Uri{}
 	if err := sip.ParseUri(target, &recipient); err != nil {
 		s.notifyAndFail(referrer, 400, "Bad Refer-To URI")
@@ -393,6 +398,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	newLeg.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
 	newLeg.SetTrunkID(trunkID)
 	newLeg.SetSRTPMode(inviteOpts.SRTPMode)
+	inviteOpts.Headers = append(inviteOpts.Headers, headers...)
 	if replaces != nil {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Replaces", replaces.String()))
 	}

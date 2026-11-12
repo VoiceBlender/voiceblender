@@ -75,6 +75,10 @@ type SDPConfig struct {
 	Crypto []SDESCrypto
 	Proto  []string
 
+	// Origin keeps the o= line stable across the SDPs of one session. Nil
+	// gives every SDP a fresh session id, which is only right for a one-off.
+	Origin *SDPOrigin
+
 	// Streams, when non-empty, replaces the single audio section the generators
 	// would otherwise derive from RTPPort/Codecs/AMR*/DTMF*. Sections are
 	// emitted in slice order; a zero Port rejects one per RFC 3264 §6. The
@@ -735,8 +739,7 @@ func GenerateOffer(cfg SDPConfig) []byte {
 		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
 	}
 
-	b, _ := sd.Marshal()
-	return b
+	return cfg.Origin.stamp(sd)
 }
 
 // GenerateAnswer builds an SDP answer with a single selected codec.
@@ -756,8 +759,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 		sd.MediaDescriptions = append(sd.MediaDescriptions, rejectedTextSection(cfg))
 	}
 
-	b, _ := sd.Marshal()
-	return b
+	return cfg.Origin.stamp(sd)
 }
 
 // ParseSDP parses a remote SDP body and extracts media parameters.
@@ -1030,8 +1032,7 @@ func GenerateReInviteSDP(cfg SDPConfig, selected codec.CodecType, selectedPT uin
 		sd.MediaDescriptions = append(sd.MediaDescriptions, textMD)
 	}
 
-	b, _ := sd.Marshal()
-	return b
+	return cfg.Origin.stamp(sd)
 }
 
 // NegotiateCodec finds the first codec in the remote SDP that is also in the supported list.
