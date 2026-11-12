@@ -96,6 +96,11 @@ type Participant struct {
 	shortReads atomic.Uint64
 	dropped    atomic.Uint64 // drop-oldest on a full queue
 
+	// concealGaps has the mix tick conceal an empty queue. See MarkConcealGaps.
+	concealGaps  atomic.Bool
+	concealStale atomic.Int32
+	conceal      gapConcealer
+
 	// Muted prevents this participant's audio from contributing to the mix
 	// and suppresses speaking events. Lock-free via atomic.
 	Muted atomic.Bool
@@ -446,6 +451,11 @@ func (m *Mixer) AddParticipant(id string, reader io.Reader, writer io.Writer) *P
 // mixer's panic path leaves it alone. See ownerClosesEgress.
 func (p *Participant) MarkOwnerClosesEgress() {
 	p.ownerClosesEgress.Store(true)
+}
+
+// Queued is the number of this participant's frames waiting for a mix tick.
+func (p *Participant) Queued() int {
+	return len(p.incoming)
 }
 
 // MarkMixerClocked makes the mixer this source's clock. See mixerClocked.
@@ -901,8 +911,12 @@ func (m *Mixer) mixTick() {
 		select {
 		case raw = <-p.incoming:
 		default:
-			raw = make([]byte, m.frameSizeBytes) // silence
 			p.starved.Add(1)
+		}
+		if p.concealGaps.Load() {
+			raw = p.conceal.frame(raw, m.sampleRate, m.frameSizeBytes, int(p.concealStale.Load()))
+		} else if raw == nil {
+			raw = make([]byte, m.frameSizeBytes) // silence
 		}
 		// Write raw PCM to per-participant tap (for STT) before conversion.
 		// Tap still receives audio even when muted (recording/STT of own audio).

@@ -227,7 +227,7 @@ Examples:
 "amd": { "greeting_duration": 2000, "beep_timeout": 8000 }  // custom thresholds
 ```
 
-**Jitter Buffer:** The SIP ingress jitter buffer absorbs variation in RTP packet arrival times. When enabled, packets are reordered by sequence number and released to the decoder at a fixed 20 ms cadence; late packets that miss their slot are replaced with silence. The buffer adds latency equal to its target depth, so it is **off by default** — turn it on only when network jitter is a real concern (PSTN trunks, mobile carriers, satellite links), not for latency-sensitive voice-agent legs.
+**Jitter Buffer:** The SIP ingress jitter buffer absorbs variation in RTP packet arrival times. When enabled, packets are reordered by sequence number and released at a fixed 20 ms cadence; a slot with no packet is concealed on PCMU, PCMA and Opus legs (see below) and is silence on the other codecs. The buffer adds latency equal to its target depth, so it is **off by default** — turn it on only when network jitter is a real concern (PSTN trunks, mobile carriers, satellite links), not for latency-sensitive voice-agent legs.
 
 Configured server-wide:
 
@@ -235,6 +235,15 @@ Configured server-wide:
 - `SIP_JITTER_BUFFER_MAX_MS` — queue cap in ms (default `300`). Frames beyond this are dropped oldest-first to catch up after a stall.
 
 WebRTC legs are unaffected — pion/webrtc provides its own jitter buffer.
+
+**Packet loss concealment:** SIP legs on PCMU, PCMA and Opus conceal lost RTP packets instead of leaving a hole in the audio. There is no setting, and a stream with no loss is not changed.
+
+- **PCMU and PCMA** repeat the last pitch period of the signal, after ITU-T G.711 Appendix I, with a cross-fade at both edges of the gap and no added delay. The level falls from 10 ms and reaches silence at 60 ms, so a long gap does not buzz.
+- **Opus** uses the decoder's own concealment, and rebuilds the lost frame from in-band FEC when the packet after it carries any. Both run when that packet arrives, for a hole of up to three packets.
+- **With the jitter buffer on**, the listener hears no gap. A missing PCMU or PCMA frame is concealed when its turn to play comes. A missing Opus frame is concealed or rebuilt when the next packet arrives and takes the lost packet's place in the buffer, so an Opus packet that arrives after its successor is dropped. A tick with nothing to play (a hole longer than the buffer, an underrun, a stream that stops) is concealed by the G.711 method on the decoded audio, for either codec: the audio fades out over 60 ms instead of cutting to silence, and the first frame after the pause is not touched.
+- **With the jitter buffer off**, a lost packet never makes the leg's audio later. In a room, the mixer conceals a tick for which it has no frame of the leg's, by the G.711 method on the decoded audio. The leg learns of a lost packet when the next one arrives, for a hole of up to three packets. If a frame of the leg's is still waiting to be played at that point, the lost frame's tick is still to come, so the leg fills the hole and the delay does not change. If none is waiting, the leg passes over the hole: the frames either side are joined with a 4 ms cross-fade, and the delay stays the same or falls by 20 ms for each frame that was waiting before the loss. Taps on the leg itself (a recording of the leg alone, AMD, SIPREC, speaking detection) get the leg's stream, without the mixer's concealment. A packet that is late, not lost, is concealed by the mixer and then played, which leaves the leg 20 ms later; a later lost packet takes that back. Outside a room the leg fills every hole of up to three packets.
+
+AMR-WB and AMR-NB keep their decoder's own concealment, which runs with the jitter buffer off only and fills every hole it sees, as before. G.722 is not concealed.
 
 **WebSocket playout buffer:** WebSocket legs and room WebSocket participants get a simpler mechanism — a WebSocket delivers in order, so the buffer is only a playout lead that absorbs a producer running late against the mixer's 20 ms tick. The lead is rebuilt at the start of every talkspurt (after 200 ms with nothing sent), so it works with producers that go silent between utterances. Send audio steadily, about one frame per 20 ms, rather than in bursts. Off by default; it adds latency equal to its depth, and `40`–`60` ms is typical.
 

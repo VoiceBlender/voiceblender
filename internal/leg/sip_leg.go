@@ -1005,24 +1005,22 @@ func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 }
 
 // popLoop drains the jitter buffer at a fixed 20 ms cadence and pushes the
-// resulting PCM frame (or silence on underrun) into inFrames. Runs only
-// when an ingress jitter buffer is enabled; otherwise readLoop pushes
-// directly.
+// resulting PCM frame (or concealment, then silence, on underrun) into
+// inFrames. Runs only when an ingress jitter buffer is enabled; otherwise
+// readLoop pushes directly.
 func (l *SIPLeg) popLoop(s *mediaStream) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	var plc playoutConcealer
 	for {
 		select {
 		case <-l.ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		pcm, ok := s.jb.Pop()
-		if !ok {
-			// Warm-up or underrun — push a silence frame so the mixer's
-			// downstream pull still finds something at this tick.
-			pcm = make([]byte, s.live().pcmFrameBytes)
-		}
+		// On warm-up or underrun pop still returns a frame, concealed or
+		// silent, so the mixer's downstream pull finds something at this tick.
+		pcm := plc.pop(s)
 		select {
 		case s.inFrames <- pcm:
 		default:
@@ -1109,14 +1107,15 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 	// the decoded samples.
 	pkt := &rtp.Packet{}
 	var decoded []int16
-	// The gap filler follows the live decoder; it runs only without a jitter
-	// buffer, which orders by sequence number and has no slot for a frame
-	// that never had a packet.
+	// The gap filler follows the live decoder. A jitter buffer orders by
+	// sequence number and has no slot for a frame that never had a packet, so
+	// with one the filler runs for Opus only: its decoder must be told of a
+	// loss, and a lost packet does have a slot.
 	var (
 		gapDec codec.Decoder
 		gaps   *gapFiller
 	)
-	emit := func(samples []int16) { l.deliverInbound(s, 0, samples) }
+	emit := func(seq uint16, samples []int16) { l.deliverInbound(s, seq, samples) }
 	lastRead := time.Now()
 	for {
 		// Set read deadline for RTP timeout detection.
@@ -1241,11 +1240,16 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 
 		if lc.decoder != gapDec {
 			gapDec, gaps = lc.decoder, nil
-			if s.jb == nil {
+			if s.jb == nil || lc.codecType == codec.CodecOpus {
 				gaps = newGapFiller(lc.decoder, lc.samplesPerFrame)
 			}
+			// A jitter buffer has a slot for every fill. A mixer has none
+			// for one that comes after its tick.
+			if gaps != nil && s.jb == nil && concealedAtPlayout(lc.codecType) {
+				gaps.queued = s.playoutQueued
+			}
 		}
-		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, emit) {
+		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, pkt.SequenceNumber, pkt.Payload, emit) {
 			continue
 		}
 
@@ -1266,6 +1270,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		decoded = samples
 		if gaps != nil {
 			gaps.after(pkt.SSRC, pkt.Timestamp, len(samples), time.Now())
+			gaps.joinTo(samples)
 		}
 		l.deliverInbound(s, pkt.SequenceNumber, samples)
 	}

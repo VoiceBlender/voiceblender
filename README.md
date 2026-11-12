@@ -15,6 +15,7 @@ A Go voice engine that connects SIP, WebRTC, WhatsApp, WebSocket and other call 
 - **RTCP** -- sender/receiver reports on SIP media, with the peer's view of loss, jitter and round-trip time in call quality
 - **SIP trunks & registrations** -- register to upstream PBXs/carriers or peer with them by static IP, and act as a registrar for SIP clients
 - **Codecs** -- PCMU, PCMA, G.722, Opus, AMR-WB, AMR-NB (with DTX and comfort noise), with mid-call codec renegotiation
+- **Packet loss concealment** -- lost RTP packets on PCMU, PCMA and Opus SIP legs are concealed, not played as silence
 - **WebRTC** -- browser voice via SDP offer/answer with trickle ICE and ICE restarts
 - **WhatsApp Business Calling** -- inbound and outbound WhatsApp voice calls
 - **WebSocket legs** -- raw PCM over WebSocket for bots and custom clients
