@@ -1883,7 +1883,7 @@ frames away from the mixer that is already carrying them.
 
 ### DELETE /v1/legs/{id}/stt
 
-Stop speech-to-text on a leg.
+Stop speech-to-text on a leg. STT can be started again on the leg, with the same or another provider, as soon as this call returns.
 
 **Response:** `200 OK`
 

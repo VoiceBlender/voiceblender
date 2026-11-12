@@ -20,7 +20,8 @@ import (
 // swapBot stands in for a Pipecat bot. It holds every WebSocket open and
 // records, in arrival order, whether the client has closed it.
 type swapBot struct {
-	url string
+	url     string
+	httpURL string
 
 	mu     sync.Mutex
 	conns  []net.Conn
@@ -51,6 +52,7 @@ func newSwapBot(t *testing.T) *swapBot {
 		b.mu.Unlock()
 	}))
 	t.Cleanup(srv.Close)
+	b.httpURL = srv.URL
 	b.url = "ws" + strings.TrimPrefix(srv.URL, "http")
 	return b
 }
