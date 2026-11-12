@@ -96,7 +96,7 @@ func TestStopLegRecording_DiscardedCaptureReportsNoFile(t *testing.T) {
 	})
 	defer unsub()
 
-	loc, ok := s.stopLegRecording(legID)
+	loc, ok := s.stopLegRecording(legID, nil)
 	if !ok {
 		t.Fatal("stopLegRecording reported no recording, though one was in progress")
 	}
