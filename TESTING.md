@@ -780,7 +780,8 @@ G722, OPUS). A case the endpoint cannot perform is skipped, not failed.
 | `TestInterop_SessionTimer_Survives` | A 120 s session interval is refreshed in both directions. Skipped with `-short`. |
 | `TestInterop_SessionTimer_422Retry` | A 422 Session Interval Too Small is retried with the peer's Min-SE (RFC 4028 §6). |
 | `TestInterop_SRTP*` | SDES-SRTP each way with audio and DTMF; kept across hold; refused when the peer forbids it. |
-| `TestInterop_TLS_VBToPeer` | Outbound call over TLS, with and without SRTP. |
+| `TestInterop_TLS_VBToPeer` / `_PeerToVB` | Calls over TLS in each direction, with and without SRTP, against an instance with a TLS listener (`newInteropVBTLS`). |
+| `TestInterop_TLS_RemoteTargetTransport` | A TLS call answered with a `;transport=udp` Contact sends its ACK and BYE over UDP, as the Contact says. |
 | `TestInterop_Transfer_*` | REFER from the peer (auto-dial, app accept, app decline, consult timeout, Refer-To URI headers, BYE on the transferred leg) and from VoiceBlender. |
 | `TestInterop_Register_*` | The peer registers to VoiceBlender, is reachable at its AOR, CANCEL routes to the contact, unregister, refresh, digest challenge. |
 | `TestInterop_Auth_*` | Digest challenge on INVITE in each direction. |

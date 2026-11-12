@@ -256,6 +256,41 @@ func (e *Engine) SendNotifySipfrag(ctx context.Context, dialog interface{}, stat
 	}
 }
 
+// ReferToHeaders returns the headers embedded in a Refer-To URI that belong
+// in the INVITE to the transfer target (RFC 3515 §2.1, RFC 3261 §19.1.5).
+// Replaces, the headers a URI may not set and malformed pairs are left out.
+func ReferToHeaders(value string) []sip.Header {
+	v := strings.TrimSpace(value)
+	v = strings.TrimPrefix(v, "<")
+	if i := strings.Index(v, ">"); i >= 0 {
+		v = v[:i]
+	}
+	_, raw, ok := strings.Cut(v, "?")
+	if !ok {
+		return nil
+	}
+	var out []sip.Header
+	seen := map[string]bool{}
+	for _, pair := range strings.Split(raw, "&") {
+		k, val, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		name, err1 := url.QueryUnescape(k)
+		value, err2 := url.QueryUnescape(val)
+		if err1 != nil || err2 != nil || !IsHeaderToken(name) || hasControlChar(value) {
+			continue
+		}
+		lower := strings.ToLower(name)
+		if _, denied := referToDeniedHeaders[lower]; denied || seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		out = append(out, sip.NewHeader(name, value))
+	}
+	return out
+}
+
 // ParseReferTo extracts the bare URI and (optional) Replaces from a Refer-To.
 func ParseReferTo(value string) (string, *ReplacesParams, error) {
 	v := strings.TrimSpace(value)

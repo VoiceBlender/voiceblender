@@ -402,11 +402,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		go func() {
-			if err := sipLeg.Hold(context.Background()); err != nil {
-				s.publishCommandFailed(sipLeg, "hold", err)
-			}
-		}()
+		sipLeg.SetHoldAsync(true, func(err error) { s.publishCommandFailed(sipLeg, "hold", err) })
 		s.wsCommandResult(lw, msg, map[string]string{"status": "holding"})
 	case "unhold_leg":
 		var p idPayload
@@ -418,11 +414,7 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 			s.wsCommandError(lw, msg, err)
 			return
 		}
-		go func() {
-			if err := sipLeg.Unhold(context.Background()); err != nil {
-				s.publishCommandFailed(sipLeg, "unhold", err)
-			}
-		}()
+		sipLeg.SetHoldAsync(false, func(err error) { s.publishCommandFailed(sipLeg, "unhold", err) })
 		s.wsCommandResult(lw, msg, map[string]string{"status": "unholding"})
 
 	// ── DTMF ────────────────────────────────────────────────────────

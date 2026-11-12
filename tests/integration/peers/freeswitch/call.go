@@ -223,7 +223,23 @@ func (c *call) Renegotiate(codec string, ptime int) error {
 // SRTP forbidden, then hangs up on its own answer.
 func (c *call) DropSRTP() error { return peers.ErrUnsupported }
 
-func (c *call) Transport() string { return strings.ToLower(c.Var("sip_via_protocol")) }
+// Transport reads the Via protocol of a received INVITE; a call FreeSWITCH
+// placed only records its destination URI.
+func (c *call) Transport() string {
+	if v := c.Var("sip_via_protocol"); v != "" {
+		return strings.ToLower(v)
+	}
+	dest := strings.ToLower(c.Var("sip_destination_url"))
+	switch {
+	case dest == "":
+		return ""
+	case strings.HasPrefix(dest, "sips:") || strings.Contains(dest, "transport=tls"):
+		return "tls"
+	case strings.Contains(dest, "transport=tcp"):
+		return "tcp"
+	}
+	return "udp"
+}
 
 // Refer runs in the background: uuid_deflect blocks until the REFER
 // transaction ends, which a peer may hold open while it decides.

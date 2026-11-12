@@ -347,6 +347,7 @@ func (l *SIPLeg) negotiateInboundAnswer(preferred codec.CodecType) ([]byte, erro
 	}
 
 	cfg := sipmod.SDPConfig{
+		Origin:  l.origin(),
 		LocalIP: l.localIP,
 		Codecs:  l.supportedCodecs,
 		Streams: sections,

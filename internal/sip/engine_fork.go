@@ -73,7 +73,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	// CANCEL / ACK requests sipgo builds from the original INVITE route
 	// to the bound socket even though sipgo's SetDestination is not
 	// always preserved through dialog state.
-	buildReq := func(target ForkTarget) *sip.Request {
+	buildReq := func(target ForkTarget) (*sip.Request, *SDPOrigin) {
 		host, port := splitHostPort(target.Socket)
 		branchURI := sip.Uri{
 			Scheme: recipient.Scheme,
@@ -86,12 +86,14 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		if localPeer {
 			req.AppendHeader(e.contactWithHost(localIP))
 		}
+		origin := NewSDPOrigin()
 		req.SetBody(GenerateOffer(SDPConfig{
 			LocalIP:           localIP,
 			RTPPort:           rtpSess.LocalPort(),
 			Codecs:            codecs,
 			AMRWBOctetAligned: e.amrwbOctetAligned,
 			Crypto:            offerCrypto,
+			Origin:            origin,
 		}))
 		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 		req.AppendHeader(e.AllowHeader())
@@ -105,7 +107,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		for _, h := range opts.Headers {
 			req.AppendHeader(h)
 		}
-		return req
+		return req, origin
 	}
 
 	branchCtx, branchCancel := context.WithCancelCause(ctx)
@@ -114,6 +116,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		winnerMu       sync.Mutex
 		winner         *sipgo.DialogClientSession
 		winnerIP       string
+		winnerOrigin   *SDPOrigin
 		earlyMediaOnce sync.Once
 	)
 
@@ -127,7 +130,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	for i, target := range opts.ForkTargets {
 		i, target := i, target
 		go func() {
-			req := buildReq(target)
+			req, origin := buildReq(target)
 			if target.Transport != "" {
 				req.SetTransport(strings.ToUpper(target.Transport))
 			}
@@ -185,6 +188,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 			if winner == nil {
 				winner = ds
 				winnerIP, _ = branchIP(target)
+				winnerOrigin = origin
 				winnerMu.Unlock()
 				// Plain cancel (no WaitAnswerForceCancelErr cause) so sipgo
 				// actually sends CANCEL on the losing branches instead of
@@ -231,6 +235,7 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 	}
 
 	ds := winner
+	adoptRemoteTargetTransport(ds)
 	if err := ds.Ack(ctx); err != nil {
 		ds.Bye(context.Background())
 		rtpSess.Close()
@@ -262,5 +267,6 @@ func (e *Engine) inviteFork(ctx context.Context, recipient sip.Uri, opts InviteO
 		RemoteSDP: remoteSDP,
 		RTPSess:   rtpSess,
 		LocalIP:   winnerIP,
+		Origin:    winnerOrigin,
 	}, nil
 }

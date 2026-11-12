@@ -710,11 +710,7 @@ func (s *Server) holdLeg(w http.ResponseWriter, r *http.Request) {
 		handleAPIError(w, err)
 		return
 	}
-	go func() {
-		if err := sipLeg.Hold(context.Background()); err != nil {
-			s.publishCommandFailed(sipLeg, "hold", err)
-		}
-	}()
+	sipLeg.SetHoldAsync(true, func(err error) { s.publishCommandFailed(sipLeg, "hold", err) })
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "holding"})
 }
 
@@ -833,11 +829,7 @@ func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
 		handleAPIError(w, err)
 		return
 	}
-	go func() {
-		if err := sipLeg.Unhold(context.Background()); err != nil {
-			s.publishCommandFailed(sipLeg, "unhold", err)
-		}
-	}()
+	sipLeg.SetHoldAsync(false, func(err error) { s.publishCommandFailed(sipLeg, "unhold", err) })
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "unholding"})
 }
 
