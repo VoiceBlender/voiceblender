@@ -244,14 +244,20 @@ func (s *Server) doStartSTTLeg(legID string, req STTRequest) (*STTStartLegResult
 	go func() {
 		err := transcriber.Start(l.Context(), reader, apiKey, opts, nil)
 		s.Log.Info("stt transcriber exited", "leg_id", id, "error", err)
+		// Stop does not wait for this exit, so a later transcriber may own
+		// the entry and the tap by now. The lock covers the tap so that one
+		// cannot start in between.
+		legTranscribers.Lock()
+		defer legTranscribers.Unlock()
+		if legTranscribers.m[id] != transcriber {
+			return
+		}
 		if roomID := l.RoomID(); roomID != "" {
 			if rm, ok := s.RoomMgr.Get(roomID); ok {
 				rm.Mixer().ClearParticipantTap(id)
 			}
 		}
-		legTranscribers.Lock()
 		delete(legTranscribers.m, id)
-		legTranscribers.Unlock()
 	}()
 
 	return &STTStartLegResult{Status: "stt_started", LegID: id}, nil
