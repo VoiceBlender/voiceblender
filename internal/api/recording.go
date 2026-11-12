@@ -683,30 +683,22 @@ func (s *Server) resumeRecordLeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// roomRecordSource is one audio source in a room: the mixer participant to tap
-// and a context to hang the capture on.
-type roomRecordSource struct {
-	participantID string
-	ctx           context.Context
-}
-
-// roomRecordSources lists every audio source in a room, of both kinds: a
-// recording session's room holds one stream participant per party and no leg
-// participant at all.
-func (s *Server) roomRecordSources(rm *room.Room, roomID string) []roomRecordSource {
-	var out []roomRecordSource
+// roomRecordSources lists the mixer participant ID of every audio source in a
+// room, of both kinds: a recording session's room holds one stream participant
+// per party and no leg participant at all.
+func (s *Server) roomRecordSources(rm *room.Room, roomID string) []string {
+	var out []string
 	for _, l := range rm.Participants() {
-		out = append(out, roomRecordSource{participantID: l.ID(), ctx: l.Context()})
+		out = append(out, l.ID())
 	}
 	for _, sp := range rm.StreamParticipants() {
-		l, ok := s.LegMgr.Get(sp.LegID)
-		if !ok {
-			// The stream outlived its leg; there is nothing to hang a capture on.
+		if _, ok := s.LegMgr.Get(sp.LegID); !ok {
+			// The stream outlived its leg, so no audio will arrive on it.
 			s.Log.Warn("room recording: stream participant has no leg",
 				"room_id", roomID, "participant_id", sp.ParticipantID, "leg_id", sp.LegID)
 			continue
 		}
-		out = append(out, roomRecordSource{participantID: sp.ParticipantID, ctx: l.Context()})
+		out = append(out, sp.ParticipantID)
 	}
 	return out
 }
@@ -734,7 +726,9 @@ func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req Recor
 	rm.Mixer().SetTap(pw)
 
 	rec := recording.NewRecorder(s.Log)
-	fpath, err := rec.StartAt(sources[0].ctx, pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
+	// Not a participant's context: the mix must outlive any one leg. The room
+	// recording's own stop ends it.
+	fpath, err := rec.StartAt(context.Background(), pr, s.Config.RecordingDir, uint32(rm.Mixer().SampleRate()), basename)
 	if err != nil {
 		rm.Mixer().SetTap(nil)
 		pw.Close()
@@ -771,8 +765,8 @@ func (s *Server) doStartRecordRoom(ctx context.Context, roomID string, req Recor
 		roomMultiChannel.m[id] = mc
 		roomMultiChannel.Unlock()
 		mix := rm.Mixer()
-		for _, src := range sources {
-			mc.startLeg(src.participantID, mix, s.Config.RecordingDir)
+		for _, participantID := range sources {
+			mc.startLeg(participantID, mix, s.Config.RecordingDir)
 		}
 	}
 
