@@ -70,7 +70,7 @@ func twoPartyMetadata(t *testing.T) []byte {
 // dialSIPREC originates a recording session from `from` to `to`, the way an SBC
 // would: two sendonly m=audio sections plus the rs-metadata document, with
 // Require: siprec and a +sip.src Contact feature tag.
-func dialSIPREC(t *testing.T, from, to *testInstance, metadata []byte) (*sipmod.OutboundCall, error) {
+func dialSIPREC(t *testing.T, from, to *testInstance, metadata []byte, extra ...sip.Header) (*sipmod.OutboundCall, error) {
 	t.Helper()
 	// A SIPREC INVITE carries SDP plus the whole metadata document, past the
 	// 1300 bytes RFC 3261 §18.1.1 allows on UDP, so it goes over TCP — as it
@@ -87,10 +87,10 @@ func dialSIPREC(t *testing.T, from, to *testInstance, metadata []byte) (*sipmod.
 			{Direction: sipmod.DirSendOnly, Label: "1", Content: "main"},
 			{Direction: sipmod.DirSendOnly, Label: "2", Content: "main"},
 		},
-		Headers: []sip.Header{
+		Headers: append([]sip.Header{
 			sip.NewHeader("Require", sipmod.OptionTagSIPREC),
 			sip.NewHeader("Contact", fmt.Sprintf("<sip:src@127.0.0.1:%d>;+sip.src", from.sipPort)),
-		},
+		}, extra...),
 		BodyParts: []sipmod.BodyPart{{
 			ContentType: sipmod.ContentTypeRSMetadata,
 			Disposition: "recording-session;handling=required",

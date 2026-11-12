@@ -666,9 +666,14 @@ func (m *Manager) RemoveLeg(roomID, legID string) error {
 		return fmt.Errorf("room %s not found", roomID)
 	}
 
-	r.RemoveLeg(legID)
+	// The participant is the first source for the app: a leg being deleted
+	// has already left the leg manager.
+	l, ok := r.RemoveLeg(legID)
+	if !ok {
+		l, ok = m.legMgr.Get(legID)
+	}
 	legAppID := ""
-	if l, ok := m.legMgr.Get(legID); ok {
+	if ok {
 		legAppID = l.AppID()
 	}
 	m.bus.Publish(events.LegLeftRoom, &events.LegLeftRoomData{

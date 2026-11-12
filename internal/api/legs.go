@@ -859,7 +859,7 @@ func (s *Server) cleanupLeg(l leg.Leg) {
 
 	s.stopSpeakingDetector(l.ID())
 	s.cleanupLegAgent(l.ID(), true)
-	s.stopLegRecording(l.ID())
+	s.stopLegRecording(l.ID(), l)
 	s.cleanupSIPRECSession(l)
 	s.cleanupSIPRECSRC(l)
 	s.pendingRooms.clear(l.ID())

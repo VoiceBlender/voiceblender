@@ -238,8 +238,8 @@ func (s *Server) startSIPRECLegRecording(l leg.Leg, backend storage.Backend) (*R
 
 // stopSIPRECLegRecording stops and merges a recording session's capture. The
 // bool reports whether this leg had one, so the ordinary stop path can carry on
-// when it did not.
-func (s *Server) stopSIPRECLegRecording(legID string) (string, bool) {
+// when it did not. l may be nil, as for stopLegRecording.
+func (s *Server) stopSIPRECLegRecording(legID string, l leg.Leg) (string, bool) {
 	s.siprecMu.Lock()
 	sr, ok := s.siprecRecordings[legID]
 	delete(s.siprecRecordings, legID)
@@ -250,7 +250,7 @@ func (s *Server) stopSIPRECLegRecording(legID string) (string, bool) {
 
 	var sl *leg.SIPLeg
 	appID := ""
-	if l, lOK := s.LegMgr.Get(legID); lOK {
+	if l != nil {
 		appID = l.AppID()
 		sl, _ = l.(*leg.SIPLeg)
 	}

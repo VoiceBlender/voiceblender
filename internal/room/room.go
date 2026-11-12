@@ -356,16 +356,20 @@ func (r *Room) DetachLeg(legID string) (leg.Leg, bool) {
 	return l, true
 }
 
-func (r *Room) RemoveLeg(legID string) {
+// RemoveLeg returns the leg it removed; ok is false if legID was not a
+// participant.
+func (r *Room) RemoveLeg(legID string) (leg.Leg, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if l, ok := r.participants[legID]; ok {
+	l, ok := r.participants[legID]
+	if ok {
 		r.removeLegLocked(l)
 	}
 
 	r.applyRoutingLocked()
 	r.syncMixerLocked()
+	return l, ok
 }
 
 func (r *Room) removeLegLocked(l leg.Leg) {

@@ -504,8 +504,11 @@ func (s *Server) recordLeg(w http.ResponseWriter, r *http.Request) {
 // mixer taps and pipes, and emits recording.finished. Called from both the
 // REST endpoint and cleanupLeg (on disconnect). Returns the file path and
 // true if a recording was stopped.
-func (s *Server) stopLegRecording(legID string) (string, bool) {
-	if loc, ok := s.stopSIPRECLegRecording(legID); ok {
+//
+// l is the leg, or nil if the caller has none. It is passed in, not looked up:
+// cleanupLeg can run after the leg has left the manager.
+func (s *Server) stopLegRecording(legID string, l leg.Leg) (string, bool) {
+	if loc, ok := s.stopSIPRECLegRecording(legID, l); ok {
 		return loc, true
 	}
 
@@ -533,14 +536,10 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 				mix.ClearParticipantTap(legID)
 				mix.ClearParticipantOutTap(legID)
 			}
-		} else {
+		} else if sipLeg, ok := l.(*leg.SIPLeg); ok {
 			// Standalone SIP leg: clear leg-level taps.
-			if l, lOK := s.LegMgr.Get(legID); lOK {
-				if sipLeg, ok := l.(*leg.SIPLeg); ok {
-					sipLeg.ClearInTap()
-					sipLeg.ClearOutTap()
-				}
-			}
+			sipLeg.ClearInTap()
+			sipLeg.ClearOutTap()
 		}
 		// Close pipes to unblock the recording goroutine so enc.Close()
 		// can finalize the WAV header.
@@ -581,8 +580,8 @@ func (s *Server) stopLegRecording(legID string) (string, bool) {
 	}
 
 	legAppID := ""
-	if ll, ok := s.LegMgr.Get(legID); ok {
-		legAppID = ll.AppID()
+	if l != nil {
+		legAppID = l.AppID()
 	}
 	s.Bus.Publish(events.RecordingFinished, &events.RecordingFinishedData{
 		LegRoomScope: events.LegRoomScope{LegID: legID, AppID: legAppID},
@@ -607,7 +606,8 @@ type RecordingPauseResumeResult struct {
 }
 
 func (s *Server) doStopRecordLeg(legID string) (*RecordingStopLegResult, error) {
-	fpath, ok := s.stopLegRecording(legID)
+	l, _ := s.LegMgr.Get(legID)
+	fpath, ok := s.stopLegRecording(legID, l)
 	if !ok {
 		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
 	}
