@@ -511,3 +511,41 @@ func TestLocalStreams_TombstoneEchoesSRTPProfile(t *testing.T) {
 		t.Errorf("plain tombstone renders %v", p)
 	}
 }
+
+// A re-offer that repeats the keys reaches SetSRTP again. Past a sequence
+// wrap, an end that rebuilt its context would restart the rollover counter and
+// the two would stop authenticating each other.
+func TestRTPSession_SRTPRolloverSurvivesRepeatedKeys(t *testing.T) {
+	a, b := srtpPair(t, SuiteAES128CMSHA1_80, nil)
+	payload := bytes.Repeat([]byte{0x5A}, 160)
+	exchange := func(first, last uint16) {
+		t.Helper()
+		var pkt rtp.Packet
+		for seq := first; ; seq++ {
+			if err := a.WriteRTP(testPacket(seq, payload)); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.ReadRTPInto(&pkt); err != nil {
+				t.Fatalf("seq %d: %v", seq, err)
+			}
+			if pkt.SequenceNumber != seq || !bytes.Equal(pkt.Payload, payload) {
+				t.Fatalf("seq %d: got seq=%d payload len=%d", seq, pkt.SequenceNumber, len(pkt.Payload))
+			}
+			if seq == last {
+				return
+			}
+		}
+	}
+
+	exchange(65530, 5)
+
+	if err := a.SetSRTP(a.LocalCrypto(), b.LocalCrypto()); err != nil {
+		t.Fatal(err)
+	}
+	exchange(6, 10)
+
+	if err := b.SetSRTP(b.LocalCrypto(), a.LocalCrypto()); err != nil {
+		t.Fatal(err)
+	}
+	exchange(11, 15)
+}
