@@ -3177,6 +3177,8 @@ Events `tts.started` and `tts.finished` are emitted.
 
 Start recording the full room mix to a WAV file (16-bit, mono, at the room's configured sample rate).
 
+The recording belongs to the room, not to any participant. Legs can join, leave or hang up while it runs, and the mix carries on until it is stopped or the room has no participants left (see [Automatic Stop](#automatic-stop)).
+
 **Request:**
 
 ```json
