@@ -19,6 +19,9 @@ make lint-specs
 # whose recordings are from pixabay.com — see tests/data/noise/README.md)
 make gen-noisy-greetings          # NOISE_DIR=... to point elsewhere; .wav or .mp3
 
+# Interop tests against a real third-party SIP stack (FreeSWITCH in Docker)
+make test-interop
+
 # Benchmark (scaling + audio latency)
 go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
 
@@ -648,6 +651,7 @@ the kernel hands to an unrelated `:0` bind:
 | 8192-16383 | SIP ports, one per instance, checked free before use and only reused after the whole band |
 | 16384-28671 | RTP, one pool shared by every instance in the process |
 | 28672-32767 | `RTP_PORT_MIN`/`RTP_PORT_MAX` — pion's range for WebRTC/LiveKit/WhatsApp/MoQ legs |
+| 6000-8191 | Third-party endpoints of the [interop suite](#interop-tests-third-party-sip-endpoints), on the host network |
 
 Wiring lives in `tests/integration/ports_test.go`; new instance constructors
 must use `reserveSIPPort` and `testRTPAllocator` rather than binding `:0`.
@@ -679,6 +683,127 @@ go test -tags integration -v -timeout 120s -run TestLiveKit_ ./tests/integration
 ```
 
 The tests use `lkmedia.NewTransport` directly to act as a second LK client joining the same room — no separate LK client SDK or browser is required.
+
+## Interop Tests (third-party SIP endpoints)
+
+Every other SIP test runs VoiceBlender against another in-process VoiceBlender
+or a bare sipgo client, so both ends share one SIP/SDP/RTP implementation and
+a bug both sides agree on goes unnoticed. The interop suite puts a real,
+independent SIP stack on the far end — FreeSWITCH today — and checks
+signalling, audio (by tone frequency), DTMF, SRTP, transfers, registration
+and trunks in both call directions.
+
+The suite lives next to the integration tests but builds only with the extra
+`interop` tag, so `make test-integration` is unaffected and needs no Docker.
+
+### Requirements
+
+- Docker, and a host where `--network host` works (Linux). The endpoint binds
+  `127.0.0.1` alongside the in-process VoiceBlender instances.
+- Ports 6000-8191 free on `127.0.0.1`. FreeSWITCH uses 7021 (event socket),
+  7060 (UDP/TCP), 7061 (TLS), 7062 (digest-auth profile), 7063 (stoppable
+  profile for OPTIONS-ping tests) and 7100-7999 for RTP.
+- The first run pulls the pinned image (`safarov/freeswitch`, FreeSWITCH
+  1.11.3, pinned by digest).
+
+### Run
+
+```bash
+# Everything: peers unit tests, then the interop suite (~10 min)
+make test-interop
+
+# Skip the slow cases (session-timer expiry, registration refresh, 20 s continuity)
+go test -tags 'integration interop' -short -v -run '^TestInterop' ./tests/integration/
+
+# One test
+go test -tags 'integration interop' -v -run '^TestInterop_DTMF_RFC2833$' ./tests/integration/
+
+# Unit tests of the endpoint drivers (event socket parser, config rendering)
+go test ./tests/integration/peers/...
+```
+
+The harness starts the container on first use, once per `go test` run, and
+removes it in `TestMain`. Leftovers from an aborted run carry the
+`vb-interop` label and are replaced on the next run:
+
+```bash
+docker ps -a --filter label=vb-interop
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VB_INTEROP_PEERS` | `freeswitch` | Comma-separated endpoints to run every test against. |
+| `VB_INTEROP_FREESWITCH_IMAGE` | pinned `safarov/freeswitch` digest | Docker image to run instead. |
+| `VB_INTEROP_FREESWITCH_REUSE` | unset | Keep the container after the run and reuse it on the next one, as long as the rendered config is unchanged. Saves the startup when iterating. Config, recordings and logs live in `$TMPDIR/vb-interop-freeswitch/`. |
+| `VB_INTEROP_FREESWITCH_SIPTRACE` | unset | Log every SIP message FreeSWITCH sends and receives. |
+| `VB_INTEROP_FREESWITCH_LOGLEVEL` | `info` | FreeSWITCH log level (`debug` for media negotiation detail). |
+
+### Debugging a failure
+
+- The FreeSWITCH log is `log/freeswitch.log` under the config dir — keep it
+  with `VB_INTEROP_FREESWITCH_REUSE=1` and add `VB_INTEROP_FREESWITCH_SIPTRACE=1`
+  to see the wire.
+- A failed wait prints the channel's event history, e.g.
+  `waiting for unheld: ... (events: CHANNEL_CREATE,...,CHANNEL_HOLD)`.
+- With a reused container, `docker exec vb-interop-freeswitch fs_cli -H 127.0.0.1 -P 7021 -p ClueCon`
+  gives a FreeSWITCH console.
+
+### Interop test list
+
+Each test runs once per endpoint (`TestInterop_X/freeswitch`), and most once
+per call direction (`vb-dials`, `peer-dials`) and per codec (PCMU, PCMA,
+G722, OPUS). A case the endpoint cannot perform is skipped, not failed.
+
+| Test | Description |
+|------|-------------|
+| `TestInterop_PeerPortsOutsideHarnessBands` | The 6000-8191 peer band stays clear of the harness's SIP and RTP bands. |
+| `TestInterop_VBToPeer_VBHangsUp` / `_PeerHangsUp` | Answered call, BYE from each side; reasons and Q.850 causes on both ends. |
+| `TestInterop_VBToPeer_CancelWhileRinging` | VoiceBlender cancels; the peer sees ORIGINATOR_CANCEL. |
+| `TestInterop_VBToPeer_PeerRejects` | 486 / 603 / 404 map to busy / declined / not_found. |
+| `TestInterop_VBToPeer_RingTimeout` | `ring_timeout` expires and CANCELs the peer. |
+| `TestInterop_VBToPeer_EarlyMedia` | 183 with a tone reaches the leg in `early_media`, then the call is answered. |
+| `TestInterop_PeerToVB_*` | Answer through the API, hangup from each side, DELETE with a reason (486/603/480 on the wire), caller CANCEL. |
+| `TestInterop_Media_Codecs` | Each codec and direction: both ends run the codec, a tone arrives each way. |
+| `TestInterop_Media_WidebandEndToEnd` | A 5 kHz tone survives G722 and Opus in both directions (no hop through 8 kHz). |
+| `TestInterop_Media_EchoRoundTrip` | VoiceBlender's tone comes back through the peer's echo. |
+| `TestInterop_Media_Continuity` | 20 s of tone each way with no dropout in any 100 ms window. Skipped with `-short`. |
+| `TestInterop_DTMF_RFC2833` | `0123456789*#` each way, once and in order, per codec and direction. |
+| `TestInterop_CodecSelect_*` | Answering with each offered codec; 400 for a codec not offered. |
+| `TestInterop_CodecRenegotiation` | Peer re-INVITEs PCMU→G722→OPUS→PCMA→PCMU; both ends switch codec and rate, audio stays clean. |
+| `TestInterop_SDPOriginStableAcrossReOffers` | VoiceBlender keeps its `o=` session id and bumps the version across a re-negotiation (RFC 3264 §8). |
+| `TestInterop_CustomHeaders` | X- headers pass through in both directions. |
+| `TestInterop_Hold_PeerHolds` / `_VBHolds` | Hold and unhold from each side; events, `held` flag, audio afterwards. |
+| `TestInterop_Hold_VBUnholdWhileHoldPending` | An unhold accepted while the hold re-INVITE is outstanding still takes effect. |
+| `TestInterop_RTCP` / `_Disabled` | RTCP reports flow both ways; none from VoiceBlender with `SIP_RTCP` off. |
+| `TestInterop_SessionTimer_Survives` | A 120 s session interval is refreshed in both directions. Skipped with `-short`. |
+| `TestInterop_SessionTimer_422Retry` | A 422 Session Interval Too Small is retried with the peer's Min-SE (RFC 4028 §6). |
+| `TestInterop_SRTP*` | SDES-SRTP each way with audio and DTMF; kept across hold; refused when the peer forbids it. |
+| `TestInterop_TLS_VBToPeer` | Outbound call over TLS, with and without SRTP. |
+| `TestInterop_Transfer_*` | REFER from the peer (auto-dial, app accept, app decline, consult timeout, Refer-To URI headers, BYE on the transferred leg) and from VoiceBlender. |
+| `TestInterop_Register_*` | The peer registers to VoiceBlender, is reachable at its AOR, CANCEL routes to the contact, unregister, refresh, digest challenge. |
+| `TestInterop_Auth_*` | Digest challenge on INVITE in each direction. |
+| `TestInterop_Trunk_*` | `sip_register` trunk to the peer as registrar, wrong password, REFER through the trunk, `ip_ip` digest/inbound by socket and CIDR, OPTIONS ping down and up, SRTP-required trunk. |
+| `TestInterop_Room_*` | Three peer legs in a room hear each other but not themselves, across mixed codecs; the room recording carries every member. |
+| `TestInterop_Ptime` | 30 and 40 ms packetization each way. Skipped for FreeSWITCH, which only sends the ptime the remote advertises. |
+
+### Adding an endpoint
+
+Endpoints live under `tests/integration/peers/<name>/`:
+
+1. Implement `peers.Peer` and `peers.Call` (`tests/integration/peers/peer.go`).
+   Correlate calls VoiceBlender places by the `X-Interop-Tag` header.
+2. Declare what the endpoint can do in `Caps()`; tests skip the rest. Return
+   `peers.ErrUnsupported` from a `Call` method it cannot perform.
+3. Register it in an `init` function: `peers.Register("asterisk", start)`,
+   start it with `peers.Run` (host network, `vb-interop` label) and clean up in
+   `Close`.
+4. Give it its own ports inside 6000-8191 (FreeSWITCH holds 7021-7999).
+5. Blank-import the package in `tests/integration/interop_harness_test.go`
+   and run with `VB_INTEROP_PEERS=freeswitch,asterisk`.
+
+---
 
 ## AMD Accuracy Tests
 

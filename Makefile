@@ -1,4 +1,4 @@
-.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push moq-web-client
+.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-interop test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push moq-web-client
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
@@ -30,6 +30,13 @@ test: vet
 
 test-integration:
 	go test -tags integration -v -timeout 10m -skip TestConcurrentRoomsScale ./tests/integration/
+
+# Interop suite: VoiceBlender against third-party SIP endpoints run in docker
+# (FreeSWITCH by default; VB_INTEROP_PEERS selects others). Needs docker with
+# host networking. See TESTING.md.
+test-interop:
+	go test ./tests/integration/peers/... -count=1
+	go test -tags 'integration interop' -v -count=1 -timeout 30m -run '^TestInterop' ./tests/integration/
 
 test-benchmark:
 	go test -tags integration -v -timeout 300s -run TestConcurrentRoomsScale ./tests/integration/
