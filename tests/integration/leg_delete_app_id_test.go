@@ -215,3 +215,28 @@ func TestSIPREC_RecordingFinishedCarriesAppIDOnLegDelete(t *testing.T) {
 
 	assertFinishedCarriesApp(t, srs, legID, recAppID)
 }
+
+// The same leg delete takes the leg out of its room, and leg.left_room is
+// filled the same way.
+func TestLegLeftRoom_CarriesAppIDOnLegDelete(t *testing.T) {
+	instA := newTestInstance(t, "instance-a")
+	instB := newTestInstance(t, "instance-b")
+	legID := establishCallWithApp(t, instA, instB, recAppID)
+	roomID := joinNewRoom(t, instA, legID, recAppID)
+
+	delResp := httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), legID))
+	if delResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete leg: unexpected status %d", delResp.StatusCode)
+	}
+	delResp.Body.Close()
+
+	left := instA.collector.waitForMatch(t, events.LegLeftRoom, func(e events.Event) bool {
+		return e.Data.GetLegID() == legID
+	}, 5*time.Second)
+	if got := left.Data.GetRoomID(); got != roomID {
+		t.Errorf("leg.left_room room_id = %q, want %q", got, roomID)
+	}
+	if got := left.Data.GetAppID(); got != recAppID {
+		t.Errorf("leg.left_room app_id = %q, want %q", got, recAppID)
+	}
+}
