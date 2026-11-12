@@ -127,6 +127,19 @@ func TestMultiChannel_HangupLegsThenDeleteRoom(t *testing.T) {
 	assertMultiChannelComplete(t, instA, c)
 }
 
+// TestMultiChannel_HangupBothLegs has no room delete. The two legs leave at
+// the same time, each can find the room empty, and both then stop the recording.
+func TestMultiChannel_HangupBothLegs(t *testing.T) {
+	instA := newTestInstance(t, "mc-hangup-a")
+	instB := newTestInstance(t, "mc-hangup-b")
+	c := startMultiChannelCall(t, instA, instB)
+
+	deleteAccepted(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), c.legs[0]), http.StatusAccepted)
+	deleteAccepted(t, fmt.Sprintf("%s/v1/legs/%s", instA.baseURL(), c.legs[1]), http.StatusAccepted)
+
+	assertMultiChannelComplete(t, instA, c)
+}
+
 // onLegDisconnected returns a channel that is closed as soon as instance
 // publishes leg.disconnected for legID. The collector polls, which is too slow
 // for a test that must act at once.
