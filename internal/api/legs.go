@@ -310,6 +310,9 @@ func inviteFailureReason(err error, hasRingTimeout bool, ctx context.Context) st
 			}
 		}
 	}
+	if errors.Is(err, sipmod.ErrNotAcceptable) {
+		return "not_acceptable"
+	}
 
 	return "invite_failed"
 }
@@ -772,11 +775,11 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // A SIPREC re-INVITE may also carry an updated recording metadata document,
 // with or without SDP. The SDP is applied first so any newly negotiated stream
 // exists and carries its a=label before the metadata is joined to it.
-func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte {
+func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
-		return nil
+		return nil, nil
 	}
 
 	// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
@@ -784,23 +787,26 @@ func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte 
 
 	var answer []byte
 	if offer, ok := body.SDP(); ok {
-		direction := ""
-		answer, direction = sl.ApplyRemoteOffer(offer)
+		var direction string
+		var err error
+		if answer, direction, err = sl.ApplyRemoteOffer(offer); err != nil {
+			return nil, err
+		}
 		sl.HandleRemoteHold(direction)
 	}
 	s.applySIPRECMetadata(sl, body)
-	return answer
+	return answer, nil
 }
 
 // HandleUpdate processes a remote in-dialog UPDATE (RFC 3311). For session-
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) []byte {
+func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
-		return nil
+		return nil, nil
 	}
 
 	sl.ResetSessionTimer()
@@ -808,13 +814,16 @@ func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bo
 	var answer []byte
 	if hasSDP {
 		if offer, ok := body.SDP(); ok {
-			direction := ""
-			answer, direction = sl.ApplyRemoteOffer(offer)
+			var direction string
+			var err error
+			if answer, direction, err = sl.ApplyRemoteOffer(offer); err != nil {
+				return nil, err
+			}
 			sl.HandleRemoteHold(direction)
 		}
 	}
 	s.applySIPRECMetadata(sl, body)
-	return answer
+	return answer, nil
 }
 
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
@@ -1422,6 +1431,13 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	}
 	inviteOpts.SRTP = useSRTP
 	trunkIDForLeg := s.applyFromIdentity(trunk, req.From, recipient, &inviteOpts)
+	if req.SRTP != nil {
+		// An explicit srtp holds for the whole call, as the first answer is held to it.
+		inviteOpts.SRTPMode = sipmod.SRTPDisabled
+		if *req.SRTP {
+			inviteOpts.SRTPMode = sipmod.SRTPRequired
+		}
+	}
 	if legProxy != nil {
 		inviteOpts.ProxyURI = legProxy
 	}

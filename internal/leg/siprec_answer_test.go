@@ -161,7 +161,7 @@ func TestBuildAnswerStreams_RejectedSectionClosesItsStream(t *testing.T) {
 
 	// The second participant leaves: the re-offer disables its section.
 	reoffer := strings.Replace(srcOfferSDP, "m=audio 40002 RTP/AVP 0", "m=audio 0 RTP/AVP 0", 1)
-	answer, _ := l.ApplyRemoteOffer([]byte(reoffer))
+	answer, _, _ := l.ApplyRemoteOffer([]byte(reoffer))
 	if len(answer) == 0 {
 		t.Fatal("ApplyRemoteOffer returned no answer")
 	}

@@ -4259,7 +4259,7 @@ components:
                     default: false
                 srtp:
                     type: boolean
-                    description: 'SIP outbound only. true offers SDES-SRTP (RFC 4568): every audio section, and the text section when rtt is set, goes out as RTP/SAVP with its own a=crypto keys, and a peer that answers without an accepted key fails the call. false offers plain RTP/AVP. Omit to follow SIP_SRTP, which offers SRTP only when it is "required". Rejected with 400 when it contradicts SIP_SRTP (true under "disabled", false under "required"). The keys travel in the SDP, so send the INVITE over TLS (a "sips:" URI or ";transport=tls").'
+                    description: 'SIP outbound only. true offers SDES-SRTP (RFC 4568): every audio section, and the text section when rtt is set, goes out as RTP/SAVP with its own a=crypto keys, and a peer that answers without an accepted key fails the call. false offers plain RTP/AVP. Either value holds for the whole call: a later re-offer on the other transport gets 488. Omit to follow SIP_SRTP, which offers SRTP only when it is "required". Rejected with 400 when it contradicts SIP_SRTP (true under "disabled", false under "required"). The keys travel in the SDP, so send the INVITE over TLS (a "sips:" URI or ";transport=tls").'
                 custom_data:
                     description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
                 streams:

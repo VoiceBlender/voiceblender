@@ -109,8 +109,8 @@ type Engine struct {
 	onInvite          func(call *InboundCall)
 	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
 	pendingAuth       *pendingAuthStore
-	onReInvite        func(callID string, body *MessageBody) []byte // returns SDP answer for 200 OK
-	onUpdate          func(callID string, body *MessageBody, hasSDP bool) []byte
+	onReInvite        func(callID string, body *MessageBody) ([]byte, error) // SDP answer for the 200 OK; ErrNotAcceptable answers 488
+	onUpdate          func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify          func(callID string, statusCode int, reason string, terminated bool)
 	codecs            []codec.CodecType
@@ -597,8 +597,9 @@ func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
 
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
 // The handler receives the SIP Call-ID and the SDP direction attribute, and
-// returns the SDP body to include in the 200 OK response (nil = no SDP).
-func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) []byte) {
+// returns the SDP body to include in the 200 OK response (nil = no SDP). An
+// error rejects the offer with 488 and leaves the session as it was.
+func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) ([]byte, error)) {
 	e.onReInvite = handler
 }
 
@@ -608,7 +609,8 @@ func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) []byt
 // direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
 // and the returned []byte is the SDP answer for the 200 OK. When false,
 // direction is "" and the handler should only refresh session-timer state.
-func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) []byte) {
+// An error rejects the offer with 488.
+func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)) {
 	e.onUpdate = handler
 }
 
@@ -667,7 +669,11 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// and update hold state.
 	var answerSDP []byte
 	if e.onReInvite != nil {
-		answerSDP = e.onReInvite(callID.Value(), body)
+		var err error
+		if answerSDP, err = e.onReInvite(callID.Value(), body); err != nil {
+			e.rejectOffer(tx, req, "re-INVITE", err)
+			return
+		}
 	}
 
 	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
@@ -695,6 +701,16 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	_, hadSDP := body.SDP()
 	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "has_sdp", hadSDP)
+}
+
+// rejectOffer answers an in-dialog offer the handler refused with 488.
+func (e *Engine) rejectOffer(tx sip.ServerTransaction, req *sip.Request, method string, err error) {
+	e.log.Info(method+" offer rejected", "call_id", req.CallID().Value(), "error", err)
+	res := sip.NewResponseFromRequest(req, sip.StatusNotAcceptableHere, "Not Acceptable Here", nil)
+	res.AppendHeader(e.ServerHeader())
+	if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+		e.log.Error(method+": respond 488 failed", "error", rerr)
+	}
 }
 
 // handleUpdate processes an in-dialog UPDATE (RFC 3311). Typical uses are
@@ -763,7 +779,11 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 
 	var answerSDP []byte
 	if e.onUpdate != nil {
-		answerSDP = e.onUpdate(callID.Value(), body, hasSDP)
+		var err error
+		if answerSDP, err = e.onUpdate(callID.Value(), body, hasSDP); err != nil {
+			e.rejectOffer(tx, req, "UPDATE", err)
+			return
+		}
 	}
 
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
@@ -1771,7 +1791,7 @@ func applyAnswerSRTP(sessions []*RTPSession, offered [][]SDESCrypto, answer *SDP
 		ra := &answer.Audio[i]
 		local, remote, ok := AnswerCryptoFor(offered[i], ra.Crypto)
 		if !ok || !protoIsSDES(ra.Proto) {
-			return fmt.Errorf("audio stream %d: answer accepts none of the offered SRTP crypto suites", i)
+			return fmt.Errorf("%w: audio stream %d: answer accepts none of the offered SRTP crypto suites", ErrNotAcceptable, i)
 		}
 		if err := sess.SetSRTP(local, remote); err != nil {
 			return fmt.Errorf("audio stream %d: %w", i, err)
@@ -1789,7 +1809,7 @@ func keyAnswerText(sess *RTPSession, offered []SDESCrypto, answer *SDPTextMedia)
 	}
 	local, remote, ok := AnswerCryptoFor(offered, answer.Crypto)
 	if !ok || !protoIsSDES(answer.Proto) {
-		return fmt.Errorf("text stream: answer accepts none of the offered SRTP crypto suites")
+		return fmt.Errorf("%w: text stream: answer accepts none of the offered SRTP crypto suites", ErrNotAcceptable)
 	}
 	return sess.SetSRTP(local, remote)
 }

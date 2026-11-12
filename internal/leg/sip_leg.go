@@ -1767,24 +1767,23 @@ func (l *SIPLeg) ReInviteAnswerSDP(remoteDirection string) []byte {
 
 // ApplyRemoteOffer processes a peer's re-INVITE/UPDATE offer and returns the
 // SDP answer plus the offered direction (empty when the body carried none).
+// An offer with no acceptable audio section changes nothing and returns
+// sipmod.ErrNotAcceptable, so the caller can answer 488.
 //
 // Unlike the direction-only path it replaces, this re-applies the peer's media
 // address: an SBC that re-anchors media on a re-INVITE used to leave the call
 // one-way because nothing ever called SetRemote again.
-func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string) {
+func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string, err error) {
 	if len(body) == 0 {
 		// A session-timer refresh with no offer: nothing to renegotiate.
-		return nil, ""
+		return nil, "", nil
 	}
 
 	remote, err := sipmod.ParseSDP(body)
 	if err != nil {
 		l.log.Warn("re-offer: parse SDP failed", "leg_id", l.id, "error", err)
-		return l.reInviteSDP(sipmod.DirSendRecv), ""
+		return l.reInviteSDP(sipmod.DirSendRecv), "", nil
 	}
-
-	direction = remote.Direction
-	l.applyRemoteAudio(remote)
 
 	// Re-plan the whole offer rather than just echoing a direction: a re-offer
 	// may add or remove sections, and RFC 3264 §6 requires the answer to match
@@ -1793,20 +1792,24 @@ func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string)
 	if l.textRtpSess != nil {
 		textIdx = offeredTextMLine(remote, l.srtpMode)
 	}
+	plans := sipmod.PlanAnswer(remote, l.answerOptions(codec.CodecUnknown, textIdx))
+	if len(sipmod.AcceptedAudio(plans)) == 0 {
+		l.log.Warn("re-offer: no acceptable audio section, rejecting",
+			"leg_id", l.id, "srtp_mode", l.srtpMode)
+		return nil, "", sipmod.ErrNotAcceptable
+	}
+
+	direction = remote.Direction
+	l.applyRemoteAudio(remote)
 	if textIdx >= 0 && remote.Text != nil {
 		if err := l.keyTextFromOffer(l.textRtpSess, remote.Text); err != nil {
 			l.log.Warn("re-offer: text SRTP keying failed, dropping the text section",
 				"leg_id", l.id, "error", err)
 			textIdx = -1
+			plans = sipmod.PlanAnswer(remote, l.answerOptions(codec.CodecUnknown, textIdx))
 		}
 	}
-	plans := sipmod.PlanAnswer(remote, l.answerOptions(codec.CodecUnknown, textIdx))
 	sections := l.buildAnswerStreams(remote, plans)
-	if len(sipmod.AcceptedAudio(plans)) == 0 {
-		// Nothing negotiable left; fall back to re-offering our current state
-		// rather than answering with no media at all.
-		return l.reInviteSDP(sipmod.MirrorDirection(direction)), direction
-	}
 
 	l.mu.RLock()
 	cfg := sipmod.SDPConfig{
@@ -1822,7 +1825,7 @@ func (l *SIPLeg) ApplyRemoteOffer(body []byte) (answer []byte, direction string)
 
 	answer = sipmod.GenerateAnswer(cfg, selected, pt, false)
 	l.startAcceptedStreams()
-	return answer, direction
+	return answer, direction, nil
 }
 
 // applyAnswer takes the peer's answer to an offer we sent. It runs before the

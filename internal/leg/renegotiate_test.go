@@ -59,7 +59,7 @@ func TestReInviteSwitchesCodecAndRate(t *testing.T) {
 	rateCh := make(chan int, 1)
 	l.SetOnMediaRateChange(func(_ string, rate int) { rateCh <- rate })
 
-	answer, _ := l.ApplyRemoteOffer(offerSDP(41000, "9", "a=rtpmap:9 G722/8000"))
+	answer, _, _ := l.ApplyRemoteOffer(offerSDP(41000, "9", "a=rtpmap:9 G722/8000"))
 
 	if !strings.Contains(string(answer), "G722") {
 		t.Fatalf("answer should accept G.722:\n%s", answer)

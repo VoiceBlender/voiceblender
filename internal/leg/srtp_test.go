@@ -2,6 +2,7 @@ package leg
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -117,7 +118,7 @@ func TestApplyRemoteOffer_SRTPRekey(t *testing.T) {
 	first := l.prim.rtpSess.LocalCrypto()
 
 	// The same suite with a new peer key: our key stays.
-	answer, _ := l.ApplyRemoteOffer([]byte(srtpOfferSDP("RTP/SAVP", sipmod.SuiteAES128CMSHA1_80, peerKeyB)))
+	answer, _, _ := l.ApplyRemoteOffer([]byte(srtpOfferSDP("RTP/SAVP", sipmod.SuiteAES128CMSHA1_80, peerKeyB)))
 	if got := l.prim.rtpSess.LocalCrypto(); !got.SameKey(first) {
 		t.Error("a re-offer keeping the suite must not change our key")
 	}
@@ -132,9 +133,33 @@ func TestApplyRemoteOffer_SRTPRekey(t *testing.T) {
 	}
 
 	// Optional mode follows a peer that drops back to plain RTP.
-	answer, _ = l.ApplyRemoteOffer([]byte(srtpOfferSDP("RTP/AVP", "", nil)))
+	answer, _, _ = l.ApplyRemoteOffer([]byte(srtpOfferSDP("RTP/AVP", "", nil)))
 	if l.prim.rtpSess.SRTPEnabled() || strings.Contains(string(answer), "SAVP") {
 		t.Errorf("plain re-offer left SRTP on:\n%s", answer)
+	}
+}
+
+// TestApplyRemoteOffer_RejectsUnacceptable covers a re-offer the policy
+// refuses: it must come back as ErrNotAcceptable and leave the media alone.
+func TestApplyRemoteOffer_RejectsUnacceptable(t *testing.T) {
+	l := newAnswerLeg(t, srtpOfferSDP("RTP/SAVP", sipmod.SuiteAES128CMSHA1_80, peerKeyA))
+	l.srtpMode = sipmod.SRTPRequired
+	if _, err := l.negotiateInboundAnswer(codec.CodecUnknown); err != nil {
+		t.Fatal(err)
+	}
+	local, remote := l.prim.rtpSess.LocalCrypto(), l.prim.rtpSess.RemoteAddr().String()
+
+	plain := strings.Replace(srtpOfferSDP("RTP/AVP", "", nil, "a=sendonly"), "a=sendrecv\r\n", "", 1)
+	plain = strings.Replace(plain, "m=audio 40000", "m=audio 40100", 1)
+	answer, direction, err := l.ApplyRemoteOffer([]byte(plain))
+	if !errors.Is(err, sipmod.ErrNotAcceptable) || answer != nil || direction != "" {
+		t.Fatalf("plain re-offer under required: answer %q, direction %q, err %v", answer, direction, err)
+	}
+	if got := l.prim.rtpSess.LocalCrypto(); got == nil || !got.SameKey(local) {
+		t.Error("a rejected re-offer changed the SRTP key")
+	}
+	if got := l.prim.rtpSess.RemoteAddr().String(); got != remote {
+		t.Errorf("a rejected re-offer moved media from %s to %s", remote, got)
 	}
 }
 
@@ -250,7 +275,7 @@ func TestNegotiateInboundAnswer_SRTPText(t *testing.T) {
 	}
 
 	// The peer re-keys under the same suite: our key stays.
-	reAnswer, _ := l.ApplyRemoteOffer([]byte(textOfferSDP("RTP/SAVP", textCryptoAttr(peerKeyA))))
+	reAnswer, _, _ := l.ApplyRemoteOffer([]byte(textOfferSDP("RTP/SAVP", textCryptoAttr(peerKeyA))))
 	if got := rs.LocalCrypto(); !got.SameKey(local) {
 		t.Error("a re-offer keeping the suite must not change our text key")
 	}
@@ -265,7 +290,7 @@ func TestNegotiateInboundAnswer_SRTPText(t *testing.T) {
 	}
 
 	// Optional mode follows the peer back to plain text.
-	reAnswer, _ = l.ApplyRemoteOffer([]byte(textOfferSDP("RTP/AVP")))
+	reAnswer, _, _ = l.ApplyRemoteOffer([]byte(textOfferSDP("RTP/AVP")))
 	if text := textSection(reAnswer); rs.SRTPEnabled() || !strings.Contains(text, " RTP/AVP 98 99") || strings.Contains(text, "a=crypto") {
 		t.Errorf("plain text re-offer left SRTP on:\n%s", text)
 	}

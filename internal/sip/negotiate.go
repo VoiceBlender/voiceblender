@@ -1,6 +1,15 @@
 package sip
 
-import "github.com/VoiceBlender/voiceblender/internal/codec"
+import (
+	"errors"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
+)
+
+// ErrNotAcceptable reports an offer or answer with no audio section we can
+// use under the call's codec and SRTP policy: a 488 for an offer, a failed
+// call for an answer.
+var ErrNotAcceptable = errors.New("media not acceptable")
 
 // AnswerOptions parameterizes PlanAnswer.
 type AnswerOptions struct {

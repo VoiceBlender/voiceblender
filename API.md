@@ -199,7 +199,7 @@ Originate an outbound leg — one VoiceBlender dials out itself. `type` selects 
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `filters` | array | no | Ordered ingress audio processing chain for this leg — see [Audio filters](#audio-filters). Omit to use the server default (`AUDIO_FILTERS`); send `[]` for no processing. |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
-| `srtp` | bool | no | **SIP only.** `true` offers SDES-SRTP (RFC 4568): every audio section goes out as `RTP/SAVP` with `a=crypto` keys, and a peer that answers without an accepted key fails the call. `false` offers plain `RTP/AVP`. Omit to follow `SIP_SRTP`, which offers SRTP only when it is `required`. Cannot be combined with `rtt`. See [SDES-SRTP](#sdes-srtp-encrypted-sip-media). |
+| `srtp` | bool | no | **SIP only.** `true` offers SDES-SRTP (RFC 4568): every audio section, and the text section when `rtt` is set, goes out as `RTP/SAVP` with `a=crypto` keys, and a peer that answers without an accepted key fails the call. `false` offers plain `RTP/AVP`. Either value holds for the whole call: a later re-offer on the other transport gets `488`. Omit to follow `SIP_SRTP`, which offers SRTP only when it is `required`. See [SDES-SRTP](#sdes-srtp-encrypted-sip-media). |
 | `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
@@ -293,11 +293,11 @@ a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:<base64 key||salt>
 a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:<base64 key||salt>
 ```
 
-The peer must answer `RTP/SAVP` with one of the offered tags and the same suite; an answer without one (plain `RTP/AVP`, no `a=crypto`, an unknown tag) ends the call with a BYE instead of falling back to unencrypted media. A 183 whose SDP carries no accepted key is ignored for early media.
+The peer must answer `RTP/SAVP` with one of the offered tags and the same suite; an answer without one (plain `RTP/AVP`, no `a=crypto`, an unknown tag) ends the call with a BYE and `leg.disconnected` reason `not_acceptable`, instead of falling back to unencrypted media. A 183 whose SDP carries no accepted key is ignored for early media.
 
 - **Suites.** Answers accept `AES_CM_128_HMAC_SHA1_80`, `AES_CM_128_HMAC_SHA1_32`, `AES_256_CM_HMAC_SHA1_80`, `AES_256_CM_HMAC_SHA1_32`, `AEAD_AES_128_GCM` and `AEAD_AES_256_GCM`, taking the first one the offer lists; key lifetimes and MKIs are honoured. Offers carry `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`. An `a=crypto` line with session parameters (e.g. `UNENCRYPTED_SRTP`) or more than one key is skipped.
 - **Profiles.** `RTP/SAVP` and `RTP/SAVPF` are answered with the profile offered. DTLS-SRTP (`UDP/TLS/RTP/SAVP*`) is not accepted on classic SIP legs; it is only used by [WhatsApp](#whatsapp-business-calling) and WebRTC legs.
-- **Re-INVITEs.** Hold, unhold and `POST /v1/legs/{id}/streams` keep SRTP: our key is reused, and a new key from the peer is applied. A stream added to an SRTP call is offered with SRTP too, and fails with `409` if the peer accepts it unencrypted. Under `optional`, a peer that re-offers plain RTP mid-call is followed.
+- **Re-INVITEs.** Hold, unhold and `POST /v1/legs/{id}/streams` keep SRTP: our key is reused, and a new key from the peer is applied. A stream added to an SRTP call is offered with SRTP too, and fails with `409` if the peer accepts it unencrypted. A peer re-offer (re-INVITE or `UPDATE`) is checked against the same policy as the first offer: one with no audio section the policy allows gets `488 Not Acceptable Here`, and the call carries on unchanged. Under `optional`, a peer that re-offers plain RTP mid-call is followed, unless the leg was created with `"srtp": true`.
 - **SRTCP.** RTCP reports (see [`quality.outbound`](#quality-object-omitted-when-no-media-was-received)) are sent and read as SRTCP (RFC 3711) under the same keys. An RTCP packet that fails authentication is dropped and does not count as media activity for the RTP timeout.
 - **Real-time text.** The `m=text` section follows the same rules with keys of its own. An outbound SRTP call with `"rtt": true` offers it on `RTP/SAVP`, and an answer that accepts it without one of our keys fails the call. An inbound text section is judged on its own like an audio section, so under `optional` a plain text section next to SRTP audio is answered plain. Text sections get RTCP only when the peer offers `a=rtcp-mux` on them; our own text offers do not carry it.
 - **Transport.** The keys travel in clear inside the SDP, so anyone who can read the signalling can decrypt the media. Use SIP over TLS (`sips:` / `;transport=tls`, `SIP_TLS_PORT`) end to end.
@@ -4757,7 +4757,7 @@ sequence numbers stay contiguous.
 | `unauthorized` | Remote returned 401/407 Authentication Required |
 | `timeout` | Remote returned 408 Request Timeout |
 | `cancelled` | INVITE was cancelled (487 Request Terminated) |
-| `not_acceptable` | Remote returned 488 Not Acceptable Here |
+| `not_acceptable` | Remote returned 488 Not Acceptable Here, or answered an SRTP offer without an accepted key |
 | `service_unavailable` | Remote returned 503 Service Unavailable |
 | `declined` | Remote returned 603 Decline |
 | `sip_{code}` | Other SIP failure response (e.g. `sip_500`) |
@@ -4873,7 +4873,9 @@ Notes and limits:
 - Re-offers **VoiceBlender itself sends** advertise only the codec already running, so a
   compliant peer cannot switch codecs in its answer to them.
 - A codec the leg did not offer cannot be selected; negotiation is still bounded by the
-  leg's `codecs` list.
+  leg's `codecs` list. A re-offer leaving no audio section the leg can accept (no common
+  codec, or a transport the [SRTP policy](#sdes-srtp-encrypted-sip-media) refuses) gets
+  `488 Not Acceptable Here` and changes nothing.
 - If the new codec's encoder or decoder cannot be built, the leg keeps running the
   previous codec rather than losing media, and the failure is logged.
 
