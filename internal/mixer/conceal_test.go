@@ -8,6 +8,8 @@ import (
 	"math"
 	"slices"
 	"testing"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
 
 // voicedFrame is 20 ms of a speech-like signal: four harmonics of 110 Hz under
@@ -160,78 +162,103 @@ func TestMixTickEmptyTickIsSilentWithoutConcealGaps(t *testing.T) {
 	}
 }
 
-func toneAt(rate, from, n int) []int16 {
-	out := make([]int16, n)
-	for i := range out {
-		out[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(from+i)/float64(rate)))
+// throughConversion plays a 440 Hz PCMU leg into a 16 kHz room through the
+// real rate conversion, with leg frame lost missing, and returns what the
+// other party hears, tick by tick, and the converted frames that were queued.
+// The leg side does what a SIP leg does when it passes over a hole: its
+// decoder conceals the lost frame without playing it, cross-fades the start
+// of the next frame from its own substitute, and the gap filler then
+// cross-fades the first 4 ms in from that substitute (see gapFiller.joinTo).
+func throughConversion(stale, lost, ticks int) (heard, queued [][]int16) {
+	const rate = 16000
+	rs := NewPCMResampler(8000, rate)
+	dec := codec.NewConcealer(8000)
+	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), rate)
+	m.SetComfortNoise(false)
+	src := newTickParticipant(m, "src")
+	src.MarkConcealGaps(stale)
+	dst := newTickParticipant(m, "dst")
+	var join []int16
+	for tick := range ticks {
+		var frame []int16
+		if tick == lost {
+			join = dec.Conceal(nil, 160)
+		} else {
+			leg := make([]int16, 160)
+			for i := range leg {
+				leg[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(tick*160+i)/8000))
+			}
+			dec.Good(leg)
+			n := len(join) / 5
+			for i := range n {
+				w := float32(i+1) / float32(n+1)
+				leg[i] = int16(float32(join[i])*(1-w) + float32(leg[i])*w)
+			}
+			join = nil
+			frame = rs.ResampleSamples(leg)
+			src.incoming <- encodeFrame(frame)
+		}
+		queued = append(queued, frame)
+		m.mixTick()
+		heard = append(heard, decodeSamples(nil, <-dst.outgoing))
+		<-src.outgoing
 	}
-	return out
+	return heard, queued
 }
 
-// A leg reaches the mixer through a rate conversion whose filter delay puts
-// the end of each leg frame at the start of the next mix frame. When a leg
-// frame is lost, the mix frame after the gap opens with the end of the frame
-// before it: older audio than the substitute, and out of step with it. The
-// substitute must run on over that stale start before the cross-fade.
-func TestMixTickConcealmentRunsOverAStaleStart(t *testing.T) {
-	const (
-		rate  = 16000
-		n     = rate / 50
-		stale = 64 // 8 to 16 kHz, as ResampleDelay gives
-		lost  = 12
-	)
-	if got := ResampleDelay(8000, rate); got != stale {
-		t.Fatalf("ResampleDelay(8000, %d) = %d, want %d", rate, got, stale)
+// lowest5ms is the lowest level of any 5 ms window, sliding by 1 ms.
+func lowest5ms(pcm []int16, rate int) float64 {
+	w, step := rate/200, rate/1000
+	low := math.Inf(1)
+	for i := 0; i+w <= len(pcm); i += step {
+		low = min(low, frameLevel(pcm[i:i+w]))
 	}
-	// Mix frame k is the tone from k*n-stale. Leg frame lost never arrives,
-	// so mix frame lost+1 is its stale start, then frame lost+1 onwards.
-	frameFor := func(k int) []int16 {
-		if k == lost+1 {
-			return slices.Concat(toneAt(rate, lost*n-stale, stale), toneAt(rate, (lost+1)*n, n-stale))
-		}
-		return toneAt(rate, k*n-stale, n)
+	return low
+}
+
+// A leg reaches the mixer through a rate conversion whose filter delay (4 ms
+// here) puts the end of each leg frame at the start of the next mix frame.
+// When a leg frame is lost and the mixer has concealed its tick, the mix frame
+// after the gap opens with that stale end and then the leg's own 4 ms join,
+// which also carries on from before the gap. Both are older than the mixer's
+// substitute and out of step with it. The substitute must run on over all
+// 8 ms, at the level it had reached, before the cross-fade, or the level dips.
+func TestMixTickConcealmentAllowsForTheRateConversion(t *testing.T) {
+	const rate = 16000
+	overlap := ResampleOverlap(8000, rate)
+	if overlap != 128 {
+		t.Fatalf("ResampleOverlap(8000, %d) = %d, want 128", rate, overlap)
 	}
-	play := func(stale int) [][]int16 {
-		m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), rate)
-		m.SetComfortNoise(false)
-		src := newTickParticipant(m, "src")
-		src.MarkConcealGaps(stale)
-		dst := newTickParticipant(m, "dst")
-		var heard [][]int16
-		for tick := range 20 {
-			if tick != lost {
-				src.incoming <- encodeFrame(frameFor(tick))
+	// worst is the lowest 5 ms level around the gap, against the tone, over
+	// five loss positions: 20 ms is 8.8 cycles of the tone, so five positions
+	// cover every phase it can be lost at.
+	worst := func(stale int) float64 {
+		low := math.Inf(1)
+		for lost := 10; lost < 15; lost++ {
+			heard, queued := throughConversion(stale, lost, lost+3)
+			around := slices.Concat(heard[lost-1], heard[lost], heard[lost+1])
+			low = min(low, lowest5ms(around, rate)/frameLevel(heard[5]))
+			if stale != overlap {
+				continue
 			}
-			m.mixTick()
-			heard = append(heard, decodeSamples(nil, <-dst.outgoing))
-			<-src.outgoing
+			if bound := largestStep(heard[5])*3/2 + 50; largestStep(around) > bound {
+				t.Errorf("lost %d: largest step around the gap is %d, above %d", lost, largestStep(around), bound)
+			}
+			// The overlap, then the cross-fade (8 ms after one lost frame);
+			// after that the frame is the converted source's own.
+			if from := overlap + 8*rate/1000; !slices.Equal(heard[lost+1][from:], queued[lost+1][from:]) {
+				t.Errorf("lost %d: the frame after the gap was changed after sample %d", lost, from)
+			}
 		}
-		return heard
+		return low
 	}
 
-	bound := largestStep(toneAt(rate, 0, n))*3/2 + 50
-	heard := play(stale)
-	around := slices.Concat(heard[lost-1], heard[lost], heard[lost+1])
-	if got := largestStep(around); got > bound {
-		t.Errorf("largest step around the gap is %d, above %d", got, bound)
+	// The substitute is at 77% by the end of the gap: no lower than that, and
+	// above what the loss analysis counts as a dip (a 5 ms block under 70%).
+	if got := worst(overlap); got < 0.75 {
+		t.Errorf("lowest 5 ms around the gap is at %.0f%% of the tone", 100*got)
 	}
-	// By the end of the gap the substitute has faded to 72%, so the cross-fade
-	// starts from there.
-	tone := frameLevel(toneAt(rate, 0, n))
-	for i := 0; i+16 <= len(heard[lost+1]); i += 16 {
-		if got := frameLevel(heard[lost+1][i : i+16]); got < tone*0.6 {
-			t.Errorf("1 ms block %d after the gap has level %.0f, under 60%% of the tone's %.0f", i/16, got, tone)
-		}
-	}
-	// The stale start, then a 10 ms cross-fade; after that the frame is the
-	// source's own.
-	if from := stale + 10*rate/1000; !slices.Equal(heard[lost+1][from:], frameFor(lost + 1)[from:]) {
-		t.Errorf("the frame after the gap was changed after sample %d", from)
-	}
-
-	// Without the stale count the old start is cross-faded into, and the jump
-	// to the next frame inside it shows.
-	if got := largestStep(slices.Concat(heard[lost], play(0)[lost+1])); got <= bound {
-		t.Errorf("with no stale count the largest step is %d, within %d: the test does not show the fault", got, bound)
+	if got := worst(0); got >= 0.7 {
+		t.Errorf("with no allowance the lowest 5 ms is at %.0f%% of the tone: the test does not show the fault", 100*got)
 	}
 }

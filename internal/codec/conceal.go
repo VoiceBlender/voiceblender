@@ -81,6 +81,24 @@ func (c *Concealer) Conceal(dst []int16, n int) []int16 {
 	return out
 }
 
+// Extend continues the substitute for n samples at its present level: the
+// fade waits. It is for samples just after a gap that turn out to be unusable,
+// so the gap is longer than its count of lost frames. Outside a gap it is
+// Conceal.
+func (c *Concealer) Extend(dst []int16, n int) []int16 {
+	if c.erased == 0 {
+		return c.Conceal(dst, n)
+	}
+	out := growInt16(dst, n)
+	t := c.erased
+	for i := range out {
+		out[i] = clampInt16(c.next())
+		c.erased = t
+	}
+	c.push(out)
+	return out
+}
+
 // mergeLen is the cross-fade at the end of a gap: 4 ms, 4 ms more for each
 // further 10 ms lost, at most 10 ms.
 func (c *Concealer) mergeLen() int {

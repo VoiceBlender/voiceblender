@@ -126,7 +126,7 @@ func watchPlayout(l leg.Leg, p *mixer.Participant, legRate, mixRate int) {
 		return
 	}
 	pl.SetPlayoutQueued(p.Queued)
-	p.MarkConcealGaps(mixer.ResampleDelay(legRate, mixRate))
+	p.MarkConcealGaps(mixer.ResampleOverlap(legRate, mixRate))
 }
 
 // watchRateChanges asks a leg to report a mid-call rate change so the room can

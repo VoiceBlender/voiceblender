@@ -274,3 +274,49 @@ func TestG711DecodersWithNoLossMatchThePlainDecoders(t *testing.T) {
 		}
 	}
 }
+
+// Extend runs the substitute on at the level it had reached at the end of the
+// gap, joined with no step, and the cross-fade into the next frame follows it.
+func TestConcealerExtendHoldsTheLevel(t *testing.T) {
+	const rate = 16000
+	c := NewConcealer(rate)
+	tone := func(from, n int) []int16 {
+		out := make([]int16, n)
+		for i := range out {
+			out[i] = int16(8000 * math.Sin(2*math.Pi*440*float64(from+i)/rate))
+		}
+		return out
+	}
+	n := 0
+	for range 10 {
+		c.Good(tone(n, 320))
+		n += 320
+	}
+	gap := c.Conceal(nil, 320)
+	head := c.Extend(nil, 128)
+	next := tone(n+320+128, 320)
+	c.Good(next)
+
+	bound := maxStep(tone(0, 320))*3/2 + 50
+	if got := maxStep(slices.Concat(gap, head, next)); got > bound {
+		t.Errorf("largest step across the gap, the extension and the next frame is %d, above %d", got, bound)
+	}
+	end, held := rms(gap[240:]), rms(head)
+	if held < end*0.9 || held > end*1.05 {
+		t.Errorf("extension has level %.0f against %.0f at the end of the gap: the fade moved on", held, end)
+	}
+	if got := rms(next[:64]); got < held*0.85 {
+		t.Errorf("the start of the cross-fade has level %.0f, under the extension's %.0f", got, held)
+	}
+}
+
+func TestConcealerExtendOutsideAGapConceals(t *testing.T) {
+	a, b := NewConcealer(8000), NewConcealer(8000)
+	for f := range 10 {
+		a.Good(voiced(8000, f*160, 160))
+		b.Good(voiced(8000, f*160, 160))
+	}
+	if !slices.Equal(a.Extend(nil, 160), b.Conceal(nil, 160)) {
+		t.Error("Extend with no gap in progress is not Conceal")
+	}
+}
