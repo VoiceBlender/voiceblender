@@ -454,7 +454,7 @@ func (s *Server) doStartLegAgent(legID, provider, apiKey string, opts agent.Opti
 
 	go func() {
 		// Natural session end: let buffered speech (e.g. a goodbye) play out.
-		defer s.cleanupLegAgent(id, false)
+		defer s.cleanupLegAgentIf(id, info, false)
 		err := session.Start(l.Context(), audioIn, audioOut, apiKey, opts, cb)
 		s.Log.Info("agent session exited", "leg_id", id, "error", err)
 	}()
@@ -669,8 +669,18 @@ const legAgentForwarderStopTimeout = time.Second
 // buffered is dropped and the call returns only once the forwarder has stopped
 // writing to the leg, so audio started afterwards never interleaves with it.
 func (s *Server) cleanupLegAgent(legID string, discard bool) {
+	s.cleanupLegAgentIf(legID, nil, discard)
+}
+
+// cleanupLegAgentIf detaches the leg's agent if it is still only, or any agent
+// when only is nil. A session's own exit passes its agent: Stop does not wait
+// for the session, so another agent may be attached by the time it ends.
+func (s *Server) cleanupLegAgentIf(legID string, only *agentInfo, discard bool) {
 	legAgents.Lock()
 	info, ok := legAgents.m[legID]
+	if ok && only != nil && info != only {
+		ok = false
+	}
 	if ok {
 		delete(legAgents.m, legID)
 	}
@@ -787,7 +797,7 @@ func (s *Server) doStartRoomAgent(roomID, provider, apiKey string, opts agent.Op
 	}
 
 	go func() {
-		defer s.cleanupRoomAgent(id)
+		defer s.cleanupRoomAgentIf(id, info)
 		err := session.Start(ctx, listenReader, speakWriter, apiKey, opts, cb)
 		s.Log.Info("agent room session exited", "room_id", id, "error", err)
 	}()
@@ -918,8 +928,16 @@ func (s *Server) stopRoomAgentIfEmpty(roomID string) {
 }
 
 func (s *Server) cleanupRoomAgent(roomID string) {
+	s.cleanupRoomAgentIf(roomID, nil)
+}
+
+// cleanupRoomAgentIf is the room form of cleanupLegAgentIf.
+func (s *Server) cleanupRoomAgentIf(roomID string, only *agentInfo) {
 	roomAgents.Lock()
 	info, ok := roomAgents.m[roomID]
+	if ok && only != nil && info != only {
+		ok = false
+	}
 	if ok {
 		delete(roomAgents.m, roomID)
 	}

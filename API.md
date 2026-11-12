@@ -2284,6 +2284,8 @@ curl -X POST http://localhost:8080/v1/legs/$LEG_ID/play \
 
 When the agent session ends on its own (the provider closes the conversation), buffered speech such as a closing sentence is still played out.
 
+Another agent can be attached as soon as this call returns. The detached agent's session may still be closing; that does not affect the new agent.
+
 **Response:** `200 OK`
 
 ```json
@@ -3587,7 +3589,7 @@ Inject a context message or instruction into a running agent session on a room. 
 
 ### DELETE /v1/rooms/{id}/agent
 
-Detach the agent from a room (provider-agnostic).
+Detach the agent from a room (provider-agnostic). Another agent can be attached as soon as this call returns.
 
 **Response:** `200 OK`
 
