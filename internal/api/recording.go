@@ -49,7 +49,10 @@ type multiChannelState struct {
 	// Timing — join/leave offsets relative to startTime.
 	joinOffsets  map[string]time.Duration
 	leaveOffsets map[string]time.Duration
-	log          *slog.Logger
+	// stopping counts stopLeg calls that have taken their recorder and not yet
+	// stored its file. Until they return, the leg is in neither map.
+	stopping sync.WaitGroup
+	log      *slog.Logger
 }
 
 // noteParticipant gives legID a channel position, at most one across every path
@@ -113,7 +116,9 @@ func (mc *multiChannelState) stopLeg(legID string, m mixerIface) {
 	delete(mc.recorders, legID)
 	delete(mc.pipes, legID)
 	mc.leaveOffsets[legID] = time.Since(mc.startTime)
+	mc.stopping.Add(1)
 	mc.mu.Unlock()
+	defer mc.stopping.Done()
 
 	m.ClearParticipantRecordTap(legID)
 	if pw != nil {
@@ -155,6 +160,9 @@ func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResul
 	for _, id := range legIDs {
 		mc.stopLeg(id, m)
 	}
+	// A leg that hung up just before this may still be finalising its file.
+	// Its capture is not lost, so the merge has to wait for it.
+	mc.stopping.Wait()
 
 	mc.mu.Lock()
 	// Merge inputs in channel order, over the legs that actually published. The
@@ -185,7 +193,7 @@ func (mc *multiChannelState) stopAll(m mixerIface) (*recording.MultiChannelResul
 	}
 	result.OmittedLegs = omitted
 	if len(omitted) > 0 {
-		mc.log.Warn("multi-channel: merged without the legs whose captures were discarded", "omitted_legs", omitted)
+		mc.log.Warn("multi-channel: merged without the legs that have no capture file", "omitted_legs", omitted)
 	}
 
 	// Upload the merged file if storage backend is set.
@@ -251,6 +259,13 @@ var (
 		sync.Mutex
 		m map[string]storage.Backend
 	}{m: make(map[string]storage.Backend)}
+
+	// roomRecordStops holds, per room, a channel that is closed when the stop
+	// in progress on that room's recording has finished.
+	roomRecordStops = struct {
+		sync.Mutex
+		m map[string]chan struct{}
+	}{m: make(map[string]chan struct{})}
 )
 
 // resolveStorage returns the appropriate storage backend for the request.
@@ -870,6 +885,51 @@ func (s *Server) cleanupRoomRecording(id string) (location string, mcResult *rec
 	return location, mcResult, true
 }
 
+// stopRoomRecording stops the room's recording and publishes
+// recording.finished. ok is false when there was none to stop.
+//
+// Stops of one room run one at a time. A room delete, the last leg leaving and
+// the API stop can overlap, and interleaved they each take part of the state,
+// so none reports the whole recording. A later caller returns only once the
+// event is out, so a room delete cannot clear the room's webhook ahead of it.
+func (s *Server) stopRoomRecording(roomID, appID string) (location string, mcResult *recording.MultiChannelResult, ok bool) {
+	done := make(chan struct{})
+	for {
+		roomRecordStops.Lock()
+		inFlight := roomRecordStops.m[roomID]
+		if inFlight == nil {
+			roomRecordStops.m[roomID] = done
+		}
+		roomRecordStops.Unlock()
+		if inFlight == nil {
+			break
+		}
+		<-inFlight
+	}
+	defer func() {
+		roomRecordStops.Lock()
+		delete(roomRecordStops.m, roomID)
+		roomRecordStops.Unlock()
+		close(done)
+	}()
+
+	location, mcResult, ok = s.cleanupRoomRecording(roomID)
+	if !ok {
+		return "", nil, false
+	}
+	evtData := &events.RecordingFinishedData{
+		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: appID},
+		File:         location,
+	}
+	if mcResult != nil {
+		evtData.MultiChannelFile = mcResult.FilePath
+		evtData.Channels = mcResult.Channels
+		evtData.OmittedLegs = mcResult.OmittedLegs
+	}
+	s.Bus.Publish(events.RecordingFinished, evtData)
+	return location, mcResult, true
+}
+
 // RecordingStopRoomResult is the success payload for stopping a room
 // recording. multi_channel_file/channels are present only when the recording
 // was started with multi_channel=true.
@@ -886,28 +946,20 @@ type RecordingStopRoomResult struct {
 }
 
 func (s *Server) doStopRecordRoom(roomID string) (*RecordingStopRoomResult, error) {
-	location, mcResult, ok := s.cleanupRoomRecording(roomID)
-	if !ok {
-		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
-	}
 	roomAppID := ""
 	if rm, ok := s.RoomMgr.Get(roomID); ok {
 		roomAppID = rm.AppID
 	}
-	res := &RecordingStopRoomResult{Status: "stopped", File: location}
-	evtData := &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: roomAppID},
-		File:         location,
+	location, mcResult, ok := s.stopRoomRecording(roomID, roomAppID)
+	if !ok {
+		return nil, newAPIError(http.StatusNotFound, "no recording in progress")
 	}
+	res := &RecordingStopRoomResult{Status: "stopped", File: location}
 	if mcResult != nil {
 		res.MultiChannelFile = mcResult.FilePath
 		res.Channels = mcResult.Channels
 		res.OmittedLegs = mcResult.OmittedLegs
-		evtData.MultiChannelFile = mcResult.FilePath
-		evtData.Channels = mcResult.Channels
-		evtData.OmittedLegs = mcResult.OmittedLegs
 	}
-	s.Bus.Publish(events.RecordingFinished, evtData)
 	return res, nil
 }
 
@@ -1035,21 +1087,10 @@ func (s *Server) stopRoomRecordingIfEmpty(roomID string) {
 // holds it: room delete snapshots it alongside the participants, and the
 // empty-room path already has the room in hand.
 func (s *Server) finalizeRoomRecording(roomID, appID, why string) bool {
-	location, mcResult, ok := s.cleanupRoomRecording(roomID)
+	location, _, ok := s.stopRoomRecording(roomID, appID)
 	if !ok {
 		return false
 	}
-
-	evtData := &events.RecordingFinishedData{
-		LegRoomScope: events.LegRoomScope{RoomID: roomID, AppID: appID},
-		File:         location,
-	}
-	if mcResult != nil {
-		evtData.MultiChannelFile = mcResult.FilePath
-		evtData.Channels = mcResult.Channels
-		evtData.OmittedLegs = mcResult.OmittedLegs
-	}
-	s.Bus.Publish(events.RecordingFinished, evtData)
 	s.Log.Info("auto-stopped room recording", "room_id", roomID, "file", location, "reason", why)
 	return true
 }

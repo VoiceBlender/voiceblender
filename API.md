@@ -3234,9 +3234,11 @@ A room recording does not have to be stopped explicitly. Whenever the room is le
 
 After that, `DELETE /v1/rooms/{id}/record` returns `404 — No recording in progress`. A client waiting for the recording to complete should therefore wait on `recording.finished` rather than assume the stop call is what produces it.
 
+These paths can overlap with each other and with an explicit `DELETE /v1/rooms/{id}/record`: a controller often hangs up the legs and deletes the room in consecutive requests. The stops of one room run one at a time, so exactly one of them stops the recording and `recording.finished` is published once, with the whole result. A stop that arrives while another is in progress waits until that event is published and then finds nothing to stop (`404` from the explicit stop). `recording.finished` is published before `DELETE /v1/rooms/{id}` clears the room's webhook, so a per-room webhook receives it.
+
 #### Multi-Channel Recording
 
-When `multi_channel: true` is set, a single multi-channel WAV file is produced alongside the full mix. Each participant gets their own channel (track) within this file, with silence padding so all tracks are time-aligned to the recording start. Participants that join mid-recording get a new channel; participants that leave have silence written for the remainder.
+When `multi_channel: true` is set, a single multi-channel WAV file is produced alongside the full mix. Each participant gets their own channel (track) within this file, with silence padding so all tracks are time-aligned to the recording start. Participants that join mid-recording get a new channel; participants that leave have silence written for the remainder. A participant that hangs up keeps its track however soon the recording is stopped afterwards: the stop waits for a capture that is still being finalised.
 
 This gives you one file ready for post-production — each speaker on a clean isolated channel for independent editing, noise reduction, and level adjustment.
 
