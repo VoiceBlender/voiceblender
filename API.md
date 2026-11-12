@@ -298,6 +298,7 @@ The peer must answer `RTP/SAVP` with one of the offered tags and the same suite;
 - **Suites.** Answers accept `AES_CM_128_HMAC_SHA1_80`, `AES_CM_128_HMAC_SHA1_32`, `AES_256_CM_HMAC_SHA1_80`, `AES_256_CM_HMAC_SHA1_32`, `AEAD_AES_128_GCM` and `AEAD_AES_256_GCM`, taking the first one the offer lists; key lifetimes and MKIs are honoured. Offers carry `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`. An `a=crypto` line with session parameters (e.g. `UNENCRYPTED_SRTP`) or more than one key is skipped.
 - **Profiles.** `RTP/SAVP` and `RTP/SAVPF` are answered with the profile offered. DTLS-SRTP (`UDP/TLS/RTP/SAVP*`) is not accepted on classic SIP legs; it is only used by [WhatsApp](#whatsapp-business-calling) and WebRTC legs.
 - **Re-INVITEs.** Hold, unhold and `POST /v1/legs/{id}/streams` keep SRTP: our key is reused, and a new key from the peer is applied. A stream added to an SRTP call is offered with SRTP too, and fails with `409` if the peer accepts it unencrypted. A peer re-offer (re-INVITE or `UPDATE`) is checked against the same policy as the first offer: one with no audio section the policy allows gets `488 Not Acceptable Here`, and the call carries on unchanged. Under `optional`, a peer that re-offers plain RTP mid-call is followed, unless the leg was created with `"srtp": true`.
+- **Checking.** [`GET /v1/legs/{id}/streams`](#get-v1legsidstreams) reports `"srtp": true` on each stream that is encrypted, so an application can see what a call under `optional` ended up with.
 - **SRTCP.** RTCP reports (see [`quality.outbound`](#quality-object-omitted-when-no-media-was-received)) are sent and read as SRTCP (RFC 3711) under the same keys. An RTCP packet that fails authentication is dropped and does not count as media activity for the RTP timeout.
 - **Real-time text.** The `m=text` section follows the same rules with keys of its own. An outbound SRTP call with `"rtt": true` offers it on `RTP/SAVP`, and an answer that accepts it without one of our keys fails the call. An inbound text section is judged on its own like an audio section, so under `optional` a plain text section next to SRTP audio is answered plain. Text sections get RTCP only when the peer offers `a=rtcp-mux` on them; our own text offers do not carry it.
 - **Transport.** The keys travel in clear inside the SDP, so anyone who can read the signalling can decrypt the media. Use SIP over TLS (`sips:` / `;transport=tls`, `SIP_TLS_PORT`) end to end.
@@ -2919,6 +2920,8 @@ List a leg's negotiated audio streams, in m-line order.
   }
 ]
 ```
+
+A stream whose media is encrypted with [SDES-SRTP](#sdes-srtp-encrypted-sip-media) also carries `"srtp": true`. The field is omitted on a plain RTP stream, and on an added stream until the peer has answered it.
 
 **Errors:** `400` — not a SIP leg; `404` — leg not found
 

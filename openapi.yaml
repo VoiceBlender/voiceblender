@@ -5129,6 +5129,9 @@ components:
                 remote_addr:
                     type: string
                     description: Remote RTP address media is currently sent to.
+                srtp:
+                    type: boolean
+                    description: True while the stream's media is encrypted with SDES-SRTP (RFC 4568). Omitted for plain RTP, and for an added stream until the peer has answered it.
                 label:
                     type: string
                     description: The stream's a=label value (RFC 4574), for correlating it with external metadata.

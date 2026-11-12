@@ -406,6 +406,7 @@ type LegStreamView struct {
 	SampleRate       int    `json:"sample_rate,omitempty"`
 	LocalPort        int    `json:"local_port,omitempty"`
 	RemoteAddr       string `json:"remote_addr,omitempty"`
+	SRTP             bool   `json:"srtp,omitempty"`
 	Label            string `json:"label,omitempty"`
 	Content          string `json:"content,omitempty"`
 	Lang             string `json:"lang,omitempty"`
@@ -425,6 +426,7 @@ var legStreamViewFields = map[string]FieldEnrichment{
 	"sample_rate":       {Description: "Native sample rate of the codec the stream is running, in Hz. It follows a mid-call codec renegotiation."},
 	"local_port":        {Description: "Local RTP port. Each stream binds its own port; a shared transport is undefined without BUNDLE (RFC 9143)."},
 	"remote_addr":       {Description: "Remote RTP address media is currently sent to."},
+	"srtp":              {Description: "True while the stream's media is encrypted with SDES-SRTP (RFC 4568). Omitted for plain RTP, and for an added stream until the peer has answered it."},
 	"label":             {Description: "The stream's a=label value (RFC 4574), for correlating it with external metadata."},
 	"content":           {Description: "The stream's a=content value (RFC 4796), e.g. \"main\" for original audio and \"alt\" for a translated feed."},
 	"lang":              {Description: "The stream's a=lang value (RFC 8866): a BCP 47 language tag such as \"en\" or \"es-ES\"."},
