@@ -1435,6 +1435,26 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 		pkt     rtp.Packet
 	)
 
+	// A send can fail for a moment (a firewall, a full buffer); the frame is
+	// then lost but the stream goes on. A closed socket means the stream ended.
+	var sendFailures int
+	sendFailed := func(err error) (stop bool) {
+		if errors.Is(err, net.ErrClosed) {
+			return true
+		}
+		if sendFailures == 0 {
+			l.log.Error("writeLoop: RTP send failed", "leg_id", l.id, "stream_id", s.id, "error", err)
+		}
+		sendFailures++
+		return false
+	}
+	sendOK := func() {
+		if sendFailures > 0 {
+			l.log.Info("writeLoop: RTP sends resumed", "leg_id", l.id, "stream_id", s.id, "failed", sendFailures)
+			sendFailures = 0
+		}
+	}
+
 	for {
 		select {
 		case <-l.ctx.Done():
@@ -1483,8 +1503,11 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 				pkts := sipmod.GenerateDTMFPackets(ch, telephoneEventPT, ssrc, seqNum, timestamp, dtmfSamplesPerPkt)
 				for i, pkt := range pkts {
 					if err := s.rtpSess.WriteRTP(pkt); err != nil {
-						l.log.Error("writeLoop: DTMF WriteRTP failed", "error", err)
-						return
+						if sendFailed(err) {
+							return
+						}
+					} else {
+						sendOK()
 					}
 					seqNum++
 
@@ -1560,8 +1583,11 @@ func (l *SIPLeg) writeLoop(s *mediaStream) {
 			Payload: encoded,
 		}
 		if wire, err = s.rtpSess.WriteRTPBuf(&pkt, wire); err != nil {
-			l.log.Error("writeLoop: WriteRTP failed", "error", err)
-			return
+			if sendFailed(err) {
+				return
+			}
+		} else {
+			sendOK()
 		}
 		seqNum++
 		timestamp += samplesPerFrame
