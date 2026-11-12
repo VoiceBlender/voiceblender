@@ -438,9 +438,19 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 	return nil
 }
 
-func (l *SIPLeg) ID() string      { return l.id }
-func (l *SIPLeg) Type() LegType   { return l.legType }
-func (l *SIPLeg) SampleRate() int { return l.prim.codecType.SampleRate() }
+func (l *SIPLeg) ID() string    { return l.id }
+func (l *SIPLeg) Type() LegType { return l.legType }
+
+// SampleRate reports the rate of the codec the media loops run on. Before
+// media starts it reports the negotiated codec's rate.
+func (l *SIPLeg) SampleRate() int {
+	if lc := l.prim.live(); lc != nil {
+		return lc.sampleRate()
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.prim.codecType.SampleRate()
+}
 
 func (l *SIPLeg) State() LegState {
 	l.mu.RLock()
@@ -965,9 +975,6 @@ func (l *SIPLeg) setupStreamMedia(s *mediaStream) {
 	s.outFrames = make(chan []byte, 5)
 	s.dtmfCh = make(chan string, 5)
 
-	// 20 ms of samples at the codec's native rate, 16-bit mono LE.
-	s.jbFrameBytes = s.codecType.SampleRate() / 50 * 2
-
 	// Construct the jitter buffer if enabled.
 	if s.jbTargetMs > 0 {
 		s.jb = jitter.NewMs(s.jbTargetMs, s.jbMaxMs, 20)
@@ -1014,7 +1021,7 @@ func (l *SIPLeg) popLoop(s *mediaStream) {
 		if !ok {
 			// Warm-up or underrun — push a silence frame so the mixer's
 			// downstream pull still finds something at this tick.
-			pcm = make([]byte, s.jbFrameBytes)
+			pcm = make([]byte, s.live().pcmFrameBytes)
 		}
 		select {
 		case s.inFrames <- pcm:
@@ -1185,9 +1192,17 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		// comfort noise, etc.) since they share the same sequence number space.
 		l.trackRTPSeq(s, pkt.SequenceNumber)
 
+		// The live configuration is re-read per packet so a mid-call
+		// renegotiation takes effect on the very next packet, and so the PT
+		// tests and the decode below always come from the same value.
+		lc := s.live()
+		if lc == nil {
+			continue
+		}
+
 		// Handle DTMF telephone-event on whichever PTs the peer advertised
 		// (falling back to the conventional 101 = 8kHz, 100 = 48kHz for Opus).
-		if s.acceptsDTMFPT(pkt.PayloadType) {
+		if lc.acceptsDTMFPT(pkt.PayloadType) {
 			ev, err := sipmod.DecodeDTMFEvent(pkt.Payload)
 			if err != nil {
 				continue
@@ -1209,14 +1224,6 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 			continue
 		}
 
-		// The live configuration is re-read per packet so a mid-call codec
-		// renegotiation takes effect on the very next packet, and so the PT
-		// test and the decode below always come from the same value.
-		lc := s.live()
-		if lc == nil {
-			continue
-		}
-
 		// Skip packets that don't match the negotiated codec PT (e.g.
 		// comfort noise, keep-alive, or other non-audio PTs).
 		if pkt.PayloadType != lc.rtpPT {
@@ -1230,7 +1237,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 
 		// Update jitter on audio packets only (DTMF retransmits share
 		// timestamps, which would spike the jitter estimate).
-		l.updateRTPJitter(s, pkt)
+		l.updateRTPJitter(s, lc, pkt)
 
 		if lc.decoder != gapDec {
 			gapDec, gaps = lc.decoder, nil
@@ -1323,8 +1330,8 @@ func (l *SIPLeg) trackRTPSeq(s *mediaStream, seq uint16) {
 // updateRTPJitter updates inter-arrival jitter (RFC 3550 §A.8) on audio
 // packets only. DTMF end-of-event retransmits share the same RTP timestamp,
 // which would spike the jitter estimate if included.
-func (l *SIPLeg) updateRTPJitter(s *mediaStream, pkt *rtp.Packet) {
-	clockRate := int64(s.codecType.ClockRate())
+func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet) {
+	clockRate := int64(lc.codecType.ClockRate())
 	arrival := time.Now().UnixNano() * clockRate / 1e9
 	transit := arrival - int64(pkt.Timestamp)
 
@@ -1342,13 +1349,17 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, pkt *rtp.Packet) {
 
 // RTPStats returns inbound stream quality metrics and a MOS estimate.
 func (l *SIPLeg) RTPStats() RTPStats {
+	lc := l.prim.live()
+	if lc == nil {
+		return RTPStats{}
+	}
+
 	l.prim.rtpStatsMu.Lock()
 	received := l.prim.rtpReceived
 	firstSeq := l.prim.rtpFirstSeq
 	lastSeq := l.prim.rtpLastSeq
 	jitter := l.prim.rtpJitter
 	hasFirst := l.prim.rtpHasFirst
-	clockRate := l.prim.codecType.ClockRate()
 	l.prim.rtpStatsMu.Unlock()
 
 	if !hasFirst || received < 2 {
@@ -1375,7 +1386,7 @@ func (l *SIPLeg) RTPStats() RTPStats {
 		lost = expected - received
 	}
 	lossRate := float64(lost) / float64(expected)
-	jitterMs := jitter / float64(clockRate) * 1000
+	jitterMs := jitter / float64(lc.codecType.ClockRate()) * 1000
 
 	return RTPStats{
 		PacketsReceived: received,

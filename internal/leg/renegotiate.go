@@ -1,6 +1,7 @@
 package leg
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,8 @@ type liveCodec struct {
 
 	dtmfSendPT        uint8
 	dtmfSamplesPerPkt uint16
+	// dtmfRecvPTs is the set of telephone-event PTs accepted on ingress.
+	dtmfRecvPTs map[uint8]int
 
 	// The encoder-shaping AMR parameters, kept so a mode (bitrate) change is
 	// detected even when the codec itself is unchanged.
@@ -47,6 +50,17 @@ type liveCodec struct {
 
 // sampleRate is the PCM rate this configuration produces and consumes.
 func (c *liveCodec) sampleRate() int { return c.codecType.SampleRate() }
+
+// acceptsDTMFPT reports whether an ingress RTP payload type is a negotiated
+// telephone-event. Absent negotiation it falls back to the conventional PTs so
+// behaviour matches what the leg did before the PTs were tracked.
+func (c *liveCodec) acceptsDTMFPT(pt uint8) bool {
+	if len(c.dtmfRecvPTs) == 0 {
+		return pt == 100 || pt == 101
+	}
+	_, ok := c.dtmfRecvPTs[pt]
+	return ok
+}
 
 // snapshotCodec builds the live configuration from the stream's currently
 // negotiated fields. The caller holds no lock; the fields it reads are written
@@ -74,6 +88,7 @@ func snapshotCodec(s *mediaStream, enc codec.Encoder, dec codec.Decoder) *liveCo
 		samplesPerFrame:   uint32(s.codecType.ClockRate() / 50),
 		dtmfSendPT:        telephoneEventPT,
 		dtmfSamplesPerPkt: dtmfSamples,
+		dtmfRecvPTs:       maps.Clone(s.dtmfRecvPTs),
 
 		amrwbMode:             s.amrwbMode,
 		amrwbOctetAligned:     s.amrwbOctetAligned,
@@ -129,7 +144,8 @@ func (c *liveCodec) changed(s *mediaStream) bool {
 	}
 	next := snapshotCodec(s, c.encoder, c.decoder)
 	return next.rtpPT != c.rtpPT || next.sendPT != c.sendPT ||
-		next.dtmfSendPT != c.dtmfSendPT || next.dtmfSamplesPerPkt != c.dtmfSamplesPerPkt
+		next.dtmfSendPT != c.dtmfSendPT || next.dtmfSamplesPerPkt != c.dtmfSamplesPerPkt ||
+		!maps.Equal(next.dtmfRecvPTs, c.dtmfRecvPTs)
 }
 
 // renegotiateStreamMedia re-points a running stream's media pipeline at the
@@ -169,11 +185,6 @@ func (l *SIPLeg) renegotiateStreamMedia(s *mediaStream) (rate int, rateChanged b
 	next := snapshotCodec(s, enc, dec)
 	rateChanged = next.sampleRate() != cur.sampleRate()
 
-	l.mu.Lock()
-	s.jbFrameBytes = next.pcmFrameBytes
-	jb := s.jb
-	l.mu.Unlock()
-
 	// Publish before draining, so anything the loops push from here on is at
 	// the new rate.
 	s.liveCodec.Store(next)
@@ -185,8 +196,8 @@ func (l *SIPLeg) renegotiateStreamMedia(s *mediaStream) (rate int, rateChanged b
 		// Queued PCM is at the old rate. Handing it to a room that has just
 		// been told the rate changed would play it back at the wrong speed, so
 		// drop it: at most 5 frames, 100 ms.
-		if jb != nil {
-			jb.Reset()
+		if s.jb != nil {
+			s.jb.Reset()
 		}
 		drain(s.inFrames)
 		drain(s.outFrames)

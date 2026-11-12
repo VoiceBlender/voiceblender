@@ -98,10 +98,9 @@ type mediaStream struct {
 	// into jb keyed by RTP sequence number, and popLoop drains jb at a fixed
 	// cadence into inFrames. When nil, readLoop pushes directly to inFrames
 	// (passthrough — zero added latency, no reordering).
-	jb           *jitter.Buffer
-	jbTargetMs   int // target delay in ms; 0 = disabled
-	jbMaxMs      int // max queue depth in ms
-	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
+	jb         *jitter.Buffer
+	jbTargetMs int // target delay in ms; 0 = disabled
+	jbMaxMs    int // max queue depth in ms
 
 	inTap       io.Writer // copy of decoded incoming PCM (before inFrames)
 	outTap      io.Writer // copy of outgoing PCM (from writeLoop, including silence)
@@ -780,17 +779,6 @@ func (s *mediaStream) receives() bool {
 	default:
 		return true
 	}
-}
-
-// acceptsDTMFPT reports whether an ingress RTP payload type is a negotiated
-// telephone-event. Absent negotiation it falls back to the conventional PTs so
-// behaviour matches what the leg did before the PTs were tracked.
-func (s *mediaStream) acceptsDTMFPT(pt uint8) bool {
-	if len(s.dtmfRecvPTs) == 0 {
-		return pt == 100 || pt == 101
-	}
-	_, ok := s.dtmfRecvPTs[pt]
-	return ok
 }
 
 // close releases the stream's RTP socket, returning its port to the allocator.
