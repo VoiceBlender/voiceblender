@@ -74,8 +74,27 @@ func (p *playoutConcealer) conceal(n int) []byte {
 	return samplesToBytes(p.samples)
 }
 
-// ConcealsLoss reports whether the leg's codec has loss concealment. The room
-// then conceals the ticks it has no frame of the leg's for.
+// SetPlayoutQueued gives the leg a way to ask how many of its frames the
+// mixer holds ready to play, or nil when the leg leaves the room or no longer
+// conceals loss. With the jitter buffer off, the read path then fills a lost
+// packet only while a frame is waiting to be played: see gapFiller.before.
+func (l *SIPLeg) SetPlayoutQueued(queued func() int) {
+	l.mu.RLock()
+	s := l.prim
+	l.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	if queued == nil {
+		s.mixerQueued.Store(nil)
+		return
+	}
+	s.mixerQueued.Store(&queued)
+}
+
+// ConcealsLoss reports whether the leg's codec is one whose lost packets are
+// concealed at playout. The room then has the mixer conceal the ticks it has
+// no frame of the leg's for.
 func (l *SIPLeg) ConcealsLoss() bool {
 	l.mu.RLock()
 	s := l.prim
@@ -84,9 +103,15 @@ func (l *SIPLeg) ConcealsLoss() bool {
 		return false
 	}
 	lc := s.live()
-	if lc == nil {
-		return false
+	return lc != nil && concealedAtPlayout(lc.codecType)
+}
+
+// playoutQueued is how many of the stream's frames wait to be played, in the
+// leg's queue and the mixer's. It is negative when no mixer plays the stream.
+func (s *mediaStream) playoutQueued() int {
+	queued := s.mixerQueued.Load()
+	if queued == nil {
+		return -1
 	}
-	_, fills := lc.decoder.(codec.GapDecoder)
-	return fills || concealedAtPlayout(lc.codecType)
+	return len(s.inFrames) + (*queued)()
 }

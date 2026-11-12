@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -72,6 +73,7 @@ type clickDelay struct {
 	ms      float64 // from that packet leaving the sender to the click reaching the listener
 	shiftMs float64 // the same, counted in samples of the two streams, against the first click
 	starved uint64  // mix ticks so far that found the sender's queue empty
+	pos     int     // sample of the listener's stream at which the click was heard
 }
 
 const (
@@ -81,9 +83,14 @@ const (
 
 // probeClickDelays puts two bare SIP clients in a room. The first sends a quiet
 // tone with a click every 200 ms, less the frames in lost; the second times
-// each click. prefill starts the audio before the legs join the room.
-func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool, offset time.Duration) []clickDelay {
+// each click. prefill starts the audio before the legs join the room. The
+// second result is all the listener heard, by sample of its stream.
+func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool, offset time.Duration) ([]clickDelay, []int16) {
 	t.Helper()
+	// LOSS_DELAY_JITTER_MS sends each packet up to that much late, as a busy
+	// sender does. The schedule itself does not slip.
+	jitterMs, _ := strconv.Atoi(os.Getenv("LOSS_DELAY_JITTER_MS"))
+	rng := rand.New(rand.NewSource(1))
 	inst := newTestInstanceFull(t, "plc-delay", func(c *config.Config) {
 		c.SIPJitterBufferMs = 0
 	}, []codec.CodecType{codec.CodecPCMU})
@@ -109,6 +116,7 @@ func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool,
 	var (
 		mu     sync.Mutex
 		clicks []heard
+		audio  []int16
 	)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -145,9 +153,18 @@ func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool,
 			if err != nil {
 				continue
 			}
+			start := int(int32(pkt.Timestamp - ts0))
+			if start >= 0 && start < 1<<24 {
+				mu.Lock()
+				if need := start + len(pcm); need > len(audio) {
+					audio = append(audio, make([]int16, need-len(audio))...)
+				}
+				copy(audio[start:], pcm)
+				mu.Unlock()
+			}
 			for i, s := range pcm {
 				if s > clickLevel/3 || s < -clickLevel/3 {
-					pos := int(int32(pkt.Timestamp-ts0)) + i
+					pos := start + i
 					// A click is smeared over a few samples and may cross a packet edge.
 					if pos-lastPos > 400 {
 						mu.Lock()
@@ -217,6 +234,9 @@ func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool,
 		if lost[f] {
 			continue
 		}
+		if jitterMs > 0 {
+			time.Sleep(time.Duration(rng.Intn(jitterMs*1000)) * time.Microsecond)
+		}
 		payload, err := enc.Encode(frame)
 		if err != nil {
 			t.Fatal(err)
@@ -258,9 +278,74 @@ func probeClickDelays(t *testing.T, frames int, lost map[int]bool, prefill bool,
 			ms:      float64(h.at.Sub(s.at).Microseconds()) / 1000,
 			shiftMs: shift - base,
 			starved: s.starved,
+			pos:     h.pos,
 		})
 	}
-	return out
+	return out, audio
+}
+
+func rmsLevel(pcm []int16) float64 {
+	var sum float64
+	for _, s := range pcm {
+		sum += float64(s) * float64(s)
+	}
+	return math.Sqrt(sum / float64(max(len(pcm), 1)))
+}
+
+// TestSIPLossKeepsDelay loses one PCMU packet on a leg in a room, with the
+// jitter buffer off. The other party must hear the audio after the loss no
+// later than before it, and must not hear silence where the lost 20 ms was.
+// Both must hold when the mixer has no frame of the leg's in hand (it then
+// conceals the tick itself) and when it has frames in hand (the leg fills the
+// hole in time).
+func TestSIPLossKeepsDelay(t *testing.T) {
+	const (
+		frames    = 160
+		lostFrame = 105
+		before    = 100 // the last click ahead of the loss
+		after     = 110 // the first click behind it
+	)
+	for _, prefill := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prefill=%v", prefill), func(t *testing.T) {
+			// The sender, the mixer and the leg each run on a clock of their
+			// own, and a stall on a busy machine moves the audio by a frame
+			// with no loss at all. One clean run in three is enough.
+			var problems []string
+			for attempt := 1; attempt <= 3; attempt++ {
+				clicks, audio := probeClickDelays(t, frames, map[int]bool{lostFrame: true}, prefill, 0)
+				problems = nil
+				var b, a *clickDelay
+				for i := range clicks {
+					switch clicks[i].frame {
+					case before:
+						b = &clicks[i]
+					case after:
+						a = &clicks[i]
+					}
+				}
+				if b == nil || a == nil {
+					problems = append(problems, "a click next to the loss was not heard")
+				} else {
+					if a.shiftMs > b.shiftMs {
+						problems = append(problems, fmt.Sprintf("audio is %+.1f ms later after the loss", a.shiftMs-b.shiftMs))
+					}
+					// The middle 10 ms of the lost frame, against a whole frame
+					// two before it.
+					lostAt := b.pos + (lostFrame-before)*160
+					if lostAt+120 > len(audio) {
+						problems = append(problems, "the listener's audio ends before the lost frame")
+					} else if got, tone := rmsLevel(audio[lostAt+40:lostAt+120]), rmsLevel(audio[lostAt-320:lostAt-160]); got < tone/2 {
+						problems = append(problems, fmt.Sprintf("the lost frame plays at level %.0f against %.0f before it", got, tone))
+					}
+				}
+				if len(problems) == 0 {
+					return
+				}
+				t.Logf("attempt %d: %s", attempt, strings.Join(problems, "; "))
+			}
+			t.Errorf("no clean run in three: %s", strings.Join(problems, "; "))
+		})
+	}
 }
 
 // TestSIPLossDelayProbe prints the delay through a room, click by click, as
@@ -282,11 +367,24 @@ func TestSIPLossDelayProbe(t *testing.T) {
 			lost[n] = true
 		}
 	}
+	// LOSS_DELAY_RANDOM loses that share of the packets at random instead.
+	if p, _ := strconv.ParseFloat(os.Getenv("LOSS_DELAY_RANDOM"), 64); p > 0 {
+		rng := rand.New(rand.NewSource(7))
+		clear(lost)
+		for f := 20; f < 500; f++ {
+			// Never a frame that carries a click.
+			if f%clickEvery != 0 && rng.Float64() < p {
+				lost[f] = true
+			}
+		}
+		spec = fmt.Sprintf("%d frames at random", len(lost))
+	}
 	for _, prefill := range []bool{false, true} {
 		for _, offset := range []time.Duration{0, 7 * time.Millisecond, 14 * time.Millisecond} {
 			t.Run(fmt.Sprintf("prefill=%v/offset=%v", prefill, offset), func(t *testing.T) {
 				var line strings.Builder
-				for _, d := range probeClickDelays(t, 500, lost, prefill, offset) {
+				clicks, _ := probeClickDelays(t, 500, lost, prefill, offset)
+				for _, d := range clicks {
 					fmt.Fprintf(&line, "\n  frame %3d  delay %6.1f ms  shift %+6.1f ms  starved %d", d.frame, d.ms, d.shiftMs, d.starved)
 				}
 				t.Logf("lost %s%s", spec, line.String())

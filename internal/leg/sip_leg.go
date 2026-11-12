@@ -1212,6 +1212,11 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 			if s.jb == nil || lc.codecType == codec.CodecOpus {
 				gaps = newGapFiller(lc.decoder, lc.samplesPerFrame)
 			}
+			// A jitter buffer has a slot for every fill. A mixer has none
+			// for one that comes after its tick.
+			if gaps != nil && s.jb == nil && concealedAtPlayout(lc.codecType) {
+				gaps.queued = s.playoutQueued
+			}
 		}
 		if gaps != nil && gaps.before(pkt.SSRC, pkt.Timestamp, pkt.SequenceNumber, pkt.Payload, emit) {
 			continue
@@ -1234,6 +1239,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		decoded = samples
 		if gaps != nil {
 			gaps.after(pkt.SSRC, pkt.Timestamp, len(samples), time.Now())
+			gaps.joinTo(samples)
 		}
 		l.deliverInbound(s, pkt.SequenceNumber, samples)
 	}

@@ -105,6 +105,10 @@ type mediaStream struct {
 	srcOutTap   io.Writer // outgoing PCM forked to a SIPREC recording server
 	speakingTap io.Writer // decoded incoming PCM for voice activity detection
 
+	// mixerQueued reads how many of this stream's frames a mixer holds ready
+	// to play. Unset while no mixer plays the stream.
+	mixerQueued atomic.Pointer[func() int]
+
 	// Inbound RTP stream statistics for MOS calculation.
 	rtpStatsMu     sync.Mutex
 	rtpReceived    uint32

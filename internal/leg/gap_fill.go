@@ -34,6 +34,13 @@ type gapFiller struct {
 	ssrc   uint32
 	synced bool
 	buf    []int16
+
+	// queued is how many of this stream's frames wait to be played. nil, or
+	// negative, when no mixer plays the stream.
+	queued func() int
+	// join is the substitute for the first frame of a hole that was passed
+	// over. The frame after the hole is cross-faded in from it.
+	join []int16
 }
 
 func newGapFiller(dec codec.Decoder, spf uint32) *gapFiller {
@@ -56,6 +63,7 @@ type gapEmit func(seq uint16, pcm []int16)
 func (g *gapFiller) before(ssrc, ts uint32, seq uint16, payload []byte, emit gapEmit) (drop bool) {
 	if !g.synced || ssrc != g.ssrc {
 		g.synced = false
+		g.join = g.join[:0]
 		return false
 	}
 	gap := int32(ts-g.nextTS) / int32(g.spf)
@@ -63,13 +71,47 @@ func (g *gapFiller) before(ssrc, ts uint32, seq uint16, payload []byte, emit gap
 	case gap < 0 && gap >= -gapMaxFill:
 		return true
 	case gap > 0 && gap <= gapMaxBurst:
+		// With none of the stream's frames waiting, the mixer has run the
+		// lost frame's tick empty, or will before a fill reaches it. A fill
+		// queued now would play a tick late and leave the stream 20 ms behind
+		// for good. So the hole is passed over: the decoder is still told of
+		// each lost frame, and the mixer conceals the tick if it runs empty.
+		if g.queued != nil && g.queued() == 0 {
+			emit = g.passOver
+		} else {
+			// What comes next follows the fills, not an earlier hole.
+			g.join = g.join[:0]
+		}
 		for back := uint16(gap); back > 1; back-- {
 			g.fill(seq-back, nil, emit)
 		}
 		// Only the frame just before the packet can be in its redundancy.
 		g.fill(seq-1, payload, emit)
+	case gap != 0:
+		// A jump too long to fill starts the stream afresh.
+		g.join = g.join[:0]
 	}
 	return false
+}
+
+// passOver takes the frames of a hole that is passed over. It keeps the first,
+// which carries on from the frame before the hole, for joinTo.
+func (g *gapFiller) passOver(_ uint16, pcm []int16) {
+	if len(g.join) == 0 {
+		g.join = append(g.join, pcm...)
+	}
+}
+
+// joinTo cross-fades the first 4 ms of pcm, the frame after a hole that was
+// passed over, in from the substitute for the hole's first frame, so the
+// frames either side of the hole join with no step.
+func (g *gapFiller) joinTo(pcm []int16) {
+	n := min(len(pcm), len(g.join)) / 5
+	for i := range n {
+		w := float32(i+1) / float32(n+1)
+		pcm[i] = int16(float32(g.join[i])*(1-w) + float32(pcm[i])*w)
+	}
+	g.join = g.join[:0]
 }
 
 // after records a packet with timestamp ts that decoded to n samples.
