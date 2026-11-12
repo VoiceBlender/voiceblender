@@ -103,6 +103,19 @@ type mediaRateNotifier interface {
 	SetOnMediaRateChange(fn func(streamID string, rate int))
 }
 
+// playoutLeg is implemented by legs that conceal lost packets. The mixer
+// conceals a tick it has no frame of such a leg's for. Today that is the SIP
+// leg.
+type playoutLeg interface {
+	ConcealsLoss() bool
+}
+
+func watchPlayout(l leg.Leg, p *mixer.Participant) {
+	if pl, ok := l.(playoutLeg); ok && pl.ConcealsLoss() {
+		p.MarkConcealGaps()
+	}
+}
+
 // watchRateChanges asks a leg to report a mid-call rate change so the room can
 // resize what it built for the old rate. The rebuild runs on its own goroutine:
 // the callback fires from the leg's negotiation path, which must not block on
@@ -141,6 +154,7 @@ func (r *Room) addLegLocked(l leg.Leg) {
 		// racing a move would otherwise silence the leg on its new participant.
 		// Hangup closes it instead.
 		p.MarkOwnerClosesEgress()
+		watchPlayout(l, p)
 		r.legParts[l.ID()] = p
 		// Sync mute/deaf state so legs muted/deafened before room join stay that way in mixer.
 		if l.IsMuted() {
@@ -213,6 +227,7 @@ func (r *Room) RebuildLegMedia(legID string) bool {
 		mixer.NewResampleWriter(writer, mixRate, legRate),
 	)
 	p.MarkOwnerClosesEgress()
+	watchPlayout(l, p)
 	r.legParts[legID] = p
 	if rd := r.legFilterReaders[legID]; rd != nil {
 		for k, w := range observers {

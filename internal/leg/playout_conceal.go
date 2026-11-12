@@ -73,3 +73,20 @@ func (p *playoutConcealer) conceal(n int) []byte {
 	p.samples = p.plc.Conceal(p.samples, n/2)
 	return samplesToBytes(p.samples)
 }
+
+// ConcealsLoss reports whether the leg's codec has loss concealment. The room
+// then conceals the ticks it has no frame of the leg's for.
+func (l *SIPLeg) ConcealsLoss() bool {
+	l.mu.RLock()
+	s := l.prim
+	l.mu.RUnlock()
+	if s == nil {
+		return false
+	}
+	lc := s.live()
+	if lc == nil {
+		return false
+	}
+	_, fills := lc.decoder.(codec.GapDecoder)
+	return fills || concealedAtPlayout(lc.codecType)
+}
