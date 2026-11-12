@@ -52,6 +52,7 @@ func toLegStreamView(info leg.StreamInfo) LegStreamView {
 		SampleRate:       info.SampleRate,
 		LocalPort:        info.LocalPort,
 		RemoteAddr:       info.RemoteAddr,
+		SRTP:             info.SRTP,
 		Label:            info.Label,
 		Content:          info.Content,
 		Lang:             info.Lang,

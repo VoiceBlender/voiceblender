@@ -1,6 +1,15 @@
 package sip
 
-import "github.com/VoiceBlender/voiceblender/internal/codec"
+import (
+	"errors"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
+)
+
+// ErrNotAcceptable reports an offer or answer with no audio section we can
+// use under the call's codec and SRTP policy: a 488 for an offer, a failed
+// call for an answer.
+var ErrNotAcceptable = errors.New("media not acceptable")
 
 // AnswerOptions parameterizes PlanAnswer.
 type AnswerOptions struct {
@@ -22,6 +31,10 @@ type AnswerOptions struct {
 	// no cap; DirRecvOnly makes the answer receive-only whatever was offered,
 	// which is what a recording session (RFC 7866) needs.
 	MaxDirection string
+
+	// SRTP is the transport policy each audio section is checked against.
+	// Empty behaves as SRTPOptional.
+	SRTP SRTPMode
 }
 
 // SlotAction is what an answer does with one offered m= section.
@@ -54,6 +67,9 @@ type SlotPlan struct {
 	Codec     codec.CodecType
 	PT        uint8
 	Direction string // the direction our answer must carry
+
+	// Crypto is the offered SDES attribute the answer accepts, nil for plain RTP.
+	Crypto *SDESCrypto
 
 	MID     string
 	Label   string
@@ -111,6 +127,12 @@ func PlanAnswer(offer *SDPMedia, opts AnswerOptions) []SlotPlan {
 			p.Action = SlotReject
 			p.Reason = "offer_disabled"
 		default:
+			crypto, reason := SelectAnswerCrypto(ml.Proto, ra.Crypto, opts.SRTP)
+			if reason != "" {
+				p.Action = SlotReject
+				p.Reason = reason
+				break
+			}
 			preferred := codec.CodecUnknown
 			if accepted == 0 {
 				preferred = opts.Preferred
@@ -122,6 +144,7 @@ func PlanAnswer(offer *SDPMedia, opts AnswerOptions) []SlotPlan {
 				break
 			}
 			p.Action = SlotAccept
+			p.Crypto = crypto
 			p.Codec = selected
 			p.PT = pt
 			p.Direction = NarrowDirection(MirrorDirection(ra.EffectiveDirection()), opts.MaxDirection)

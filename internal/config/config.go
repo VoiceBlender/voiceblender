@@ -95,7 +95,13 @@ type Config struct {
 	// separately from multi-stream because it changes the SDP single-stream
 	// calls emit whenever a peer offers a section we don't handle (e.g. video).
 	SIPSDPStrictMLineAnswer bool
-	SIPReferAutoDial        bool
+	// SIPSRTP is the SDES-SRTP policy for classic SIP legs: "disabled",
+	// "optional" or "required".
+	SIPSRTP string
+	// SIPRTCP sends RTCP reports on SIP audio streams that multiplex RTCP
+	// onto the RTP port (RFC 5761).
+	SIPRTCP          bool
+	SIPReferAutoDial bool
 	// SIPReferConsultTimeoutMs bounds how long an inbound REFER is parked
 	// awaiting an app accept/decline decision (via the transfer commands) before
 	// it auto-declines with 603 — fail-closed, matching the default-deny behaviour
@@ -259,6 +265,8 @@ func Load() Config {
 		WSJitterBufferMs:          envInt("WS_JITTER_BUFFER_MS", 0),
 		ComfortNoiseEnabled:       envBool("COMFORT_NOISE_ENABLED", true),
 		SIPSDPStrictMLineAnswer:   envBool("SIP_SDP_STRICT_MLINE_ANSWER", false),
+		SIPSRTP:                   envOr("SIP_SRTP", "optional"),
+		SIPRTCP:                   envBool("SIP_RTCP", true),
 		SIPReferAutoDial:          os.Getenv("SIP_REFER_AUTO_DIAL") == "true",
 		SIPReferConsultTimeoutMs:  envInt("SIP_REFER_CONSULT_TIMEOUT_MS", 2000),
 		SIPAutoRinging:            os.Getenv("SIP_AUTO_RINGING") == "true",

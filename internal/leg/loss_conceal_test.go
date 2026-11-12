@@ -294,7 +294,6 @@ func newJitterStream(ct codec.CodecType, targetMs int) *mediaStream {
 	l := newTestSIPLeg(ct)
 	s := l.prim
 	s.liveCodec.Store(snapshotCodec(s, nil, nil))
-	s.jbFrameBytes = ct.SampleRate() / 50 * 2
 	s.jb = jitter.NewMs(targetMs, 300, 20)
 	return s
 }

@@ -359,17 +359,20 @@ func TestAudioStreamPayloadType(t *testing.T) {
 	}
 }
 
-func TestAudioIsSRTPOnly(t *testing.T) {
+func TestAudioTransportAcceptable(t *testing.T) {
+	const key = "inline:YUJDZGVmZ2hpSktMbW9QUXJzVFV2d3h5ejEyMzQ1"
 	cases := []struct {
-		name string
-		sdp  string
-		want bool
+		name                         string
+		sdp                          string
+		disabled, optional, required bool
 	}{
-		{"plain RTP/AVP", "m=audio 40000 RTP/AVP 0\r\n", false},
-		{"SDES SRTP", "m=audio 40000 RTP/SAVP 0\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:abcd\r\n", true},
-		{"DTLS-SRTP", "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", true},
-		{"SRTP alongside plain RTP", "m=audio 40000 RTP/SAVP 0\r\nm=audio 40002 RTP/AVP 0\r\n", false},
-		{"plain RTP section rejected with port 0", "m=audio 40000 RTP/SAVP 0\r\nm=audio 0 RTP/AVP 0\r\n", true},
+		{"plain RTP/AVP", "m=audio 40000 RTP/AVP 0\r\n", true, true, false},
+		{"SDES SRTP", "m=audio 40000 RTP/SAVP 0\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 " + key + "\r\n", false, true, true},
+		{"SAVP without crypto", "m=audio 40000 RTP/SAVP 0\r\n", false, false, false},
+		{"SAVP with only unknown suites", "m=audio 40000 RTP/SAVP 0\r\na=crypto:1 F8_128_HMAC_SHA1_80 " + key + "\r\n", false, false, false},
+		{"DTLS-SRTP", "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", false, false, false},
+		{"SRTP alongside plain RTP", "m=audio 40000 RTP/SAVP 0\r\nm=audio 40002 RTP/AVP 0\r\n", true, true, false},
+		{"plain RTP section rejected with port 0", "m=audio 40000 RTP/SAVP 0\r\nm=audio 0 RTP/AVP 0\r\n", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,17 +381,19 @@ func TestAudioIsSRTPOnly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseSDP: %v", err)
 			}
-			if got := m.AudioIsSRTPOnly(); got != tc.want {
-				t.Errorf("AudioIsSRTPOnly() = %v, want %v", got, tc.want)
+			for mode, want := range map[SRTPMode]bool{SRTPDisabled: tc.disabled, SRTPOptional: tc.optional, SRTPRequired: tc.required} {
+				if got := m.AudioTransportAcceptable(mode); got != want {
+					t.Errorf("AudioTransportAcceptable(%s) = %v, want %v", mode, got, want)
+				}
 			}
 		})
 	}
-	if (*SDPMedia)(nil).AudioIsSRTPOnly() {
-		t.Error("nil SDPMedia should not report SRTP-only")
+	if !(*SDPMedia)(nil).AudioTransportAcceptable(SRTPRequired) {
+		t.Error("nil SDPMedia should be acceptable")
 	}
 	// ParseSDP rejects an audio-less offer, so build one directly.
-	videoOnly := &SDPMedia{MLines: []RemoteMLine{{Media: "video", Proto: []string{"RTP", "SAVP"}, Port: 40000}}}
-	if videoOnly.AudioIsSRTPOnly() {
-		t.Error("an offer with no audio section should not report SRTP-only")
+	videoOnly := &SDPMedia{MLines: []RemoteMLine{{Media: "video", Proto: []string{"RTP", "SAVP"}, Port: 40000, AudioIdx: -1}}}
+	if !videoOnly.AudioTransportAcceptable(SRTPRequired) {
+		t.Error("an offer with no audio section should be left to the codec checks")
 	}
 }

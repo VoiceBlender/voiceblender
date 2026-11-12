@@ -155,6 +155,17 @@ func main() {
 		log.Info("SIP source allowlist enabled", "prefixes", len(sipAllowedSources))
 	}
 
+	srtpMode, err := sipmod.ParseSRTPMode(cfg.SIPSRTP)
+	if err != nil {
+		log.Error("invalid SIP_SRTP", "error", err)
+		os.Exit(1)
+	}
+
+	var rtcpInterval time.Duration
+	if cfg.SIPRTCP {
+		rtcpInterval = sipmod.DefaultRTCPInterval
+	}
+
 	// SIP engine (replaces diago)
 	engine, err := sipmod.NewEngine(sipmod.EngineConfig{
 		BindIP:         cfg.SIPBindIP,
@@ -180,6 +191,8 @@ func main() {
 		Codecs:            cfg.Codecs,
 		AMRWBMode:         cfg.AMRWBMode,
 		StrictMLineAnswer: cfg.SIPSDPStrictMLineAnswer,
+		SRTPMode:          srtpMode,
+		RTCPInterval:      rtcpInterval,
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
 		AMRNBMode:         cfg.AMRNBMode,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,

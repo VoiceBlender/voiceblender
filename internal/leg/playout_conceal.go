@@ -27,10 +27,11 @@ func concealedAtPlayout(ct codec.CodecType) bool {
 // pop returns the stream's next 20 ms: the buffer's frame when it has one,
 // concealment or silence when it has not.
 func (p *playoutConcealer) pop(s *mediaStream) []byte {
-	p.follow(s.live())
+	lc := s.live()
+	p.follow(lc)
 	pcm, ok := s.jb.Pop()
 	if !ok {
-		return p.conceal(s.jbFrameBytes)
+		return p.conceal(lc.pcmFrameBytes)
 	}
 	p.good(pcm)
 	return pcm

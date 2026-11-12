@@ -181,7 +181,7 @@ func (t *MLineTable) LocalStreams(held bool, skipMedia map[int]bool) []AudioStre
 			continue
 		}
 		if s.State == SlotTombstone || s.Local.Port == 0 {
-			out = append(out, AudioStream{Port: 0, MID: s.MID})
+			out = append(out, AudioStream{Port: 0, MID: s.MID, Proto: RejectProto(s.Proto)})
 			continue
 		}
 		local := s.Local

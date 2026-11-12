@@ -31,6 +31,7 @@ type StreamInfo struct {
 	SampleRate int
 	LocalPort  int
 	RemoteAddr string
+	SRTP       bool
 	Label      string
 	Content    string
 	Lang       string
@@ -103,6 +104,7 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 		if addr := s.rtpSess.RemoteAddr(); addr != nil {
 			info.RemoteAddr = addr.String()
 		}
+		info.SRTP = s.rtpSess.SRTPEnabled()
 	}
 	if slot, ok := l.mlines.ByStreamID(s.id); ok {
 		info.State = slot.State.String()
@@ -120,6 +122,7 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, error) {
 	l.mu.RLock()
 	primaryUp := l.prim.rtpSess != nil
+	primarySRTP := primaryUp && l.prim.rtpSess.SRTPEnabled()
 	l.mu.RUnlock()
 
 	if !primaryUp {
@@ -145,6 +148,15 @@ func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, 
 		direction = sipmod.DirSendRecv
 	}
 
+	// A stream added to an SRTP call is offered with SRTP too.
+	var offered []sipmod.SDESCrypto
+	if primarySRTP {
+		if offered, err = sipmod.NewOfferCrypto(); err != nil {
+			sess.Close()
+			return StreamInfo{}, err
+		}
+	}
+
 	l.mu.Lock()
 	mid := l.mlines.MintMID()
 	index := l.mlines.Len()
@@ -160,6 +172,7 @@ func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, 
 		lang:          req.Lang,
 		desiredDir:    direction,
 		negotiatedDir: direction,
+		offeredCrypto: offered,
 	}
 	local := sipmod.AudioStream{
 		Port:      sess.LocalPort(),
@@ -169,10 +182,11 @@ func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, 
 		Label:     req.Label,
 		Content:   req.Content,
 		Lang:      req.Lang,
+		Crypto:    offered,
 	}
 	l.streams = append(l.streams, s)
 	l.mlines.Append(sipmod.MLineSlot{
-		Media: "audio", Proto: []string{"RTP", "AVP"},
+		Media: "audio", Proto: local.TransportProto(),
 		MID: mid, Label: req.Label, Content: req.Content, Lang: req.Lang,
 		State: sipmod.SlotPending, StreamID: s.id, Local: local,
 	})
@@ -189,6 +203,18 @@ func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, 
 	if s.rtpSess == nil || s.rtpSess.RemoteAddr() == nil {
 		l.closeStream(s)
 		return StreamInfo{}, newStreamError(http.StatusConflict, "peer rejected the additional audio stream")
+	}
+	if len(offered) > 0 && !s.rtpSess.SRTPEnabled() {
+		l.closeStream(s)
+		return StreamInfo{}, newStreamError(http.StatusConflict, "peer accepted the additional audio stream without SRTP")
+	}
+	if c := s.rtpSess.LocalCrypto(); c != nil {
+		l.mu.Lock()
+		s.offeredCrypto = nil
+		if slot, ok := l.mlines.ByStreamID(s.id); ok {
+			slot.Local.Crypto = []sipmod.SDESCrypto{*c}
+		}
+		l.mu.Unlock()
 	}
 
 	l.setupStreamMedia(s)
@@ -250,12 +276,14 @@ func (l *SIPLeg) ensurePrimarySlotLocked() {
 		AMRWBModeSet:      l.prim.amrwbModeSet,
 		AMRNBOctetAligned: l.prim.amrnbOctetAligned,
 		AMRNBModeSet:      l.prim.amrnbModeSet,
+		Crypto:            sessCrypto(l.prim.rtpSess),
+		Proto:             l.prim.proto,
 	}
 	if l.prim.rtpSess != nil {
 		local.Port = l.prim.rtpSess.LocalPort()
 	}
 	l.mlines.Append(sipmod.MLineSlot{
-		Media: "audio", Proto: []string{"RTP", "AVP"},
+		Media: "audio", Proto: local.TransportProto(),
 		State: sipmod.SlotActive, StreamID: l.prim.id, Local: local,
 	})
 }
@@ -272,12 +300,7 @@ func (l *SIPLeg) offerFromTable() []byte {
 		Codecs:  l.supportedCodecs,
 		Streams: l.mlines.LocalStreams(l.held, nil),
 	}
-	if l.textRtpSess != nil {
-		cfg.TextRTPPort = l.textRtpSess.LocalPort()
-		cfg.TextT140PT = l.textT140PT
-		cfg.TextREDPT = l.textREDPT
-		cfg.RTTRedundancy = l.rttRedundancy
-	}
+	l.fillTextConfig(&cfg)
 	return sipmod.GenerateOffer(cfg)
 }
 

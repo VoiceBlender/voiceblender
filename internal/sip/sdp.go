@@ -25,6 +25,13 @@ type SDPConfig struct {
 	TextT140PT    uint8
 	TextREDPT     uint8
 	RTTRedundancy int
+	// TextCrypto keys the m=text section with SDES-SRTP. TextProto is the
+	// profile to echo (and, with TextRTPPort zero, the one a rejection
+	// repeats); nil means RTP/SAVP with crypto and RTP/AVP without.
+	// TextRTCPMux adds a=rtcp-mux, which we only answer to an offer of it.
+	TextCrypto  []SDESCrypto
+	TextProto   []string
+	TextRTCPMux bool
 
 	// AMRWBOctetAligned controls the AMR-WB fmtp emitted for an offer/answer:
 	// true emits "octet-align=1", false emits no octet-align (RFC 4867 default,
@@ -62,6 +69,11 @@ type SDPConfig struct {
 	// OmitRTCPMux drops a=rtcp-mux from the audio section; see
 	// AudioStream.OmitRTCPMux.
 	OmitRTCPMux bool
+
+	// Crypto and Proto feed the single legacy audio section; see
+	// AudioStream.Crypto and AudioStream.Proto.
+	Crypto []SDESCrypto
+	Proto  []string
 
 	// Streams, when non-empty, replaces the single audio section the generators
 	// would otherwise derive from RTPPort/Codecs/AMR*/DTMF*. Sections are
@@ -150,6 +162,9 @@ type SDPTextMedia struct {
 	T140PT     uint8 // 0 if no t140/1000 advertised
 	REDPT      uint8 // 0 if no red/1000 advertised
 	Direction  string
+	Proto      []string
+	Crypto     []SDESCrypto // valid a=crypto attributes only
+	RTCPMux    bool
 }
 
 // codecRtpmap returns the rtpmap value string for a codec (e.g. "opus/48000/2").
@@ -399,7 +414,7 @@ func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
 		MediaName: pionsdp.MediaName{
 			Media:  "audio",
 			Port:   pionsdp.RangedPort{Value: s.Port},
-			Protos: []string{"RTP", "AVP"},
+			Protos: s.TransportProto(),
 		},
 	}
 
@@ -473,6 +488,9 @@ func buildAudioMediaDescription(s AudioStream) *pionsdp.MediaDescription {
 	if !s.OmitRTCPMux {
 		md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute("rtcp-mux"))
 	}
+	for i := range s.Crypto {
+		md.Attributes = append(md.Attributes, pionsdp.NewAttribute("crypto", s.Crypto[i].AttrValue()))
+	}
 
 	return md
 }
@@ -504,6 +522,8 @@ func offerStream(cfg SDPConfig) AudioStream {
 		AMRWBModeSet:      cfg.AMRWBModeSet,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
 		AMRNBModeSet:      cfg.AMRNBModeSet,
+		Crypto:            cfg.Crypto,
+		Proto:             cfg.Proto,
 	}
 }
 
@@ -524,6 +544,8 @@ func answerStream(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, dir
 		AMRWBModeSet:      cfg.AMRWBModeSet,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
 		AMRNBModeSet:      cfg.AMRNBModeSet,
+		Crypto:            cfg.Crypto,
+		Proto:             cfg.Proto,
 	}
 }
 
@@ -643,7 +665,7 @@ func buildTextMediaDescription(cfg SDPConfig, direction string) *pionsdp.MediaDe
 		MediaName: pionsdp.MediaName{
 			Media:   "text",
 			Port:    pionsdp.RangedPort{Value: cfg.TextRTPPort},
-			Protos:  []string{"RTP", "AVP"},
+			Protos:  textProto(cfg),
 			Formats: formats,
 		},
 	}
@@ -669,19 +691,35 @@ func buildTextMediaDescription(cfg SDPConfig, direction string) *pionsdp.MediaDe
 	if direction != "" {
 		md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute(direction))
 	}
+	if cfg.TextRTCPMux {
+		md.Attributes = append(md.Attributes, pionsdp.NewPropertyAttribute("rtcp-mux"))
+	}
+	for i := range cfg.TextCrypto {
+		md.Attributes = append(md.Attributes, pionsdp.NewAttribute("crypto", cfg.TextCrypto[i].AttrValue()))
+	}
 	return md
+}
+
+func textProto(cfg SDPConfig) []string {
+	switch {
+	case len(cfg.TextProto) > 0:
+		return cfg.TextProto
+	case len(cfg.TextCrypto) > 0:
+		return []string{"RTP", "SAVP"}
+	}
+	return []string{"RTP", "AVP"}
 }
 
 // rejectedTextSection returns an m=text section with port=0 — the RFC 3264
 // way to reject a text section offered by the peer. Generated when the peer
 // offers RTT and we have it disabled; preserves m-line ordering for the
 // answer.
-func rejectedTextSection() *pionsdp.MediaDescription {
+func rejectedTextSection(cfg SDPConfig) *pionsdp.MediaDescription {
 	return &pionsdp.MediaDescription{
 		MediaName: pionsdp.MediaName{
 			Media:   "text",
 			Port:    pionsdp.RangedPort{Value: 0},
-			Protos:  []string{"RTP", "AVP"},
+			Protos:  textProto(SDPConfig{TextProto: cfg.TextProto}),
 			Formats: []string{"0"},
 		},
 	}
@@ -715,7 +753,7 @@ func GenerateAnswer(cfg SDPConfig, selected codec.CodecType, selectedPT uint8, t
 			sd.MediaDescriptions = append(sd.MediaDescriptions, tmd)
 		}
 	} else if textRejected {
-		sd.MediaDescriptions = append(sd.MediaDescriptions, rejectedTextSection())
+		sd.MediaDescriptions = append(sd.MediaDescriptions, rejectedTextSection(cfg))
 	}
 
 	b, _ := sd.Marshal()
@@ -811,6 +849,7 @@ func parseAudioMedia(md *pionsdp.MediaDescription, index int, sessionIP, session
 	}
 
 	m.RemotePort = md.MediaName.Port.Value
+	m.Proto = md.MediaName.Protos
 	if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
 		m.RemoteIP = md.ConnectionInformation.Address.Address
 		m.AddressFamily = md.ConnectionInformation.AddressType
@@ -876,6 +915,10 @@ func parseAudioMedia(md *pionsdp.MediaDescription, index int, sessionIP, session
 			m.Lang = a.Value
 		case "rtcp-mux":
 			m.RTCPMux = true
+		case "crypto":
+			if c, err := ParseSDESCrypto(a.Value); err == nil {
+				m.Crypto = append(m.Crypto, c)
+			}
 		case "ssrc":
 			if m.CNAME == "" {
 				m.CNAME = ssrcCNAME(a.Value)
@@ -932,7 +975,7 @@ func parseTextMedia(md *pionsdp.MediaDescription, m *SDPMedia, sd *pionsdp.Sessi
 		// Peer rejecting the text section — leave m.Text nil.
 		return
 	}
-	tx := &SDPTextMedia{RemotePort: port}
+	tx := &SDPTextMedia{RemotePort: port, Proto: md.MediaName.Protos}
 	if md.ConnectionInformation != nil && md.ConnectionInformation.Address != nil {
 		tx.RemoteIP = md.ConnectionInformation.Address.Address
 	} else if sd.ConnectionInformation != nil && sd.ConnectionInformation.Address != nil {
@@ -961,6 +1004,12 @@ func parseTextMedia(md *pionsdp.MediaDescription, m *SDPMedia, sd *pionsdp.Sessi
 			}
 		case "sendrecv", "sendonly", "recvonly", "inactive":
 			tx.Direction = a.Key
+		case "rtcp-mux":
+			tx.RTCPMux = true
+		case "crypto":
+			if c, err := ParseSDESCrypto(a.Value); err == nil {
+				tx.Crypto = append(tx.Crypto, c)
+			}
 		}
 	}
 	if tx.T140PT == 0 && tx.REDPT == 0 {

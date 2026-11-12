@@ -51,6 +51,18 @@ type RTPStats struct {
 	PacketsLost     uint32
 	JitterMs        float64
 	MOSScore        float64 // 1.0–5.0; 0 if insufficient data (< 2 packets)
+
+	// Outbound is the peer's RTCP view of the audio we send; nil until it
+	// has reported on it.
+	Outbound *OutboundRTPStats
+}
+
+// OutboundRTPStats is our sent stream as the peer's RTCP reports describe it.
+type OutboundRTPStats struct {
+	PacketsSent uint32
+	PacketsLost uint32
+	JitterMs    float64
+	RTTMs       float64 // 0 until the peer echoes a sender report
 }
 
 // calculateMOS estimates the Mean Opinion Score (1.0–5.0) using a simplified

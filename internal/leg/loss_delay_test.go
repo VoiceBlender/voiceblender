@@ -2,7 +2,6 @@ package leg
 
 import (
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,13 +9,6 @@ import (
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
-
-type frameCounter struct{ n atomic.Int64 }
-
-func (c *frameCounter) Write(p []byte) (int, error) {
-	c.n.Add(1)
-	return len(p), nil
-}
 
 // TestReadLoopLossAndPlayoutDelay measures how late a PCMU leg's audio plays
 // across lost packets, with the jitter buffer off. The consumer here does what

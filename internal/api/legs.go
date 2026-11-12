@@ -97,6 +97,14 @@ func disconnectData(l leg.Leg, reason string) *events.LegDisconnectedData {
 			PacketsLost:     stats.PacketsLost,
 			JitterMs:        stats.JitterMs,
 		}
+		if o := stats.Outbound; o != nil {
+			d.Quality.Outbound = &events.OutboundQuality{
+				PacketsSent: o.PacketsSent,
+				PacketsLost: o.PacketsLost,
+				JitterMs:    o.JitterMs,
+				RTTMs:       o.RTTMs,
+			}
+		}
 	}
 	return d
 }
@@ -301,6 +309,9 @@ func inviteFailureReason(err error, hasRingTimeout bool, ctx context.Context) st
 				return fmt.Sprintf("sip_%d", res.StatusCode)
 			}
 		}
+	}
+	if errors.Is(err, sipmod.ErrNotAcceptable) {
+		return "not_acceptable"
 	}
 
 	return "invite_failed"
@@ -764,11 +775,11 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // A SIPREC re-INVITE may also carry an updated recording metadata document,
 // with or without SDP. The SDP is applied first so any newly negotiated stream
 // exists and carries its a=label before the metadata is joined to it.
-func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte {
+func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
-		return nil
+		return nil, nil
 	}
 
 	// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
@@ -776,23 +787,26 @@ func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) []byte 
 
 	var answer []byte
 	if offer, ok := body.SDP(); ok {
-		direction := ""
-		answer, direction = sl.ApplyRemoteOffer(offer)
+		var direction string
+		var err error
+		if answer, direction, err = sl.ApplyRemoteOffer(offer); err != nil {
+			return nil, err
+		}
 		sl.HandleRemoteHold(direction)
 	}
 	s.applySIPRECMetadata(sl, body)
-	return answer
+	return answer, nil
 }
 
 // HandleUpdate processes a remote in-dialog UPDATE (RFC 3311). For session-
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) []byte {
+func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
-		return nil
+		return nil, nil
 	}
 
 	sl.ResetSessionTimer()
@@ -800,13 +814,16 @@ func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bo
 	var answer []byte
 	if hasSDP {
 		if offer, ok := body.SDP(); ok {
-			direction := ""
-			answer, direction = sl.ApplyRemoteOffer(offer)
+			var direction string
+			var err error
+			if answer, direction, err = sl.ApplyRemoteOffer(offer); err != nil {
+				return nil, err
+			}
 			sl.HandleRemoteHold(direction)
 		}
 	}
 	s.applySIPRECMetadata(sl, body)
-	return answer
+	return answer, nil
 }
 
 func (s *Server) unholdLeg(w http.ResponseWriter, r *http.Request) {
@@ -1207,6 +1224,7 @@ func (s *Server) applyFromIdentity(t sipmod.Trunk, from string, recipient sip.Ur
 		if opts.FromHost == "" {
 			opts.FromHost = route.FromHost
 		}
+		opts.SRTPMode = t.SRTPMode()
 		trunkID = t.ID()
 	}
 
@@ -1237,6 +1255,48 @@ func (s *Server) trunkForFrom(from string) sipmod.Trunk {
 	}
 	// User-only fallback (POST /v1/legs with `from: "alice"`).
 	return s.SIPEngine.Trunks().LookupByAORUser(from)
+}
+
+// outboundSRTP resolves whether an outbound SIP leg offers SDES-SRTP: the
+// request's own srtp field when set, else the policy of the trunk the call
+// goes through, else SIP_SRTP.
+func (s *Server) outboundSRTP(req CreateLegRequest, trunk sipmod.Trunk) (bool, error) {
+	var override sipmod.SRTPMode
+	source := "SIP_SRTP"
+	if trunk != nil && trunk.SRTPMode() != "" {
+		override, source = trunk.SRTPMode(), "trunk "+trunk.ID()+" srtp"
+	}
+	mode := s.SIPEngine.EffectiveSRTPMode(override)
+	use := mode == sipmod.SRTPRequired
+	if req.SRTP != nil {
+		switch {
+		case *req.SRTP && mode == sipmod.SRTPDisabled:
+			return false, newAPIError(http.StatusBadRequest, "srtp is disabled for this call (%s=disabled)", source)
+		case !*req.SRTP && mode == sipmod.SRTPRequired:
+			return false, newAPIError(http.StatusBadRequest, "srtp cannot be turned off: %s=required", source)
+		}
+		use = *req.SRTP
+	}
+	return use, nil
+}
+
+// inboundTrunk returns the trunk an inbound INVITE's source address claims it
+// for, and whether that trunk is the only candidate.
+func (s *Server) inboundTrunk(call *sipmod.InboundCall) (sipmod.Trunk, bool) {
+	sourceAddr := call.Request.Source()
+	if sourceAddr == "" {
+		return nil, false
+	}
+	host, portStr, err := net.SplitHostPort(sourceAddr)
+	if err != nil {
+		return nil, false
+	}
+	port, _ := strconv.Atoi(portStr)
+	var to sip.Uri
+	if h := call.Request.To(); h != nil {
+		to = h.Address
+	}
+	return s.SIPEngine.Trunks().LookupInbound(host, port, call.Request.Recipient.User, to)
 }
 
 // doCreateSIPOutboundLeg performs the synchronous validation + leg setup for an
@@ -1283,6 +1343,15 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 				}
 			}
 		}
+	}
+
+	srtpTrunk := trunk
+	if srtpTrunk == nil {
+		srtpTrunk = s.trunkForFrom(req.From)
+	}
+	useSRTP, err := s.outboundSRTP(req, srtpTrunk)
+	if err != nil {
+		return LegView{}, err
 	}
 
 	// Parse codec overrides from request.
@@ -1360,12 +1429,21 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 	if req.RTT {
 		inviteOpts.RTTEnabled = true
 	}
+	inviteOpts.SRTP = useSRTP
 	trunkIDForLeg := s.applyFromIdentity(trunk, req.From, recipient, &inviteOpts)
+	if req.SRTP != nil {
+		// An explicit srtp holds for the whole call, as the first answer is held to it.
+		inviteOpts.SRTPMode = sipmod.SRTPDisabled
+		if *req.SRTP {
+			inviteOpts.SRTPMode = sipmod.SRTPRequired
+		}
+	}
 	if legProxy != nil {
 		inviteOpts.ProxyURI = legProxy
 	}
 	l.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
 	l.SetTrunkID(trunkIDForLeg)
+	l.SetSRTPMode(inviteOpts.SRTPMode)
 
 	// AOR auto-resolve: if the recipient URI matches a known registration,
 	// route the INVITE to the bound socket(s) instead of letting sipgo
@@ -1511,24 +1589,33 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		return
 	}
 	if sipmod.IsMetaFromHost(call) {
-		// A proxy that re-encrypted with SDES leaves an SRTP offer no
-		// path here can decrypt; answering it would be silent audio.
-		if call.RemoteSDP.AudioIsSRTPOnly() {
-			s.Log.Error("meta From host offers SRTP without a DTLS fingerprint; no media path can carry it",
-				"from", call.From, "to", call.To)
-			if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusNotAcceptableHere, "Unsupported Media Transport", nil, s.SIPEngine.ServerHeader()); err != nil {
-				s.Log.Error("failed to send 488 Not Acceptable Here", "error", err)
-			}
-			return
-		}
 		s.Log.Info("meta From host without DTLS media; taking the classic SIP path",
 			"from", call.From, "to", call.To)
+	}
+	// A trunk claiming the call by its source brings its own SRTP policy.
+	inTrunk, uniqueTrunk := s.inboundTrunk(call)
+	var srtpOverride sipmod.SRTPMode
+	if inTrunk != nil {
+		srtpOverride = inTrunk.SRTPMode()
+	}
+	srtpMode := s.SIPEngine.EffectiveSRTPMode(srtpOverride)
+
+	// No audio section on a transport the SRTP policy allows (plain RTP under
+	// required, SRTP under disabled, DTLS-SRTP, SDES with no usable suite):
+	// answering would only yield silent audio.
+	if !call.RemoteSDP.AudioTransportAcceptable(srtpMode) {
+		s.Log.Warn("rejecting INVITE: no audio section has an acceptable media transport",
+			"from", call.From, "to", call.To, "srtp_mode", srtpMode)
+		if err := s.SIPEngine.DialogRespond(call.Dialog, sip.StatusNotAcceptableHere, "Unsupported Media Transport", nil, s.SIPEngine.ServerHeader()); err != nil {
+			s.Log.Error("failed to send 488 Not Acceptable Here", "error", err)
+		}
+		return
 	}
 
 	// A SIPREC recording session (RFC 7866) is not a call: it is answered
 	// receive-only and its m= sections carry other parties' audio. An INVITE
 	// the recording path declines to claim carries on as an ordinary call.
-	if s.ClaimSIPREC(call) {
+	if s.ClaimSIPREC(call, srtpOverride) {
 		return
 	}
 
@@ -1571,20 +1658,10 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// trunk's upstream.
 	var trunkID, ownerAppID string
 	sourceAddr := call.Request.Source()
-	if sourceAddr != "" {
-		host, portStr, err := net.SplitHostPort(sourceAddr)
-		if err == nil {
-			port, _ := strconv.Atoi(portStr)
-			var to sip.Uri
-			if h := call.Request.To(); h != nil {
-				to = h.Address
-			}
-			if t, unique := s.SIPEngine.Trunks().LookupInbound(host, port, call.Request.Recipient.User, to); t != nil {
-				trunkID = t.ID()
-				if unique {
-					ownerAppID = t.AppID()
-				}
-			}
+	if inTrunk != nil {
+		trunkID = inTrunk.ID()
+		if uniqueTrunk {
+			ownerAppID = inTrunk.AppID()
 		}
 	}
 	if trunkID == "" {
@@ -1599,6 +1676,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 		l.SetAppID(appID)
 	}
 	l.SetTrunkID(trunkID)
+	l.SetSRTPMode(srtpOverride)
 	s.LegMgr.Add(l)
 
 	// Apply server-default jitter buffer to inbound legs. No per-call

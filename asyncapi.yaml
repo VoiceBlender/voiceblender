@@ -6752,6 +6752,8 @@ components:
                     type: string
                 app_id:
                     type: string
+                srtp:
+                    type: string
                 sip_register:
                     $ref: '#/components/schemas/SIPRegisterTrunkSpec'
                 ip_ip:
@@ -6872,6 +6874,8 @@ components:
                     type: integer
                 remote_addr:
                     type: string
+                srtp:
+                    type: boolean
                 label:
                     type: string
                 content:
@@ -7214,6 +7218,8 @@ components:
                 status:
                     type: string
                 last_error:
+                    type: string
+                srtp:
                     type: string
                 created_at:
                     type: string

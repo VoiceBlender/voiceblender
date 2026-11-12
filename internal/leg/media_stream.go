@@ -65,8 +65,13 @@ type mediaStream struct {
 	// omitRTCPMux is set when we answered an offer that carried no a=rtcp-mux;
 	// every later SDP for the stream must then leave it out too.
 	omitRTCPMux bool
-	lastDTMFTS  uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
-	dtmfCh      chan string
+	// proto is the SRTP profile we answered on, echoed in every later SDP;
+	// nil means the RTP/AVP default. offeredCrypto holds the attributes we
+	// offered on a stream added mid-call until the answer keys rtpSess.
+	proto         []string
+	offeredCrypto []sipmod.SDESCrypto
+	lastDTMFTS    uint32 // timestamp of last fired end-of-event (dedup RFC 4733 retransmits)
+	dtmfCh        chan string
 
 	// AMR-WB negotiated parameters (only meaningful when codecType is AMR-WB).
 	amrwbOctetAligned bool
@@ -93,10 +98,9 @@ type mediaStream struct {
 	// into jb keyed by RTP sequence number, and popLoop drains jb at a fixed
 	// cadence into inFrames. When nil, readLoop pushes directly to inFrames
 	// (passthrough — zero added latency, no reordering).
-	jb           *jitter.Buffer
-	jbTargetMs   int // target delay in ms; 0 = disabled
-	jbMaxMs      int // max queue depth in ms
-	jbFrameBytes int // native-rate 20ms frame size in bytes (silence size on underrun)
+	jb         *jitter.Buffer
+	jbTargetMs int // target delay in ms; 0 = disabled
+	jbMaxMs    int // max queue depth in ms
 
 	inTap       io.Writer // copy of decoded incoming PCM (before inFrames)
 	outTap      io.Writer // copy of outgoing PCM (from writeLoop, including silence)
@@ -324,12 +328,12 @@ func (l *SIPLeg) negotiateInboundAnswer(preferred codec.CodecType) ([]byte, erro
 		return nil, fmt.Errorf("inbound call has no SDP offer")
 	}
 
-	textIdx := offeredTextMLine(offer)
+	textIdx := offeredTextMLine(offer, l.srtpMode)
+	textMLine := textIdx
 	var textPort int
-	var t140PT, redPT uint8
 	var textRejected bool
 	if textIdx >= 0 {
-		textPort, t140PT, redPT, textRejected = l.setupInboundTextMedia(offer)
+		textPort, _, _, textRejected = l.setupInboundTextMedia(offer)
 	}
 	if textPort == 0 {
 		// We are not carrying RTT, so the section is just another one to reject.
@@ -343,25 +347,34 @@ func (l *SIPLeg) negotiateInboundAnswer(preferred codec.CodecType) ([]byte, erro
 	}
 
 	cfg := sipmod.SDPConfig{
-		LocalIP:       l.localIP,
-		Codecs:        l.supportedCodecs,
-		Streams:       sections,
-		TextRTPPort:   textPort,
-		TextT140PT:    t140PT,
-		TextREDPT:     redPT,
-		RTTRedundancy: l.rttRedundancy,
+		LocalIP: l.localIP,
+		Codecs:  l.supportedCodecs,
+		Streams: sections,
 	}
+	l.mu.RLock()
+	if textPort != 0 {
+		l.fillTextConfig(&cfg)
+	} else if textRejected {
+		cfg.TextProto = offer.MLines[textMLine].Proto
+	}
+	l.mu.RUnlock()
 	return sipmod.GenerateAnswer(cfg, l.prim.codecType, l.prim.rtpPT, textRejected), nil
 }
 
 // offeredTextMLine returns the index of an m=text section we could carry, or
 // -1. RTT is only accepted as the final m-line: the generator appends m=text
 // after the audio sections, so accepting one in any other position would
-// reorder the answer and break RFC 3264 §6 positional matching.
-func offeredTextMLine(offer *sipmod.SDPMedia) int {
+// reorder the answer and break RFC 3264 §6 positional matching. The SRTP
+// policy applies to the text section on its own, as to each audio section.
+func offeredTextMLine(offer *sipmod.SDPMedia, srtp sipmod.SRTPMode) int {
 	for i, ml := range offer.MLines {
 		if ml.Media != "text" {
 			continue
+		}
+		if t := offer.Text; t != nil {
+			if _, reason := sipmod.SelectAnswerCrypto(t.Proto, t.Crypto, srtp); reason != "" {
+				return -1
+			}
 		}
 		if i == len(offer.MLines)-1 {
 			return i
@@ -378,6 +391,7 @@ func (l *SIPLeg) applyEngineGates() {
 		return
 	}
 	l.strictMLines = l.engine.StrictMLineAnswer()
+	l.srtpMode = l.engine.SRTPMode()
 }
 
 // answerOptions builds the negotiation gates for this leg.
@@ -388,6 +402,7 @@ func (l *SIPLeg) answerOptions(preferred codec.CodecType, textMLine int) sipmod.
 		TextMLineIndex:  textMLine,
 		StrictMLines:    l.strictMLines,
 		MaxDirection:    l.maxAnswerDirection,
+		SRTP:            l.srtpMode,
 	}
 }
 
@@ -407,7 +422,7 @@ func (l *SIPLeg) buildAnswerStreams(offer *sipmod.SDPMedia, plans []sipmod.SlotP
 			l.recordSlot(p, "", sipmod.SlotTombstone, sipmod.AudioStream{})
 			continue
 		case sipmod.SlotReject:
-			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID})
+			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID, Proto: sipmod.RejectProto(p.Proto)})
 			l.closeStreamAtIndex(p.Index)
 			l.recordSlot(p, "", sipmod.SlotTombstone, sipmod.AudioStream{})
 			continue
@@ -415,7 +430,7 @@ func (l *SIPLeg) buildAnswerStreams(offer *sipmod.SDPMedia, plans []sipmod.SlotP
 
 		s, sec, ok := l.materializeStream(offer, p)
 		if !ok {
-			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID})
+			sections = append(sections, sipmod.AudioStream{Port: 0, MID: p.MID, Proto: sipmod.RejectProto(p.Proto)})
 			l.closeStreamAtIndex(p.Index)
 			l.recordSlot(p, "", sipmod.SlotTombstone, sipmod.AudioStream{})
 			continue
@@ -453,8 +468,28 @@ func (l *SIPLeg) materializeStream(offer *sipmod.SDPMedia, p sipmod.SlotPlan) (*
 		}
 		return nil, sipmod.AudioStream{}, false
 	}
+	s.rtpSess.SetRTCPMux(ra.RTCPMux)
+	wasSRTP := s.rtpSess.SRTPEnabled()
+	crypto, err := keyStreamSRTP(s.rtpSess, p.Crypto)
+	if err != nil {
+		l.log.Warn("answer: SRTP keying failed, rejecting section",
+			"leg_id", l.id, "m_line", p.Index, "error", err)
+		if !s.primary {
+			s.close()
+			s.rtpSess = nil
+		}
+		return nil, sipmod.AudioStream{}, false
+	}
+	var proto []string
+	if crypto != nil {
+		proto = p.Proto
+		if !wasSRTP {
+			l.log.Info("SRTP negotiated", "leg_id", l.id, "m_line", p.Index, "suite", crypto[0].Suite)
+		}
+	}
 
 	l.mu.Lock()
+	s.proto = proto
 	s.mid, s.label, s.content, s.lang = p.MID, p.Label, p.Content, p.Lang
 	s.codecType = p.Codec
 	s.rtpPT = p.PT
@@ -483,7 +518,43 @@ func (l *SIPLeg) materializeStream(offer *sipmod.SDPMedia, p sipmod.SlotPlan) (*
 		Label:             s.label,
 		Content:           s.content,
 		Lang:              s.lang,
+		Crypto:            crypto,
+		Proto:             proto,
 	}, true
+}
+
+// keyStreamSRTP keys sess for an accepted answer section and returns the
+// attribute our answer carries, or nil for plain RTP. Our own key survives a
+// re-offer that keeps the suite, so a re-INVITE does not rekey what we send.
+func keyStreamSRTP(sess *sipmod.RTPSession, offered *sipmod.SDESCrypto) ([]sipmod.SDESCrypto, error) {
+	if offered == nil {
+		return nil, sess.SetSRTP(nil, nil)
+	}
+	local := sess.LocalCrypto()
+	if local == nil || local.Suite != offered.Suite {
+		c, err := sipmod.NewSDESCrypto(offered.Tag, offered.Suite)
+		if err != nil {
+			return nil, err
+		}
+		local = &c
+	}
+	local.Tag = offered.Tag
+	if err := sess.SetSRTP(local, offered); err != nil {
+		return nil, err
+	}
+	return []sipmod.SDESCrypto{*local}, nil
+}
+
+// sessCrypto returns the attribute keying what sess sends, as an SDP list, or
+// nil for plain RTP.
+func sessCrypto(sess *sipmod.RTPSession) []sipmod.SDESCrypto {
+	if sess == nil {
+		return nil
+	}
+	if c := sess.LocalCrypto(); c != nil {
+		return []sipmod.SDESCrypto{*c}
+	}
+	return nil
 }
 
 // newRTPSession binds a media socket, drawing from the engine's port pool when
@@ -607,6 +678,10 @@ func (l *SIPLeg) adoptOutboundStreams(call *sipmod.OutboundCall) bool {
 			continue
 		}
 
+		sess.SetRTCPMux(ra.RTCPMux)
+		// Later offers carry only the suite the peer accepted.
+		os.Crypto = sessCrypto(sess)
+
 		l.mu.Lock()
 		s := l.streamForIndex(i)
 		s.rtpSess = sess
@@ -643,7 +718,7 @@ func (l *SIPLeg) recordOfferedSlot(index int, os sipmod.AudioStream, streamID st
 	l.recordSlot(sipmod.SlotPlan{
 		Index:   index,
 		Media:   "audio",
-		Proto:   []string{"RTP", "AVP"},
+		Proto:   os.TransportProto(),
 		MID:     os.MID,
 		Label:   os.Label,
 		Content: os.Content,
@@ -708,17 +783,6 @@ func (s *mediaStream) receives() bool {
 	default:
 		return true
 	}
-}
-
-// acceptsDTMFPT reports whether an ingress RTP payload type is a negotiated
-// telephone-event. Absent negotiation it falls back to the conventional PTs so
-// behaviour matches what the leg did before the PTs were tracked.
-func (s *mediaStream) acceptsDTMFPT(pt uint8) bool {
-	if len(s.dtmfRecvPTs) == 0 {
-		return pt == 100 || pt == 101
-	}
-	_, ok := s.dtmfRecvPTs[pt]
-	return ok
 }
 
 // close releases the stream's RTP socket, returning its port to the allocator.

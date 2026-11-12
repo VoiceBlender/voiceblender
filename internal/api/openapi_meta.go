@@ -258,6 +258,11 @@ func WebhookNestedFieldDescriptions() map[string]string {
 		"CallQuality.rtp_packets_received": "Total inbound RTP audio packets received",
 		"CallQuality.rtp_packets_lost":     "Estimated lost packets based on sequence number gaps",
 		"CallQuality.rtp_jitter_ms":        "Inter-arrival jitter in milliseconds (RFC 3550 §A.8)",
+		"CallQuality.outbound":             "The audio this server sent, as the peer described it in its RTCP receiver reports. Present only on SIP legs that negotiated RTCP multiplexing (a=rtcp-mux) and whose peer sent at least one report on our stream",
+		"OutboundQuality.rtp_packets_sent": "RTP packets this server sent on the stream",
+		"OutboundQuality.rtp_packets_lost": "Cumulative packets the peer reported lost",
+		"OutboundQuality.rtp_jitter_ms":    "Inter-arrival jitter the peer measured on our stream, in milliseconds",
+		"OutboundQuality.rtt_ms":           "Round-trip time from the peer's echo of our last sender report (RFC 3550 §6.4.1). Omitted when the peer never echoed one",
 	}
 }
 
