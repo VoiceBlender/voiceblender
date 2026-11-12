@@ -93,5 +93,16 @@ func requestedSessionTimer(req *sip.Request) *SessionTimerParams {
 			refresher = "uac"
 		}
 	}
+	// Held to the same minimum as the initial INVITE, so a far end cannot make
+	// the leg refresh every few seconds.
+	minSE := uint32(DefaultMinSE)
+	if h := req.GetHeader("Min-SE"); h != nil {
+		if v := ParseMinSE(h.Value()); v > minSE {
+			minSE = v
+		}
+	}
+	if interval < minSE {
+		interval = minSE
+	}
 	return &SessionTimerParams{Interval: interval, Refresher: refresher}
 }

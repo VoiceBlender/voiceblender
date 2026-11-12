@@ -98,3 +98,31 @@ func TestRequestedSessionTimer(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestedSessionTimer_HeldToMinimum(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		minSE  string // "" for no Min-SE header
+		want   uint32
+	}{
+		{"below the minimum", "2;refresher=uas", "", 90},
+		{"at the minimum", "90;refresher=uas", "", 90},
+		{"Min-SE above our minimum", "100;refresher=uas", "120", 120},
+		{"Min-SE below our minimum", "30;refresher=uas", "60", 90},
+		{"above both", "1800;refresher=uas", "120", 1800},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sip.NewRequest(sip.UPDATE, sip.Uri{Scheme: "sip", Host: "192.0.2.1"})
+			req.AppendHeader(sip.NewHeader("Session-Expires", tt.header))
+			if tt.minSE != "" {
+				req.AppendHeader(sip.NewHeader("Min-SE", tt.minSE))
+			}
+			got := requestedSessionTimer(req)
+			if got == nil || got.Interval != tt.want || got.Refresher != "uas" {
+				t.Fatalf("requestedSessionTimer() = %+v, want interval %d and refresher uas", got, tt.want)
+			}
+		})
+	}
+}
