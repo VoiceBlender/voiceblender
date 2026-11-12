@@ -289,6 +289,34 @@ func TestSessionTimer_RefusedOfferLeavesTimer(t *testing.T) {
 	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
 }
 
+// Glare: the far end's UPDATE is accepted while VoiceBlender's refresh is in
+// flight, and the refresh then gets 491. The UPDATE refreshed the session, so
+// the leg must keep the timer it set.
+func TestSessionTimer_GlareKeepsFarEndTimer(t *testing.T) {
+	inst := newTestInstance(t, "st-glare")
+	cli := newRawSIPClient(t, "st-glare-ua")
+	legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, "4;refresher=uac")
+
+	// VoiceBlender's refresh is due after 2 s. It stays unanswered for now.
+	refresh := cli.waitInvite(t, 4*time.Second)
+
+	resp := cli.sendInDialogUpdate(t, inv.req, okRes, nil, "90;refresher=uac")
+	if resp.StatusCode != sip.StatusOK {
+		t.Fatalf("UPDATE status = %d %s, want 200", resp.StatusCode, resp.Reason)
+	}
+
+	res := sip.NewResponseFromRequest(refresh.req, 491, "Request Pending", nil)
+	if err := refresh.tx.Respond(res); err != nil {
+		t.Fatalf("respond 491: %v", err)
+	}
+	close(refresh.done)
+
+	// An expiry at a quarter of the old 4 s interval would end the leg after 1 s.
+	time.Sleep(3 * time.Second)
+	waitForLegState(t, inst.baseURL(), legID, "connected", time.Second)
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+}
+
 // RFC 4028 §9: the 200 OK to the initial INVITE carries Require: timer when it
 // makes the caller the refresher.
 func TestSessionTimer_InitialAnswerRequiresTimer(t *testing.T) {
