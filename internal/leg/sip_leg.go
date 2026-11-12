@@ -812,11 +812,10 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	if st == StateEarlyMedia && sdp != nil {
 		if l.sessionInterval > 0 {
 			// Use Respond to include session timer headers.
+			headers := append([]sip.Header{sip.NewHeader("Content-Type", "application/sdp")},
+				sipmod.SessionTimerHeaders(l.sessionInterval, l.sessionRefresher)...)
 			if err := l.engine.DialogRespond(l.inbound.Dialog, sip.StatusOK, "OK", sdp,
-				sip.NewHeader("Content-Type", "application/sdp"),
-				sip.NewHeader("Supported", "timer"),
-				sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
-				l.engine.ServerHeader(),
+				append(headers, l.engine.ServerHeader())...,
 			); err != nil {
 				return fmt.Errorf("respond SDP: %w", err)
 			}
@@ -846,11 +845,10 @@ func (l *SIPLeg) Answer(ctx context.Context) error {
 	// Send 200 OK with SDP answer
 	if l.sessionInterval > 0 {
 		// Include session timer headers in 200 OK.
+		headers := append([]sip.Header{sip.NewHeader("Content-Type", "application/sdp")},
+			sipmod.SessionTimerHeaders(l.sessionInterval, l.sessionRefresher)...)
 		if err := l.engine.DialogRespond(l.inbound.Dialog, sip.StatusOK, "OK", answerSDP,
-			sip.NewHeader("Content-Type", "application/sdp"),
-			sip.NewHeader("Supported", "timer"),
-			sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(l.sessionInterval, l.sessionRefresher)),
-			l.engine.ServerHeader(),
+			append(headers, l.engine.ServerHeader())...,
 		); err != nil {
 			l.closeAllStreams()
 			return fmt.Errorf("respond SDP: %w", err)
@@ -2303,18 +2301,40 @@ func (l *SIPLeg) startSessionTimer() {
 // armSessionTimerLocked starts the timer for the current interval and role, in
 // place of any timer already running. Caller holds l.mu.
 func (l *SIPLeg) armSessionTimerLocked() {
-	if l.sessionTimer != nil {
-		l.sessionTimer.Stop()
-	}
 	interval := time.Duration(l.sessionInterval) * time.Second
-	if l.refreshesSessionLocked() {
+	switch {
+	case interval == 0:
+		l.setSessionTimerLocked(0, nil)
+	case l.refreshesSessionLocked():
 		// We are the refresher: send a re-INVITE at half the interval.
-		l.sessionTimer = time.AfterFunc(interval/2, l.sessionRefresh)
-	} else {
+		l.setSessionTimerLocked(interval/2, l.sessionRefresh)
+	default:
 		// The far end is the refresher: guard at the interval plus 32 s
 		// (RFC 4028 §10 recommends a grace period of at least 32 seconds).
-		l.sessionTimer = time.AfterFunc(interval+32*time.Second, l.sessionExpired)
+		l.setSessionTimerLocked(interval+32*time.Second, l.sessionExpired)
 	}
+}
+
+// setSessionTimerLocked stops any running session timer and, unless f is nil,
+// starts f after d in its place. Caller holds l.mu.
+func (l *SIPLeg) setSessionTimerLocked(d time.Duration, f func()) {
+	if l.sessionTimer != nil {
+		l.sessionTimer.Stop()
+		l.sessionTimer = nil
+	}
+	if f != nil {
+		l.sessionTimer = time.AfterFunc(d, f)
+	}
+}
+
+// refreshFailedLocked arms the expiry after our refresh failed. If a request
+// from the far end replaced the timer that fired it (glare, then 491), that
+// request refreshed the session and its timer stands. Caller holds l.mu.
+func (l *SIPLeg) refreshFailedLocked(fired *time.Timer, remaining time.Duration) {
+	if l.sessionTimer != fired || l.sessionInterval == 0 {
+		return
+	}
+	l.setSessionTimerLocked(remaining, l.sessionExpired)
 }
 
 // sessionRefresh fires when we are the refresher and a refresh is due.
@@ -2323,6 +2343,7 @@ func (l *SIPLeg) sessionRefresh() {
 	st := l.state
 	interval := l.sessionInterval
 	refreshes := l.refreshesSessionLocked()
+	fired := l.sessionTimer
 	l.mu.RUnlock()
 
 	// The far end may have taken the role after this timer fired. A refresh
@@ -2356,10 +2377,8 @@ func (l *SIPLeg) sessionRefresh() {
 		sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(interval, "uac")),
 	); err != nil {
 		l.log.Error("session timer: refresh re-INVITE failed", "leg_id", l.id, "error", err)
-		// On failure, try once more at 75% of remaining interval.
-		remaining := time.Duration(interval) * time.Second / 4
 		l.mu.Lock()
-		l.sessionTimer = time.AfterFunc(remaining, l.sessionExpired)
+		l.refreshFailedLocked(fired, time.Duration(interval)*time.Second/4)
 		l.mu.Unlock()
 		return
 	}
@@ -2393,7 +2412,12 @@ func (l *SIPLeg) ResetSessionTimer(timer *sipmod.SessionTimerParams) {
 		return
 	}
 
-	if timer != nil {
+	if timer == nil {
+		// RFC 4028: a request without Session-Expires, answered without
+		// one, leaves the session with no timer.
+		l.sessionInterval = 0
+		l.sessionRefresher = ""
+	} else {
 		l.sessionInterval = timer.Interval
 		l.sessionRefresher = timer.Refresher
 		// The far end sent this request. On an outbound leg that puts the
@@ -2406,10 +2430,6 @@ func (l *SIPLeg) ResetSessionTimer(timer *sipmod.SessionTimerParams) {
 			}
 		}
 	}
-	if l.sessionInterval == 0 {
-		return
-	}
-
 	l.log.Debug("session timer reset", "leg_id", l.id, "interval", l.sessionInterval, "local_refresher", l.refreshesSessionLocked())
 	l.armSessionTimerLocked()
 }

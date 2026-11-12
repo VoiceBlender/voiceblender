@@ -713,8 +713,9 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	// Echo Session-Expires in the re-INVITE 200 OK if present (RFC 4028).
 	if timer != nil {
-		res.AppendHeader(sip.NewHeader("Supported", "timer"))
-		res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(timer.Interval, timer.Refresher)))
+		for _, h := range SessionTimerHeaders(timer.Interval, timer.Refresher) {
+			res.AppendHeader(h)
+		}
 	}
 	if err := e.respondMaybeFromSource(tx, req, res); err != nil {
 		e.log.Error("re-INVITE: respond failed", "error", err)
@@ -817,8 +818,9 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	// Echo Session-Expires per RFC 4028 §9.
 	if timer != nil {
-		res.AppendHeader(sip.NewHeader("Supported", "timer"))
-		res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(timer.Interval, timer.Refresher)))
+		for _, h := range SessionTimerHeaders(timer.Interval, timer.Refresher) {
+			res.AppendHeader(h)
+		}
 	}
 	if err := e.respondMaybeFromSource(tx, req, res); err != nil {
 		e.log.Error("UPDATE: respond failed", "error", err)

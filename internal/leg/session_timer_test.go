@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -66,8 +67,8 @@ func TestResetSessionTimer_FollowsFarEndRequest(t *testing.T) {
 			&sipmod.SessionTimerParams{Interval: 600, Refresher: "uas"}, 600, true, true},
 		{"held leg takes the role", false, StateHeld, 1800, "uas",
 			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
-		{"request names no timer", false, StateConnected, 1800, "uac",
-			nil, 1800, true, true},
+		{"request names no timer: timer off", false, StateConnected, 1800, "uac",
+			nil, 0, false, false},
 		{"timer first agreed in mid call", false, StateConnected, 0, "",
 			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
 		{"no timer and none asked for", false, StateConnected, 0, "",
@@ -177,4 +178,63 @@ func TestSessionRefreshSDP_KeepsRemoteHold(t *testing.T) {
 	if got := sdpDirection(t, l.sessionRefreshSDP()); got != sipmod.DirRecvOnly {
 		t.Errorf("refresh direction = %q, want recvonly", got)
 	}
+}
+
+// After our refresh fails, the expiry replaces the timer that fired the
+// refresh, unless a request from the far end replaced that timer meanwhile.
+func TestRefreshFailed_KeepsTimerFromFarEnd(t *testing.T) {
+	newLeg := func(interval uint32) *SIPLeg {
+		l := newTestSIPLeg(codec.CodecPCMU)
+		l.log = slog.New(slog.DiscardHandler)
+		l.outbound = &sipmod.OutboundCall{}
+		l.state = StateConnected
+		l.sessionInterval = interval
+		l.sessionRefresher = "uac"
+		t.Cleanup(l.stopSessionTimer)
+		return l
+	}
+
+	t.Run("own timer is replaced by the expiry", func(t *testing.T) {
+		l := newLeg(1800)
+		fired := time.AfterFunc(time.Hour, func() {})
+		l.sessionTimer = fired
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got == nil || got == fired {
+			t.Fatalf("session timer = %p, want a new expiry timer", got)
+		}
+	})
+
+	t.Run("far end refreshed meanwhile: its timer stands", func(t *testing.T) {
+		l := newLeg(1800)
+		fired := time.AfterFunc(time.Hour, func() {})
+		fired.Stop()
+		fresh := time.AfterFunc(time.Hour, func() {})
+		l.sessionTimer = fresh
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got != fresh {
+			t.Fatal("the failed refresh replaced the timer the far end's request armed")
+		}
+		if !fresh.Stop() {
+			t.Fatal("the far end's timer was stopped")
+		}
+	})
+
+	t.Run("timer turned off meanwhile: nothing armed", func(t *testing.T) {
+		l := newLeg(0)
+		fired := time.AfterFunc(time.Hour, func() {})
+		fired.Stop()
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got != nil {
+			t.Fatal("an expiry was armed for a session with no timer")
+		}
+	})
 }

@@ -130,3 +130,21 @@ func TestRequestedSessionTimer_HeldToMinimum(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionTimerHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		refresher   string
+		wantRequire bool
+	}{{"uac", true}, {"uas", false}} {
+		names := map[string]string{}
+		for _, h := range SessionTimerHeaders(1800, tt.refresher) {
+			names[h.Name()] = h.Value()
+		}
+		if names["Supported"] != "timer" || names["Session-Expires"] != "1800;refresher="+tt.refresher {
+			t.Errorf("refresher=%s: headers = %v", tt.refresher, names)
+		}
+		if got := names["Require"] == "timer"; got != tt.wantRequire {
+			t.Errorf("refresher=%s: Require: timer present = %v, want %v", tt.refresher, got, tt.wantRequire)
+		}
+	}
+}

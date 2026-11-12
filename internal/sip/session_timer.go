@@ -68,6 +68,19 @@ func ParseMinSE(value string) uint32 {
 	return uint32(n)
 }
 
+// SessionTimerHeaders are the session timer headers of a 2xx. A 2xx that makes
+// the UAC the refresher must also carry Require: timer (RFC 4028 §9).
+func SessionTimerHeaders(interval uint32, refresher string) []sip.Header {
+	h := []sip.Header{
+		sip.NewHeader("Supported", "timer"),
+		sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)),
+	}
+	if refresher == "uac" {
+		h = append(h, sip.NewHeader("Require", "timer"))
+	}
+	return h
+}
+
 // FormatSessionExpires formats a Session-Expires header value.
 func FormatSessionExpires(interval uint32, refresher string) string {
 	return fmt.Sprintf("%d;refresher=%s", interval, refresher)
