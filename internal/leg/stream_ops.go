@@ -31,6 +31,7 @@ type StreamInfo struct {
 	SampleRate int
 	LocalPort  int
 	RemoteAddr string
+	SRTP       bool
 	Label      string
 	Content    string
 	Lang       string
@@ -103,6 +104,7 @@ func (l *SIPLeg) streamInfoLocked(s *mediaStream) StreamInfo {
 		if addr := s.rtpSess.RemoteAddr(); addr != nil {
 			info.RemoteAddr = addr.String()
 		}
+		info.SRTP = s.rtpSess.SRTPEnabled()
 	}
 	if slot, ok := l.mlines.ByStreamID(s.id); ok {
 		info.State = slot.State.String()

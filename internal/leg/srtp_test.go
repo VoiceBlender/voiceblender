@@ -329,3 +329,38 @@ func TestSetSRTPMode(t *testing.T) {
 		t.Error("a trunk's required policy must refuse a plain offer")
 	}
 }
+
+func TestStreams_ReportSRTP(t *testing.T) {
+	srtpFlag := func(l *SIPLeg) bool {
+		t.Helper()
+		streams := l.Streams()
+		if len(streams) != 1 {
+			t.Fatalf("streams = %+v, want one", streams)
+		}
+		return streams[0].SRTP
+	}
+
+	l := newAnswerLeg(t, srtpOfferSDP("RTP/AVP", "", nil))
+	if _, err := l.negotiateInboundAnswer(codec.CodecUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if srtpFlag(l) {
+		t.Error("a plain stream reports SRTP")
+	}
+
+	l = newAnswerLeg(t, srtpOfferSDP("RTP/SAVP", sipmod.SuiteAES128CMSHA1_80, peerKeyA))
+	if _, err := l.negotiateInboundAnswer(codec.CodecUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if !srtpFlag(l) {
+		t.Error("an SDES stream does not report SRTP")
+	}
+
+	// Optional mode follows a peer that drops back to plain RTP, and so does the view.
+	if _, _, err := l.ApplyRemoteOffer([]byte(srtpOfferSDP("RTP/AVP", "", nil))); err != nil {
+		t.Fatal(err)
+	}
+	if srtpFlag(l) {
+		t.Error("the stream still reports SRTP after a plain re-offer")
+	}
+}

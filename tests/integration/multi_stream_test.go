@@ -206,6 +206,7 @@ type legStreamView struct {
 	Direction string `json:"direction"`
 	Codec     string `json:"codec"`
 	LocalPort int    `json:"local_port"`
+	SRTP      bool   `json:"srtp"`
 	Content   string `json:"content"`
 	Lang      string `json:"lang"`
 	RoomID    string `json:"room_id"`

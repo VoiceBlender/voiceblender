@@ -6874,6 +6874,8 @@ components:
                     type: integer
                 remote_addr:
                     type: string
+                srtp:
+                    type: boolean
                 label:
                     type: string
                 content:
