@@ -20,6 +20,9 @@ func TestParseSessionExpires(t *testing.T) {
 		{"0", 0, ""},
 		{"abc", 0, ""},
 		{"1800;foo=bar;refresher=uac", 1800, "uac"},
+		{"1800;Refresher=UAS", 1800, "uas"},
+		{"1800;REFRESHER=uac", 1800, "uac"},
+		{"1800; refresher = uas", 1800, "uas"},
 	}
 
 	for _, tt := range tests {
@@ -71,6 +74,7 @@ func TestRequestedSessionTimer(t *testing.T) {
 		{"none named, sender supports timer", "1800", "replaces, timer", &SessionTimerParams{Interval: 1800, Refresher: "uac"}},
 		{"none named, sender does not", "1800", "replaces", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
 		{"none named, no Supported", "1800", "", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
+		{"refresher named in capitals", "1800;Refresher=UAS", "timer", &SessionTimerParams{Interval: 1800, Refresher: "uas"}},
 		{"zero interval", "0", "timer", nil},
 		{"not a number", "abc", "timer", nil},
 	}

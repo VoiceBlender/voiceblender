@@ -43,10 +43,10 @@ func ParseSessionExpires(value string) (interval uint32, refresher string) {
 
 	if len(parts) > 1 {
 		for _, param := range strings.Split(parts[1], ";") {
-			param = strings.TrimSpace(param)
-			if strings.HasPrefix(strings.ToLower(param), "refresher=") {
-				refresher = strings.ToLower(strings.TrimPrefix(param, "refresher="))
-				refresher = strings.TrimPrefix(refresher, "Refresher=") // already lowered
+			// Parameter names are case-insensitive (RFC 3261 §7.3.1).
+			name, val, ok := strings.Cut(strings.ToLower(param), "=")
+			if ok && strings.TrimSpace(name) == "refresher" {
+				refresher = strings.TrimSpace(val)
 			}
 		}
 	}
