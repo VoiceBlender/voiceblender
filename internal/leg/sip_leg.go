@@ -2207,22 +2207,46 @@ func (l *SIPLeg) OnSessionExpired(f func()) {
 	l.onSessionExpired = f
 }
 
+// refreshesSessionLocked reports whether this side sends the refreshes. The
+// refresher names a role in the initial INVITE: we were its UAS on an inbound
+// leg and its UAC on an outbound one. Caller holds l.mu.
+func (l *SIPLeg) refreshesSessionLocked() bool {
+	if l.inbound != nil {
+		return l.sessionRefresher == "uas"
+	}
+	return l.sessionRefresher == "uac"
+}
+
+// sessionRefreshSDP re-offers the direction the call already has, so a refresh
+// never takes a held call off hold.
+func (l *SIPLeg) sessionRefreshSDP() []byte {
+	l.mu.RLock()
+	dir := l.prim.negotiatedDir
+	held := l.held
+	l.mu.RUnlock()
+
+	if dir == "" || dir == sipmod.DirSendRecv {
+		dir = sipmod.HoldDirection(dir, held)
+	}
+	return l.reInviteSDP(dir)
+}
+
 // startSessionTimer starts the session refresh or expiry timer after the call
 // is answered. Must only be called once.
 func (l *SIPLeg) startSessionTimer() {
 	l.mu.RLock()
 	interval := l.sessionInterval
-	refresher := l.sessionRefresher
+	refreshes := l.refreshesSessionLocked()
 	l.mu.RUnlock()
 
 	if interval == 0 {
 		return
 	}
 
-	if refresher == "uas" {
+	if refreshes {
 		// We are the refresher — send re-INVITE at half the interval.
 		refreshAt := time.Duration(interval) * time.Second / 2
-		l.log.Info("session timer: uas refresher", "leg_id", l.id, "interval", interval, "refresh_at", refreshAt)
+		l.log.Info("session timer: local refresher", "leg_id", l.id, "interval", interval, "refresh_at", refreshAt)
 		l.mu.Lock()
 		l.sessionTimer = time.AfterFunc(refreshAt, l.sessionRefresh)
 		l.mu.Unlock()
@@ -2230,14 +2254,14 @@ func (l *SIPLeg) startSessionTimer() {
 		// Remote is the refresher — guard timer at full interval + 32s grace
 		// (RFC 4028 §10 recommends a grace period of at least 32 seconds).
 		guardAt := time.Duration(interval)*time.Second + 32*time.Second
-		l.log.Info("session timer: uac refresher", "leg_id", l.id, "interval", interval, "guard_at", guardAt)
+		l.log.Info("session timer: remote refresher", "leg_id", l.id, "interval", interval, "guard_at", guardAt)
 		l.mu.Lock()
 		l.sessionTimer = time.AfterFunc(guardAt, l.sessionExpired)
 		l.mu.Unlock()
 	}
 }
 
-// sessionRefresh fires when we (UAS) need to refresh the session.
+// sessionRefresh fires when we are the refresher and a refresh is due.
 func (l *SIPLeg) sessionRefresh() {
 	l.mu.RLock()
 	st := l.state
@@ -2250,7 +2274,7 @@ func (l *SIPLeg) sessionRefresh() {
 
 	l.log.Info("session timer: sending refresh re-INVITE", "leg_id", l.id)
 
-	sdpBody := l.ReInviteAnswerSDP("sendrecv")
+	sdpBody := l.sessionRefreshSDP()
 	if sdpBody == nil {
 		l.log.Error("session timer: could not generate refresh SDP", "leg_id", l.id)
 		return
@@ -2266,7 +2290,12 @@ func (l *SIPLeg) sessionRefresh() {
 		return
 	}
 
-	if _, err := l.engine.SendReInviteAnswer(l.ctx, dialog, sdpBody, l.applyAnswer); err != nil {
+	// A refresh with no Session-Expires turns the timer off at the peer. We are
+	// the UAC of this request, so refresher=uac keeps the role with us.
+	if _, err := l.engine.SendReInviteAnswer(l.ctx, dialog, sdpBody, l.applyAnswer,
+		sip.NewHeader("Supported", "timer"),
+		sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(interval, "uac")),
+	); err != nil {
 		l.log.Error("session timer: refresh re-INVITE failed", "leg_id", l.id, "error", err)
 		// On failure, try once more at 75% of remaining interval.
 		remaining := time.Duration(interval) * time.Second / 4
@@ -2300,6 +2329,7 @@ func (l *SIPLeg) ResetSessionTimer() {
 	l.mu.Lock()
 	interval := l.sessionInterval
 	refresher := l.sessionRefresher
+	refreshes := l.refreshesSessionLocked()
 	t := l.sessionTimer
 	l.mu.Unlock()
 
@@ -2309,7 +2339,7 @@ func (l *SIPLeg) ResetSessionTimer() {
 
 	l.log.Debug("session timer reset", "leg_id", l.id, "interval", interval, "refresher", refresher)
 
-	if refresher == "uas" {
+	if refreshes {
 		t.Reset(time.Duration(interval) * time.Second / 2)
 	} else {
 		t.Reset(time.Duration(interval)*time.Second + 32*time.Second)

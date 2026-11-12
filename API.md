@@ -4885,9 +4885,10 @@ Notes and limits:
 
 - Accepts session timers requested by the remote UA (inbound and outbound)
 - Minimum session interval: 90 seconds (`Min-SE`)
-- Supports both `refresher=uac` and `refresher=uas` roles
+- Supports both `refresher=uac` and `refresher=uas` roles. The role is read against the leg's direction: VoiceBlender is the UAS on an inbound leg and the UAC on an outbound leg. If the answer to an outbound call names no refresher, VoiceBlender refreshes
+- As refresher, VoiceBlender sends a re-INVITE at half the interval. It carries `Supported: timer` and `Session-Expires`, and repeats the call's current direction, so a held call stays on hold
 - Re-INVITEs (including hold/unhold) reset the session timer
-- Expired sessions disconnect with reason `session_expired`
+- When the remote UA is the refresher and no refresh arrives within the interval plus 32 seconds, the leg disconnects with reason `session_expired`
 
 ---
 
