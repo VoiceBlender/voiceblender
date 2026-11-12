@@ -225,6 +225,15 @@ type CallQuality struct {
 	PacketsReceived uint32  `json:"rtp_packets_received"`
 	PacketsLost     uint32  `json:"rtp_packets_lost"`
 	JitterMs        float64 `json:"rtp_jitter_ms"`
+	// Outbound is present once the peer has sent an RTCP report on our audio.
+	Outbound *OutboundQuality `json:"outbound,omitempty"`
+}
+
+type OutboundQuality struct {
+	PacketsSent uint32  `json:"rtp_packets_sent"`
+	PacketsLost uint32  `json:"rtp_packets_lost"`
+	JitterMs    float64 `json:"rtp_jitter_ms"`
+	RTTMs       float64 `json:"rtt_ms,omitempty"`
 }
 
 // --- Room lifecycle events ---

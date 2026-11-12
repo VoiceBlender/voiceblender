@@ -1,8 +1,6 @@
 package sip
 
 import (
-	"strings"
-
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 )
 
@@ -46,6 +44,24 @@ type AudioStream struct {
 	AMRWBModeSet      string
 	AMRNBOctetAligned bool
 	AMRNBModeSet      string
+
+	// Crypto holds the SDES attributes to advertise: every offered suite in an
+	// offer, the single accepted one in an answer. Non-empty selects an SRTP
+	// profile.
+	Crypto []SDESCrypto
+	// Proto overrides the m= transport profile. Empty derives it from Crypto.
+	Proto []string
+}
+
+// TransportProto returns the m= transport profile the section advertises.
+func (s *AudioStream) TransportProto() []string {
+	if len(s.Proto) > 0 {
+		return s.Proto
+	}
+	if len(s.Crypto) > 0 {
+		return []string{"RTP", "SAVP"}
+	}
+	return []string{"RTP", "AVP"}
 }
 
 // PayloadType returns the payload type to advertise for c, preferring an
@@ -80,6 +96,11 @@ type RemoteAudioStream struct {
 	Direction string
 	Ptime     int
 	RTCPMux   bool
+
+	// Proto is the m= transport profile. Crypto holds the a=crypto attributes
+	// we can honour, in offer order; unsupported ones are dropped.
+	Proto  []string
+	Crypto []SDESCrypto
 
 	Codecs       []codec.CodecType
 	CodecPTs     map[codec.CodecType]uint8
@@ -184,37 +205,4 @@ func HoldDirection(desired string, held bool) string {
 	default:
 		return DirSendOnly
 	}
-}
-
-// AudioIsSRTPOnly reports whether every active audio section the offer carries
-// is on an SRTP profile. Nothing in the RTP media path decrypts SRTP, so such
-// an offer has no section we can play; an offer with at least one plain-RTP
-// audio section, or with no audio at all, is not reported.
-func (m *SDPMedia) AudioIsSRTPOnly() bool {
-	if m == nil {
-		return false
-	}
-	active := 0
-	for _, ml := range m.MLines {
-		if ml.Media != "audio" || ml.Port == 0 {
-			continue
-		}
-		active++
-		if !protoIsSRTP(ml.Proto) {
-			return false
-		}
-	}
-	return active > 0
-}
-
-// protoIsSRTP reports whether an m= transport profile is an SRTP one:
-// RTP/SAVP (SDES) or UDP/TLS/RTP/SAVPF (DTLS-SRTP).
-func protoIsSRTP(proto []string) bool {
-	for _, tok := range proto {
-		switch strings.ToUpper(tok) {
-		case "SAVP", "SAVPF":
-			return true
-		}
-	}
-	return false
 }

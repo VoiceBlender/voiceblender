@@ -63,6 +63,7 @@ type OutboundRegistrationParams struct {
 	// verification. Scoped to that peer's hostname; every other TLS peer is
 	// still verified.
 	TLSInsecureSkipVerify bool
+	SRTPMode              SRTPMode
 }
 
 // OutboundRegistration is the sip_register Trunk implementation. One
@@ -75,6 +76,7 @@ type OutboundRegistration struct {
 
 	id            string
 	appID         string
+	srtpMode      SRTPMode
 	registrarURI  sip.Uri
 	outboundProxy *sip.Uri
 	aor           sip.Uri
@@ -147,6 +149,7 @@ func NewOutboundRegistration(engine *Engine, bus *events.Bus, log *slog.Logger, 
 		log:              log.With("trunk_id", p.ID, "aor", CanonicalizeAOR(p.AOR)),
 		id:               p.ID,
 		appID:            p.AppID,
+		srtpMode:         p.SRTPMode,
 		registrarURI:     p.RegistrarURI,
 		outboundProxy:    p.OutboundProxy,
 		aor:              p.AOR,
@@ -283,6 +286,8 @@ func (r *OutboundRegistration) OutboundRoute(_ sip.Uri) OutboundRoute {
 }
 
 // Snapshot returns the current TrunkView. Safe to call concurrently.
+func (r *OutboundRegistration) SRTPMode() SRTPMode { return r.srtpMode }
+
 func (r *OutboundRegistration) Snapshot() TrunkView {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -295,6 +300,7 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 		AppID:     r.appID,
 		Status:    r.status,
 		LastError: r.lastError,
+		SRTP:      r.srtpMode,
 		CreatedAt: r.createdAt.UTC().Format(time.RFC3339),
 		SIPRegister: &SIPRegisterTrunkView{
 			RegistrarURI:            r.registrarURI.String(),

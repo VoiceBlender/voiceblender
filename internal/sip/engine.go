@@ -84,6 +84,14 @@ type EngineConfig struct {
 	// offered section we don't accept, per RFC 3264 §6.
 	StrictMLineAnswer bool
 
+	// SRTPMode is the SDES-SRTP policy for offers and answers. Empty behaves
+	// as SRTPOptional.
+	SRTPMode SRTPMode
+
+	// RTCPInterval is the nominal RTCP report interval for SIP audio streams;
+	// zero sends no RTCP.
+	RTCPInterval time.Duration
+
 	// TCPEnabled adds a TCP listener on BindPort alongside the UDP one. Needed
 	// for inbound SIPREC: sipgo refuses to send a request over 1300 bytes on
 	// UDP (RFC 3261 §18.1.1), and a recording INVITE always exceeds that.
@@ -101,13 +109,15 @@ type Engine struct {
 	onInvite          func(call *InboundCall)
 	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
 	pendingAuth       *pendingAuthStore
-	onReInvite        func(callID string, body *MessageBody) []byte // returns SDP answer for 200 OK
-	onUpdate          func(callID string, body *MessageBody, hasSDP bool) []byte
+	onReInvite        func(callID string, body *MessageBody) ([]byte, error) // SDP answer for the 200 OK; ErrNotAcceptable answers 488
+	onUpdate          func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify          func(callID string, statusCode int, reason string, terminated bool)
 	codecs            []codec.CodecType
 	amrwbMode         int
 	strictMLineAnswer bool
+	srtpMode          SRTPMode
+	rtcpInterval      time.Duration
 	amrwbOctetAligned bool
 	amrnbMode         int
 	amrnbOctetAligned bool
@@ -513,6 +523,8 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		codecs:            cfg.Codecs,
 		amrwbMode:         cfg.AMRWBMode,
 		strictMLineAnswer: cfg.StrictMLineAnswer,
+		srtpMode:          cfg.SRTPMode,
+		rtcpInterval:      cfg.RTCPInterval,
 		amrwbOctetAligned: cfg.AMRWBOctetAligned,
 		amrnbMode:         cfg.AMRNBMode,
 		amrnbOctetAligned: cfg.AMRNBOctetAligned,
@@ -585,8 +597,9 @@ func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
 
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
 // The handler receives the SIP Call-ID and the SDP direction attribute, and
-// returns the SDP body to include in the 200 OK response (nil = no SDP).
-func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) []byte) {
+// returns the SDP body to include in the 200 OK response (nil = no SDP). An
+// error rejects the offer with 488 and leaves the session as it was.
+func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) ([]byte, error)) {
 	e.onReInvite = handler
 }
 
@@ -596,7 +609,8 @@ func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) []byt
 // direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
 // and the returned []byte is the SDP answer for the 200 OK. When false,
 // direction is "" and the handler should only refresh session-timer state.
-func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) []byte) {
+// An error rejects the offer with 488.
+func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)) {
 	e.onUpdate = handler
 }
 
@@ -655,7 +669,11 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// and update hold state.
 	var answerSDP []byte
 	if e.onReInvite != nil {
-		answerSDP = e.onReInvite(callID.Value(), body)
+		var err error
+		if answerSDP, err = e.onReInvite(callID.Value(), body); err != nil {
+			e.rejectOffer(tx, req, "re-INVITE", err)
+			return
+		}
 	}
 
 	// Respond 200 OK with SDP answer (RFC 3261 §14.2 requires SDP in 200).
@@ -683,6 +701,16 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	_, hadSDP := body.SDP()
 	e.log.Info("re-INVITE handled", "call_id", callID.Value(), "has_sdp", hadSDP)
+}
+
+// rejectOffer answers an in-dialog offer the handler refused with 488.
+func (e *Engine) rejectOffer(tx sip.ServerTransaction, req *sip.Request, method string, err error) {
+	e.log.Info(method+" offer rejected", "call_id", req.CallID().Value(), "error", err)
+	res := sip.NewResponseFromRequest(req, sip.StatusNotAcceptableHere, "Not Acceptable Here", nil)
+	res.AppendHeader(e.ServerHeader())
+	if rerr := e.respondMaybeFromSource(tx, req, res); rerr != nil {
+		e.log.Error(method+": respond 488 failed", "error", rerr)
+	}
 }
 
 // handleUpdate processes an in-dialog UPDATE (RFC 3311). Typical uses are
@@ -751,7 +779,11 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 
 	var answerSDP []byte
 	if e.onUpdate != nil {
-		answerSDP = e.onUpdate(callID.Value(), body, hasSDP)
+		var err error
+		if answerSDP, err = e.onUpdate(callID.Value(), body, hasSDP); err != nil {
+			e.rejectOffer(tx, req, "UPDATE", err)
+			return
+		}
 	}
 
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", answerSDP)
@@ -1281,6 +1313,13 @@ type InviteOptions struct {
 	// offers emit exactly the SDP a single-stream call always has.
 	Streams []OfferStream
 
+	// SRTP offers SDES-SRTP (RTP/SAVP) on every audio section. The policy
+	// outranks it: required always offers SRTP, disabled never does.
+	SRTP bool
+	// SRTPMode replaces the engine's policy for this call, as a trunk's srtp
+	// setting does; empty keeps the engine's.
+	SRTPMode SRTPMode
+
 	// BodyParts, when non-empty, sends the offer as a multipart/mixed body with
 	// the SDP as its first part and these appended — how RFC 7866 carries the
 	// rs-metadata document alongside the offer. Empty emits the plain
@@ -1309,6 +1348,7 @@ func (o OfferStream) zero() bool {
 //
 // The returned sessions cover only the extra streams; the caller owns the first.
 func (e *Engine) buildOfferStreams(cfg *SDPConfig, first *RTPSession, codecs []codec.CodecType, streams []OfferStream) ([]*RTPSession, []AudioStream, error) {
+	srtp := len(cfg.Crypto) > 0
 	if len(streams) == 0 || (len(streams) == 1 && streams[0].zero()) {
 		return nil, nil, nil
 	}
@@ -1329,6 +1369,13 @@ func (e *Engine) buildOfferStreams(cfg *SDPConfig, first *RTPSession, codecs []c
 			sess = s
 		}
 		as := base
+		if i > 0 && srtp {
+			c, err := NewOfferCrypto()
+			if err != nil {
+				return sessions, nil, err
+			}
+			as.Crypto = c
+		}
 		as.Codecs = codecs
 		as.Port = sess.LocalPort()
 		as.MID = strconv.Itoa(i)
@@ -1341,6 +1388,20 @@ func (e *Engine) buildOfferStreams(cfg *SDPConfig, first *RTPSession, codecs []c
 
 	cfg.Streams = offered
 	return sessions, offered, nil
+}
+
+// offeredCrypto lists the attributes offered per audio section, in m-line
+// order: from the multi-stream sections when there are any, else the single
+// legacy section's.
+func offeredCrypto(single []SDESCrypto, streams []AudioStream) [][]SDESCrypto {
+	if len(streams) == 0 {
+		return [][]SDESCrypto{single}
+	}
+	out := make([][]SDESCrypto, len(streams))
+	for i := range streams {
+		out[i] = streams[i].Crypto
+	}
+	return out
 }
 
 // fromIdentity builds the From header and the matching P-Asserted-Identity
@@ -1415,6 +1476,11 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// hosts decide directly; hostnames go through the OS resolver.
 	localIP, localPeer := e.advertisedIPForRecipient(ctx, opts.nextHopHost(recipient))
 
+	offerCrypto, err := e.offerCrypto(opts.SRTPMode, opts.SRTP)
+	if err != nil {
+		return nil, err
+	}
+
 	// Optionally allocate a second RTP session for RTT (m=text).
 	cfg := SDPConfig{
 		LocalIP:           localIP,
@@ -1422,6 +1488,7 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		Codecs:            codecs,
 		AMRWBOctetAligned: e.amrwbOctetAligned,
 		AMRNBOctetAligned: e.amrnbOctetAligned,
+		Crypto:            offerCrypto,
 	}
 	extraSess, offered, oerr := e.buildOfferStreams(&cfg, rtpSess, codecs, opts.Streams)
 	if oerr != nil {
@@ -1444,6 +1511,14 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		cfg.TextT140PT = 99
 		cfg.TextREDPT = 98
 		cfg.RTTRedundancy = opts.RTTRedundancy
+		if offerCrypto != nil {
+			if cfg.TextCrypto, terr = NewOfferCrypto(); terr != nil {
+				for _, s := range extraSess {
+					s.Close()
+				}
+				return nil, terr
+			}
+		}
 	}
 
 	// Generate SDP offer
@@ -1554,6 +1629,10 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 			e.log.Warn("early media: parse 183 SDP failed", "error", err)
 			return nil // non-fatal, keep waiting for 200
 		}
+		if err := applyAnswerSRTP([]*RTPSession{rtpSess}, [][]SDESCrypto{offerCrypto}, remoteSDP); err != nil {
+			e.log.Warn("early media: ignoring 183", "error", err)
+			return nil
+		}
 		if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
 			e.log.Warn("early media: set remote failed", "error", err)
 			return nil
@@ -1587,6 +1666,13 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		return nil, fmt.Errorf("parse answer SDP: %w", err)
 	}
 
+	if err := applyAnswerSRTP(append([]*RTPSession{rtpSess}, extraSess...), offeredCrypto(offerCrypto, offered), remoteSDP); err != nil {
+		return nil, err
+	}
+	if c := rtpSess.LocalCrypto(); c != nil {
+		e.log.Info("SRTP negotiated", "recipient", recipient.String(), "suite", c.Suite)
+	}
+
 	// Set remote RTP address
 	if err := rtpSess.SetRemote(remoteSDP.RemoteIP, remoteSDP.RemotePort); err != nil {
 		return nil, fmt.Errorf("set remote: %w", err)
@@ -1604,6 +1690,9 @@ func (e *Engine) Invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 	// engine never returns a session the leg will discard.
 	if textRtpSess != nil {
 		if remoteSDP.Text != nil && remoteSDP.Text.RemotePort != 0 && remoteSDP.Text.T140PT != 0 {
+			if err := keyAnswerText(textRtpSess, cfg.TextCrypto, remoteSDP.Text); err != nil {
+				return nil, err
+			}
 			if err := textRtpSess.SetRemote(remoteSDP.Text.RemoteIP, remoteSDP.Text.RemotePort); err != nil {
 				e.log.Warn("text RTP set remote failed", "error", err)
 				textRtpSess.Close()
@@ -1651,6 +1740,79 @@ func (e *Engine) Codecs() []codec.CodecType {
 
 // StrictMLineAnswer reports whether answers cover every offered m= section.
 func (e *Engine) StrictMLineAnswer() bool { return e.strictMLineAnswer }
+
+// SRTPMode returns the configured SDES-SRTP policy.
+func (e *Engine) SRTPMode() SRTPMode {
+	if e.srtpMode == "" {
+		return SRTPOptional
+	}
+	return e.srtpMode
+}
+
+// EffectiveSRTPMode returns override when set, else the engine's policy.
+func (e *Engine) EffectiveSRTPMode(override SRTPMode) SRTPMode {
+	if override != "" {
+		return override
+	}
+	return e.SRTPMode()
+}
+
+// RTCPInterval returns the RTCP report interval, or zero when RTCP is off.
+func (e *Engine) RTCPInterval() time.Duration { return e.rtcpInterval }
+
+// offerCrypto returns the a=crypto attributes for a new offer's audio section,
+// or nil when the call carries plain RTP. The policy outranks the call's own
+// request.
+func (e *Engine) offerCrypto(override SRTPMode, requested bool) ([]SDESCrypto, error) {
+	switch e.EffectiveSRTPMode(override) {
+	case SRTPRequired:
+	case SRTPDisabled:
+		return nil, nil
+	default:
+		if !requested {
+			return nil, nil
+		}
+	}
+	return NewOfferCrypto()
+}
+
+// applyAnswerSRTP keys each offered audio section's session from the peer's
+// answer, matched positionally. A section offered with SRTP that the peer
+// accepted without a matching attribute fails the call rather than fall back
+// to plain RTP.
+func applyAnswerSRTP(sessions []*RTPSession, offered [][]SDESCrypto, answer *SDPMedia) error {
+	for i, sess := range sessions {
+		if i >= len(offered) || len(offered[i]) == 0 {
+			continue
+		}
+		if i >= len(answer.Audio) || answer.Audio[i].RemotePort == 0 {
+			continue
+		}
+		ra := &answer.Audio[i]
+		local, remote, ok := AnswerCryptoFor(offered[i], ra.Crypto)
+		if !ok || !protoIsSDES(ra.Proto) {
+			return fmt.Errorf("%w: audio stream %d: answer accepts none of the offered SRTP crypto suites", ErrNotAcceptable, i)
+		}
+		if err := sess.SetSRTP(local, remote); err != nil {
+			return fmt.Errorf("audio stream %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// keyAnswerText keys the text session from the answer to an offer that
+// carried the given text crypto. As with audio, an SRTP offer the peer
+// accepts without one of our keys fails rather than falling back to plain.
+func keyAnswerText(sess *RTPSession, offered []SDESCrypto, answer *SDPTextMedia) error {
+	if len(offered) == 0 {
+		return nil
+	}
+	local, remote, ok := AnswerCryptoFor(offered, answer.Crypto)
+	if !ok || !protoIsSDES(answer.Proto) {
+		return fmt.Errorf("%w: text stream: answer accepts none of the offered SRTP crypto suites", ErrNotAcceptable)
+	}
+	return sess.SetSRTP(local, remote)
+}
 
 // AMRWBMode returns the configured AMR-WB encoder speech mode (0..8).
 func (e *Engine) AMRWBMode() int { return e.amrwbMode }

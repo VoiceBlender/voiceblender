@@ -72,6 +72,9 @@ type Trunk interface {
 	// upstream addresses inbound INVITEs to it. Empty when not applicable.
 	ContactUser() string
 	AppID() string
+	// SRTPMode is the SDES-SRTP policy for calls through this trunk, either
+	// way; empty follows the engine's.
+	SRTPMode() SRTPMode
 	// OutboundRoute returns the routing, identity and credentials for an
 	// outbound INVITE to recipient placed through this trunk.
 	OutboundRoute(recipient sip.Uri) OutboundRoute
@@ -93,6 +96,7 @@ type TrunkView struct {
 	AppID     string      `json:"app_id,omitempty"`
 	Status    TrunkStatus `json:"status"`
 	LastError string      `json:"last_error,omitempty"`
+	SRTP      SRTPMode    `json:"srtp,omitempty"`
 	CreatedAt string      `json:"created_at"`
 
 	SIPRegister *SIPRegisterTrunkView `json:"sip_register,omitempty"`

@@ -38,6 +38,7 @@ type IPIPTrunkParams struct {
 	// PingInterval enables the OPTIONS health check; zero disables it.
 	PingInterval          time.Duration
 	TLSInsecureSkipVerify bool
+	SRTPMode              SRTPMode
 }
 
 type trunkHealth int
@@ -57,6 +58,7 @@ type IPIPTrunk struct {
 
 	id            string
 	appID         string
+	srtpMode      SRTPMode
 	peerURI       sip.Uri
 	outboundProxy *sip.Uri
 	aor           *sip.Uri
@@ -102,6 +104,7 @@ func NewIPIPTrunk(engine *Engine, bus *events.Bus, log *slog.Logger, p IPIPTrunk
 		log:                   log.With("trunk_id", p.ID, "peer", p.PeerURI.String()),
 		id:                    p.ID,
 		appID:                 p.AppID,
+		srtpMode:              p.SRTPMode,
 		peerURI:               p.PeerURI,
 		outboundProxy:         p.OutboundProxy,
 		aor:                   p.AOR,
@@ -154,6 +157,7 @@ func (t *IPIPTrunk) nextHopURI() sip.Uri {
 func (t *IPIPTrunk) ID() string          { return t.id }
 func (t *IPIPTrunk) Type() TrunkType     { return TrunkTypeIPIP }
 func (t *IPIPTrunk) AppID() string       { return t.appID }
+func (t *IPIPTrunk) SRTPMode() SRTPMode  { return t.srtpMode }
 func (t *IPIPTrunk) ContactUser() string { return "" }
 
 func (t *IPIPTrunk) AOR() string {
@@ -214,6 +218,7 @@ func (t *IPIPTrunk) Snapshot() TrunkView {
 	view := TrunkView{
 		ID:        t.id,
 		Type:      TrunkTypeIPIP,
+		SRTP:      t.srtpMode,
 		AppID:     t.appID,
 		Status:    t.status,
 		LastError: t.lastError,

@@ -96,6 +96,14 @@ info:
           group: SIP
           default: "false"
           description: Emit a port-0 placeholder for every offered m= section we do not accept, so answers carry the same m-line count and order as the offer (RFC 3264 §6). Gated separately from multi-stream because it changes the SDP single-stream calls emit whenever a peer offers a section we don't handle, such as video.
+        - name: SIP_SRTP
+          group: SIP
+          default: optional
+          description: 'SDES-SRTP (RFC 4568) policy for classic SIP legs. optional: an offer on RTP/SAVP with a supported a=crypto suite is answered with SRTP and a plain offer with plain RTP; outbound calls offer SRTP only when the leg sets srtp. required: every audio stream must be SRTP; plain-RTP offers are rejected with 488 and every outbound call offers SRTP. disabled: plain RTP only; SRTP offers are rejected with 488. Answers accept AES_CM_128_HMAC_SHA1_80/_32, AES_256_CM_HMAC_SHA1_80/_32 and AEAD_AES_128/256_GCM; offers carry AES_CM_128_HMAC_SHA1_80 and _32. The keys travel in the SDP, so pair SRTP with SIP over TLS. DTLS-SRTP is not accepted on classic SIP legs. The policy applies to a real-time text section the same way, with keys of its own; an outbound SRTP call with rtt offers text on RTP/SAVP too. A trunk created with its own srtp replaces this setting, stricter or looser, for calls through that trunk in both directions.'
+        - name: SIP_RTCP
+          group: SIP
+          default: "true"
+          description: 'Send RTCP (RFC 3550) on SIP audio streams: a sender or receiver report with SDES CNAME every 5 s (randomised ±50%), and a BYE when the stream closes. Reports go only where offer/answer settled on a=rtcp-mux (RFC 5761), so a peer that does not multiplex RTCP onto the RTP port gets none. On an SRTP call they are sent as SRTCP. The peer''s reports on our stream fill quality.outbound on leg.disconnected. Incoming RTCP is read whatever this is set to.'
         - name: SIP_REFER_AUTO_DIAL
           group: SIP
           default: "false"
@@ -4249,6 +4257,9 @@ components:
                     type: boolean
                     description: 'For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.'
                     default: false
+                srtp:
+                    type: boolean
+                    description: 'SIP outbound only. true offers SDES-SRTP (RFC 4568): every audio section, and the text section when rtt is set, goes out as RTP/SAVP with its own a=crypto keys, and a peer that answers without an accepted key fails the call. false offers plain RTP/AVP. Either value holds for the whole call: a later re-offer on the other transport gets 488. Omit to follow SIP_SRTP, which offers SRTP only when it is "required". Rejected with 400 when it contradicts SIP_SRTP (true under "disabled", false under "required"). The keys travel in the SDP, so send the INVITE over TLS (a "sips:" URI or ";transport=tls").'
                 custom_data:
                     description: Opaque application JSON attached to the leg. Any JSON value is accepted (object, array, string, number, boolean). It is echoed on the leg view and carried at the top level of every event published for this leg, so external state can be correlated without keeping a leg_id lookup table. Capped by CUSTOM_DATA_MAX_BYTES (default 1024 bytes, 0 = unlimited).
                 streams:
@@ -4350,6 +4361,13 @@ components:
                 app_id:
                     type: string
                     description: Application identifier carried through to every event emitted by this trunk.
+                srtp:
+                    type: string
+                    description: 'SDES-SRTP policy for calls through this trunk, in both directions: outbound calls placed through it (by trunk_id or by from) and inbound calls it claims. Takes the SIP_SRTP values and replaces SIP_SRTP for those calls, stricter or looser: required makes every call through the trunk SRTP, disabled keeps it plain RTP even when SIP_SRTP is required. Omit to follow SIP_SRTP. Inbound calls are claimed by source address, which can be forged over UDP; a trunk that relaxes the server policy should use TLS.'
+                    enum:
+                        - disabled
+                        - optional
+                        - required
                 sip_register:
                     description: Required when type == "sip_register". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry).
                     anyOf:
@@ -5484,6 +5502,8 @@ components:
                     type: string
                 last_error:
                     type: string
+                srtp:
+                    type: string
                 created_at:
                     type: string
                 sip_register:
@@ -5768,6 +5788,28 @@ webhooks:
                                             rtp_jitter_ms:
                                                 type: number
                                                 description: Inter-arrival jitter in milliseconds (RFC 3550 §A.8)
+                                            outbound:
+                                                type:
+                                                    - object
+                                                    - "null"
+                                                properties:
+                                                    rtp_packets_sent:
+                                                        type: integer
+                                                        description: RTP packets this server sent on the stream
+                                                    rtp_packets_lost:
+                                                        type: integer
+                                                        description: Cumulative packets the peer reported lost
+                                                    rtp_jitter_ms:
+                                                        type: number
+                                                        description: Inter-arrival jitter the peer measured on our stream, in milliseconds
+                                                    rtt_ms:
+                                                        type: number
+                                                        description: Round-trip time from the peer's echo of our last sender report (RFC 3550 §6.4.1). Omitted when the peer never echoed one
+                                                required:
+                                                    - rtp_packets_sent
+                                                    - rtp_packets_lost
+                                                    - rtp_jitter_ms
+                                                description: The audio this server sent, as the peer described it in its RTCP receiver reports. Present only on SIP legs that negotiated RTCP multiplexing (a=rtcp-mux) and whose peer sent at least one report on our stream
                                         required:
                                             - mos_score
                                             - rtp_packets_received

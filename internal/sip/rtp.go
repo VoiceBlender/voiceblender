@@ -10,12 +10,18 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
+	"github.com/pion/srtp/v3"
 )
 
 // ErrNotRTP is returned by ReadRTP when a received UDP packet is not valid RTP
 // (e.g. RTCP, STUN). Callers should continue reading on this error.
 var ErrNotRTP = errors.New("not an RTP packet")
+
+// ErrSRTPAuth accompanies ErrNotRTP for a packet that failed SRTP
+// authentication. Unlike RTCP or STUN it is no sign the peer is alive.
+var ErrSRTPAuth = errors.New("srtp authentication failed")
 
 const rtpBufSize = 1500
 
@@ -31,6 +37,25 @@ type RTPSession struct {
 	closeOnce  sync.Once
 	closeErr   error
 	readBuf    []byte // ReadRTPInto's buffer, owned by the single reader
+
+	// SDES-SRTP state per direction; nil while the session carries plain RTP.
+	tx atomic.Pointer[srtpDir]
+	rx atomic.Pointer[srtpDir]
+
+	rtcp     rtcpState
+	rtcpMux  atomic.Bool
+	rtcpOn   atomic.Bool
+	rtcpOnce sync.Once
+	cname    string
+	done     chan struct{}
+}
+
+func newSession(conn *net.UDPConn) *RTPSession {
+	return &RTPSession{
+		conn:      conn,
+		localPort: conn.LocalAddr().(*net.UDPAddr).Port,
+		done:      make(chan struct{}),
+	}
 }
 
 // NewRTPSession creates a new RTP session listening on a random UDP port.
@@ -41,12 +66,7 @@ func NewRTPSession() (*RTPSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen udp: %w", err)
 	}
-
-	addr := conn.LocalAddr().(*net.UDPAddr)
-	return &RTPSession{
-		conn:      conn,
-		localPort: addr.Port,
-	}, nil
+	return newSession(conn), nil
 }
 
 // NewRTPSessionOnPort creates a new RTP session on a specific local port.
@@ -56,12 +76,7 @@ func NewRTPSessionOnPort(port int) (*RTPSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen udp on port %d: %w", port, err)
 	}
-
-	addr := conn.LocalAddr().(*net.UDPAddr)
-	return &RTPSession{
-		conn:      conn,
-		localPort: addr.Port,
-	}, nil
+	return newSession(conn), nil
 }
 
 const rtpBindAttempts = 8
@@ -149,21 +164,33 @@ func (s *RTPSession) readInto(pkt *rtp.Packet, buf []byte) error {
 		return err
 	}
 
-	// RFC 5761 §4: drop RTCP frames muxed on the RTP port (PT byte in
-	// 192..223 with V=2). Otherwise they unmarshal cleanly as RTP and feed
-	// garbage to the payload decoder.
+	// RFC 5761 §4: RTCP muxed on the RTP port has its PT byte in 192..223.
+	// It must not reach the RTP path, where it would unmarshal cleanly and
+	// feed garbage to the payload decoder.
 	if n >= 2 {
 		pt2 := buf[1]
 		if pt2 >= 192 && pt2 <= 223 {
-			return fmt.Errorf("%w: rtcp-on-rtp-port", ErrNotRTP)
+			return s.readRTCP(buf[:n])
 		}
+	}
+
+	if rx := s.rx.Load(); rx != nil {
+		plain, err := rx.decrypt(buf[:n])
+		if err != nil {
+			return fmt.Errorf("%w: %w: %v", ErrNotRTP, ErrSRTPAuth, err)
+		}
+		n = len(plain)
 	}
 
 	if err := pkt.Unmarshal(buf[:n]); err != nil {
 		return fmt.Errorf("%w: %v", ErrNotRTP, err)
 	}
+	if s.rtcpOn.Load() {
+		s.rtcp.onReceive(&pkt.Header, time.Now())
+	}
 
-	// Symmetric RTP: latch remote address to the source of incoming RTP.
+	// Latching only after decryption keeps an unauthenticated packet from
+	// redirecting the media. Symmetric RTP: latch remote address to the source of incoming RTP.
 	if cur := s.getRemote(); cur == nil || cur.AddrPort() != src {
 		s.setRemote(net.UDPAddrFromAddrPort(src))
 	}
@@ -180,7 +207,34 @@ func (s *RTPSession) WriteRTP(pkt *rtp.Packet) error {
 	if err != nil {
 		return fmt.Errorf("rtp marshal: %w", err)
 	}
-	_, err = s.conn.WriteToUDP(data, addr)
+	if err := s.send(data, addr); err != nil {
+		return err
+	}
+	s.noteSent(pkt)
+	return nil
+}
+
+func (s *RTPSession) noteSent(pkt *rtp.Packet) {
+	if s.rtcpOn.Load() {
+		s.rtcp.onSend(&pkt.Header, len(pkt.Payload), time.Now())
+	}
+}
+
+// send writes one marshalled RTP packet, encrypting it when SRTP is active.
+func (s *RTPSession) send(data []byte, addr *net.UDPAddr) error {
+	tx := s.tx.Load()
+	if tx == nil {
+		_, err := s.conn.WriteToUDP(data, addr)
+		return err
+	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	out, err := tx.ctx.EncryptRTP(tx.buf, data, &tx.hdr)
+	if err != nil {
+		return fmt.Errorf("srtp encrypt: %w", err)
+	}
+	tx.buf = out[:0]
+	_, err = s.conn.WriteToUDP(out, addr)
 	return err
 }
 
@@ -199,8 +253,11 @@ func (s *RTPSession) WriteRTPBuf(pkt *rtp.Packet, buf []byte) ([]byte, error) {
 	if _, err := pkt.MarshalTo(buf); err != nil {
 		return buf, fmt.Errorf("rtp marshal: %w", err)
 	}
-	_, err := s.conn.WriteToUDP(buf, addr)
-	return buf, err
+	if err := s.send(buf, addr); err != nil {
+		return buf, err
+	}
+	s.noteSent(pkt)
+	return buf, nil
 }
 
 // SendKeepalive sends a small burst of silence RTP packets to the remote
@@ -235,7 +292,7 @@ func (s *RTPSession) SendKeepalive(payloadType uint8, count int) {
 		if err != nil {
 			return
 		}
-		s.conn.WriteToUDP(data, addr)
+		_ = s.send(data, addr)
 		seq++
 		ts += 160
 	}
@@ -251,11 +308,16 @@ func (s *RTPSession) SetReadDeadline(t time.Time) error {
 	return s.conn.SetReadDeadline(t)
 }
 
-// Close closes the UDP connection and releases the port back to the allocator.
-// Idempotent: subsequent calls are no-ops. Multiple rollback paths in the
-// engine ladder can each call Close on the same session.
+// Close closes the UDP connection and releases the port back to the allocator,
+// first sending an RTCP BYE when reports are on. Idempotent: subsequent calls
+// are no-ops. Multiple rollback paths in the engine ladder can each call Close
+// on the same session.
 func (s *RTPSession) Close() error {
 	s.closeOnce.Do(func() {
+		if s.rtcpOn.Load() {
+			_ = s.sendRTCP(true)
+		}
+		close(s.done)
 		s.closeErr = s.conn.Close()
 		if s.allocator != nil {
 			s.allocator.Release(s.localPort)
@@ -263,3 +325,103 @@ func (s *RTPSession) Close() error {
 	})
 	return s.closeErr
 }
+
+// srtpDir is the SRTP context for one direction of a session. pion contexts
+// are not safe for concurrent use, so every use holds mu.
+type srtpDir struct {
+	mu      sync.Mutex
+	ctx     *srtp.Context
+	key     SDESCrypto
+	hdr     rtp.Header
+	rtcpHdr rtcp.Header
+	buf     []byte
+}
+
+func newSRTPDir(c *SDESCrypto, decrypt bool) (*srtpDir, error) {
+	keyLen, _, err := suiteKeyLens(c.Suite)
+	if err != nil {
+		return nil, err
+	}
+	var opts []srtp.ContextOption
+	if len(c.MKI) > 0 {
+		opts = append(opts, srtp.MasterKeyIndicator(c.MKI))
+	}
+	if decrypt {
+		opts = append(opts, srtp.SRTPReplayProtection(srtpReplayWindow), srtp.SRTCPReplayProtection(srtpReplayWindow))
+	}
+	ctx, err := srtp.CreateContext(c.Key[:keyLen], c.Key[keyLen:], sdesSuites[c.Suite], opts...)
+	if err != nil {
+		return nil, fmt.Errorf("srtp context: %w", err)
+	}
+	d := &srtpDir{ctx: ctx, key: *c}
+	if !decrypt {
+		d.buf = make([]byte, 0, rtpBufSize+64)
+	}
+	return d, nil
+}
+
+const srtpReplayWindow = 128
+
+// decrypt authenticates and decrypts pkt in place, returning the plain RTP.
+func (d *srtpDir) decrypt(pkt []byte) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.ctx.DecryptRTP(pkt, pkt, &d.hdr)
+}
+
+// SetSRTP keys the session with SDES-SRTP: local encrypts what we send,
+// remote decrypts what the peer sends. Passing nil for both returns the
+// session to plain RTP. A direction whose key is unchanged keeps its context,
+// so a re-INVITE that repeats the keys does not reset the rollover counter.
+func (s *RTPSession) SetSRTP(local, remote *SDESCrypto) error {
+	if local == nil && remote == nil {
+		s.tx.Store(nil)
+		s.rx.Store(nil)
+		return nil
+	}
+	if local == nil || remote == nil {
+		return fmt.Errorf("srtp needs both a local and a remote key")
+	}
+	var tx, rx *srtpDir
+	if cur := s.tx.Load(); cur == nil || !cur.key.SameKey(local) {
+		d, err := newSRTPDir(local, false)
+		if err != nil {
+			return fmt.Errorf("local key: %w", err)
+		}
+		tx = d
+	}
+	if cur := s.rx.Load(); cur == nil || !cur.key.SameKey(remote) {
+		d, err := newSRTPDir(remote, true)
+		if err != nil {
+			return fmt.Errorf("remote key: %w", err)
+		}
+		rx = d
+	}
+	if tx != nil {
+		s.tx.Store(tx)
+	} else if cur := s.tx.Load(); cur.key.Tag != local.Tag {
+		cur.mu.Lock()
+		cur.key.Tag = local.Tag
+		cur.mu.Unlock()
+	}
+	if rx != nil {
+		s.rx.Store(rx)
+	}
+	return nil
+}
+
+// LocalCrypto returns the attribute keying what we send, or nil when the
+// session carries plain RTP.
+func (s *RTPSession) LocalCrypto() *SDESCrypto {
+	d := s.tx.Load()
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	c := d.key
+	d.mu.Unlock()
+	return &c
+}
+
+// SRTPEnabled reports whether the session encrypts its media.
+func (s *RTPSession) SRTPEnabled() bool { return s.tx.Load() != nil }

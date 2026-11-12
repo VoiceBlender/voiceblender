@@ -56,6 +56,7 @@ type CreateLegRequest struct {
 	SpeechDetection *bool             `json:"speech_detection,omitempty"` // override server default for speaking.started/speaking.stopped events
 	Filters         []FilterSpec      `json:"filters,omitempty"`          // ingress audio processing chain; omit for the server default, send [] for none
 	RTT             bool              `json:"rtt,omitempty"`              // offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE, or enable bidi text channel for websocket legs
+	SRTP            *bool             `json:"srtp,omitempty"`             // offer SDES-SRTP (RTP/SAVP) on the outbound INVITE; omitted = server default (SIP_SRTP)
 
 	// CustomData is opaque application JSON echoed on the leg view and in
 	// every event published for this leg.
@@ -144,6 +145,7 @@ var createLegRequestFields = map[string]FieldEnrichment{
 	"filters":          {Description: "Ordered audio processing chain applied to audio arriving from this leg, before it reaches the room mixer and therefore before other legs, recordings and speech-to-text see it. Each entry names a built-in filter and may carry parameters. Omit the field to use the server default (AUDIO_FILTERS env var); send an empty array for no processing. Filters run in the order given, and corrective filters should precede effects. Known filters: denoise (background noise suppression), bandpass (low_hz, high_hz), gain (volume, -8 to 8 in ~3 dB steps), pitch (shifts the voice up or down in semitones; semitones, mix), robotic (metallic voice effect that keeps speech easy to follow; pitch_hz, depth, mix), vocoder (a stronger, fully synthetic robot voice that is noticeably harder to understand; carrier_hz, bands, mix). Noise suppression removes background noise, not competing speech."},
 	"custom_data":      {Description: customDataDescription},
 	"rtt":              {Description: "For sip legs: offer Real-Time Text (ITU-T T.140 over RTP per RFC 4103) alongside audio. For websocket legs: enable the bidirectional text-message channel. Default: false.", Default: false},
+	"srtp":             {Description: "SIP outbound only. true offers SDES-SRTP (RFC 4568): every audio section, and the text section when rtt is set, goes out as RTP/SAVP with its own a=crypto keys, and a peer that answers without an accepted key fails the call. false offers plain RTP/AVP. Either value holds for the whole call: a later re-offer on the other transport gets 488. Omit to follow SIP_SRTP, which offers SRTP only when it is \"required\". Rejected with 400 when it contradicts SIP_SRTP (true under \"disabled\", false under \"required\"). The keys travel in the SDP, so send the INVITE over TLS (a \"sips:\" URI or \";transport=tls\")."},
 	"streams":          {Description: "SIP outbound only. Extra m=audio sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the first INVITE instead of a follow-up re-INVITE. Each entry binds its own RTP port and may be mixed into its own room. To add a stream to a call that is already up, use POST /v1/legs/{id}/streams instead."},
 	"url":              {Description: "WebSocket target URL (ws:// or wss://) for outbound websocket legs. Required when type=websocket.", Format: "uri"},
 	"sample_rate":      {Description: "PCM sample rate for websocket legs. The room's mixer automatically resamples between this and the room rate.", Enum: []string{"8000", "16000", "24000", "48000"}, Default: 16000},
@@ -919,6 +921,7 @@ var webRTCOfferRequestFields = map[string]FieldEnrichment{
 type CreateTrunkRequest struct {
 	Type        string                `json:"type"`
 	AppID       string                `json:"app_id,omitempty"`
+	SRTP        string                `json:"srtp,omitempty"`
 	SIPRegister *SIPRegisterTrunkSpec `json:"sip_register,omitempty"`
 	IPIP        *IPIPTrunkSpec        `json:"ip_ip,omitempty"`
 }
@@ -929,6 +932,7 @@ var TrunkTypeEnum = []string{"sip_register", "ip_ip"}
 var createTrunkRequestFields = map[string]FieldEnrichment{
 	"type":         {Description: "Trunk type discriminator. `sip_register` REGISTERs to an upstream registrar; `ip_ip` peers with a fixed upstream without registering.", Enum: TrunkTypeEnum},
 	"app_id":       {Description: "Application identifier carried through to every event emitted by this trunk."},
+	"srtp":         {Description: "SDES-SRTP policy for calls through this trunk, in both directions: outbound calls placed through it (by trunk_id or by from) and inbound calls it claims. Takes the SIP_SRTP values and replaces SIP_SRTP for those calls, stricter or looser: required makes every call through the trunk SRTP, disabled keeps it plain RTP even when SIP_SRTP is required. Omit to follow SIP_SRTP. Inbound calls are claimed by source address, which can be forged over UDP; a trunk that relaxes the server policy should use TLS.", Enum: []string{"disabled", "optional", "required"}},
 	"sip_register": {Description: "Required when type == \"sip_register\". Configures the outbound REGISTER (registrar URI, AOR, digest credentials, expiry)."},
 	"ip_ip":        {Description: "Required when type == \"ip_ip\". Configures static peering with a fixed upstream (peer URI, optional digest credentials, inbound source addresses, OPTIONS health check)."},
 }

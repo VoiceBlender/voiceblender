@@ -177,6 +177,9 @@ func (l *SIPLeg) renegotiateStreamMedia(s *mediaStream) (rate int, rateChanged b
 	// Publish before draining, so anything the loops push from here on is at
 	// the new rate.
 	s.liveCodec.Store(next)
+	if s.rtpSess != nil {
+		s.rtpSess.SetClockRate(next.codecType.ClockRate())
+	}
 
 	if rateChanged {
 		// Queued PCM is at the old rate. Handing it to a room that has just

@@ -392,6 +392,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	trunkID := s.applyFromIdentity(referTrunk, referFrom, recipient, &inviteOpts)
 	newLeg.SetOriginatingIdentity(inviteOpts.FromUser, inviteOpts.FromHost)
 	newLeg.SetTrunkID(trunkID)
+	newLeg.SetSRTPMode(inviteOpts.SRTPMode)
 	if replaces != nil {
 		inviteOpts.Headers = append(inviteOpts.Headers, sip.NewHeader("Replaces", replaces.String()))
 	}

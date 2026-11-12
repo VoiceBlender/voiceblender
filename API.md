@@ -199,6 +199,7 @@ Originate an outbound leg — one VoiceBlender dials out itself. `type` selects 
 | `speech_detection` | bool | no | Emit `speaking.started` / `speaking.stopped` events for this leg. Omit to use the server default (`SPEECH_DETECTION_ENABLED` env var, default `false`). |
 | `filters` | array | no | Ordered ingress audio processing chain for this leg — see [Audio filters](#audio-filters). Omit to use the server default (`AUDIO_FILTERS`); send `[]` for no processing. |
 | `rtt` | bool | no | Offer Real-Time Text (T.140 / RFC 4103) on the outbound INVITE. The peer may accept or ignore the `m=text` section; audio negotiation is unaffected either way. Default: `false`. |
+| `srtp` | bool | no | **SIP only.** `true` offers SDES-SRTP (RFC 4568): every audio section, and the text section when `rtt` is set, goes out as `RTP/SAVP` with `a=crypto` keys, and a peer that answers without an accepted key fails the call. `false` offers plain `RTP/AVP`. Either value holds for the whole call: a later re-offer on the other transport gets `488`. Omit to follow `SIP_SRTP`, which offers SRTP only when it is `required`. See [SDES-SRTP](#sdes-srtp-encrypted-sip-media). |
 | `streams` | object[] | no | **SIP only.** Extra `m=audio` sections to offer alongside the call's primary bidirectional audio, so a multi-stream call is established by the **first INVITE** instead of a follow-up re-INVITE. Each entry takes `direction` (`sendrecv`/`sendonly`/`recvonly`/`inactive`, default `sendrecv`), `lang` (BCP 47, emitted as `a=lang`), `content` (`main`/`alt`/…, emitted as `a=content`), `label` (emitted as `a=label`), and `room_id` + `role` to mix that stream into its own room once connected. See [Per-leg audio streams](#per-leg-audio-streams-multiple-maudio-lines). |
 
 **AMD Parameters** (all optional — `"amd": {}` enables AMD with all defaults):
@@ -252,8 +253,54 @@ When the lead is enabled the buffer also compensates for clock drift. The produc
 **Early Media:** When the remote sends a 183 Session Progress response with SDP, the leg automatically transitions to `early_media` state and a `leg.early_media` webhook event is emitted. The RTP media pipeline starts immediately, allowing the leg to be added to a room so other participants can hear the remote's early media (custom ringback, IVR prompts, etc.). When the remote answers (200 OK), the leg transitions to `connected` as normal.
 
 **Errors:**
-- `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, or an invalid `streams[].direction`
+- `400` — Invalid JSON, bad SIP URI, unknown codec, unsupported type, an invalid `streams[].direction`, or `srtp` contradicting `SIP_SRTP` (`true` under `disabled`, `false` under `required`)
 - `404` — A `streams[].room_id` names a room that does not exist
+
+#### SDES-SRTP (encrypted SIP media)
+
+Classic SIP legs can encrypt their media with SRTP keyed by SDES (RFC 4568): each side puts its own master key in an `a=crypto` attribute of the SDP, on an `RTP/SAVP` media line. The server-wide policy is `SIP_SRTP` ([CONFIGURATION.md](CONFIGURATION.md)):
+
+| `SIP_SRTP` | Inbound offer | Outbound offer |
+|------------|---------------|----------------|
+| `optional` (default) | `RTP/SAVP` with a supported `a=crypto` is answered with SRTP; plain `RTP/AVP` is answered plain | Plain `RTP/AVP`, unless the leg sets `"srtp": true` |
+| `required` | Plain-RTP audio is rejected; an INVITE with no SRTP audio gets **488 Not Acceptable Here** | Always `RTP/SAVP` |
+| `disabled` | SRTP audio is rejected; an INVITE with only SRTP audio gets **488** | Always plain `RTP/AVP` |
+
+A [trunk](#post-v1siptrunks) can carry its own `srtp`, taking the same values. It replaces `SIP_SRTP`, stricter or looser, for outbound calls placed through the trunk (by `trunk_id` or by `from`) and inbound calls it claims by source address. Calls that involve no trunk keep `SIP_SRTP`. A leg's `srtp` is then checked against the trunk's policy; for example, `"srtp": false` on a `required` trunk gets a `400` naming the trunk.
+
+```bash
+# Server stays optional; this carrier gets SRTP on every call, both ways.
+curl -X POST http://localhost:8080/v1/sip/trunks \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"ip_ip","srtp":"required","ip_ip":{"peer_uri":"sips:sbc.carrier.example","inbound_sources":["203.0.113.0/24"]}}'
+```
+
+A trunk that relaxes the server policy (`disabled` while `SIP_SRTP=required`) applies to every INVITE from its `inbound_sources`. Source addresses can be forged over UDP, so peer such a trunk over TLS.
+
+Request an encrypted outbound call:
+
+```bash
+curl -X POST http://localhost:8080/v1/legs \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"sip","to":"sips:alice@pbx.example.com","srtp":true}'
+```
+
+The INVITE then carries, per audio section:
+
+```
+m=audio 10000 RTP/SAVP 0 101
+a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:<base64 key||salt>
+a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:<base64 key||salt>
+```
+
+The peer must answer `RTP/SAVP` with one of the offered tags and the same suite; an answer without one (plain `RTP/AVP`, no `a=crypto`, an unknown tag) ends the call with a BYE and `leg.disconnected` reason `not_acceptable`, instead of falling back to unencrypted media. A 183 whose SDP carries no accepted key is ignored for early media.
+
+- **Suites.** Answers accept `AES_CM_128_HMAC_SHA1_80`, `AES_CM_128_HMAC_SHA1_32`, `AES_256_CM_HMAC_SHA1_80`, `AES_256_CM_HMAC_SHA1_32`, `AEAD_AES_128_GCM` and `AEAD_AES_256_GCM`, taking the first one the offer lists; key lifetimes and MKIs are honoured. Offers carry `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`. An `a=crypto` line with session parameters (e.g. `UNENCRYPTED_SRTP`) or more than one key is skipped.
+- **Profiles.** `RTP/SAVP` and `RTP/SAVPF` are answered with the profile offered. DTLS-SRTP (`UDP/TLS/RTP/SAVP*`) is not accepted on classic SIP legs; it is only used by [WhatsApp](#whatsapp-business-calling) and WebRTC legs.
+- **Re-INVITEs.** Hold, unhold and `POST /v1/legs/{id}/streams` keep SRTP: our key is reused, and a new key from the peer is applied. A stream added to an SRTP call is offered with SRTP too, and fails with `409` if the peer accepts it unencrypted. A peer re-offer (re-INVITE or `UPDATE`) is checked against the same policy as the first offer: one with no audio section the policy allows gets `488 Not Acceptable Here`, and the call carries on unchanged. Under `optional`, a peer that re-offers plain RTP mid-call is followed, unless the leg was created with `"srtp": true`.
+- **SRTCP.** RTCP reports (see [`quality.outbound`](#quality-object-omitted-when-no-media-was-received)) are sent and read as SRTCP (RFC 3711) under the same keys. An RTCP packet that fails authentication is dropped and does not count as media activity for the RTP timeout.
+- **Real-time text.** The `m=text` section follows the same rules with keys of its own. An outbound SRTP call with `"rtt": true` offers it on `RTP/SAVP`, and an answer that accepts it without one of our keys fails the call. An inbound text section is judged on its own like an audio section, so under `optional` a plain text section next to SRTP audio is answered plain. Text sections get RTCP only when the peer offers `a=rtcp-mux` on them; our own text offers do not carry it.
+- **Transport.** The keys travel in clear inside the SDP, so anyone who can read the signalling can decrypt the media. Use SIP over TLS (`sips:` / `;transport=tls`, `SIP_TLS_PORT`) end to end.
 
 ---
 
@@ -315,7 +362,7 @@ The handler is **asynchronous**: it returns the leg view as soon as PCMedia setu
 
 #### Inbound
 
-INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) **and** whose SDP offer still carries DTLS-SRTP (`a=fingerprint`) are routed to the WhatsApp handler automatically. If a fronting SIP proxy has already terminated ICE+DTLS into plain RTP/AVP, the Meta From host alone is not enough — the call takes the classic SIP inbound path instead. A proxy that re-encrypts with SDES-SRTP instead (every active audio section on an `RTP/SAVP`-style profile) is rejected with **488 Not Acceptable Here**: no media path here decrypts SRTP, so answering would yield silent audio. When the WhatsApp path is taken, the leg is created in `ringing` state with `type: "whatsapp_in"`, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
+INVITEs whose From-URI host is `meta.vc` (or any subdomain, e.g. `wa.meta.vc`) **and** whose SDP offer still carries DTLS-SRTP (`a=fingerprint`) are routed to the WhatsApp handler automatically. If a fronting SIP proxy has already terminated ICE+DTLS into plain RTP/AVP, the Meta From host alone is not enough — the call takes the classic SIP inbound path instead. A proxy that re-encrypts with SDES-SRTP instead (`RTP/SAVP` with `a=crypto`) also takes the classic path and is answered with [SDES-SRTP](#sdes-srtp-encrypted-sip-media), subject to `SIP_SRTP`. When the WhatsApp path is taken, the leg is created in `ringing` state with `type: "whatsapp_in"`, a `leg.ringing` webhook event is emitted, and the call remains in this state until `POST /v1/legs/{id}/answer` is invoked. At that point a 200 OK with the pre-gathered SDP answer is sent and the leg transitions to `connected`.
 
 The standard `/answer`, `/mute`, `/deaf`, `/dtmf`, `/play`, `/record`, `/stt`, `/tts`, and `/agent/*` endpoints all apply. The following explicitly return **409 Conflict**:
 
@@ -1225,7 +1272,7 @@ curl -X POST http://localhost:8080/v1/legs/abc-123/dtmf/reject
 
 VoiceBlender can negotiate an `m=text` media line alongside `m=audio` on SIP legs and exchange UTF-8 text in real time using the RFC 4103 RTP payload with RFC 2198 redundancy. Useful for accessibility (deaf / hard-of-hearing callers) and totally-conversational compliance scenarios.
 
-- **Inbound calls** automatically accept any `m=text` section the caller offers — no configuration needed.
+- **Inbound calls** automatically accept an `m=text` section the caller offers — no configuration needed — as long as it passes the [SDES-SRTP](#sdes-srtp-encrypted-sip-media) policy: plain or `RTP/SAVP` with a supported key under `optional`, `RTP/SAVP` only under `required`, plain only under `disabled`.
 - **Outbound calls** offer RTT only when the originate request sets `"rtt": true` (see `POST /v1/legs`). Peers that don't speak RFC 4103 simply ignore or reject the section, and audio still negotiates normally.
 
 WebRTC legs do not currently bridge RTT (browsers use RFC 8865 over data channels rather than RFC 4103 over RTP).
@@ -2903,7 +2950,9 @@ Emits `leg.stream_added`, plus `leg.stream_room_changed` when `room_id` was set.
 A peer that refuses the section emits `leg.stream_rejected`.
 
 **Errors:** `400` — invalid JSON or not a SIP leg; `404` — leg or room not
-found; `409` — leg has no negotiated media yet, or the peer rejected the stream
+found; `409` — leg has no negotiated media yet, the peer rejected the stream,
+or the call is [SRTP](#sdes-srtp-encrypted-sip-media) and the peer accepted the
+stream unencrypted
 
 ---
 
@@ -4635,7 +4684,13 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
     "mos_score": 4.21,
     "rtp_packets_received": 6025,
     "rtp_packets_lost": 12,
-    "rtp_jitter_ms": 3.45
+    "rtp_jitter_ms": 3.45,
+    "outbound": {
+      "rtp_packets_sent": 6010,
+      "rtp_packets_lost": 3,
+      "rtp_jitter_ms": 1.12,
+      "rtt_ms": 48.6
+    }
   }
 }
 ```
@@ -4672,6 +4727,13 @@ The `leg.disconnected` event uses a `cdr` object for disconnect reason and timin
 | `rtp_packets_received` | integer | Total inbound RTP audio packets received |
 | `rtp_packets_lost` | integer | Estimated lost packets based on sequence number gaps |
 | `rtp_jitter_ms` | float | Inter-arrival jitter in milliseconds (RFC 3550 §A.8) |
+| `outbound` | object | The audio this server sent, as the peer described it in its RTCP receiver reports. Omitted until the peer has reported on it. |
+| `outbound.rtp_packets_sent` | integer | RTP packets this server sent on the stream |
+| `outbound.rtp_packets_lost` | integer | Cumulative packets the peer reported lost |
+| `outbound.rtp_jitter_ms` | float | Inter-arrival jitter the peer measured on our stream, in milliseconds |
+| `outbound.rtt_ms` | float | Round-trip time from the peer's echo of our last sender report (RFC 3550 §6.4.1). Omitted when the peer never echoed one. |
+
+**RTCP.** With `SIP_RTCP=true` (the default), each SIP audio stream sends an RTCP report every 5 s (randomised ±50%, RFC 3550): a sender report while it sends audio, a receiver report while it does not (on hold, for example), each with an SDES CNAME, and a BYE when the stream closes. Reports are only sent when offer/answer settled on `a=rtcp-mux` (RFC 5761). Our offers always carry it, and an offer without it is answered without it. A peer that does not multiplex RTCP onto the RTP port therefore gets no reports, and `outbound` stays absent. Asterisk's PJSIP `rtcp_mux` defaults to `no`, for example. RTCP the peer sends to the RTP port is read whatever `SIP_RTCP` is set to.
 
 AMR-WB and AMR-NB legs send with discontinuous transmission (DTX): during silence only a
 SID update goes out every 160 ms instead of a packet every 20 ms, and the receiving side
@@ -4695,7 +4757,7 @@ sequence numbers stay contiguous.
 | `unauthorized` | Remote returned 401/407 Authentication Required |
 | `timeout` | Remote returned 408 Request Timeout |
 | `cancelled` | INVITE was cancelled (487 Request Terminated) |
-| `not_acceptable` | Remote returned 488 Not Acceptable Here |
+| `not_acceptable` | Remote returned 488 Not Acceptable Here, or answered an SRTP offer without an accepted key |
 | `service_unavailable` | Remote returned 503 Service Unavailable |
 | `declined` | Remote returned 603 Decline |
 | `sip_{code}` | Other SIP failure response (e.g. `sip_500`) |
@@ -4811,7 +4873,9 @@ Notes and limits:
 - Re-offers **VoiceBlender itself sends** advertise only the codec already running, so a
   compliant peer cannot switch codecs in its answer to them.
 - A codec the leg did not offer cannot be selected; negotiation is still bounded by the
-  leg's `codecs` list.
+  leg's `codecs` list. A re-offer leaving no audio section the leg can accept (no common
+  codec, or a transport the [SRTP policy](#sdes-srtp-encrypted-sip-media) refuses) gets
+  `488 Not Acceptable Here` and changes nothing.
 - If the new codec's encoder or decoder cannot be built, the leg keeps running the
   previous codec rather than losing media, and the failure is logged.
 
@@ -5198,6 +5262,14 @@ Response:
   "status": "registering"
 }
 ```
+
+Top-level fields, for every type:
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | yes | `sip_register` or `ip_ip`. |
+| `app_id` | no | Tagged onto the trunk's events and the calls it claims. |
+| `srtp` | no | `disabled`, `optional` or `required`: the [SDES-SRTP](#sdes-srtp-encrypted-sip-media) policy for calls through this trunk in both directions, replacing `SIP_SRTP` for them. Omit to follow `SIP_SRTP`. Any other value is rejected with `400`. Returned by `GET` when set. |
 
 Field reference (`sip_register` block):
 

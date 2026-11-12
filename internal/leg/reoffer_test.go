@@ -57,7 +57,7 @@ func TestApplyRemoteOffer_RemoteAddressChangeApplied(t *testing.T) {
 	}
 	before := l.prim.rtpSess.RemoteAddr()
 
-	answer, direction := l.ApplyRemoteOffer(reofferSDP(41234, sipmod.DirSendRecv))
+	answer, direction, _ := l.ApplyRemoteOffer(reofferSDP(41234, sipmod.DirSendRecv))
 
 	if len(answer) == 0 {
 		t.Fatal("ApplyRemoteOffer must return an SDP answer")
@@ -83,7 +83,7 @@ func TestApplyRemoteOffer_MirrorsDirection(t *testing.T) {
 	}
 	for offered, want := range cases {
 		l := newReofferLeg(t)
-		answer, direction := l.ApplyRemoteOffer(reofferSDP(41000, offered))
+		answer, direction, _ := l.ApplyRemoteOffer(reofferSDP(41000, offered))
 		if direction != offered {
 			t.Errorf("direction = %q, want %q", direction, offered)
 		}
@@ -95,7 +95,7 @@ func TestApplyRemoteOffer_MirrorsDirection(t *testing.T) {
 
 func TestApplyRemoteOffer_NoBodyIsNoop(t *testing.T) {
 	l := newReofferLeg(t)
-	answer, direction := l.ApplyRemoteOffer(nil)
+	answer, direction, _ := l.ApplyRemoteOffer(nil)
 	if answer != nil || direction != "" {
 		t.Errorf("empty body = (%q, %q), want (nil, \"\") — a session-timer refresh renegotiates nothing", answer, direction)
 	}
@@ -105,7 +105,7 @@ func TestApplyRemoteOffer_MalformedBodyStillAnswers(t *testing.T) {
 	l := newReofferLeg(t)
 	// A body we cannot parse must not drop the call: RFC 3261 §14.2 still wants
 	// SDP in the 200 OK, so we re-offer our current state.
-	answer, direction := l.ApplyRemoteOffer([]byte("not sdp at all"))
+	answer, direction, _ := l.ApplyRemoteOffer([]byte("not sdp at all"))
 	if len(answer) == 0 {
 		t.Error("a malformed offer must still produce an answer body")
 	}

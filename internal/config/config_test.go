@@ -551,3 +551,25 @@ func TestLoad_VendorDataHandling(t *testing.T) {
 		t.Errorf("VAPI overrides = %+v", cfg.VAPI)
 	}
 }
+
+func TestLoad_SIPSRTP(t *testing.T) {
+	t.Setenv("SIP_SRTP", "")
+	if cfg := Load(); cfg.SIPSRTP != "optional" {
+		t.Errorf("default SIPSRTP = %q, want optional", cfg.SIPSRTP)
+	}
+	t.Setenv("SIP_SRTP", "required")
+	if cfg := Load(); cfg.SIPSRTP != "required" {
+		t.Errorf("SIPSRTP = %q, want required", cfg.SIPSRTP)
+	}
+}
+
+func TestLoad_SIPRTCP(t *testing.T) {
+	t.Setenv("SIP_RTCP", "")
+	if cfg := Load(); !cfg.SIPRTCP {
+		t.Error("RTCP must be on by default")
+	}
+	t.Setenv("SIP_RTCP", "false")
+	if cfg := Load(); cfg.SIPRTCP {
+		t.Error("SIP_RTCP=false left RTCP on")
+	}
+}

@@ -26,11 +26,15 @@ type TrunksListResponse struct {
 // doCreateTrunk validates the request, registers the trunk, and starts its
 // background lifecycle. Shared by the REST handler and the VSI dispatcher.
 func (s *Server) doCreateTrunk(req CreateTrunkRequest) (CreateTrunkResponse, error) {
+	srtpMode, err := trunkSRTPMode(req.SRTP)
+	if err != nil {
+		return CreateTrunkResponse{}, err
+	}
 	switch req.Type {
 	case string(sipmod.TrunkTypeSIPRegister):
-		return s.doCreateSIPRegisterTrunk(req)
+		return s.doCreateSIPRegisterTrunk(req, srtpMode)
 	case string(sipmod.TrunkTypeIPIP):
-		return s.doCreateIPIPTrunk(req)
+		return s.doCreateIPIPTrunk(req, srtpMode)
 	case "":
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "type is required")
 	default:
@@ -38,7 +42,19 @@ func (s *Server) doCreateTrunk(req CreateTrunkRequest) (CreateTrunkResponse, err
 	}
 }
 
-func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkResponse, error) {
+// trunkSRTPMode validates a trunk's srtp field; empty follows SIP_SRTP.
+func trunkSRTPMode(v string) (sipmod.SRTPMode, error) {
+	if v == "" {
+		return "", nil
+	}
+	m, err := sipmod.ParseSRTPMode(v)
+	if err != nil {
+		return "", newAPIError(http.StatusBadRequest, "srtp must be disabled, optional or required")
+	}
+	return m, nil
+}
+
+func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest, srtpMode sipmod.SRTPMode) (CreateTrunkResponse, error) {
 	spec := req.SIPRegister
 	if spec == nil {
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "sip_register block is required when type=sip_register")
@@ -87,6 +103,7 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest) (CreateTrunkRe
 	trunk := sipmod.NewOutboundRegistration(s.SIPEngine, s.Bus, s.Log, cfg, sipmod.OutboundRegistrationParams{
 		ID:                      id,
 		AppID:                   req.AppID,
+		SRTPMode:                srtpMode,
 		RegistrarURI:            registrarURI,
 		AOR:                     aorURI,
 		Username:                spec.Username,
@@ -135,7 +152,7 @@ const (
 	maxIPIPPingIntervalSecs = 3600
 )
 
-func (s *Server) doCreateIPIPTrunk(req CreateTrunkRequest) (CreateTrunkResponse, error) {
+func (s *Server) doCreateIPIPTrunk(req CreateTrunkRequest, srtpMode sipmod.SRTPMode) (CreateTrunkResponse, error) {
 	spec := req.IPIP
 	if spec == nil {
 		return CreateTrunkResponse{}, newAPIError(http.StatusBadRequest, "ip_ip block is required when type=ip_ip")
@@ -193,6 +210,7 @@ func (s *Server) doCreateIPIPTrunk(req CreateTrunkRequest) (CreateTrunkResponse,
 	trunk := sipmod.NewIPIPTrunk(s.SIPEngine, s.Bus, s.Log, sipmod.IPIPTrunkParams{
 		ID:                    id,
 		AppID:                 req.AppID,
+		SRTPMode:              srtpMode,
 		PeerURI:               peerURI,
 		OutboundProxy:         outboundProxy,
 		AOR:                   aor,
