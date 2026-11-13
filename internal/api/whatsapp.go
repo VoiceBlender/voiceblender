@@ -31,6 +31,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	var legPtr *leg.WhatsAppLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:       codec.CodecOpus,
+		OpusBitrate: s.Config.WebRTCOpusBitrate,
 		ICEServers:  s.Config.ICEServers,
 		ExternalIPs: s.Config.WebRTCExternalIPs,
 		RTPPortMin:  uint16(s.Config.RTPPortMin),
@@ -58,7 +59,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 		return
 	}
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(offerSDP)}
-	if err := pc.SetRemoteDescription(offer); err != nil {
+	if err := media.SetRemoteDescription(offer); err != nil {
 		s.Log.Error("whatsapp inbound: SetRemoteDescription", "call_id", callID, "error", err)
 		media.Close()
 		s.SIPEngine.LogSyntheticResponse(call.Request, sip.StatusBadRequest, "Bad SDP Offer", nil, s.SIPEngine.ServerHeader())
@@ -224,6 +225,7 @@ func (s *Server) doCreateWhatsAppOutboundLeg(req CreateLegRequest) (LegView, err
 	var l *leg.WhatsAppLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:        codec.CodecOpus,
+		OpusBitrate:  s.Config.WebRTCOpusBitrate,
 		ICEServers:   s.Config.ICEServers,
 		ExternalIPs:  s.Config.WebRTCExternalIPs,
 		RTPPortMin:   uint16(s.Config.RTPPortMin),
@@ -294,7 +296,7 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 	}
 
 	answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: string(call.AnswerSDP)}
-	if err := media.PC().SetRemoteDescription(answer); err != nil {
+	if err := media.SetRemoteDescription(answer); err != nil {
 		s.Log.Error("whatsapp outbound: SetRemoteDescription", "leg_id", l.ID(), "error", err)
 		_ = call.Dialog.Bye(context.Background())
 		if l.State() != leg.StateHungUp {

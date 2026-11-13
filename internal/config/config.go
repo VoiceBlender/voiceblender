@@ -165,6 +165,11 @@ type Config struct {
 	AMRNBMode         int  // encoder speech-mode ceiling 0..7 (default 7 = 12.2 kbit/s, GSM-EFR), clamped to the peer's mode-set
 	AMRNBOctetAligned bool // offer octet-aligned framing (default true)
 
+	// Opus target bitrates (bps), capped per call by the peer's
+	// maxaveragebitrate.
+	SIPOpusBitrate    int
+	WebRTCOpusBitrate int
+
 	// SIPREC (RFC 7865 / RFC 7866) session recording server.
 	SIPRECEnabled          bool // accept inbound recording sessions; off by default
 	SIPRECAutoAnswer       bool // answer immediately instead of waiting for POST /legs/{id}/answer
@@ -301,6 +306,9 @@ func Load() Config {
 
 		AMRNBMode:         amrnbMode(envInt("AMRNB_MODE", 7)),
 		AMRNBOctetAligned: envBool("AMRNB_OCTET_ALIGNED", true),
+
+		SIPOpusBitrate:    opusBitrate(envInt("SIP_OPUS_BITRATE", codec.DefaultOpusBitrate)),
+		WebRTCOpusBitrate: opusBitrate(envInt("WEBRTC_OPUS_BITRATE", codec.DefaultOpusBitrate)),
 
 		SIPRECEnabled:          envBool("SIPREC_ENABLED", false),
 		SIPRECAutoAnswer:       envBool("SIPREC_AUTO_ANSWER", true),
@@ -444,6 +452,11 @@ func amrnbMode(n int) int {
 		return 7
 	}
 	return n
+}
+
+// opusBitrate clamps an Opus bitrate to the valid range 6000..510000.
+func opusBitrate(n int) int {
+	return max(codec.MinOpusBitrate, min(n, codec.MaxOpusBitrate))
 }
 
 func envInt(key string, def int) int {

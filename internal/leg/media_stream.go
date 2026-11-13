@@ -86,6 +86,9 @@ type mediaStream struct {
 	amrModeChangePeriod   int
 	amrModeChangeNeighbor bool
 
+	// opus is the encoder shaping for the peer's Opus fmtp.
+	opus codec.OpusParams
+
 	inFrames  chan []byte // decoded native-rate PCM from readLoop (or jitter-buffer popLoop)
 	outFrames chan []byte // native-rate PCM to encode in writeLoop
 
@@ -499,6 +502,7 @@ func (l *SIPLeg) materializeStream(offer *sipmod.SDPMedia, p sipmod.SlotPlan) (*
 	s.omitRTCPMux = !ra.RTCPMux
 	l.configureAMRWB(s, offer, p.PT)
 	l.configureAMRNB(s, offer, p.PT)
+	l.configureOpus(s, offer)
 	l.configureDTMF(s, offer)
 	l.mu.Unlock()
 
@@ -695,6 +699,7 @@ func (l *SIPLeg) adoptOutboundStreams(call *sipmod.OutboundCall) bool {
 		s.negotiatedDir = sipmod.MirrorDirection(ra.EffectiveDirection())
 		l.configureAMRWB(s, call.RemoteSDP, pt)
 		l.configureAMRNB(s, call.RemoteSDP, pt)
+		l.configureOpus(s, call.RemoteSDP)
 		l.configureDTMF(s, call.RemoteSDP)
 		l.mu.Unlock()
 

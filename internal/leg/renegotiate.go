@@ -46,6 +46,8 @@ type liveCodec struct {
 	amrnbModeSet          string
 	amrModeChangePeriod   int
 	amrModeChangeNeighbor bool
+
+	opus codec.OpusParams
 }
 
 // sampleRate is the PCM rate this configuration produces and consumes.
@@ -98,6 +100,8 @@ func snapshotCodec(s *mediaStream, enc codec.Encoder, dec codec.Decoder) *liveCo
 		amrnbModeSet:          s.amrnbModeSet,
 		amrModeChangePeriod:   s.amrModeChangePeriod,
 		amrModeChangeNeighbor: s.amrModeChangeNeighbor,
+
+		opus: s.opus,
 	}
 }
 
@@ -121,6 +125,8 @@ func (c *liveCodec) needsRebuild(s *mediaStream) bool {
 	case codec.CodecAMRNB:
 		return c.amrnbMode != s.amrnbMode || c.amrnbOctetAligned != s.amrnbOctetAligned ||
 			c.amrnbModeSet != s.amrnbModeSet || modeChange
+	case codec.CodecOpus:
+		return c.opus != s.opus
 	}
 	return false
 }
@@ -250,6 +256,11 @@ func (l *SIPLeg) buildCodecPair(s *mediaStream) (codec.Encoder, codec.Decoder, e
 		enc, err := codec.NewEncoder(s.codecType)
 		if err != nil {
 			return nil, nil, err
+		}
+		if oe, ok := enc.(*codec.OpusEncoder); ok {
+			if err := oe.Apply(s.opus); err != nil {
+				return nil, nil, err
+			}
 		}
 		dec, err := codec.NewDecoder(s.codecType)
 		if err != nil {

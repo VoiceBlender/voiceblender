@@ -33,6 +33,10 @@ type PCMediaConfig struct {
 	RTPPortMax uint16
 	Log        *slog.Logger
 
+	// OpusBitrate is the Opus target in bps, capped by the remote's
+	// maxaveragebitrate. 0 means codec.DefaultOpusBitrate.
+	OpusBitrate int
+
 	// ExternalIPs are public addresses substituted into local host ICE
 	// candidates via pion's SetNAT1To1IPs. Required when VB runs behind
 	// NAT/Docker and the gathered host interface IPs aren't routable
@@ -110,6 +114,11 @@ type PCMedia struct {
 
 	encoder codec.Encoder
 	ssrc    uint32
+
+	// opusBitrate is the configured Opus target; opus is the shaping for the
+	// remote's fmtp, applied to the encoder by writeLoop.
+	opusBitrate int
+	opus        atomic.Pointer[codec.OpusParams]
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -287,6 +296,17 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		log:        cfg.Log,
 	}
 
+	if oe, ok := enc.(*codec.OpusEncoder); ok {
+		p := sipmod.OpusSendParams("", cfg.OpusBitrate)
+		if err := oe.Apply(p); err != nil {
+			pc.Close()
+			cancel()
+			return nil, fmt.Errorf("opus encoder: %w", err)
+		}
+		m.opusBitrate = cfg.OpusBitrate
+		m.opus.Store(&p)
+	}
+
 	pc.OnTrack(m.handleTrack)
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -357,6 +377,34 @@ func (m *PCMedia) PC() *webrtc.PeerConnection { return m.pc }
 func (m *PCMedia) Codec() codec.CodecType     { return m.codec }
 func (m *PCMedia) SampleRate() int            { return m.codec.ClockRate() }
 
+// SetRemoteDescription applies a remote offer or answer and shapes the Opus
+// encoder to the remote's fmtp.
+func (m *PCMedia) SetRemoteDescription(sd webrtc.SessionDescription) error {
+	if err := m.pc.SetRemoteDescription(sd); err != nil {
+		return err
+	}
+	m.followRemoteOpus(sd.SDP)
+	return nil
+}
+
+func (m *PCMedia) followRemoteOpus(raw string) {
+	cur := m.opus.Load()
+	if cur == nil {
+		return
+	}
+	var fmtp string
+	if remote, err := sipmod.ParseSDP([]byte(raw)); err == nil {
+		fmtp = remote.CodecFmtp[codec.CodecOpus]
+	}
+	p := sipmod.OpusSendParams(fmtp, m.opusBitrate)
+	if p == *cur {
+		return
+	}
+	m.opus.Store(&p)
+	m.log.Debug("pcmedia: opus encoder follows remote fmtp",
+		"bitrate", p.Bitrate, "max_playback_rate", p.MaxPlaybackRate)
+}
+
 // Start begins the outbound write loop. Idempotent.
 func (m *PCMedia) Start() {
 	m.mu.Lock()
@@ -410,7 +458,7 @@ func (m *PCMedia) RestartICE(offerSDP string) (string, error) {
 	m.mu.Unlock()
 
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}
-	if err := m.pc.SetRemoteDescription(offer); err != nil {
+	if err := m.SetRemoteDescription(offer); err != nil {
 		m.mu.Lock()
 		m.iceCandidates, m.iceDone = prevCandidates, prevDone
 		m.mu.Unlock()
@@ -593,6 +641,8 @@ func (m *PCMedia) writeLoop() {
 
 	pending := make([]byte, 0, m.frameSz*2*2)
 	frameBytes := m.frameSz * 2
+	opusEnc, _ := m.encoder.(*codec.OpusEncoder)
+	var applied *codec.OpusParams
 
 	for {
 		select {
@@ -621,6 +671,15 @@ func (m *PCMedia) writeLoop() {
 			pending = pending[frameBytes:]
 		} else {
 			frame = silencePCM
+		}
+
+		if opusEnc != nil {
+			if p := m.opus.Load(); p != applied {
+				applied = p
+				if err := opusEnc.Apply(*p); err != nil {
+					m.log.Warn("pcmedia: opus encoder shaping", "error", err)
+				}
+			}
 		}
 
 		samples := bytesToInt16(frame)

@@ -164,6 +164,10 @@ info:
           group: WebRTC
           default: 25s
           description: How long after leg.ice_interrupted a WebRTC leg waits for connectivity to return before it is torn down with reason ice_failure (Go duration).
+        - name: WEBRTC_OPUS_BITRATE
+          group: WebRTC
+          default: "24000"
+          description: Target bitrate (bps) of the Opus encoder on WebRTC and WhatsApp legs. Must be in 6000..510000; out-of-range values clamp. It is lowered to the maxaveragebitrate in the peer's SDP when that is smaller, and the coded audio bandwidth is capped to its maxplaybackrate (RFC 7587).
         - name: RTP_PORT_MIN
           group: Media & codecs
           default: "10000"
@@ -196,6 +200,10 @@ info:
           group: Media & codecs
           default: "true"
           description: Offer octet-aligned AMR-NB framing (RFC 4867) in outbound SDP. When false, offers bandwidth-efficient framing. On answers, VoiceBlender always echoes the framing the peer negotiated.
+        - name: SIP_OPUS_BITRATE
+          group: Media & codecs
+          default: "24000"
+          description: Target bitrate (bps) of the Opus encoder on SIP legs. Must be in 6000..510000; out-of-range values clamp. Per call it is lowered to the peer's maxaveragebitrate when that is smaller, and the coded audio bandwidth is capped to the peer's maxplaybackrate (RFC 7587).
         - name: SIP_JITTER_BUFFER_MS
           group: Media & codecs
           default: "0"
