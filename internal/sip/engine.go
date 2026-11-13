@@ -851,74 +851,57 @@ func (e *Engine) SendReInviteAnswer(ctx context.Context, dialog interface{}, sdp
 // re-INVITE can carry an updated SIPREC metadata document alongside the offer.
 // With no extra parts the request is byte-identical to the plain SDP form.
 func (e *Engine) SendReInviteBody(ctx context.Context, dialog interface{}, sdpBody []byte, extra []BodyPart, apply func(answer []byte), headers ...sip.Header) ([]byte, error) {
+	res, err := e.SendReInviteResponse(ctx, dialog, sdpBody, extra, apply, headers...)
+	if res == nil {
+		return nil, err
+	}
+	return res.Body(), err
+}
+
+// SendReInviteResponse is SendReInviteBody returning the whole 2xx, for
+// callers that read its headers.
+func (e *Engine) SendReInviteResponse(ctx context.Context, dialog interface{}, sdpBody []byte, extra []BodyPart, apply func(answer []byte), headers ...sip.Header) (*sip.Response, error) {
+	var (
+		req *sip.Request
+		do  func(context.Context, *sip.Request) (*sip.Response, error)
+		ack func(*sip.Request) error
+	)
 	switch d := dialog.(type) {
 	case *sipgo.DialogServerSession:
-		req := sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
+		req = sip.NewRequest(sip.INVITE, d.InviteRequest.Contact().Address)
 		e.appendDialogContact(req, d)
-		if err := setRequestBody(req, sdpBody, extra); err != nil {
-			return nil, err
-		}
-		req.AppendHeader(e.AllowHeader())
-		for _, h := range headers {
-			req.AppendHeader(h)
-		}
-
-		res, err := d.Do(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("re-INVITE Do: %w", err)
-		}
-		if !res.IsSuccess() {
-			return nil, fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
-		}
-
-		answer := res.Body()
-		if apply != nil {
-			apply(answer)
-		}
-
-		// Send ACK
-		cont := res.Contact()
-		if cont != nil {
-			ack := sip.NewRequest(sip.ACK, cont.Address)
-			return answer, d.WriteRequest(ack)
-		}
-		return answer, nil
-
+		do, ack = d.Do, d.WriteRequest
 	case *sipgo.DialogClientSession:
-		req := sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
+		req = sip.NewRequest(sip.INVITE, d.InviteResponse.Contact().Address)
 		req.AppendHeader(d.InviteRequest.Contact())
-		if err := setRequestBody(req, sdpBody, extra); err != nil {
-			return nil, err
-		}
-		req.AppendHeader(e.AllowHeader())
-		for _, h := range headers {
-			req.AppendHeader(h)
-		}
-
-		res, err := d.Do(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("re-INVITE Do: %w", err)
-		}
-		if !res.IsSuccess() {
-			return nil, fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
-		}
-
-		answer := res.Body()
-		if apply != nil {
-			apply(answer)
-		}
-
-		// Send ACK
-		cont := res.Contact()
-		if cont != nil {
-			ack := sip.NewRequest(sip.ACK, cont.Address)
-			return answer, d.WriteRequest(ack)
-		}
-		return answer, nil
-
+		do, ack = d.Do, d.WriteRequest
 	default:
 		return nil, fmt.Errorf("unsupported dialog type: %T", dialog)
 	}
+	if err := setRequestBody(req, sdpBody, extra); err != nil {
+		return nil, err
+	}
+	req.AppendHeader(e.AllowHeader())
+	for _, h := range headers {
+		req.AppendHeader(h)
+	}
+
+	res, err := do(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("re-INVITE Do: %w", err)
+	}
+	if !res.IsSuccess() {
+		return nil, fmt.Errorf("re-INVITE rejected: %d %s", res.StatusCode, res.Reason)
+	}
+
+	if apply != nil {
+		apply(res.Body())
+	}
+
+	if cont := res.Contact(); cont != nil {
+		return res, ack(sip.NewRequest(sip.ACK, cont.Address))
+	}
+	return res, nil
 }
 
 func (e *Engine) registerHandlers() {
@@ -1757,20 +1740,7 @@ func (e *Engine) invite(ctx context.Context, recipient sip.Uri, opts InviteOptio
 		}
 	}
 
-	// Parse session timer from 200 OK if present.
-	var sessionTimer *SessionTimerParams
-	if seHdr := ds.InviteResponse.GetHeader("Session-Expires"); seHdr != nil {
-		interval, refresher := ParseSessionExpires(seHdr.Value())
-		if interval > 0 {
-			if refresher == "" {
-				refresher = "uac" // we are UAC
-			}
-			sessionTimer = &SessionTimerParams{
-				Interval:  interval,
-				Refresher: refresher,
-			}
-		}
-	}
+	sessionTimer := AnsweredSessionTimer(ds.InviteResponse)
 
 	committed = true
 	return &OutboundCall{

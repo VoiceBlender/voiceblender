@@ -193,7 +193,7 @@ func (l *SIPLeg) AddStream(ctx context.Context, req StreamRequest) (StreamInfo, 
 	l.mu.Unlock()
 
 	offer := l.offerFromTable()
-	if _, err := l.engine.SendReInviteAnswer(ctx, dialog, offer, l.applyAnswer); err != nil {
+	if err := l.sendReInvite(ctx, dialog, offer); err != nil {
 		l.closeStream(s)
 		return StreamInfo{}, fmt.Errorf("add-stream re-INVITE: %w", err)
 	}
@@ -248,7 +248,7 @@ func (l *SIPLeg) RemoveStream(ctx context.Context, streamID string) error {
 	l.closeStream(s)
 
 	offer := l.offerFromTable()
-	if _, err := l.engine.SendReInviteAnswer(ctx, dialog, offer, l.applyAnswer); err != nil {
+	if err := l.sendReInvite(ctx, dialog, offer); err != nil {
 		return fmt.Errorf("remove-stream re-INVITE: %w", err)
 	}
 	return nil

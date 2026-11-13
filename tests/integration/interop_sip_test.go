@@ -381,6 +381,61 @@ func TestInterop_SessionTimer_Survives(t *testing.T) {
 	})
 }
 
+// A hold re-INVITE from VoiceBlender refreshes the session too, so it carries
+// the timer, and the call must outlive the interval while held.
+func TestInterop_SessionTimer_SurvivesVBHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits past a 120 s session interval")
+	}
+	forEachPeer(t, func(t *testing.T, p peers.Peer) {
+		requireCap(t, p.Caps().SessionTimers, "session timers")
+		requireCap(t, p.Caps().Hold, "hold")
+		inst := newInteropVB(t, "vb", nil)
+		cases := []struct {
+			name    string
+			connect func(t *testing.T) (string, peers.Call)
+		}{
+			{"vb-dials", func(t *testing.T) (string, peers.Call) {
+				return connectVBToPeer(t, inst, p, interopDial{
+					Codecs:  []string{"PCMU"},
+					Headers: map[string]string{"Session-Expires": "120", "Min-SE": "120", "Supported": "timer"},
+				}, peers.AnswerOpts{})
+			}},
+			{"peer-dials", func(t *testing.T) (string, peers.Call) {
+				call, legID := connectPeerToVB(t, inst, p, peers.OriginateOpts{Codecs: []string{"PCMU"}, SessionTimer: 120}, nil)
+				return legID, call
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				legID, call := tc.connect(t)
+				vbHold(t, inst, legID, true)
+				if err := call.WaitEvent(interopCtx(t, 5*time.Second), peers.EventHeld); err != nil {
+					t.Fatalf("peer never saw the hold: %v", err)
+				}
+				waitForLegState(t, inst.baseURL(), legID, "held", 5*time.Second)
+				start := time.Now()
+				for time.Since(start) < 155*time.Second {
+					if lv := getLeg(t, inst, legID); lv.State != "held" {
+						t.Fatalf("leg is %s %v into a 120 s session interval", lv.State, time.Since(start).Round(time.Second))
+					}
+					time.Sleep(time.Second)
+				}
+				if info, err := call.WaitHangup(interopCtx(t, 10*time.Millisecond)); err == nil {
+					t.Fatalf("peer ended the call: %+v", info)
+				}
+				vbHold(t, inst, legID, false)
+				if err := call.WaitEvent(interopCtx(t, 5*time.Second), peers.EventUnheld); err != nil {
+					t.Fatalf("peer never saw the unhold: %v", err)
+				}
+				waitForLegState(t, inst.baseURL(), legID, "connected", 2*time.Second)
+				assertMediaBothWays(t, inst, legID, call)
+			})
+		}
+	})
+}
+
 // RFC 4028 section 6: a 422 carries the peer's Min-SE, and the UAC retries
 // with a Session-Expires at least that large instead of failing the call.
 func TestInterop_SessionTimer_422Retry(t *testing.T) {
