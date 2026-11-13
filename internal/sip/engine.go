@@ -69,8 +69,11 @@ type EngineConfig struct {
 	// AMRNBOctetAligned selects octet-aligned (true) vs bandwidth-efficient
 	// (false) AMR-NB framing in generated offers.
 	AMRNBOctetAligned bool
-	Log               *slog.Logger
-	PortAllocator     *PortAllocator // nil = OS-assigned ports
+	// OpusBitrate is the Opus encoder's target bitrate in bps, before the
+	// peer's maxaveragebitrate caps it. 0 means codec.DefaultOpusBitrate.
+	OpusBitrate   int
+	Log           *slog.Logger
+	PortAllocator *PortAllocator // nil = OS-assigned ports
 
 	// Registrar, when non-nil, enables inbound REGISTER handling and AOR
 	// resolution for outbound INVITEs.
@@ -121,6 +124,7 @@ type Engine struct {
 	amrwbOctetAligned bool
 	amrnbMode         int
 	amrnbOctetAligned bool
+	opusBitrate       int
 	bindIP            string // IPv4 advertised address (SDP c= / Contact); empty if v6-only deployment
 	bindIPV6          string // IPv6 advertised address; empty if v4-only
 	localIP           string // IPv4 advertised to peers in localNets: bindIP before the ExternalIP override
@@ -553,6 +557,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		amrwbOctetAligned: cfg.AMRWBOctetAligned,
 		amrnbMode:         cfg.AMRNBMode,
 		amrnbOctetAligned: cfg.AMRNBOctetAligned,
+		opusBitrate:       cfg.OpusBitrate,
 		bindIP:            advertiseIP,
 		bindIPV6:          advertiseIPV6,
 		localIP:           localIP,
@@ -1845,6 +1850,9 @@ func (e *Engine) AMRWBOctetAligned() bool { return e.amrwbOctetAligned }
 
 // AMRNBMode returns the configured AMR-NB encoder speech mode (0..7).
 func (e *Engine) AMRNBMode() int { return e.amrnbMode }
+
+// OpusBitrate returns the configured Opus target bitrate in bps (0 = default).
+func (e *Engine) OpusBitrate() int { return e.opusBitrate }
 
 // AMRNBOctetAligned reports whether AMR-NB offers advertise octet-aligned framing.
 func (e *Engine) AMRNBOctetAligned() bool { return e.amrnbOctetAligned }

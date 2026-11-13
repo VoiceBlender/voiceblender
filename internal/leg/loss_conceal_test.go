@@ -60,6 +60,12 @@ func newLossFixture(t *testing.T, ct codec.CodecType, frames int) *lossFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The packets stand in for a peer's; the recovery bounds were set at 64 kbps.
+	if oe, ok := enc.(*codec.OpusEncoder); ok {
+		if err := oe.SetBitrate(64000); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return encodeLossFixture(t, ct, frames, enc.Encode)
 }
 

@@ -8,6 +8,22 @@ import (
 	"github.com/thesyncim/gopus"
 )
 
+// Opus target bitrate bounds (bps), and the default for a new encoder.
+const (
+	MinOpusBitrate     = 6000
+	MaxOpusBitrate     = 510000
+	DefaultOpusBitrate = 24000
+)
+
+// OpusParams shapes an Opus encoder for one receiver.
+type OpusParams struct {
+	// Bitrate is the target in bits per second.
+	Bitrate int
+	// MaxPlaybackRate is the highest sample rate the receiver renders
+	// (RFC 7587 maxplaybackrate); 0 means no limit.
+	MaxPlaybackRate int
+}
+
 // OpusEncoder wraps a gopus Encoder for 48kHz mono VoIP.
 type OpusEncoder struct {
 	enc *gopus.Encoder
@@ -23,6 +39,9 @@ func NewOpusEncoder() (*OpusEncoder, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gopus.NewEncoder: %w", err)
+	}
+	if err := enc.SetBitrate(DefaultOpusBitrate); err != nil {
+		return nil, fmt.Errorf("gopus.SetBitrate: %w", err)
 	}
 	return &OpusEncoder{
 		enc: enc,
@@ -55,10 +74,49 @@ func (e *OpusEncoder) Reset() {
 }
 
 // SetBitrate adjusts the target bitrate in bits per second (gopus accepts
-// 6_000..510_000). Used by transports that want a tighter rate than the
-// library default.
+// 6_000..510_000).
 func (e *OpusEncoder) SetBitrate(bps int) error {
 	return e.enc.SetBitrate(bps)
+}
+
+// Bitrate returns the target bitrate in bits per second.
+func (e *OpusEncoder) Bitrate() int { return e.enc.Bitrate() }
+
+// SetMaxPlaybackRate caps the coded audio bandwidth at what a receiver
+// rendering at hz can reproduce. 0 lifts the cap.
+func (e *OpusEncoder) SetMaxPlaybackRate(hz int) error {
+	return e.enc.SetMaxBandwidth(opusBandwidthFor(hz))
+}
+
+// Apply sets the bitrate and playback-rate cap together. A zero bitrate means
+// DefaultOpusBitrate.
+func (e *OpusEncoder) Apply(p OpusParams) error {
+	if p.Bitrate <= 0 {
+		p.Bitrate = DefaultOpusBitrate
+	}
+	if err := e.SetBitrate(p.Bitrate); err != nil {
+		return err
+	}
+	return e.SetMaxPlaybackRate(p.MaxPlaybackRate)
+}
+
+// opusBandwidthFor maps a playback rate to the widest Opus bandwidth whose
+// audio it can render (RFC 7587 §6.1).
+func opusBandwidthFor(hz int) gopus.Bandwidth {
+	switch {
+	case hz <= 0:
+		return gopus.BandwidthFullband
+	case hz <= 8000:
+		return gopus.BandwidthNarrowband
+	case hz <= 12000:
+		return gopus.BandwidthMediumband
+	case hz <= 16000:
+		return gopus.BandwidthWideband
+	case hz <= 24000:
+		return gopus.BandwidthSuperwideband
+	default:
+		return gopus.BandwidthFullband
+	}
 }
 
 // OpusDecoder wraps a gopus Decoder for 48kHz mono.

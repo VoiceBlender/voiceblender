@@ -196,6 +196,7 @@ func main() {
 		AMRWBOctetAligned: cfg.AMRWBOctetAligned,
 		AMRNBMode:         cfg.AMRNBMode,
 		AMRNBOctetAligned: cfg.AMRNBOctetAligned,
+		OpusBitrate:       cfg.SIPOpusBitrate,
 		Log:               log,
 		PortAllocator:     portAlloc,
 		Registrar:         registrar,

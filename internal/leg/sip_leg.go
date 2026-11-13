@@ -315,6 +315,7 @@ func NewSIPOutboundLeg(call *sipmod.OutboundCall, engine *sipmod.Engine, log *sl
 	l.prim.rtpPT = negotiated.PayloadType()
 	l.configureAMRWB(l.prim, call.RemoteSDP, remotePT)
 	l.configureAMRNB(l.prim, call.RemoteSDP, remotePT)
+	l.configureOpus(l.prim, call.RemoteSDP)
 	l.configureDTMF(l.prim, call.RemoteSDP)
 	l.setupStreamMedia(l.prim)
 	l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
@@ -373,6 +374,7 @@ func (l *SIPLeg) SetupEarlyMediaOutbound(remoteSDP *sipmod.SDPMedia, rtpSess *si
 	l.prim.rtpPT = negotiated.PayloadType()
 	l.configureAMRWB(l.prim, remoteSDP, remotePT)
 	l.configureAMRNB(l.prim, remoteSDP, remotePT)
+	l.configureOpus(l.prim, remoteSDP)
 	l.configureDTMF(l.prim, remoteSDP)
 	l.mu.Unlock()
 
@@ -423,6 +425,7 @@ func (l *SIPLeg) ConnectOutbound(call *sipmod.OutboundCall) error {
 			l.prim.rtpPT = negotiated.PayloadType()
 			l.configureAMRWB(l.prim, call.RemoteSDP, remotePT)
 			l.configureAMRNB(l.prim, call.RemoteSDP, remotePT)
+			l.configureOpus(l.prim, call.RemoteSDP)
 			l.configureDTMF(l.prim, call.RemoteSDP)
 			l.setupStreamMedia(l.prim)
 			l.adoptOutboundTextSession(call.RemoteSDP, call.TextRTPSess)
@@ -934,6 +937,24 @@ func (l *SIPLeg) configureAMRNB(s *mediaStream, remoteSDP *sipmod.SDPMedia, remo
 			s.amrnbModeSet = sipmod.FormatAMRNBModeSet(modeSet)
 		}
 	}
+}
+
+// configureOpus records the encoder shaping for the peer's Opus fmtp: the
+// configured bitrate capped by its maxaveragebitrate, and its maxplaybackrate.
+// No-op for other codecs.
+func (l *SIPLeg) configureOpus(s *mediaStream, remoteSDP *sipmod.SDPMedia) {
+	if s.codecType != codec.CodecOpus {
+		return
+	}
+	bitrate := 0
+	if l.engine != nil {
+		bitrate = l.engine.OpusBitrate()
+	}
+	var fmtp string
+	if remoteSDP != nil {
+		fmtp = remoteSDP.CodecFmtp[codec.CodecOpus]
+	}
+	s.opus = sipmod.OpusSendParams(fmtp, bitrate)
 }
 
 // configureDTMF picks the telephone-event PT and clock rate for outbound DTMF

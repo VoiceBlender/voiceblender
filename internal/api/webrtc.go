@@ -42,6 +42,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 	var l *leg.WebRTCLeg
 	media, err := leg.NewPCMedia(leg.PCMediaConfig{
 		Codec:       codec.CodecOpus,
+		OpusBitrate: s.Config.WebRTCOpusBitrate,
 		ICEServers:  s.Config.ICEServers,
 		ExternalIPs: s.Config.WebRTCExternalIPs,
 		RTPPortMin:  uint16(s.Config.RTPPortMin),
@@ -92,7 +93,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 
 	pc := media.PC()
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: req.SDP}
-	if err := pc.SetRemoteDescription(offer); err != nil {
+	if err := media.SetRemoteDescription(offer); err != nil {
 		media.Close()
 		return nil, newAPIError(http.StatusBadRequest, "invalid SDP offer")
 	}
