@@ -109,8 +109,8 @@ type Engine struct {
 	onInvite          func(call *InboundCall)
 	onRegisterAttempt func(*RegisterAttempt) RegisterDecision // nil = auto-accept (no inbound REGISTER auth)
 	pendingAuth       *pendingAuthStore
-	onReInvite        func(callID string, body *MessageBody) ([]byte, error) // SDP answer for the 200 OK; ErrNotAcceptable answers 488
-	onUpdate          func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)
+	onReInvite        func(callID string, body *MessageBody, timer *SessionTimerParams) ([]byte, error) // SDP answer for the 200 OK; ErrNotAcceptable answers 488
+	onUpdate          func(callID string, body *MessageBody, hasSDP bool, timer *SessionTimerParams) ([]byte, error)
 	onRefer           func(callID string, target string, replaces *ReplacesParams, req *sip.Request, tx sip.ServerTransaction)
 	onNotify          func(callID string, statusCode int, reason string, terminated bool)
 	codecs            []codec.CodecType
@@ -623,8 +623,9 @@ func (e *Engine) ChallengeInvite(call *InboundCall, p ChallengeParams) error {
 // OnReInvite registers a handler for in-dialog re-INVITE requests (hold/unhold).
 // The handler receives the SIP Call-ID and the SDP direction attribute, and
 // returns the SDP body to include in the 200 OK response (nil = no SDP). An
-// error rejects the offer with 488 and leaves the session as it was.
-func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) ([]byte, error)) {
+// error rejects the offer with 488 and leaves the session as it was. timer is
+// the session timer the request asks for, nil when it names none.
+func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody, timer *SessionTimerParams) ([]byte, error)) {
 	e.onReInvite = handler
 }
 
@@ -634,8 +635,9 @@ func (e *Engine) OnReInvite(handler func(callID string, body *MessageBody) ([]by
 // direction is the parsed a=sendrecv/sendonly/recvonly/inactive attribute
 // and the returned []byte is the SDP answer for the 200 OK. When false,
 // direction is "" and the handler should only refresh session-timer state.
-// An error rejects the offer with 488.
-func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool) ([]byte, error)) {
+// An error rejects the offer with 488. timer is the session timer the request
+// asks for, nil when it names none.
+func (e *Engine) OnUpdate(handler func(callID string, body *MessageBody, hasSDP bool, timer *SessionTimerParams) ([]byte, error)) {
 	e.onUpdate = handler
 }
 
@@ -692,10 +694,11 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Call the handler before responding so it can provide the SDP answer
 	// and update hold state.
+	timer := requestedSessionTimer(req)
 	var answerSDP []byte
 	if e.onReInvite != nil {
 		var err error
-		if answerSDP, err = e.onReInvite(callID.Value(), body); err != nil {
+		if answerSDP, err = e.onReInvite(callID.Value(), body, timer); err != nil {
 			e.rejectOffer(tx, req, "re-INVITE", err)
 			return
 		}
@@ -709,14 +712,9 @@ func (e *Engine) handleReInvite(req *sip.Request, tx sip.ServerTransaction) {
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	}
 	// Echo Session-Expires in the re-INVITE 200 OK if present (RFC 4028).
-	if seHdr := req.GetHeader("Session-Expires"); seHdr != nil {
-		interval, refresher := ParseSessionExpires(seHdr.Value())
-		if interval > 0 {
-			if refresher == "" {
-				refresher = "uac"
-			}
-			res.AppendHeader(sip.NewHeader("Supported", "timer"))
-			res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)))
+	if timer != nil {
+		for _, h := range SessionTimerHeaders(timer.Interval, timer.Refresher) {
+			res.AppendHeader(h)
 		}
 	}
 	if err := e.respondMaybeFromSource(tx, req, res); err != nil {
@@ -802,10 +800,11 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 		}
 	}
 
+	timer := requestedSessionTimer(req)
 	var answerSDP []byte
 	if e.onUpdate != nil {
 		var err error
-		if answerSDP, err = e.onUpdate(callID.Value(), body, hasSDP); err != nil {
+		if answerSDP, err = e.onUpdate(callID.Value(), body, hasSDP, timer); err != nil {
 			e.rejectOffer(tx, req, "UPDATE", err)
 			return
 		}
@@ -818,14 +817,9 @@ func (e *Engine) handleUpdate(req *sip.Request, tx sip.ServerTransaction) {
 		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	}
 	// Echo Session-Expires per RFC 4028 §9.
-	if seHdr := req.GetHeader("Session-Expires"); seHdr != nil {
-		interval, refresher := ParseSessionExpires(seHdr.Value())
-		if interval > 0 {
-			if refresher == "" {
-				refresher = "uac"
-			}
-			res.AppendHeader(sip.NewHeader("Supported", "timer"))
-			res.AppendHeader(sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)))
+	if timer != nil {
+		for _, h := range SessionTimerHeaders(timer.Interval, timer.Refresher) {
+			res.AppendHeader(h)
 		}
 	}
 	if err := e.respondMaybeFromSource(tx, req, res); err != nil {

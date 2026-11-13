@@ -771,15 +771,12 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 // A SIPREC re-INVITE may also carry an updated recording metadata document,
 // with or without SDP. The SDP is applied first so any newly negotiated stream
 // exists and carries its a=label before the metadata is joined to it.
-func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) ([]byte, error) {
+func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody, timer *sipmod.SessionTimerParams) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("re-INVITE: no matching leg", "call_id", callID)
 		return nil, nil
 	}
-
-	// Reset session timer on any in-dialog re-INVITE (RFC 4028 §10).
-	sl.ResetSessionTimer()
 
 	var answer []byte
 	if offer, ok := body.SDP(); ok {
@@ -790,6 +787,9 @@ func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) ([]byte
 		}
 		sl.HandleRemoteHold(direction)
 	}
+	// Only an accepted request refreshes the session (RFC 4028 §10). A
+	// refused offer gets a 488 with no Session-Expires, so nothing changed.
+	sl.ResetSessionTimer(timer)
 	s.applySIPRECMetadata(sl, body)
 	return answer, nil
 }
@@ -798,14 +798,12 @@ func (s *Server) HandleReInvite(callID string, body *sipmod.MessageBody) ([]byte
 // timer refresh (no SDP), it only resets the session timer. When an SDP
 // offer is included, it reuses the re-INVITE path to renegotiate media and
 // returns the SDP answer for the 200 OK response.
-func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool) ([]byte, error) {
+func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bool, timer *sipmod.SessionTimerParams) ([]byte, error) {
 	sl := s.LegMgr.FindSIPByCallID(callID)
 	if sl == nil {
 		s.Log.Warn("UPDATE: no matching leg", "call_id", callID)
 		return nil, nil
 	}
-
-	sl.ResetSessionTimer()
 
 	var answer []byte
 	if hasSDP {
@@ -818,6 +816,7 @@ func (s *Server) HandleUpdate(callID string, body *sipmod.MessageBody, hasSDP bo
 			sl.HandleRemoteHold(direction)
 		}
 	}
+	sl.ResetSessionTimer(timer)
 	s.applySIPRECMetadata(sl, body)
 	return answer, nil
 }

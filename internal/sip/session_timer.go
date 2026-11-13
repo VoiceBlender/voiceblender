@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 const (
@@ -41,10 +43,10 @@ func ParseSessionExpires(value string) (interval uint32, refresher string) {
 
 	if len(parts) > 1 {
 		for _, param := range strings.Split(parts[1], ";") {
-			param = strings.TrimSpace(param)
-			if strings.HasPrefix(strings.ToLower(param), "refresher=") {
-				refresher = strings.ToLower(strings.TrimPrefix(param, "refresher="))
-				refresher = strings.TrimPrefix(refresher, "Refresher=") // already lowered
+			// Parameter names are case-insensitive (RFC 3261 §7.3.1).
+			name, val, ok := strings.Cut(strings.ToLower(param), "=")
+			if ok && strings.TrimSpace(name) == "refresher" {
+				refresher = strings.TrimSpace(val)
 			}
 		}
 	}
@@ -66,7 +68,54 @@ func ParseMinSE(value string) uint32 {
 	return uint32(n)
 }
 
+// SessionTimerHeaders are the session timer headers of a 2xx. A 2xx that makes
+// the UAC the refresher must also carry Require: timer (RFC 4028 §9).
+func SessionTimerHeaders(interval uint32, refresher string) []sip.Header {
+	h := []sip.Header{
+		sip.NewHeader("Supported", "timer"),
+		sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)),
+	}
+	if refresher == "uac" {
+		h = append(h, sip.NewHeader("Require", "timer"))
+	}
+	return h
+}
+
 // FormatSessionExpires formats a Session-Expires header value.
 func FormatSessionExpires(interval uint32, refresher string) string {
 	return fmt.Sprintf("%d;refresher=%s", interval, refresher)
+}
+
+// requestedSessionTimer returns the session timer that a re-INVITE or UPDATE
+// asks for, as the 200 OK echoes it, or nil when the request names none.
+func requestedSessionTimer(req *sip.Request) *SessionTimerParams {
+	h := req.GetHeader("Session-Expires")
+	if h == nil {
+		return nil
+	}
+	interval, refresher := ParseSessionExpires(h.Value())
+	if interval == 0 {
+		return nil
+	}
+	if refresher == "" {
+		// The choice is ours. A proxy may have added the header for a sender
+		// that cannot refresh, so the sender gets the role only if it says
+		// it supports the timer (RFC 4028 §9).
+		refresher = "uas"
+		if sup := req.GetHeader("Supported"); sup != nil && containsToken(sup.Value(), "timer") {
+			refresher = "uac"
+		}
+	}
+	// Held to the same minimum as the initial INVITE, so a far end cannot make
+	// the leg refresh every few seconds.
+	minSE := uint32(DefaultMinSE)
+	if h := req.GetHeader("Min-SE"); h != nil {
+		if v := ParseMinSE(h.Value()); v > minSE {
+			minSE = v
+		}
+	}
+	if interval < minSE {
+		interval = minSE
+	}
+	return &SessionTimerParams{Interval: interval, Refresher: refresher}
 }

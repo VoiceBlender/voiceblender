@@ -1,8 +1,10 @@
 package leg
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/codec"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -34,6 +36,77 @@ func TestRefreshesSession_FollowsLegRole(t *testing.T) {
 
 			if got := l.refreshesSessionLocked(); got != tc.want {
 				t.Errorf("refreshesSessionLocked() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A re-INVITE or UPDATE from the far end can name a new refresher or interval.
+// We are the UAS of that request, whatever the leg's direction.
+func TestResetSessionTimer_FollowsFarEndRequest(t *testing.T) {
+	cases := []struct {
+		name          string
+		inbound       bool
+		state         LegState
+		interval      uint32
+		refresher     string // from the initial INVITE
+		request       *sipmod.SessionTimerParams
+		wantInterval  uint32
+		wantRefreshes bool
+		wantTimer     bool
+	}{
+		{"outbound leg takes the role", false, StateConnected, 1800, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
+		{"outbound leg gives up the role", false, StateConnected, 1800, "uac",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, false, true},
+		{"inbound leg takes the role", true, StateConnected, 1800, "uac",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
+		{"inbound leg gives up the role", true, StateConnected, 1800, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, false, true},
+		{"new interval, same role", false, StateConnected, 1800, "uac",
+			&sipmod.SessionTimerParams{Interval: 600, Refresher: "uas"}, 600, true, true},
+		{"held leg takes the role", false, StateHeld, 1800, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
+		{"request names no timer: timer off", false, StateConnected, 1800, "uac",
+			nil, 0, false, false},
+		{"timer first agreed in mid call", false, StateConnected, 0, "",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, true, true},
+		{"no timer and none asked for", false, StateConnected, 0, "",
+			nil, 0, false, false},
+		{"not answered yet", true, StateRinging, 1800, "uac",
+			&sipmod.SessionTimerParams{Interval: 600, Refresher: "uas"}, 1800, false, false},
+		{"hung up", false, StateHungUp, 1800, "uas",
+			&sipmod.SessionTimerParams{Interval: 600, Refresher: "uas"}, 1800, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newTestSIPLeg(codec.CodecPCMU)
+			l.log = slog.New(slog.DiscardHandler)
+			if tc.inbound {
+				l.inbound = &sipmod.InboundCall{}
+			} else {
+				l.outbound = &sipmod.OutboundCall{}
+			}
+			l.state = tc.state
+			l.sessionInterval = tc.interval
+			l.sessionRefresher = tc.refresher
+			if tc.state == StateConnected || tc.state == StateHeld {
+				l.startSessionTimer()
+			}
+			t.Cleanup(l.stopSessionTimer)
+
+			l.ResetSessionTimer(tc.request)
+
+			l.mu.RLock()
+			defer l.mu.RUnlock()
+			if l.sessionInterval != tc.wantInterval {
+				t.Errorf("interval = %d, want %d", l.sessionInterval, tc.wantInterval)
+			}
+			if got := l.refreshesSessionLocked(); got != tc.wantRefreshes {
+				t.Errorf("refreshesSessionLocked() = %v, want %v", got, tc.wantRefreshes)
+			}
+			if got := l.sessionTimer != nil; got != tc.wantTimer {
+				t.Errorf("timer running = %v, want %v", got, tc.wantTimer)
 			}
 		})
 	}
@@ -105,4 +178,63 @@ func TestSessionRefreshSDP_KeepsRemoteHold(t *testing.T) {
 	if got := sdpDirection(t, l.sessionRefreshSDP()); got != sipmod.DirRecvOnly {
 		t.Errorf("refresh direction = %q, want recvonly", got)
 	}
+}
+
+// After our refresh fails, the expiry replaces the timer that fired the
+// refresh, unless a request from the far end replaced that timer meanwhile.
+func TestRefreshFailed_KeepsTimerFromFarEnd(t *testing.T) {
+	newLeg := func(interval uint32) *SIPLeg {
+		l := newTestSIPLeg(codec.CodecPCMU)
+		l.log = slog.New(slog.DiscardHandler)
+		l.outbound = &sipmod.OutboundCall{}
+		l.state = StateConnected
+		l.sessionInterval = interval
+		l.sessionRefresher = "uac"
+		t.Cleanup(l.stopSessionTimer)
+		return l
+	}
+
+	t.Run("own timer is replaced by the expiry", func(t *testing.T) {
+		l := newLeg(1800)
+		fired := time.AfterFunc(time.Hour, func() {})
+		l.sessionTimer = fired
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got == nil || got == fired {
+			t.Fatalf("session timer = %p, want a new expiry timer", got)
+		}
+	})
+
+	t.Run("far end refreshed meanwhile: its timer stands", func(t *testing.T) {
+		l := newLeg(1800)
+		fired := time.AfterFunc(time.Hour, func() {})
+		fired.Stop()
+		fresh := time.AfterFunc(time.Hour, func() {})
+		l.sessionTimer = fresh
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got != fresh {
+			t.Fatal("the failed refresh replaced the timer the far end's request armed")
+		}
+		if !fresh.Stop() {
+			t.Fatal("the far end's timer was stopped")
+		}
+	})
+
+	t.Run("timer turned off meanwhile: nothing armed", func(t *testing.T) {
+		l := newLeg(0)
+		fired := time.AfterFunc(time.Hour, func() {})
+		fired.Stop()
+		l.mu.Lock()
+		l.refreshFailedLocked(fired, time.Hour)
+		got := l.sessionTimer
+		l.mu.Unlock()
+		if got != nil {
+			t.Fatal("an expiry was armed for a session with no timer")
+		}
+	})
 }

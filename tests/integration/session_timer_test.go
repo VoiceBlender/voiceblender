@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -162,7 +163,9 @@ func TestSessionTimer_RefreshCarriesSessionExpires(t *testing.T) {
 // call already has. One that offers sendrecv takes a held call off hold.
 func TestSessionTimer_RefreshKeepsHold(t *testing.T) {
 	// A 6 s interval puts the refresh 3 s out, which leaves time to set up
-	// the hold first.
+	// the hold first. A hold from the far end resets the timer to at least
+	// 90 s, or turns it off, so that case is covered by the internal/leg
+	// unit test TestSessionRefreshSDP_KeepsRemoteHold instead.
 	const sessionExpires = "6;refresher=uac"
 
 	t.Run("held by VoiceBlender", func(t *testing.T) {
@@ -190,26 +193,193 @@ func TestSessionTimer_RefreshKeepsHold(t *testing.T) {
 
 		httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
 	})
+}
 
-	t.Run("held by the far end", func(t *testing.T) {
-		inst := newTestInstance(t, "st-hold-remote")
-		cli := newRawSIPClient(t, "st-hold-remote-ua")
-		legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, sessionExpires)
+// TestSessionTimer_FollowsFarEndRequest: a re-INVITE or UPDATE from the far
+// end can name a new refresher or interval, and the 200 OK agrees to it. The
+// leg must then do what was agreed, or nobody refreshes.
+func TestSessionTimer_FollowsFarEndRequest(t *testing.T) {
+	// The call is set up so that VoiceBlender refreshes every 2 s. Each request
+	// hands the role to the far end, or turns the timer off, so the leg must
+	// stop refreshing.
+	cases := []struct {
+		name     string
+		method   sip.RequestMethod
+		request  string // Session-Expires in the far end's request
+		wantEcho string // Session-Expires in the 200 OK
+	}{
+		{"UPDATE: far end takes the role", sip.UPDATE, "90;refresher=uac", "90;refresher=uac"},
+		{"re-INVITE: far end takes the role", sip.INVITE, "90;refresher=uac", "90;refresher=uac"},
+		{"short interval is held to the minimum", sip.UPDATE, "2;refresher=uac", "90;refresher=uac"},
+		{"request with no Session-Expires turns the timer off", sip.UPDATE, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := newTestInstance(t, "st-follow")
+			cli := newRawSIPClient(t, "st-follow-ua")
+			legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, "4;refresher=uac")
 
-		resp := cli.sendInDialogUpdate(t, inv.req, okRes, cli.audioSDP(sipmod.DirSendOnly), "")
-		if resp.StatusCode != sip.StatusOK {
-			t.Fatalf("hold UPDATE status = %d %s, want 200", resp.StatusCode, resp.Reason)
-		}
-		if !strings.Contains(string(resp.Body()), "a=recvonly") {
-			t.Fatalf("answer to the hold offer is not recvonly:\n%s", resp.Body())
-		}
+			// In this request the far end is the UAC and VoiceBlender the UAS.
+			var offer []byte
+			if tc.method == sip.INVITE {
+				offer = cli.audioSDP(sipmod.DirSendRecv)
+			}
+			resp := cli.sendInDialog(t, tc.method, inv.req, okRes, offer, tc.request)
+			if resp.StatusCode != sip.StatusOK {
+				t.Fatalf("%s status = %d %s, want 200", tc.method, resp.StatusCode, resp.Reason)
+			}
+			se := resp.GetHeader("Session-Expires")
+			switch {
+			case tc.wantEcho == "" && se != nil:
+				t.Fatalf("200 OK Session-Expires = %v, want none", se)
+			case tc.wantEcho != "" && (se == nil || se.Value() != tc.wantEcho):
+				t.Fatalf("200 OK Session-Expires = %v, want %s", se, tc.wantEcho)
+			}
+			// RFC 4028 §9: a 2xx that makes the UAC the refresher requires timer.
+			req := resp.GetHeader("Require")
+			if wantReq := strings.HasSuffix(tc.wantEcho, "refresher=uac"); wantReq != (req != nil && strings.Contains(req.Value(), "timer")) {
+				t.Fatalf("200 OK Require = %v, want Require: timer %v", req, wantReq)
+			}
 
-		refresh := cli.waitInvite(t, 5*time.Second)
-		if dir := offerDirection(t, refresh.req); dir != sipmod.DirRecvOnly {
-			t.Errorf("refresh direction = %q, want recvonly", dir)
-		}
-		cli.answerWith(t, refresh, sipmod.DirSendOnly, sessionExpires)
+			// Without the change the leg's next refresh is due 2 s after setup.
+			select {
+			case <-cli.invites:
+				t.Fatal("leg sent a session refresh, but the far end took the role")
+			case <-time.After(3 * time.Second):
+			}
 
-		httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
-	})
+			waitForLegState(t, inst.baseURL(), legID, "connected", 2*time.Second)
+			httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+		})
+	}
+}
+
+// A request refused with 488 must leave the session timer as it was: the far
+// end, which got no 200 OK, still expects VoiceBlender to refresh.
+func TestSessionTimer_RefusedOfferLeavesTimer(t *testing.T) {
+	inst := newTestInstance(t, "st-refused")
+	cli := newRawSIPClient(t, "st-refused-ua")
+	legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, "4;refresher=uac")
+
+	// G.729 only: the leg offers PCMU and PCMA, so no audio section is acceptable.
+	offer := []byte(strings.Join([]string{
+		"v=0",
+		fmt.Sprintf("o=raw 1 2 IN IP4 %s", cli.host),
+		"s=-",
+		fmt.Sprintf("c=IN IP4 %s", cli.host),
+		"t=0 0",
+		"m=audio 40000 RTP/AVP 18",
+		"a=rtpmap:18 G729/8000",
+		"a=sendrecv",
+		"",
+	}, "\r\n"))
+	resp := cli.sendInDialog(t, sip.INVITE, inv.req, okRes, offer, "90;refresher=uac")
+	if resp.StatusCode != sip.StatusNotAcceptableHere {
+		t.Fatalf("re-INVITE status = %d %s, want 488", resp.StatusCode, resp.Reason)
+	}
+
+	select {
+	case e := <-cli.invites:
+		cli.answerWith(t, e, sipmod.DirSendRecv, "4;refresher=uac")
+	case <-time.After(3 * time.Second):
+		t.Fatal("leg stopped refreshing after a re-INVITE that it refused")
+	}
+
+	waitForLegState(t, inst.baseURL(), legID, "connected", 2*time.Second)
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+}
+
+// Glare: the far end's UPDATE is accepted while VoiceBlender's refresh is in
+// flight, and the refresh then gets 491. The UPDATE refreshed the session, so
+// the leg must keep the timer it set.
+func TestSessionTimer_GlareKeepsFarEndTimer(t *testing.T) {
+	inst := newTestInstance(t, "st-glare")
+	cli := newRawSIPClient(t, "st-glare-ua")
+	legID, inv, okRes := dialRawWithSessionTimer(t, inst, cli, "4;refresher=uac")
+
+	// VoiceBlender's refresh is due after 2 s. It stays unanswered for now.
+	refresh := cli.waitInvite(t, 4*time.Second)
+
+	resp := cli.sendInDialogUpdate(t, inv.req, okRes, nil, "90;refresher=uac")
+	if resp.StatusCode != sip.StatusOK {
+		t.Fatalf("UPDATE status = %d %s, want 200", resp.StatusCode, resp.Reason)
+	}
+
+	res := sip.NewResponseFromRequest(refresh.req, 491, "Request Pending", nil)
+	if err := refresh.tx.Respond(res); err != nil {
+		t.Fatalf("respond 491: %v", err)
+	}
+	close(refresh.done)
+
+	// An expiry at a quarter of the old 4 s interval would end the leg after 1 s.
+	time.Sleep(3 * time.Second)
+	waitForLegState(t, inst.baseURL(), legID, "connected", time.Second)
+	httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+}
+
+// RFC 4028 §9: the 200 OK to the initial INVITE carries Require: timer when it
+// makes the caller the refresher.
+func TestSessionTimer_InitialAnswerRequiresTimer(t *testing.T) {
+	cases := []struct {
+		name        string
+		request     string
+		wantRequire bool
+	}{
+		{"caller refreshes", "1800;refresher=uac", true},
+		{"VoiceBlender refreshes", "1800;refresher=uas", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := newTestInstance(t, "st-require")
+			cli := newRawSIPClient(t, "st-require-ua")
+
+			target := sip.Uri{Scheme: "sip", User: "alice", Host: "127.0.0.1", Port: inst.sipPort}
+			req := sip.NewRequest(sip.INVITE, target)
+			fromHdr := &sip.FromHeader{Address: sip.Uri{Scheme: "sip", User: "tester", Host: cli.host, Port: cli.port}, Params: sip.NewParams()}
+			fromHdr.Params.Add("tag", sip.GenerateTagN(8))
+			req.AppendHeader(fromHdr)
+			req.AppendHeader(&sip.ToHeader{Address: target, Params: sip.NewParams()})
+			req.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Scheme: "sip", Host: cli.host, Port: cli.port}})
+			req.AppendHeader(sip.NewHeader("Supported", "timer"))
+			req.AppendHeader(sip.NewHeader("Session-Expires", tc.request))
+			req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+			req.SetBody(cli.audioSDP(sipmod.DirSendRecv))
+
+			respCh := make(chan *sip.Response, 1)
+			errCh := make(chan error, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				resp, err := cli.client.Do(ctx, req)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				respCh <- resp
+			}()
+
+			inbound := waitForInboundLeg(t, inst.baseURL(), 5*time.Second)
+			ansResp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/answer", inst.baseURL(), inbound.ID), nil)
+			ansResp.Body.Close()
+			defer httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), inbound.ID))
+
+			select {
+			case err := <-errCh:
+				t.Fatalf("INVITE Do: %v", err)
+			case resp := <-respCh:
+				if resp.StatusCode != sip.StatusOK {
+					t.Fatalf("INVITE status = %d %s, want 200", resp.StatusCode, resp.Reason)
+				}
+				if se := resp.GetHeader("Session-Expires"); se == nil || se.Value() != tc.request {
+					t.Fatalf("200 OK Session-Expires = %v, want %s", se, tc.request)
+				}
+				r := resp.GetHeader("Require")
+				if got := r != nil && strings.Contains(r.Value(), "timer"); got != tc.wantRequire {
+					t.Fatalf("200 OK Require = %v, want Require: timer %v", r, tc.wantRequire)
+				}
+			case <-time.After(7 * time.Second):
+				t.Fatal("timed out waiting for 200 OK")
+			}
+		})
+	}
 }
