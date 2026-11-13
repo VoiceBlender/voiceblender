@@ -81,6 +81,34 @@ func SessionTimerHeaders(interval uint32, refresher string) []sip.Header {
 	return h
 }
 
+// SessionRefreshHeaders are the session timer headers of a re-INVITE or
+// UPDATE we send. refresher is relative to that request, in which we are the
+// UAC.
+func SessionRefreshHeaders(interval uint32, refresher string) []sip.Header {
+	return []sip.Header{
+		sip.NewHeader("Supported", "timer"),
+		sip.NewHeader("Session-Expires", FormatSessionExpires(interval, refresher)),
+	}
+}
+
+// AnsweredSessionTimer is the session timer a 2xx to our INVITE settles on,
+// with the refresher relative to that INVITE. Nil means the session has no
+// timer (RFC 4028 §7.2). A 2xx that names no refresher leaves it to us, the UAC.
+func AnsweredSessionTimer(res *sip.Response) *SessionTimerParams {
+	h := res.GetHeader("Session-Expires")
+	if h == nil {
+		return nil
+	}
+	interval, refresher := ParseSessionExpires(h.Value())
+	if interval == 0 {
+		return nil
+	}
+	if refresher == "" {
+		refresher = "uac"
+	}
+	return &SessionTimerParams{Interval: interval, Refresher: refresher}
+}
+
 // FormatSessionExpires formats a Session-Expires header value.
 func FormatSessionExpires(interval uint32, refresher string) string {
 	return fmt.Sprintf("%d;refresher=%s", interval, refresher)

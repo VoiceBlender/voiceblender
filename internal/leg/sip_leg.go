@@ -77,6 +77,8 @@ type SIPLeg struct {
 	// holdMu serialises the re-INVITEs that bring held in line with it.
 	holdWant bool
 	holdMu   sync.Mutex
+	// localHeld is set while our own hold re-INVITE is in effect.
+	localHeld bool
 	// holdReInvite sends a hold or unhold re-INVITE; nil uses the dialog.
 	holdReInvite func(ctx context.Context, hold bool) error
 
@@ -2209,6 +2211,9 @@ func (l *SIPLeg) reconcileHold(ctx context.Context) error {
 		if err := send(ctx, want); err != nil {
 			return err
 		}
+		l.mu.Lock()
+		l.localHeld = want
+		l.mu.Unlock()
 		if l.setHeld(want) {
 			l.fireHoldCallback(want)
 		}
@@ -2234,7 +2239,7 @@ func (l *SIPLeg) sendHoldReInvite(ctx context.Context, hold bool) error {
 		return fmt.Errorf("no dialog available")
 	}
 
-	if _, err := l.engine.SendReInviteAnswer(ctx, dialog, sdpBody, l.applyAnswer); err != nil {
+	if err := l.sendReInvite(ctx, dialog, sdpBody); err != nil {
 		return fmt.Errorf("%s re-INVITE: %w", what, err)
 	}
 	return nil
@@ -2264,6 +2269,14 @@ func (l *SIPLeg) HandleRemoteHold(direction string) {
 	case sipmod.DirSendRecv, sipmod.DirRecvOnly, "":
 		held = false
 	default:
+		return
+	}
+	l.mu.RLock()
+	local := l.localHeld
+	l.mu.RUnlock()
+	// A peer refreshing a call we hold offers recvonly; only our unhold ends
+	// our hold.
+	if !held && local {
 		return
 	}
 	if l.setHeld(held) {
@@ -2396,23 +2409,39 @@ func (l *SIPLeg) sessionRefresh() {
 		return
 	}
 
-	// A refresh with no Session-Expires turns the timer off at the peer. We are
-	// the UAC of this request, so refresher=uac keeps the role with us.
-	if _, err := l.engine.SendReInviteAnswer(l.ctx, dialog, sdpBody, l.applyAnswer,
-		sip.NewHeader("Supported", "timer"),
-		sip.NewHeader("Session-Expires", sipmod.FormatSessionExpires(interval, "uac")),
-	); err != nil {
+	if err := l.sendReInvite(l.ctx, dialog, sdpBody); err != nil {
 		l.log.Error("session timer: refresh re-INVITE failed", "leg_id", l.id, "error", err)
 		l.mu.Lock()
 		l.refreshFailedLocked(fired, time.Duration(interval)*time.Second/4)
 		l.mu.Unlock()
-		return
 	}
+}
 
-	// Schedule the next refresh.
-	l.mu.Lock()
-	l.armSessionTimerLocked()
-	l.mu.Unlock()
+// sendReInvite sends a re-INVITE of ours. Its 2xx refreshes the session
+// (RFC 4028 §10), so a leg with a timer offers the interval and role it runs,
+// then follows what the 2xx settles on.
+func (l *SIPLeg) sendReInvite(ctx context.Context, dialog interface{}, offer []byte) error {
+	l.mu.RLock()
+	interval, refresher := l.sessionInterval, "uas"
+	if l.refreshesSessionLocked() {
+		refresher = "uac"
+	}
+	l.mu.RUnlock()
+
+	var headers []sip.Header
+	if interval > 0 {
+		headers = sipmod.SessionRefreshHeaders(interval, refresher)
+	}
+	res, err := l.engine.SendReInviteResponse(ctx, dialog, offer, nil, l.applyAnswer, headers...)
+	if err != nil {
+		return err
+	}
+	if interval > 0 {
+		l.mu.Lock()
+		l.followSessionTimerLocked(sipmod.AnsweredSessionTimer(res), true)
+		l.mu.Unlock()
+	}
+	return nil
 }
 
 // sessionExpired fires when the remote failed to refresh the session in time.
@@ -2432,23 +2461,29 @@ func (l *SIPLeg) sessionExpired() {
 func (l *SIPLeg) ResetSessionTimer(timer *sipmod.SessionTimerParams) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.followSessionTimerLocked(timer, false)
+}
 
+// followSessionTimerLocked applies the timer a mid-call request and its 2xx
+// agreed on, and restarts it. ours tells whether we sent the request; the
+// refresher in timer is relative to it. Caller holds l.mu.
+func (l *SIPLeg) followSessionTimerLocked(timer *sipmod.SessionTimerParams, ours bool) {
 	// Before the answer, the 200 OK to the INVITE still sets the timer.
 	if l.state != StateConnected && l.state != StateHeld {
 		return
 	}
 
 	if timer == nil {
-		// RFC 4028: a request without Session-Expires, answered without
-		// one, leaves the session with no timer.
+		// RFC 4028: a request or 2xx without Session-Expires leaves the
+		// session with no timer.
 		l.sessionInterval = 0
 		l.sessionRefresher = ""
 	} else {
 		l.sessionInterval = timer.Interval
 		l.sessionRefresher = timer.Refresher
-		// The far end sent this request. On an outbound leg that puts the
-		// roles the other way round from the initial INVITE.
-		if l.inbound == nil {
+		// The role is kept relative to the initial INVITE. A request sent the
+		// other way puts uac and uas the other way round.
+		if ours == (l.inbound != nil) {
 			if timer.Refresher == "uas" {
 				l.sessionRefresher = "uac"
 			} else {

@@ -150,3 +150,28 @@ func TestHold_NotConnected(t *testing.T) {
 		t.Error("hold of a ringing leg should fail")
 	}
 }
+
+// A call we hold stays held through the peer's re-offers that are not holds
+// themselves, such as a session refresh offering recvonly; our unhold ends it.
+func TestHandleRemoteHold_KeepsLocalHold(t *testing.T) {
+	l, rec := newHoldTestLeg(t)
+	l.holdReInvite = func(context.Context, bool) error { return nil }
+	if err := l.Hold(context.Background()); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	for _, dir := range []string{sipmod.DirRecvOnly, sipmod.DirSendRecv, "", sipmod.DirInactive, sipmod.DirRecvOnly} {
+		l.HandleRemoteHold(dir)
+		if !l.IsHeld() {
+			t.Fatalf("a %q re-offer took the call off our hold", dir)
+		}
+	}
+	if err := l.Unhold(context.Background()); err != nil {
+		t.Fatalf("unhold: %v", err)
+	}
+	if l.IsHeld() {
+		t.Error("leg still held after our unhold")
+	}
+	if got := rec.get(); len(got) != 2 || got[0] != "hold" || got[1] != "unhold" {
+		t.Errorf("callbacks = %v, want [hold unhold]", got)
+	}
+}

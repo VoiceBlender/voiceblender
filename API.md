@@ -996,6 +996,8 @@ Undeafen a leg. Restores the participant's ability to hear other participants.
 
 **Asynchronous.** Queue a re-INVITE with `sendrecv` SDP direction. Successful resume is observed via `leg.unhold`; failures surface as `leg.command_failed` with `command="unhold"`.
 
+A hold from VoiceBlender lasts until this request: a re-offer from the remote UA that is not a hold itself, such as a session refresh offering `recvonly`, does not take the call off hold.
+
 Hold and unhold requests take effect in the order they were made. An unhold sent while a hold re-INVITE is still waiting for the peer's answer is applied once that answer arrives, so the leg ends in the last requested state.
 
 **Response:** `202 Accepted`
@@ -4910,6 +4912,7 @@ Notes and limits:
 - Supports both `refresher=uac` and `refresher=uas` roles. The role is read against the leg's direction: VoiceBlender is the UAS on an inbound leg and the UAC on an outbound leg. If the answer to an outbound call names no refresher, VoiceBlender refreshes
 - As refresher, VoiceBlender sends a re-INVITE at half the interval. It carries `Supported: timer` and `Session-Expires`, and repeats the call's current direction, so a held call stays on hold
 - A re-INVITE or UPDATE from the remote UA (including hold/unhold) resets the session timer. One whose offer is refused with 488 leaves the timer as it was. One that carries no `Session-Expires` turns the timer off, and its 200 OK carries none (RFC 4028). If it carries `Session-Expires`, the 200 OK echoes it and VoiceBlender follows it: the new interval applies, and the refresher role moves if the request names the other side. In such a request the remote UA is the UAC, so `refresher=uas` asks VoiceBlender to refresh. With no refresher named, the remote UA refreshes if the request carries `Supported: timer`, and VoiceBlender refreshes if it does not. A call set up with no session timer starts one this way. An interval below 90 seconds, or below the request's `Min-SE`, is raised to it, as on the initial INVITE, and the 200 OK carries the raised value
+- Every re-INVITE VoiceBlender sends on a call with a session timer (refresh, hold, unhold, adding or removing a stream) carries `Supported: timer` and `Session-Expires` with the current interval and role, since each one refreshes the session (RFC 4028 §10). In it VoiceBlender is the UAC, so `refresher=uac` means VoiceBlender refreshes. The leg then follows the `Session-Expires` in the 200 OK the same way, and a 200 OK without one turns the timer off (RFC 4028 §7.2)
 - A 200 OK that makes the remote UA the refresher (`refresher=uac`) also carries `Require: timer` (RFC 4028 §9). This applies to the answer to the initial INVITE and to a re-INVITE or UPDATE
 - When the remote UA is the refresher and no refresh arrives within the interval plus 32 seconds, the leg disconnects with reason `session_expired`. If VoiceBlender's own refresh fails, the leg disconnects a quarter of the interval later, unless the remote UA refreshes first
 - An outbound call whose `Session-Expires` header is below the peer's minimum gets `422 Session Interval Too Small`; VoiceBlender then re-sends the INVITE once with `Session-Expires` and `Min-SE` raised to the `Min-SE` the peer named (RFC 4028 §6)

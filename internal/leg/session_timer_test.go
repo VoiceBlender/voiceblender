@@ -112,6 +112,66 @@ func TestResetSessionTimer_FollowsFarEndRequest(t *testing.T) {
 	}
 }
 
+// The 2xx to a re-INVITE we sent settles the timer too. We are the UAC of
+// that request, whatever the leg's direction.
+func TestFollowSessionTimer_OwnRequest(t *testing.T) {
+	cases := []struct {
+		name          string
+		inbound       bool
+		refresher     string // from the initial INVITE
+		answer        *sipmod.SessionTimerParams
+		wantInterval  uint32
+		wantRefreshes bool
+		wantTimer     bool
+	}{
+		{"outbound leg keeps the role", false, "uac",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, true, true},
+		{"outbound leg is given the role", false, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, true, true},
+		{"outbound leg loses the role", false, "uac",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, false, true},
+		{"inbound leg keeps the role", true, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, true, true},
+		{"inbound leg loses the role", true, "uas",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uas"}, 1800, false, true},
+		{"inbound leg is given the role", true, "uac",
+			&sipmod.SessionTimerParams{Interval: 1800, Refresher: "uac"}, 1800, true, true},
+		{"new interval", false, "uac",
+			&sipmod.SessionTimerParams{Interval: 600, Refresher: "uac"}, 600, true, true},
+		{"2xx without Session-Expires: timer off", true, "uac",
+			nil, 0, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newTestSIPLeg(codec.CodecPCMU)
+			l.log = slog.New(slog.DiscardHandler)
+			if tc.inbound {
+				l.inbound = &sipmod.InboundCall{}
+			} else {
+				l.outbound = &sipmod.OutboundCall{}
+			}
+			l.state = StateConnected
+			l.sessionInterval = 1800
+			l.sessionRefresher = tc.refresher
+			l.startSessionTimer()
+			t.Cleanup(l.stopSessionTimer)
+
+			l.mu.Lock()
+			l.followSessionTimerLocked(tc.answer, true)
+			defer l.mu.Unlock()
+			if l.sessionInterval != tc.wantInterval {
+				t.Errorf("interval = %d, want %d", l.sessionInterval, tc.wantInterval)
+			}
+			if got := l.refreshesSessionLocked(); got != tc.wantRefreshes {
+				t.Errorf("refreshesSessionLocked() = %v, want %v", got, tc.wantRefreshes)
+			}
+			if got := l.sessionTimer != nil; got != tc.wantTimer {
+				t.Errorf("timer running = %v, want %v", got, tc.wantTimer)
+			}
+		})
+	}
+}
+
 func sdpDirection(t *testing.T, body []byte) string {
 	t.Helper()
 	if len(body) == 0 {

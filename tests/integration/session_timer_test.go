@@ -183,7 +183,8 @@ func TestSessionTimer_RefreshKeepsHold(t *testing.T) {
 		if dir := offerDirection(t, hold.req); dir != sipmod.DirSendOnly {
 			t.Fatalf("hold re-INVITE direction = %q, want sendonly", dir)
 		}
-		cli.answerWith(t, hold, sipmod.DirRecvOnly, "")
+		// A 2xx without Session-Expires would turn the timer off.
+		cli.answerWith(t, hold, sipmod.DirRecvOnly, sessionExpires)
 
 		refresh := cli.waitInvite(t, 5*time.Second)
 		if dir := offerDirection(t, refresh.req); dir != sipmod.DirSendOnly {
@@ -380,6 +381,104 @@ func TestSessionTimer_InitialAnswerRequiresTimer(t *testing.T) {
 			case <-time.After(7 * time.Second):
 				t.Fatal("timed out waiting for 200 OK")
 			}
+		})
+	}
+}
+
+// holdFromVB puts the leg on hold through the API and returns the hold
+// re-INVITE the raw UA received.
+func holdFromVB(t *testing.T, inst *testInstance, cli *rawSIPClient, legID string) inviteEvent {
+	t.Helper()
+	resp := httpPost(t, fmt.Sprintf("%s/v1/legs/%s/hold", inst.baseURL(), legID), nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("hold: unexpected status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	return cli.waitInvite(t, 2*time.Second)
+}
+
+// TestSessionTimer_OwnReInviteCarriesTimer: every re-INVITE refreshes the
+// session, and one without Session-Expires turns the timer off at the far end
+// (RFC 4028 §7.4). So a hold re-INVITE repeats the interval and the role.
+func TestSessionTimer_OwnReInviteCarriesTimer(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer string // Session-Expires in the far end's 200 OK to the INVITE
+		want   string // Session-Expires in VoiceBlender's hold re-INVITE
+	}{
+		{"VoiceBlender refreshes", "90;refresher=uac", "90;refresher=uac"},
+		{"far end refreshes", "90;refresher=uas", "90;refresher=uas"},
+		{"no timer", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := newTestInstance(t, "st-own")
+			cli := newRawSIPClient(t, "st-own-ua")
+			legID, _, _ := dialRawWithSessionTimer(t, inst, cli, tc.answer)
+
+			hold := holdFromVB(t, inst, cli, legID)
+			cli.answerWith(t, hold, sipmod.DirRecvOnly, tc.answer)
+
+			se := hold.req.GetHeader("Session-Expires")
+			sup := hold.req.GetHeader("Supported")
+			switch {
+			case tc.want == "" && se != nil:
+				t.Errorf("hold re-INVITE Session-Expires = %q, want none", se.Value())
+			case tc.want != "" && (se == nil || se.Value() != tc.want):
+				t.Errorf("hold re-INVITE Session-Expires = %v, want %s", se, tc.want)
+			case tc.want != "" && (sup == nil || !strings.Contains(sup.Value(), "timer")):
+				t.Errorf("hold re-INVITE Supported = %v, want timer", sup)
+			}
+			waitForLegState(t, inst.baseURL(), legID, "held", 2*time.Second)
+			httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
+		})
+	}
+}
+
+// TestSessionTimer_FollowsAnswerToOwnReInvite: the 2xx to a re-INVITE from
+// VoiceBlender settles the timer as much as a request from the far end does.
+// In that 2xx, uac is VoiceBlender.
+func TestSessionTimer_FollowsAnswerToOwnReInvite(t *testing.T) {
+	cases := []struct {
+		name         string
+		answer       string // Session-Expires in the 200 OK to the INVITE
+		holdAnswer   string // Session-Expires in the 200 OK to the hold
+		wantRefresh  bool
+		refreshAfter time.Duration
+	}{
+		// A 4 s interval puts a refresh by VoiceBlender 2 s out.
+		{"2xx without Session-Expires turns the timer off", "4;refresher=uac", "", false, 3 * time.Second},
+		{"2xx hands the role to the far end", "4;refresher=uac", "4;refresher=uas", false, 3 * time.Second},
+		{"2xx hands the role to VoiceBlender", "4;refresher=uas", "4;refresher=uac", true, 3 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := newTestInstance(t, "st-own-2xx")
+			cli := newRawSIPClient(t, "st-own-2xx-ua")
+			legID, _, _ := dialRawWithSessionTimer(t, inst, cli, tc.answer)
+
+			hold := holdFromVB(t, inst, cli, legID)
+			cli.answerWith(t, hold, sipmod.DirRecvOnly, tc.holdAnswer)
+			waitForLegState(t, inst.baseURL(), legID, "held", 2*time.Second)
+
+			select {
+			case e := <-cli.invites:
+				if !tc.wantRefresh {
+					close(e.done)
+					t.Fatal("leg sent a session refresh, but the hold 2xx left it no timer or no role")
+				}
+				if dir := offerDirection(t, e.req); dir != sipmod.DirSendOnly {
+					t.Errorf("refresh direction = %q, want sendonly", dir)
+				}
+				cli.answerWith(t, e, sipmod.DirRecvOnly, tc.holdAnswer)
+			case <-time.After(tc.refreshAfter):
+				if tc.wantRefresh {
+					t.Fatal("leg sent no session refresh after the hold 2xx made it the refresher")
+				}
+			}
+
+			waitForLegState(t, inst.baseURL(), legID, "held", 2*time.Second)
+			httpDelete(t, fmt.Sprintf("%s/v1/legs/%s", inst.baseURL(), legID))
 		})
 	}
 }

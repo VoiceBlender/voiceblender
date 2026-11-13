@@ -148,3 +148,37 @@ func TestSessionTimerHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionRefreshHeaders(t *testing.T) {
+	names := map[string]string{}
+	for _, h := range SessionRefreshHeaders(600, "uas") {
+		names[h.Name()] = h.Value()
+	}
+	if len(names) != 2 || names["Supported"] != "timer" || names["Session-Expires"] != "600;refresher=uas" {
+		t.Errorf("headers = %v, want Supported: timer and Session-Expires: 600;refresher=uas", names)
+	}
+}
+
+// RFC 4028 §7.2: a 2xx without Session-Expires leaves the session with no
+// timer, and one that names no refresher leaves the role with the UAC.
+func TestAnsweredSessionTimer(t *testing.T) {
+	for _, tt := range []struct {
+		header string // "" for none
+		want   *SessionTimerParams
+	}{
+		{"", nil},
+		{"0", nil},
+		{"600;refresher=uas", &SessionTimerParams{Interval: 600, Refresher: "uas"}},
+		{"600;Refresher=UAC", &SessionTimerParams{Interval: 600, Refresher: "uac"}},
+		{"600", &SessionTimerParams{Interval: 600, Refresher: "uac"}},
+	} {
+		res := sip.NewResponse(sip.StatusOK, "OK")
+		if tt.header != "" {
+			res.AppendHeader(sip.NewHeader("Session-Expires", tt.header))
+		}
+		got := AnsweredSessionTimer(res)
+		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+			t.Errorf("Session-Expires %q: got %+v, want %+v", tt.header, got, tt.want)
+		}
+	}
+}
