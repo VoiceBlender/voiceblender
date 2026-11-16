@@ -28,6 +28,7 @@ type Collector struct {
 	// per-leg bookkeeping to drift out of step with reality.
 	denoiseStats      atomic.Value // func() (streams, states int)
 	denoiseGTCRNStats atomic.Value // func() (streams, states int)
+	voxlockStats      atomic.Value // func() VoxlockStats
 	activeRooms       prometheus.Gauge
 
 	// legsTotal counts every leg lifecycle transition.
@@ -83,6 +84,26 @@ func (c *Collector) SetDenoiseGTCRNStatsSource(fn func() (streams, instances int
 	if fn != nil {
 		c.denoiseGTCRNStats.Store(fn)
 	}
+}
+
+// VoxlockStats are the voxlock filter's counts.
+type VoxlockStats struct {
+	Streams, Instances, GPUStreams int
+	GPUPasses, GPUFailed           uint64
+}
+
+// SetVoxlockStatsSource supplies the voxlock kernel's counts.
+func (c *Collector) SetVoxlockStatsSource(fn func() VoxlockStats) {
+	if fn != nil {
+		c.voxlockStats.Store(fn)
+	}
+}
+
+func (c *Collector) voxlock() VoxlockStats {
+	if fn, ok := c.voxlockStats.Load().(func() VoxlockStats); ok {
+		return fn()
+	}
+	return VoxlockStats{}
 }
 
 func (c *Collector) denoise() (int, int) { return loadStats(&c.denoiseStats) }
@@ -209,6 +230,26 @@ func New(bus *events.Bus) *Collector {
 			Name: "voiceblender_audio_denoise_gtcrn_instances",
 			Help: "Per-stream denoise_gtcrn states the kernel holds, live plus pooled.",
 		}, func() float64 { _, n := c.denoiseGTCRN(); return float64(n) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_voxlock_streams",
+			Help: "Legs currently running the voxlock filter.",
+		}, func() float64 { return float64(c.voxlock().Streams) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_voxlock_instances",
+			Help: "Per-stream voxlock states the kernel holds, live plus pooled.",
+		}, func() float64 { return float64(c.voxlock().Instances) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "voiceblender_audio_voxlock_gpu_streams",
+			Help: "Legs running the voxlock filter on the GPU; the rest run on the CPU.",
+		}, func() float64 { return float64(c.voxlock().GPUStreams) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "voiceblender_audio_voxlock_gpu_passes_total",
+			Help: "Batched voxlock passes run on the GPU.",
+		}, func() float64 { return float64(c.voxlock().GPUPasses) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "voiceblender_audio_voxlock_gpu_failed_passes_total",
+			Help: "voxlock passes the GPU failed, which ran on the CPU instead.",
+		}, func() float64 { return float64(c.voxlock().GPUFailed) }),
 	)
 
 	_ = bus.Subscribe(c.handle)

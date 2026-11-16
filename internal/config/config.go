@@ -152,6 +152,15 @@ type Config struct {
 	AudioFilters           string
 	SpeechDetectionEnabled bool
 
+	// The voxlock filter. Off without a model file; the GPU is used only in
+	// a build with -tags cuda.
+	VoxlockModel       string
+	VoxlockInt8        bool
+	VoxlockFrameMs     int
+	VoxlockGPU         bool
+	VoxlockGPUDevice   int
+	VoxlockGPUMaxCalls int
+
 	// Codecs is the engine's supported codec list, ordered by preference. Used
 	// for both outbound offer construction and inbound offer/answer matching —
 	// a codec absent from this list is not negotiable in either direction.
@@ -298,6 +307,13 @@ func Load() Config {
 		DefaultSampleRate:      defaultRate,
 		AudioFilters:           os.Getenv("AUDIO_FILTERS"),
 		SpeechDetectionEnabled: os.Getenv("SPEECH_DETECTION_ENABLED") == "true",
+
+		VoxlockModel:       os.Getenv("VOXLOCK_MODEL"),
+		VoxlockInt8:        envBool("VOXLOCK_INT8", true),
+		VoxlockFrameMs:     envInt("VOXLOCK_FRAME_MS", 16),
+		VoxlockGPU:         !strings.EqualFold(envOr("VOXLOCK_GPU", "auto"), "off"),
+		VoxlockGPUDevice:   envInt("VOXLOCK_GPU_DEVICE", 0),
+		VoxlockGPUMaxCalls: envInt("VOXLOCK_GPU_MAX_CALLS", 64),
 
 		Codecs: parseCodecList(os.Getenv("SIP_CODECS"), []codec.CodecType{codec.CodecPCMU, codec.CodecPCMA}),
 

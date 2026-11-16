@@ -5781,6 +5781,11 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_audio_denoise_instances` | Gauge | — | Per-stream denoise states the kernel holds, live plus pooled. One per denoising leg, retained after the leg ends so the next one reuses it |
 | `voiceblender_audio_denoise_gtcrn_streams` | Gauge | — | Legs currently running the `denoise_gtcrn` filter |
 | `voiceblender_audio_denoise_gtcrn_instances` | Gauge | — | Per-stream `denoise_gtcrn` states the kernel holds, live plus pooled |
+| `voiceblender_audio_voxlock_streams` | Gauge | — | Legs currently running the `voxlock` filter |
+| `voiceblender_audio_voxlock_instances` | Gauge | — | Per-stream `voxlock` states the kernel holds, live plus pooled |
+| `voiceblender_audio_voxlock_gpu_streams` | Gauge | — | Of those legs, the ones on the GPU; the rest run on the CPU. Stays at zero without a GPU |
+| `voiceblender_audio_voxlock_gpu_passes_total` | Counter | — | Batched `voxlock` passes run on the GPU |
+| `voiceblender_audio_voxlock_gpu_failed_passes_total` | Counter | — | `voxlock` passes the GPU failed, which ran on the CPU instead. Any increase means the GPU is faulty or out of memory |
 | `voiceblender_audio_filters_unavailable_total` | Counter | `filter` | Filters dropped from a requested chain because the filter was unavailable. A non-zero rate means calls are running with less processing than was asked for |
 | `voiceblender_webhook_enqueued_total` | Counter | — | Total events accepted onto the webhook delivery queue. Denominator for the drop ratio — see the PromQL below |
 | `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
@@ -5865,6 +5870,7 @@ sending `[]` explicitly disables all processing for that leg.
 |--------|------------|---------|
 | `denoise` | none | Background noise suppression (RNNoise). Runs at the room's rate — 8, 16 or 48 kHz — so it adds no resampling. May appear only once in a chain. A room below 8 kHz is outside the model's range and the filter is dropped. |
 | `denoise_gtcrn` | none | Background noise suppression (GTCRN), an alternative to `denoise`: about half the CPU and deeper suppression, but it runs only at 8, 12 or 16 kHz — see [Choosing a denoiser](#choosing-a-denoiser). May appear only once in a chain and cannot be combined with `denoise`. |
+| `voxlock` | none | Keeps the leg's own talker and removes other voices and noise behind them — see [Isolating the caller's voice](#isolating-the-callers-voice). Runs at 8 or 16 kHz, like `denoise_gtcrn`. Off unless the server is built with it and has `VOXLOCK_MODEL`. May appear only once in a chain. |
 | `bandpass` | `low_hz` (default `300`), `high_hz` (default `3400`) | Band-limit the audio. `high_hz` is clamped below Nyquist for the leg's rate. |
 | `gain` | `volume` (`-8` to `8`, ~3 dB per step) | Level adjustment, using the same scale as playback volume. |
 | `pitch` | `semitones` (`-12`–`12`, default `-5`), `mix` (`0`–`1`, default `1`) | Shifts the voice up or down by a musical interval, leaving duration unchanged. Formants move with the pitch, so a downward shift sounds like a physically larger speaker rather than the same speaker talking lower. Accurate to within about ±15 cents; larger shifts (beyond roughly ±7 semitones) start to show a faint warble. |
@@ -5902,6 +5908,53 @@ such as Opus, WebRTC, LiveKit or 48 kHz WebSocket legs. Speech stays fully intel
 `denoise` where fullband fidelity matters. Other filters in the same chain run at 16 kHz too.
 
 Answering-machine detection runs its denoised copy at 16 kHz, so both filters run there natively.
+
+### Isolating the caller's voice
+
+`voxlock` is target-speaker extraction ([VoxLock](https://github.com/VoiceBlender/voxlock-go)): it
+keeps one person's voice and removes everyone else's — a TV, colleagues in an open-plan office, a
+second person by the phone — along with the noise. It needs no enrolment. It passes the leg's audio
+through until it has heard 3 s of speech, takes that speech as the voice to keep, and isolates
+from then on, fading in over 10 ms. In tests, bystanders 3 dB under the caller ended 20 dB under.
+
+The voice is learned per call: a new call, a filter change or moving the leg to another room starts
+listening again. The leg's first talker is the one kept, so it suits a leg with one person on it.
+
+| | `voxlock` |
+|---|---|
+| CPU per leg | ~2.4 ms per 10 ms of audio, int8 (about 85 times `denoise_gtcrn`) |
+| Delay | `VOXLOCK_FRAME_MS` (16 ms) plus 24 ms |
+| Sample rates | 8 or 16 kHz; a 48 kHz room runs it at 16 kHz, like `denoise_gtcrn` |
+| GPU | an NVIDIA GPU takes up to `VOXLOCK_GPU_MAX_CALLS` calls, the rest run on the CPU |
+
+The filter is compiled in only with `-tags voxlock` (`make build TAGS=voxlock`) or `-tags cuda`;
+other builds accept `voxlock` in a chain but run the leg unfiltered. The images are
+`make docker TAGS=voxlock` (CPU) and `make docker-cuda` (GPU, CPU fallback); both read voxlock-go
+from `../voxlock-go` (`VOXLOCK_DIR`). Neither carries the weights: mount `voxlock.bin` (`make weights` in voxlock-go) and point
+`VOXLOCK_MODEL` at it.
+
+That CPU cost is the limit: a 12-core Ryzen 9 7900 carries about 33 isolated calls. A server built with
+`-tags cuda` (`make build-cuda` or `Dockerfile.cuda`) batches the calls on an NVIDIA GPU instead,
+with the CPU taking any beyond the GPU's share. A GPU failure moves its calls to the CPU frame by
+frame rather than dropping their audio, and counts in
+`voiceblender_audio_voxlock_gpu_failed_passes_total`. Calls an RTX 4060 keeps up with:
+
+| `VOXLOCK_FRAME_MS` | Calls | Wait for the GPU, 99th percentile | Leg latency added |
+|---|---|---|---|
+| 16 | 96 | 11 ms | ~51 ms |
+| 40 | 128 | 15 ms | ~79 ms |
+
+`voxlock` does nothing for answering-machine detection, which hears a greeting before the 3 s of
+speech the filter waits for, so AMD skips it. It can follow `denoise` or `denoise_gtcrn` in a chain,
+but it already removes noise, so it needs neither.
+
+Isolate the caller on a live call:
+
+```bash
+curl -X PUT http://localhost:8080/v1/legs/$LEG_ID/filters \
+  -H 'Content-Type: application/json' \
+  -d '{"filters": [{"type": "voxlock"}]}'
+```
 
 ### Examples
 

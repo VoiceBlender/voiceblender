@@ -47,6 +47,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+require github.com/ebitengine/purego v0.11.2 // indirect
+
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.6-20250625184727-c923a0c2a132.1 // indirect
 	buf.build/go/protovalidate v0.13.1 // indirect
@@ -62,6 +64,8 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.35.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0 // indirect
+	github.com/VoiceBlender/voxlock-go v0.0.0-00010101000000-000000000000
+	github.com/VoiceBlender/voxlock-go/cuda v0.0.0-00010101000000-000000000000
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.25 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.19 // indirect
@@ -150,3 +154,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/grpc v1.85.0 // indirect
 )
+
+replace github.com/VoiceBlender/voxlock-go => ../voxlock-go
+
+replace github.com/VoiceBlender/voxlock-go/cuda => ../voxlock-go/cuda
