@@ -1,3 +1,5 @@
+//go:build voxlock || cuda
+
 package voxlock
 
 import (
@@ -6,6 +8,9 @@ import (
 
 	vl "github.com/VoiceBlender/voxlock-go"
 )
+
+// Compiled reports whether the build carries the kernel.
+const Compiled = true
 
 // kernel holds the shared read-only model, a pool of per-stream states keyed
 // by rate, and the GPU if there is one.

@@ -15,6 +15,9 @@ import (
 
 func installVoxlock(t *testing.T) {
 	t.Helper()
+	if !voxlock.Compiled {
+		t.Skip("built without -tags voxlock")
+	}
 	model := os.Getenv("VOXLOCK_MODEL")
 	if model == "" {
 		t.Skip("set VOXLOCK_MODEL to voxlock.bin to run")

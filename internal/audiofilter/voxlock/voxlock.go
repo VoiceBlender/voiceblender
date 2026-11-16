@@ -4,8 +4,9 @@
 // the talker by itself: audio passes through until it has heard 3 s of
 // speech, which becomes the voice it keeps.
 //
-// It runs on the CPU, or, in a build with -tags cuda, on an NVIDIA GPU, with
-// the calls beyond the GPU's share on the CPU.
+// The kernel is compiled in only with -tags voxlock, on the CPU, or -tags
+// cuda, which adds an NVIDIA GPU with the calls beyond its share on the CPU.
+// Without either the filter is registered but never available.
 package voxlock
 
 import (

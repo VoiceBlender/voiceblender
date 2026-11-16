@@ -1,3 +1,5 @@
+//go:build voxlock || cuda
+
 package voxlock
 
 import (

@@ -1,4 +1,4 @@
-//go:build !cuda
+//go:build voxlock && !cuda
 
 package voxlock
 

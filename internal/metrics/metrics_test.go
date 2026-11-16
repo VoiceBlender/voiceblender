@@ -234,6 +234,43 @@ func TestAudioFilterMetrics(t *testing.T) {
 	}
 }
 
+// TestVoxlockMetrics: the voxlock gauges and GPU counters read zero at rest
+// and follow their source, independent of the denoisers'.
+func TestVoxlockMetrics(t *testing.T) {
+	c := New(events.NewBus("test"))
+	body := scrape(t, c)
+	for _, want := range []string{
+		"voiceblender_audio_voxlock_streams 0",
+		"voiceblender_audio_voxlock_instances 0",
+		"voiceblender_audio_voxlock_gpu_streams 0",
+		"voiceblender_audio_voxlock_gpu_passes_total 0",
+		"voiceblender_audio_voxlock_gpu_failed_passes_total 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metric %q missing from a fresh collector", want)
+		}
+	}
+	c.SetVoxlockStatsSource(func() VoxlockStats {
+		return VoxlockStats{Streams: 9, Instances: 11, GPUStreams: 6, GPUPasses: 1234, GPUFailed: 2}
+	})
+	c.SetVoxlockStatsSource(nil)
+	body = scrape(t, c)
+	for _, want := range []string{
+		"voiceblender_audio_voxlock_streams 9",
+		"voiceblender_audio_voxlock_instances 11",
+		"voiceblender_audio_voxlock_gpu_streams 6",
+		"voiceblender_audio_voxlock_gpu_passes_total 1234",
+		"voiceblender_audio_voxlock_gpu_failed_passes_total 2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metric %q did not follow the source:\n%s", want, filterLines(body, "voxlock"))
+		}
+	}
+	if !strings.Contains(body, "voiceblender_audio_denoise_streams 0") {
+		t.Error("the voxlock source must not affect the denoise gauges")
+	}
+}
+
 func filterLines(body, substr string) string {
 	var out []string
 	for _, ln := range strings.Split(body, "\n") {

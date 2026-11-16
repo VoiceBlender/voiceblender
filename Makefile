@@ -1,13 +1,21 @@
-.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-interop test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push moq-web-client
+.PHONY: build run openapi asyncapi specs lint-specs clean vet test test-integration test-interop test-benchmark test-all download-greetings gen-human-greetings gen-noisy-greetings docker docker-push moq-web-client build-cuda docker-cuda docker-push-cuda
 
 BINARY   = voiceblender
 ENV_FILE = voiceblender.env
 IMAGE    = voiceblender
 TAG      = $(shell git describe --tags --always)
 REDOCLY_IMAGE ?= redocly/cli:2.2.0
+VOXLOCK_DIR ?= ../voxlock-go
+VOXLOCK_CTX = --build-context voxlock=$(VOXLOCK_DIR)
 
+# TAGS=voxlock compiles in the voxlock filter.
 build:
-	go build -o $(BINARY) ./cmd/voiceblender
+	go build -tags "$(TAGS)" -o $(BINARY) ./cmd/voiceblender
+
+# The voxlock filter on an NVIDIA GPU (cuda implies voxlock); the binary is no
+# longer static.
+build-cuda:
+	go build -tags cuda -o $(BINARY) ./cmd/voiceblender
 
 run: build
 	env $$(cat $(ENV_FILE) | grep -v '^\s*\#' | xargs) ./$(BINARY)
@@ -87,11 +95,18 @@ moq-web-client:
 		--outfile="$(CURDIR)/examples/moq-web/vendor/moqt.js"
 
 docker:
-	docker build -t vpbx/$(IMAGE):$(TAG) -t vpbx/$(IMAGE):latest .
+	docker build --build-arg TAGS="$(TAGS)" $(if $(findstring voxlock,$(TAGS)),$(VOXLOCK_CTX)) -t vpbx/$(IMAGE):$(TAG) -t vpbx/$(IMAGE):latest .
+
+docker-cuda:
+	docker build -f Dockerfile.cuda $(VOXLOCK_CTX) -t vpbx/$(IMAGE):$(TAG)-cuda -t vpbx/$(IMAGE):latest-cuda .
 
 docker-push: docker
 	docker push vpbx/$(IMAGE):$(TAG)
 	docker push vpbx/$(IMAGE):latest
+
+docker-push-cuda: docker-cuda
+	docker push vpbx/$(IMAGE):$(TAG)-cuda
+	docker push vpbx/$(IMAGE):latest-cuda
 
 docker-master:
 	docker build -t vpbx/$(IMAGE):master -t vpbx/$(IMAGE):master .

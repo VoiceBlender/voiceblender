@@ -1,26 +1,45 @@
 # VoiceBlender with the voxlock filter on an NVIDIA GPU. The CUDA loader links
 # the binary dynamically, so it needs a glibc base rather than Alpine. Run it
 # with the NVIDIA Container Toolkit (docker run --gpus all); the host's driver
-# must be R570 or newer.
+# must be R570 or newer. Build it with --build-context voxlock=../voxlock-go
+# (make docker-cuda) while go.mod replaces voxlock-go.
 #
-# The CUDA runtime image carries cuBLAS, which doubles the calls a GPU takes;
-# --build-arg RUNTIME=debian:bookworm-slim gives a far smaller image without.
-ARG RUNTIME=nvidia/cuda:12.8.1-runtime-ubuntu24.04
+# Of the CUDA libraries only cuBLAS is used; it doubles the calls a GPU takes.
+# --build-arg CUBLAS=0 leaves it out for a ~190 MB image.
+ARG CUDA=nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+FROM scratch AS voxlock
+
+# The real files only: ldconfig makes the .so.12 links.
+FROM ${CUDA} AS cuda
+ARG CUBLAS=1
+RUN mkdir -p /out/lib /out/licenses && if [ "$CUBLAS" = 1 ]; then \
+	cp /usr/local/cuda/lib64/libcublas.so.12.* /usr/local/cuda/lib64/libcublasLt.so.12.* /out/lib/ \
+	&& cp /NGC-DL-CONTAINER-LICENSE /out/licenses/; fi
 
 # glibc's, so the binary names glibc's loader.
 FROM golang:1.26-bookworm AS builder
 
 WORKDIR /src
+COPY --from=voxlock go.mod go.sum /voxlock-go/
+COPY --from=voxlock cuda/go.mod cuda/go.sum /voxlock-go/cuda/
 COPY go.mod go.sum ./
 RUN go mod download
+COPY --from=voxlock *.go *.s /voxlock-go/
+COPY --from=voxlock internal /voxlock-go/internal/
+COPY --from=voxlock cuda/*.go cuda/*.ptx /voxlock-go/cuda/
 COPY . .
 RUN CGO_ENABLED=0 go build -tags cuda -o /voiceblender ./cmd/voiceblender
 
-FROM ${RUNTIME}
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
 	&& rm -rf /var/lib/apt/lists/*
+COPY --from=cuda /out/lib/ /usr/local/lib/
+COPY --from=cuda /out/licenses/ /usr/share/licenses/cuda/
+RUN ldconfig
 COPY --from=builder /voiceblender /usr/local/bin/voiceblender
+COPY --from=voxlock LICENSE NOTICE /usr/share/licenses/voxlock-go/
 
 RUN mkdir -p /tmp/recordings /tmp/tts_cache
 

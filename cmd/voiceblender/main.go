@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoisegtcrn"
+	"github.com/VoiceBlender/voiceblender/internal/audiofilter/voxlock"
 	"log/slog"
 	"net/http"
 	"os"
@@ -88,6 +89,20 @@ func main() {
 		log.Error("audio denoise_gtcrn unavailable; legs requesting it will run unfiltered", "error", err)
 	} else {
 		log.Info("audio denoise_gtcrn ready")
+	}
+	if cfg.VoxlockModel == "" {
+		log.Info("audio voxlock off: VOXLOCK_MODEL is not set")
+	} else if err := voxlock.Install(voxlock.Config{
+		Model:       cfg.VoxlockModel,
+		Int8:        cfg.VoxlockInt8,
+		FrameMs:     cfg.VoxlockFrameMs,
+		GPU:         cfg.VoxlockGPU,
+		GPUDevice:   cfg.VoxlockGPUDevice,
+		GPUMaxCalls: cfg.VoxlockGPUMaxCalls,
+	}); err != nil {
+		log.Error("audio voxlock unavailable; legs requesting it will run unfiltered", "error", err)
+	} else {
+		log.Info("audio voxlock ready", "backend", voxlock.Backend())
 	}
 
 	log.Info("mixer audio",
@@ -281,6 +296,10 @@ func main() {
 	metricsCollector := metrics.New(bus)
 	metricsCollector.SetDenoiseStatsSource(denoise.Stats)
 	metricsCollector.SetDenoiseGTCRNStatsSource(denoisegtcrn.Stats)
+	metricsCollector.SetVoxlockStatsSource(func() metrics.VoxlockStats {
+		s := voxlock.CurrentStats()
+		return metrics.VoxlockStats{Streams: s.Streams, Instances: s.Instances, GPUStreams: s.GPUStreams, GPUPasses: s.GPUPasses, GPUFailed: s.GPUFailed}
+	})
 	webhookReg.SetMetricsObserver(metricsCollector)
 
 	// HTTP API server

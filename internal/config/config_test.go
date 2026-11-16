@@ -182,6 +182,27 @@ func TestLoad_AMRWB(t *testing.T) {
 	}
 }
 
+func TestLoad_Voxlock(t *testing.T) {
+	for _, key := range []string{"VOXLOCK_MODEL", "VOXLOCK_INT8", "VOXLOCK_FRAME_MS", "VOXLOCK_GPU", "VOXLOCK_GPU_DEVICE", "VOXLOCK_GPU_MAX_CALLS"} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.VoxlockModel != "" || !cfg.VoxlockInt8 || cfg.VoxlockFrameMs != 16 || !cfg.VoxlockGPU || cfg.VoxlockGPUDevice != 0 || cfg.VoxlockGPUMaxCalls != 64 {
+		t.Errorf("defaults: model %q int8 %v frame %d gpu %v device %d calls %d", cfg.VoxlockModel, cfg.VoxlockInt8,
+			cfg.VoxlockFrameMs, cfg.VoxlockGPU, cfg.VoxlockGPUDevice, cfg.VoxlockGPUMaxCalls)
+	}
+	t.Setenv("VOXLOCK_MODEL", "/models/voxlock.bin")
+	t.Setenv("VOXLOCK_INT8", "false")
+	t.Setenv("VOXLOCK_FRAME_MS", "40")
+	t.Setenv("VOXLOCK_GPU", "OFF")
+	t.Setenv("VOXLOCK_GPU_DEVICE", "1")
+	t.Setenv("VOXLOCK_GPU_MAX_CALLS", "128")
+	cfg = Load()
+	if cfg.VoxlockModel != "/models/voxlock.bin" || cfg.VoxlockInt8 || cfg.VoxlockFrameMs != 40 || cfg.VoxlockGPU || cfg.VoxlockGPUDevice != 1 || cfg.VoxlockGPUMaxCalls != 128 {
+		t.Errorf("overrides not applied: %+v", cfg)
+	}
+}
+
 func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("INSTANCE_ID", "test-123")
 	t.Setenv("SIP_BIND_IP", "10.0.0.1")

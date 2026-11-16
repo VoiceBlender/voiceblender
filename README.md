@@ -30,6 +30,7 @@ A Go voice engine that connects SIP, WebRTC, WhatsApp, WebSocket and other call 
 - **Room bridging** -- connect two rooms with configurable direction
 - **Audio routing matrix** -- role-based who-hears-whom for whisper, barge-in and supervisor monitoring
 - **Audio filters** -- per-leg denoise, band-pass, gain and voice effects (robotic, vocoder, pitch)
+- **Voice isolation** -- keep the caller and remove other voices behind them (`voxlock`), on the CPU or an NVIDIA GPU
 - **Comfort noise** -- optional per-room background noise
 - **DTMF & Real-Time Text** -- RFC 4733 telephone-events and T.140 text
 - **Recording** -- per-leg, per-room or multi-track WAV with pause/resume and S3/GCS upload
