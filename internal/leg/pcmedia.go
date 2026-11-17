@@ -140,7 +140,11 @@ type PCMedia struct {
 
 	started bool
 	closing atomic.Bool
-	log     *slog.Logger
+	// dtlsUp and closeReported pick one reason when a failed DTLS handshake
+	// also makes pion close the peer connection.
+	dtlsUp        atomic.Bool
+	closeReported atomic.Bool
+	log           *slog.Logger
 }
 
 func (m *PCMedia) SetSpeakingTap(w io.Writer) {
@@ -354,8 +358,12 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 		case webrtc.PeerConnectionStateClosed:
 			// pion closes the peer connection itself on the peer's DTLS
 			// close_notify, which skips the ICE failed/disconnected states.
-			if cfg.OnDisconnect != nil && !m.closing.Load() {
-				cfg.OnDisconnect(PCPeerClosed)
+			if cfg.OnDisconnect != nil && !m.closing.Load() && !m.closeReported.Swap(true) {
+				reason := PCPeerClosed
+				if !m.dtlsUp.Load() {
+					reason = PCDTLSFailed
+				}
+				cfg.OnDisconnect(reason)
 			}
 		}
 	})
@@ -363,7 +371,10 @@ func NewPCMedia(cfg PCMediaConfig) (*PCMedia, error) {
 	if dtls := sender.Transport(); dtls != nil {
 		dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
 			m.log.Debug("pcmedia: DTLS state", "state", state.String())
-			if state == webrtc.DTLSTransportStateFailed && cfg.OnDisconnect != nil && !m.closing.Load() {
+			if state == webrtc.DTLSTransportStateConnected {
+				m.dtlsUp.Store(true)
+			}
+			if state == webrtc.DTLSTransportStateFailed && cfg.OnDisconnect != nil && !m.closing.Load() && !m.closeReported.Swap(true) {
 				// pion holds the transport lock here; tearing down inline deadlocks.
 				go cfg.OnDisconnect(PCDTLSFailed)
 			}
