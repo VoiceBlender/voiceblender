@@ -14,6 +14,7 @@ info:
         - $ref: '#/components/tags/Rooms'
         - $ref: '#/components/tags/SIP_Registrations'
         - $ref: '#/components/tags/SIP_Trunks'
+        - $ref: '#/components/tags/Instance'
         - $ref: '#/components/tags/Events'
         - $ref: '#/components/tags/Connection'
 channels:
@@ -434,6 +435,14 @@ channels:
                 $ref: '#/components/messages/delete_sip_trunk'
             delete_sip_trunk.result:
                 $ref: '#/components/messages/delete_sip_trunkResult'
+            start_drain:
+                $ref: '#/components/messages/start_drain'
+            start_drain.result:
+                $ref: '#/components/messages/start_drainResult'
+            cancel_drain:
+                $ref: '#/components/messages/cancel_drain'
+            cancel_drain.result:
+                $ref: '#/components/messages/cancel_drainResult'
             leg.ringing:
                 $ref: '#/components/messages/evt_leg_ringing'
             leg.early_media:
@@ -574,6 +583,8 @@ channels:
                 $ref: '#/components/messages/evt_sip_trunk_up'
             sip.trunk_down:
                 $ref: '#/components/messages/evt_sip_trunk_down'
+            instance.status_changed:
+                $ref: '#/components/messages/evt_instance_status_changed'
             connected:
                 $ref: '#/components/messages/frame_connected'
             ping:
@@ -2228,6 +2239,36 @@ operations:
             messages:
                 - $ref: '#/channels/vsi/messages/delete_sip_trunk.result'
                 - $ref: '#/channels/vsi/messages/error'
+    recv_start_drain:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: 'Start draining: refuse new SIP calls and let current calls end'
+        tags:
+            - $ref: '#/components/tags/Instance'
+        messages:
+            - $ref: '#/channels/vsi/messages/start_drain'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/start_drain.result'
+                - $ref: '#/channels/vsi/messages/error'
+    recv_cancel_drain:
+        action: receive
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Cancel a drain and accept new calls again
+        tags:
+            - $ref: '#/components/tags/Instance'
+        messages:
+            - $ref: '#/channels/vsi/messages/cancel_drain'
+        reply:
+            channel:
+                $ref: '#/channels/vsi'
+            messages:
+                - $ref: '#/channels/vsi/messages/cancel_drain.result'
+                - $ref: '#/channels/vsi/messages/error'
     send_leg_ringing:
         action: send
         channel:
@@ -2902,7 +2943,7 @@ operations:
         action: send
         channel:
             $ref: '#/channels/vsi'
-        summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+        summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime) or unregistered for a drain
         tags:
             - $ref: '#/components/tags/Events'
         x-section: SIP registrations & trunks
@@ -2928,6 +2969,16 @@ operations:
         x-section: SIP registrations & trunks
         messages:
             - $ref: '#/channels/vsi/messages/sip.trunk_down'
+    send_instance_status_changed:
+        action: send
+        channel:
+            $ref: '#/channels/vsi'
+        summary: Instance status changed (starting, ready, draining, drained, stopping); sent to every VSI client whatever its app_id filter
+        tags:
+            - $ref: '#/components/tags/Events'
+        x-section: Instance
+        messages:
+            - $ref: '#/channels/vsi/messages/instance.status_changed'
     send_connected:
         action: send
         channel:
@@ -6086,6 +6137,67 @@ components:
                         $ref: '#/components/schemas/vsiStatusResponse'
                 required:
                     - type
+        start_drain:
+            name: start_drain
+            title: 'Start draining: refuse new SIP calls and let current calls end'
+            summary: 'Start draining: refuse new SIP calls and let current calls end'
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: start_drain
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        $ref: '#/components/schemas/StartDrainRequest'
+                required:
+                    - type
+        start_drainResult:
+            name: start_drainResult
+            title: 'Start draining: refuse new SIP calls and let current calls end — success response'
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: start_drain.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/InstanceStatus'
+                required:
+                    - type
+        cancel_drain:
+            name: cancel_drain
+            title: Cancel a drain and accept new calls again
+            summary: Cancel a drain and accept new calls again
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: cancel_drain
+                    request_id:
+                        type: string
+                        description: Echoed back on the matching .result/error frame; clients use it to correlate.
+                    payload:
+                        type: "null"
+                        description: No payload.
+                required:
+                    - type
+        cancel_drainResult:
+            name: cancel_drainResult
+            title: Cancel a drain and accept new calls again — success response
+            payload:
+                type: object
+                properties:
+                    type:
+                        const: cancel_drain.result
+                    request_id:
+                        type: string
+                    data:
+                        $ref: '#/components/schemas/InstanceStatus'
+                required:
+                    - type
         evt_leg_ringing:
             name: evt_leg_ringing
             title: SIP call ringing (inbound or outbound)
@@ -6557,8 +6669,8 @@ components:
                 $ref: openapi.yaml#/webhooks/sip.outbound_registration_failed/post/requestBody/content/application~1json/schema
         evt_sip_outbound_registration_expired:
             name: evt_sip_outbound_registration_expired
-            title: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
-            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            title: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime) or unregistered for a drain
+            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime) or unregistered for a drain
             description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.outbound_registration_expired. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/webhooks/sip.outbound_registration_expired/post/requestBody/content/application~1json/schema
@@ -6576,6 +6688,13 @@ components:
             description: 'Event payload shape is documented in openapi.yaml under webhooks/sip.trunk_down. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
             payload:
                 $ref: openapi.yaml#/webhooks/sip.trunk_down/post/requestBody/content/application~1json/schema
+        evt_instance_status_changed:
+            name: evt_instance_status_changed
+            title: Instance status changed (starting, ready, draining, drained, stopping); sent to every VSI client whatever its app_id filter
+            summary: Instance status changed (starting, ready, draining, drained, stopping); sent to every VSI client whatever its app_id filter
+            description: 'Event payload shape is documented in openapi.yaml under webhooks/instance.status_changed. Full envelope: {type, timestamp, event_id, instance_id, ...event-specific fields}.'
+            payload:
+                $ref: openapi.yaml#/webhooks/instance.status_changed/post/requestBody/content/application~1json/schema
         frame_connected:
             name: frame_connected
             title: First frame the server sends after the WebSocket upgrade completes. Carries no data.
@@ -6849,6 +6968,36 @@ components:
             required:
                 - peer_uri
                 - inbound_sources
+        InstanceStatus:
+            type: object
+            properties:
+                status:
+                    type: string
+                instance_id:
+                    type: string
+                version:
+                    type: string
+                uptime_seconds:
+                    type: integer
+                draining_since:
+                    type: string
+                drain_source:
+                    type: string
+                exit_when_drained:
+                    type: boolean
+                drain_deadline:
+                    type: string
+                legs:
+                    type: integer
+                rooms:
+                    type: integer
+            required:
+                - status
+                - instance_id
+                - uptime_seconds
+                - exit_when_drained
+                - legs
+                - rooms
         LegStreamView:
             type: object
             properties:
@@ -7106,6 +7255,8 @@ components:
                     type: integer
                 tls_insecure_skip_verify:
                     type: boolean
+                unregister_on_drain:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor
@@ -7139,10 +7290,13 @@ components:
                     type: string
                 tls_insecure_skip_verify:
                     type: boolean
+                unregister_on_drain:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor
                 - requested_expires_seconds
+                - unregister_on_drain
         STTFinalizeResult:
             type: object
             properties:
@@ -7182,6 +7336,11 @@ components:
                     type: string
             required:
                 - status
+        StartDrainRequest:
+            type: object
+            properties:
+                timeout_seconds:
+                    type: integer
         TTSDiscardResult:
             type: object
             properties:
@@ -8040,6 +8199,9 @@ components:
         SIP_Trunks:
             name: SIP Trunks
             description: SIP trunks to upstream carriers and PBXs (REGISTER or static peering)
+        Instance:
+            name: Instance
+            description: 'Drain mode: stop taking new calls while current calls end'
         Events:
             name: Events
             description: Server-to-client event frames; each payload matches the webhook of the same name
@@ -8068,6 +8230,8 @@ components:
                   description: Conversational AI agent sessions
                 - name: SIP registrations & trunks
                   description: Inbound registrations and outbound trunk state
+                - name: Instance
+                  description: Instance status and drain state
         Connection:
             name: Connection
             description: Connection lifecycle, keepalive and error frames

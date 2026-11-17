@@ -4649,6 +4649,7 @@ Two consequences worth knowing:
 | `sip.registration_attempt` | An inbound REGISTER (that would create/remove a binding) is awaiting a challenge/accept/reject decision; after `SIP_INBOUND_AUTH_CONSULT_TIMEOUT_MS` the `SIP_INBOUND_REGISTER_DEFAULT` fallback applies (reject by default) | `attempt_id`, `aor`, `contact`, `source_address`, `transport`, `user_agent`, `call_id`, `has_authorization` |
 | `sip.registration_active` | A SIP AOR binding was created or refreshed | `aor`, `contact`, `socket`, `transport`, `user_agent`, `call_id`, `granted_expires_seconds`, `expires_at` |
 | `sip.registration_expired` | A SIP AOR binding was removed | `aor`, `contact`, `socket`, `reason` (`ttl` / `unregistered` / `forced` / `replaced`) |
+| `instance.status_changed` | The instance status changed (`starting`, `ready`, `draining`, `drained`, `stopping`) — see [Drain & health](#drain--health). Goes to the global webhook, and to every VSI client whatever its `app_id` filter | `from`, `to`, `legs`, `rooms`, `drain_source`, `exit_when_drained`, `drain_deadline` |
 > **LiveKit participants.** Remote LK participants do not get their own special event types. Each appears as a regular `leg.connected` / `leg.disconnected` for a `livekit_participant` leg (Model B). `speaking.started` / `speaking.stopped` apply per-leg as usual. The `leg.disconnected.reason` for an LK participant leg is `livekit_participant_left`.
 
 #### `amd.result` — Answering Machine Detection
@@ -4771,6 +4772,7 @@ sequence numbers stay contiguous.
 |--------|-------------|
 | `api_hangup` | Hung up via `DELETE /v1/legs/{id}` |
 | `remote_bye` | Remote party sent BYE |
+| `server_shutdown` | Ended by the ordered shutdown (SIGTERM, the end of a SIGUSR1 drain, or a drain timeout) — see [Drain & health](#drain--health) |
 | `caller_cancel` | Inbound caller hung up before answer |
 | `ring_timeout` | Outbound `ring_timeout` (60 seconds unless the request set one) expired before answer, or an inbound leg stayed unanswered past `SIP_INBOUND_RING_TIMEOUT_SECONDS` |
 | `max_duration` | Outbound `max_duration` reached after connect |
@@ -4818,6 +4820,10 @@ All errors return:
 | `HTTP_ADDR` | `:8080` | REST API listen address |
 | `ALLOWED_IPS` | _(empty = allow all)_ | Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6, in any mix) gating every HTTP endpoint, including the `/v1/vsi` event WebSocket, `/v1/legs/websocket`, the `/v1/legs/moq` WebTransport endpoint, `/metrics`, and pprof. Bare addresses are treated as host routes (`/32` or `/128`); malformed entries fail server startup. Only `X-Forwarded-For` is consulted as a proxy header (see `TRUST_PROXY_HEADERS`). Examples: `127.0.0.1`, `10.0.0.0/8,192.168.0.0/16`, `2001:db8::/32,::1`. |
 | `TRUST_PROXY_HEADERS` | `false` | When `true`, the client IP used for the `ALLOWED_IPS` check is taken from the leftmost entry in `X-Forwarded-For` (falling back to the socket peer when the header is absent). Default `false` ignores `X-Forwarded-For`. Enable only behind a trusted reverse proxy that unconditionally overwrites the header. |
+| `SHUTDOWN_TIMEOUT_SECONDS` | `8` | Upper bound on the [ordered shutdown](#ordered-shutdown). Keep it below the orchestrator's kill timeout. Minimum `1` |
+| `DRAIN_TIMEOUT_SECONDS` | `0` | Default drain time limit; when it passes the ordered shutdown runs. `0` = no limit |
+| `DRAIN_EMPTY_GRACE_SECONDS` | `5` | Seconds with no legs before a draining instance counts as `drained` |
+| `DRAIN_RETRY_AFTER_SECONDS` | `60` | `Retry-After` on `503`s while draining or stopping. `0` omits the header |
 | `SIP_BIND_IP` | `127.0.0.1` | IP advertised in SDP/Contact/Via headers (auto-detected if `0.0.0.0`) |
 | `SIP_LISTEN_IP` | _(same as SIP_BIND_IP)_ | IP to bind the UDP socket on |
 | `SIP_PORT` | `5060` | SIP listen port |
@@ -5184,6 +5190,7 @@ restart.
 | Upstream binding lapsed while still failing | granted lifetime expires and refresh has not recovered | `sip.outbound_registration_expired` (`reason: refresh_failed`) — emitted once per outage; resets on the next successful REGISTER |
 | `DELETE /v1/sip/trunks/{id}` | operator removes the trunk | `sip.outbound_registration_expired` (`reason: unregistered`) |
 | Server shutdown | every trunk is unregistered in parallel | `sip.outbound_registration_expired` (`reason: unregistered` or `shutdown`) |
+| Drain starts | trunks with `unregister_on_drain` unregister; cancelling the drain registers them again | `sip.outbound_registration_expired` (`reason: drain`), then `sip.outbound_registration_active` after a cancel |
 
 An `ip_ip` trunk has no registration lifecycle: it is `active` from creation.
 With the OPTIONS health check enabled it publishes `sip.trunk_up` and
@@ -5312,6 +5319,7 @@ Field reference (`sip_register` block):
 | `contact_user` | no | Override the `Contact` user-part. Defaults to the AOR user-part. |
 | `expires_seconds` | no | Requested expiry. Clamped to `[SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]`. |
 | `tls_insecure_skip_verify` | no | Accept this trunk's TLS next hop certificate without verifying it — self-signed, privately signed, or SAN-less (`x509: certificate relies on legacy Common Name field`). Scoped to that peer; every other TLS peer is still verified, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored with a logged warning when the next hop is not TLS or is named by IP literal. See [TLS proxies](#tls-proxies). |
+| `unregister_on_drain` | no | Default `true`. Unregister when the instance starts [draining](#drain--health), so the provider stops sending new calls here, and register again if the drain is cancelled. Calls already up and new outbound calls through the trunk are unaffected. Set `false` for providers that end live calls, or refuse outbound calls, from a client that is no longer registered. Echoed in the trunk view. |
 
 Errors: `400` for invalid JSON, missing or invalid fields, invalid URIs, or an
 unknown `type`.
@@ -5687,7 +5695,7 @@ curl -X DELETE http://vb.local:8080/v1/sip/trunks/7f5d39c6-2987-4643-9822-5c7ced
 |---|---|
 | `sip.outbound_registration_active` | REGISTER (initial or refresh) returned 2xx. Carries `trunk_id`, `aor`, `registrar`, `contact`, `granted_expires_seconds`, `expires_at`, `call_id`. |
 | `sip.outbound_registration_failed` | REGISTER attempt failed (transport error, non-2xx after digest retry). Carries `trunk_id`, `aor`, `registrar`, `status_code`, `reason`. The trunk stays in the manager and retries with exponential backoff. |
-| `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), or refresh failed past granted lifetime. `reason` is one of `unregistered`, `shutdown`, `refresh_failed`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER. |
+| `sip.outbound_registration_expired` | Trunk removed (DELETE or shutdown), unregistered for a drain, or refresh failed past granted lifetime. `reason` is one of `unregistered`, `shutdown`, `drain`, `refresh_failed`. The `refresh_failed` variant fires once per outage and resets on the next successful REGISTER. |
 | `sip.trunk_up` | An `ip_ip` trunk's peer answered its OPTIONS health check — the first answer, or a recovery. Carries `trunk_id`, `trunk_type`, `peer_uri`, `status_code`. See [Health check](#health-check). |
 | `sip.trunk_down` | An `ip_ip` trunk's peer failed its OPTIONS health check. Carries `trunk_id`, `trunk_type`, `peer_uri`, and `status_code` / `reason` (`status_code` is omitted when there was no response). |
 
@@ -5757,6 +5765,147 @@ trunk.
 
 ---
 
+## Drain & health
+
+Drain mode takes an instance out of service without cutting calls: it stops
+taking new calls and lets current ones end on their own. It is meant for
+deploys behind a SIP proxy that probes instances with OPTIONS.
+
+### Instance status
+
+| Status | Meaning | New INVITE / OPTIONS | New legs and rooms (API) | `/health/live` | `/health/ready` |
+|---|---|---|---|---|---|
+| `starting` | SIP listeners not bound yet | `503` | allowed | `200` | `503` |
+| `ready` | Serving | accepted | allowed | `200` | `200` |
+| `draining` | Drain started; legs still up, or the grace period is running | `503` + `Retry-After` | allowed | `200` | `503` |
+| `drained` | No legs for `DRAIN_EMPTY_GRACE_SECONDS` | `503` + `Retry-After` | `503` + `Retry-After` | `200` | `503` |
+| `stopping` | Ordered shutdown running | `503` + `Retry-After` | `503` + `Retry-After` | `503` | `503` |
+
+- Only requests that start something are refused. Everything inside a dialog
+  (re-INVITE, UPDATE, BYE, in-dialog OPTIONS, REFER) and every API call on
+  existing legs and rooms keep working.
+- The API stays fully open while any leg is up. The application may still need
+  new legs or rooms for a call already in progress, which the server cannot tell
+  apart from a new call.
+- A new INVITE is refused before any `1xx`, so a proxy can try another instance
+  at once. This covers SIPREC and WhatsApp INVITEs too. Inbound REGISTERs to the
+  built-in registrar are still accepted.
+- `sip_register` trunks with `unregister_on_drain` (default `true`) unregister
+  when the drain starts and register again if it is cancelled. Their
+  `sip.outbound_registration_expired` event carries reason `drain`.
+- Every change of status publishes [`instance.status_changed`](#webhook-events).
+
+### Ordered shutdown
+
+SIGTERM/SIGINT, the end of a SIGUSR1 drain, and a drain timeout all run the
+same ordered shutdown, bounded by `SHUTDOWN_TIMEOUT_SECONDS`:
+
+1. The status becomes `stopping`.
+2. Every leg ends through the normal teardown. A ringing inbound SIP leg is
+   rejected with `503`. `leg.disconnected` carries reason `server_shutdown`.
+3. Room recordings and agents are finished, and recordings uploaded.
+4. BYEs and trunk unregisters go out while the SIP sockets are still open.
+5. Queued webhooks are delivered, and each VSI client gets its queued events
+   and then a `1001 Going Away` close.
+6. The listeners close and the process exits.
+
+A second SIGTERM/SIGINT exits at once.
+
+### Starting a drain
+
+| How | Process afterwards | Time limit |
+|---|---|---|
+| `POST /v1/drain` / VSI `start_drain` | Keeps running in `drained` | `timeout_seconds`, else `DRAIN_TIMEOUT_SECONDS` |
+| SIGUSR1 (not on Windows) | Runs the ordered shutdown once `drained` | `DRAIN_TIMEOUT_SECONDS` |
+
+When a time limit passes before the instance is drained, the ordered shutdown
+runs and the process exits, whatever started the drain. SIGUSR1 during an API
+drain makes it exit once drained and keeps its deadline. `DELETE /v1/drain`
+cancels any drain, including a SIGUSR1 one, which then no longer exits.
+
+### POST /v1/drain
+
+Starts a drain. The body is optional.
+
+| Field | Type | Description |
+|---|---|---|
+| `timeout_seconds` | integer | Time limit for this drain; `0` means no limit. Default `DRAIN_TIMEOUT_SECONDS`. Sent while already draining, it replaces the deadline |
+
+```bash
+curl -X POST http://localhost:8080/v1/drain -d '{"timeout_seconds": 1800}'
+```
+
+**Response:** `202 Accepted` with the [status body](#status-body). `400` for a
+negative `timeout_seconds`; `409` while the instance is shutting down.
+
+### DELETE /v1/drain
+
+Cancels the drain: the status returns to `ready`, the deadline is cleared, and
+trunks the drain unregistered register again.
+
+```bash
+curl -X DELETE http://localhost:8080/v1/drain
+```
+
+**Response:** `200 OK` with the [status body](#status-body). `409` when the
+instance is not draining or is shutting down.
+
+### VSI commands
+
+`start_drain` (same optional payload as `POST /v1/drain`) and `cancel_drain`
+mirror the REST routes; both reply with the [status body](#status-body).
+
+```json
+{"type": "start_drain", "request_id": "1", "payload": {"timeout_seconds": 1800}}
+{"type": "start_drain.result", "request_id": "1", "data": {"status": "draining", "drain_source": "api", "legs": 7, "rooms": 3, "exit_when_drained": false}}
+```
+
+### GET /health/live and GET /health/ready
+
+Outside `/v1`, like `/metrics`, and behind `ALLOWED_IPS` like every route.
+
+- `/health/live` returns `200` until the ordered shutdown starts, draining
+  included, then `503`. Use it as a liveness probe: failing during a drain would
+  restart the pod with calls still up.
+- `/health/ready` returns `200` only in `ready`, otherwise `503` (with
+  `Retry-After` while draining or stopping). Use it as a readiness probe or
+  load-balancer check; it also takes the instance out of HTTP load balancers in
+  front of WebRTC, WebSocket and MoQ legs.
+
+See [CONFIGURATION.md](CONFIGURATION.md#graceful-shutdown-and-drain) for a
+Kubernetes `preStop` example.
+
+### Status body
+
+Returned by both health endpoints, `POST`/`DELETE /v1/drain` and the VSI
+`start_drain` / `cancel_drain` results.
+
+```json
+{
+  "status": "draining",
+  "instance_id": "vb-3",
+  "version": "1.42.0",
+  "uptime_seconds": 86412,
+  "draining_since": "2026-11-16T10:02:11Z",
+  "drain_source": "api",
+  "exit_when_drained": false,
+  "drain_deadline": "2026-11-16T10:32:11Z",
+  "legs": 7,
+  "rooms": 3
+}
+```
+
+| Field | Description |
+|---|---|
+| `status` | `starting`, `ready`, `draining`, `drained` or `stopping` |
+| `draining_since` | When the drain started (RFC 3339); absent when not draining |
+| `drain_source` | `api` or `signal`; absent when not draining |
+| `exit_when_drained` | `true` when the process exits once drained (SIGUSR1) |
+| `drain_deadline` | When the drain times out (RFC 3339); absent when there is no limit |
+| `legs`, `rooms` | Current counts |
+
+---
+
 ## Metrics
 
 ### GET /metrics
@@ -5786,9 +5935,11 @@ Returns Prometheus-format metrics for the VoiceBlender instance. No request body
 | `voiceblender_webhook_dropped_total` | Counter | — | Total events dropped because the webhook delivery queue was full (backpressure from slow endpoints) |
 | `voiceblender_webhook_deliveries_total` | Counter | `outcome` | Total terminal webhook delivery outcomes. `outcome`: `success`, `exhausted` (all 3 attempts failed), `marshal_error`, `request_error` (malformed webhook URL). Closed set, so cardinality is fixed at 4 |
 | `voiceblender_vsi_events_dropped_total` | Counter | — | Total events dropped because a VSI WebSocket client's buffer was full (slow consumer). Tune with `VSI_EVENT_BUFFER_SIZE` |
+| `voiceblender_instance_status` | Gauge | `status` | `1` for the instance's current status, `0` for the others. `status`: `starting`, `ready`, `draining`, `drained`, `stopping` — see [Drain & health](#drain--health) |
+| `voiceblender_draining` | Gauge | — | `1` while the instance is `draining` or `drained`, otherwise `0` |
 | Go runtime metrics | — | — | Standard `go_*` and `process_*` metrics from the Prometheus Go client |
 
-Every delivery that reaches a terminal exit increments exactly one `voiceblender_webhook_deliveries_total{outcome}`. This is not a global `enqueued == sum(outcomes)` identity: jobs still queued at shutdown are abandoned without an outcome, so a small, shutdown-only skew is expected.
+Every delivery that reaches a terminal exit increments exactly one `voiceblender_webhook_deliveries_total{outcome}`. The ordered shutdown flushes the queue first, but this is not a global `enqueued == sum(outcomes)` identity: jobs still queued when `SHUTDOWN_TIMEOUT_SECONDS` runs out are abandoned without an outcome, so a small, shutdown-only skew is expected.
 
 #### PromQL Examples
 

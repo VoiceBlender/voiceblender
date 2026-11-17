@@ -68,8 +68,7 @@ func (s *Server) joinPendingRoom(l leg.Leg, roomID string) bool {
 	if _, ok := s.RoomMgr.Get(roomID); ok {
 		return true
 	}
-	s.cleanupLeg(l)
-	s.publishDisconnect(l, "room_deleted")
+	s.teardownLeg(l, "room_deleted")
 	return false
 }
 

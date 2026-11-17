@@ -1415,6 +1415,26 @@ func (s *Server) wsHandleCommand(ctx context.Context, lw *wsutilx.LockedWriter, 
 		}
 		s.wsCommandResult(lw, msg, map[string]string{"status": "deleting"})
 
+	case "start_drain":
+		var req StartDrainRequest
+		if !s.wsParsePayload(lw, msg, &req) {
+			return
+		}
+		st, err := s.doStartDrain(req)
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, st)
+
+	case "cancel_drain":
+		st, err := s.doCancelDrain()
+		if err != nil {
+			s.wsCommandError(lw, msg, err)
+			return
+		}
+		s.wsCommandResult(lw, msg, st)
+
 	default:
 		s.vsiSendResponse(lw, msg.RequestID, "error",
 			map[string]interface{}{"code": 400, "message": "unknown command: " + msg.Type})
@@ -1465,6 +1485,10 @@ func (s *Server) wsCommandError(lw *wsutilx.LockedWriter, msg vsiInMsg, err erro
 // wsCreateLeg handles create_leg over the VSI WebSocket, mirroring POST /v1/legs.
 func (s *Server) wsCreateLeg(lw *wsutilx.LockedWriter, msg vsiInMsg, req CreateLegRequest) {
 	if err := s.validateCustomData(req.CustomData); err != nil {
+		s.wsCommandError(lw, msg, err)
+		return
+	}
+	if err := s.admitNew(); err != nil {
 		s.wsCommandError(lw, msg, err)
 		return
 	}

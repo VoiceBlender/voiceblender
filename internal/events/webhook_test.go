@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -240,4 +241,67 @@ func TestWebhook_NilObserverIsSafe(t *testing.T) {
 
 	bus.Publish(LegRinging, &LegRingingData{LegScope: LegScope{LegID: "leg-1"}})
 	time.Sleep(200 * time.Millisecond)
+}
+
+func TestWebhook_FlushWaitsForDelivery(t *testing.T) {
+	release := make(chan struct{})
+	var got sync.WaitGroup
+	got.Add(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+		got.Done()
+	}))
+	defer srv.Close()
+
+	r, _ := newTestRegistry(t, srv.URL)
+	r.bus.Publish(LegRinging, &LegRingingData{LegScope: LegScope{LegID: "leg-1"}})
+
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := r.Flush(short); err == nil {
+		t.Fatal("Flush returned nil while a delivery was blocked")
+	}
+
+	close(release)
+	ctx, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	if err := r.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	got.Wait()
+}
+
+func TestWebhook_FlushIdleReturnsAtOnce(t *testing.T) {
+	r, _ := newTestRegistry(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := r.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}
+
+func TestWebhook_StopAbortsBackoff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	r, obs := newTestRegistry(t, srv.URL)
+	r.bus.Publish(LegRinging, &LegRingingData{LegScope: LegScope{LegID: "leg-1"}})
+	time.Sleep(200 * time.Millisecond) // first attempt fails, worker enters backoff
+	start := time.Now()
+	r.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := r.Flush(ctx); err != nil {
+		t.Fatalf("Flush after Stop: %v", err)
+	}
+	if time.Since(start) > 900*time.Millisecond {
+		t.Fatalf("backoff was not interrupted")
+	}
+	if !waitFor(t, func() bool { return obs.totalOutcomes() == 1 }) {
+		t.Fatalf("want exactly 1 outcome, got %d", obs.totalOutcomes())
+	}
 }

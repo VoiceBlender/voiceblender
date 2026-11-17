@@ -20,6 +20,10 @@ import (
 // registered with the manager. The leg transitions straight to
 // StateConnected (no ringing flow).
 func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
+	if err := s.admitNew(); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	cfg, err := wsCfgFromQuery(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -112,8 +116,7 @@ func (s *Server) wsLeg(w http.ResponseWriter, r *http.Request) {
 		"duration_ms", time.Since(connectedAt).Milliseconds(),
 	)
 	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 	}
 }
 
@@ -195,8 +198,7 @@ func (s *Server) runWSOutboundDial(l *leg.WebSocketLeg, req CreateLegRequest, cf
 	tr, peerHdr, err := wsmedia.DialClient(ctx, req.URL, dialCfg)
 	if err != nil {
 		reason := classifyWSDialError(err, ctx.Err())
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 		return
 	}
 
@@ -223,20 +225,17 @@ func (s *Server) runWSOutboundDial(l *leg.WebSocketLeg, req CreateLegRequest, cf
 		select {
 		case <-tr.Done():
 			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, classifyWSReason(tr.Err()))
+				s.teardownLeg(l, classifyWSReason(tr.Err()))
 			}
 		case <-t.C:
 			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "max_duration")
+				s.teardownLeg(l, "max_duration")
 			}
 		}
 	} else {
 		<-tr.Done()
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, classifyWSReason(tr.Err()))
+			s.teardownLeg(l, classifyWSReason(tr.Err()))
 		}
 	}
 	s.Log.Info("ws outbound leg session closed",

@@ -59,6 +59,9 @@ type siprecSRC struct {
 // doStartRoomSIPREC forks every participant of a room to an external session
 // recording server, one sendonly m=audio per party.
 func (s *Server) doStartRoomSIPREC(ctx context.Context, roomID string, req StartSIPRECRequest) (*LegView, error) {
+	if err := s.admitNew(); err != nil {
+		return nil, err
+	}
 	if !s.Config.SIPRECSRCEnabled {
 		return nil, newAPIError(http.StatusForbidden, "outbound SIPREC is disabled; set SIPREC_SRC_ENABLED=true")
 	}

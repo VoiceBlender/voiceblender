@@ -12,6 +12,10 @@ Full documentation, guides and API reference: <https://voiceblender.org/docs/>
 | `HTTP_ADDR` | `:8080` | REST API listen address |
 | `ALLOWED_IPS` | _(empty = allow all)_ | Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6, in any mix) gating **every** HTTP endpoint, including the `/v1/vsi` event WebSocket, `/v1/legs/websocket`, the `/v1/legs/moq` WebTransport endpoint, `/metrics`, and pprof. Empty or unset disables the check. Whitespace around entries is trimmed; bare addresses are treated as host routes (`/32` for v4, `/128` for v6); malformed entries fail server startup. Only `X-Forwarded-For` is consulted as a proxy header (see `TRUST_PROXY_HEADERS`); `X-Real-IP` and RFC 7239 `Forwarded` are ignored. Examples: `127.0.0.1`, `10.0.0.0/8,192.168.0.0/16`, `2001:db8::/32,::1`. |
 | `TRUST_PROXY_HEADERS` | `false` | When `true`, the client IP used for the `ALLOWED_IPS` check is taken from the leftmost entry in `X-Forwarded-For` (falling back to the socket peer when the header is absent). When `false` (default), `X-Forwarded-For` is ignored and only the socket peer (`r.RemoteAddr`) is consulted. Enable only when VoiceBlender sits behind a trusted reverse proxy that unconditionally overwrites `X-Forwarded-For` — otherwise the header is client-spoofable. |
+| `SHUTDOWN_TIMEOUT_SECONDS` | `8` | Upper bound on the ordered shutdown run on SIGTERM/SIGINT, at the end of a SIGUSR1 drain, or when a drain times out. Legs are hung up with reason `server_shutdown`, recordings finished and uploaded, BYEs and trunk unregisters sent, and queued webhooks and VSI events flushed; past the limit the process exits anyway. Keep it below the orchestrator's kill timeout (`docker stop` waits 10 s). Minimum `1`. See [Graceful shutdown and drain](#graceful-shutdown-and-drain). |
+| `DRAIN_TIMEOUT_SECONDS` | `0` | Default time limit for a drain (SIGUSR1, or `POST /v1/drain` without `timeout_seconds`). If it passes before the instance is drained, the ordered shutdown runs and the process exits. `0` means no limit. |
+| `DRAIN_EMPTY_GRACE_SECONDS` | `5` | How long a draining instance must have no legs before it counts as `drained`, so a call flow that hangs up one leg and dials the next is not cut off. `0` marks it drained as soon as the last leg ends. |
+| `DRAIN_RETRY_AFTER_SECONDS` | `60` | `Retry-After` value on the `503` replies to new INVITEs, out-of-dialog OPTIONS, refused API creates and `/health/ready` while draining or shutting down. `0` omits the header. |
 | `SIP_BIND_IP` | `127.0.0.1` | IPv4 address advertised in SDP/Contact/Via headers (and used as the listen address when `SIP_LISTEN_IP` is empty). Set to `0.0.0.0` for v4 wildcard, `::` for dual-stack on Linux when `bindv6only=0`. |
 | `SIP_LISTEN_IP` | *(same as SIP_BIND_IP)* | UDP socket bind IP. Accepts `127.0.0.1`, `0.0.0.0`, `::`, or any literal v4/v6 address. |
 | `SIP_BIND_IPV6` | *(empty = v4-only)* | IPv6 address advertised in SDP/Contact/Via for IPv6 calls. Set this for IPv6-only or dual-stack deployments. |
@@ -163,6 +167,65 @@ Pick one:
 
 The same three settings apply outside Docker, on any host behind NAT that also
 serves peers on its own network.
+
+## Graceful shutdown and drain
+
+**SIGTERM / SIGINT** run the ordered shutdown, bounded by
+`SHUTDOWN_TIMEOUT_SECONDS`: every leg ends through the normal teardown (the far
+end gets a BYE, `leg.disconnected` carries reason `server_shutdown`), recordings
+are finished and uploaded, trunks unregister, and queued webhooks and VSI events
+are flushed before the listeners close. A second signal exits at once.
+
+**Drain** stops taking new calls while current calls end on their own:
+
+- new INVITEs and out-of-dialog OPTIONS get `503` with `Retry-After`, so a SIP
+  proxy that probes with OPTIONS takes the instance out of rotation;
+- everything inside a dialog, and the whole API, keep working while any leg is up;
+- once there have been no legs for `DRAIN_EMPTY_GRACE_SECONDS`, the status is
+  `drained` and new legs and rooms get `503` too;
+- `sip_register` trunks with `unregister_on_drain` (the default) unregister, and
+  register again if the drain is cancelled.
+
+Start one with `POST /v1/drain` (the process stays up; `DELETE /v1/drain`
+cancels it) or with **SIGUSR1** (the process runs the ordered shutdown once
+drained). Either way `DRAIN_TIMEOUT_SECONDS` or the request's `timeout_seconds`
+can cap it. SIGUSR1 is not available on Windows.
+
+`/health/live` returns `200` until the ordered shutdown starts, draining
+included; `/health/ready` returns `200` only while the instance takes new calls.
+Both report the status (`starting`, `ready`, `draining`, `drained`, `stopping`)
+and the leg and room counts. They sit behind `ALLOWED_IPS` like every other
+route, so allow the probe source addresses.
+
+**Kubernetes.** Kubernetes sends SIGTERM as soon as the `preStop` hook returns,
+so the hook must start the drain and then wait for it to finish. Size
+`terminationGracePeriodSeconds` to cover the longest drain you accept:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 3600
+  containers:
+    - name: voiceblender
+      livenessProbe:
+        httpGet: { path: /health/live, port: 8080 }
+      readinessProbe:
+        httpGet: { path: /health/ready, port: 8080 }
+      lifecycle:
+        preStop:
+          exec:
+            command:
+              - sh
+              - -c
+              - |
+                kill -USR1 1
+                while wget -q -O /dev/null http://127.0.0.1:8080/health/live; do
+                  sleep 2
+                done
+```
+
+The image's entrypoint is the server itself, so it is PID 1. `/health/live`
+answers `200` until the drain is over; then the ordered shutdown starts, it
+answers `503` (or stops answering once the process exits), and the loop ends.
 
 ## S3 bucket preflight
 

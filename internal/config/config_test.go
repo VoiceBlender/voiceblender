@@ -573,3 +573,27 @@ func TestLoad_SIPRTCP(t *testing.T) {
 		t.Error("SIP_RTCP=false left RTCP on")
 	}
 }
+
+func TestLoad_ShutdownAndDrain(t *testing.T) {
+	for _, k := range []string{"SHUTDOWN_TIMEOUT_SECONDS", "DRAIN_TIMEOUT_SECONDS", "DRAIN_EMPTY_GRACE_SECONDS", "DRAIN_RETRY_AFTER_SECONDS"} {
+		t.Setenv(k, "")
+	}
+	cfg := Load()
+	if cfg.ShutdownTimeoutSeconds != 8 || cfg.DrainTimeoutSeconds != 0 || cfg.DrainEmptyGraceSeconds != 5 || cfg.DrainRetryAfterSeconds != 60 {
+		t.Errorf("defaults = %d/%d/%d/%d, want 8/0/5/60", cfg.ShutdownTimeoutSeconds, cfg.DrainTimeoutSeconds, cfg.DrainEmptyGraceSeconds, cfg.DrainRetryAfterSeconds)
+	}
+	t.Setenv("SHUTDOWN_TIMEOUT_SECONDS", "30")
+	t.Setenv("DRAIN_TIMEOUT_SECONDS", "600")
+	t.Setenv("DRAIN_EMPTY_GRACE_SECONDS", "0")
+	t.Setenv("DRAIN_RETRY_AFTER_SECONDS", "120")
+	cfg = Load()
+	if cfg.ShutdownTimeoutSeconds != 30 || cfg.DrainTimeoutSeconds != 600 || cfg.DrainEmptyGraceSeconds != 0 || cfg.DrainRetryAfterSeconds != 120 {
+		t.Errorf("set = %d/%d/%d/%d", cfg.ShutdownTimeoutSeconds, cfg.DrainTimeoutSeconds, cfg.DrainEmptyGraceSeconds, cfg.DrainRetryAfterSeconds)
+	}
+	t.Setenv("SHUTDOWN_TIMEOUT_SECONDS", "0")
+	t.Setenv("DRAIN_TIMEOUT_SECONDS", "-5")
+	cfg = Load()
+	if cfg.ShutdownTimeoutSeconds != 1 || cfg.DrainTimeoutSeconds != 0 {
+		t.Errorf("clamped = %d/%d, want 1/0", cfg.ShutdownTimeoutSeconds, cfg.DrainTimeoutSeconds)
+	}
+}

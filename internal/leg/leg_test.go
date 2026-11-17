@@ -208,3 +208,31 @@ func TestCalculateMOS_Bounds(t *testing.T) {
 		t.Errorf("MOS = %.2f, expected between 1.0 and 5.0", mos)
 	}
 }
+
+func TestManager_CountAndOnCountChange(t *testing.T) {
+	mgr := NewManager()
+	var got []int
+	mgr.OnCountChange(func(n int) { got = append(got, n) })
+
+	mgr.Add(newMockLeg("a"))
+	mgr.Add(newMockLeg("b"))
+	if mgr.Count() != 2 {
+		t.Fatalf("Count = %d, want 2", mgr.Count())
+	}
+	mgr.Remove("a")
+	mgr.Remove("a")
+	mgr.Remove("b")
+
+	want := []int{1, 2, 1, 0}
+	if len(got) != len(want) {
+		t.Fatalf("callbacks = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("callbacks = %v, want %v", got, want)
+		}
+	}
+	if mgr.Count() != 0 {
+		t.Fatalf("Count = %d, want 0", mgr.Count())
+	}
+}

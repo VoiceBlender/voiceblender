@@ -97,6 +97,8 @@ const (
 
 	SIPTrunkUp   EventType = "sip.trunk_up"
 	SIPTrunkDown EventType = "sip.trunk_down"
+
+	InstanceStatusChanged EventType = "instance.status_changed"
 )
 
 type Event struct {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -147,6 +148,52 @@ type Engine struct {
 	registrar         *Registrar
 	trunks            *TrunkManager
 	peerTrust         *peerTrust // peers exempted from certificate verification
+	admission         atomic.Pointer[AdmissionFunc]
+	onListening       func()
+}
+
+// AdmissionFunc reports whether new calls and out-of-dialog OPTIONS are
+// accepted, and the Retry-After seconds to send with a 503 when they are not.
+type AdmissionFunc func() (accept bool, retryAfter int)
+
+// SetAdmission installs the gate consulted for new INVITEs and out-of-dialog
+// OPTIONS. Nil accepts everything.
+func (e *Engine) SetAdmission(fn AdmissionFunc) {
+	if fn == nil {
+		e.admission.Store(nil)
+		return
+	}
+	e.admission.Store(&fn)
+}
+
+func (e *Engine) admit() (bool, int) {
+	if fn := e.admission.Load(); fn != nil {
+		return (*fn)()
+	}
+	return true, 0
+}
+
+// OnListening registers fn to run once every SIP listener started by Serve
+// is bound. Call before Serve.
+func (e *Engine) OnListening(fn func()) { e.onListening = fn }
+
+func (e *Engine) respondUnavailable(tx sip.ServerTransaction, req *sip.Request, retryAfter int) error {
+	res := sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
+	res.AppendHeader(e.ServerHeader())
+	res.AppendHeader(e.AllowHeader())
+	if retryAfter > 0 {
+		res.AppendHeader(sip.NewHeader("Retry-After", strconv.Itoa(retryAfter)))
+	}
+	return e.respondMaybeFromSource(tx, req, res)
+}
+
+func hasToTag(req *sip.Request) bool {
+	if to := req.To(); to != nil {
+		if tag, ok := to.Params.Get("tag"); ok && tag != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // logSIPMessage prints the full RFC 3261 wire form of a SIP request or
@@ -929,12 +976,18 @@ func (e *Engine) registerHandlers() {
 	}
 
 	e.server.OnInvite(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
-		// Check if this is a re-INVITE (in-dialog request with To tag).
-		if to := req.To(); to != nil {
-			if tag, ok := to.Params.Get("tag"); ok && tag != "" {
-				e.handleReInvite(req, tx)
-				return
+		if hasToTag(req) {
+			e.handleReInvite(req, tx)
+			return
+		}
+		// Refused before ReadInvite so no dialog is created and the 503
+		// beats sipgo's automatic 100 Trying.
+		if ok, retryAfter := e.admit(); !ok {
+			e.log.Info("INVITE refused: not accepting new calls", "call_id", callIDOf(req), "source", req.Source())
+			if rerr := e.respondUnavailable(tx, req, retryAfter); rerr != nil {
+				e.log.Error("INVITE: respond 503 failed", "error", rerr)
 			}
+			return
 		}
 
 		ds, err := e.dsCache.ReadInvite(req, tx)
@@ -1067,6 +1120,14 @@ func (e *Engine) registerHandlers() {
 	}))
 
 	e.server.OnOptions(wrap(func(req *sip.Request, tx sip.ServerTransaction) {
+		if !hasToTag(req) {
+			if ok, retryAfter := e.admit(); !ok {
+				if rerr := e.respondUnavailable(tx, req, retryAfter); rerr != nil {
+					e.log.Error("OPTIONS: respond 503 failed", "error", rerr)
+				}
+				return
+			}
+		}
 		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
 		res.AppendHeader(e.ServerHeader())
 		res.AppendHeader(e.AllowHeader())
@@ -1230,6 +1291,31 @@ func (e *Engine) Serve(ctx context.Context) error {
 	udpAddr := JoinHostPort(e.listenIP, e.bindPort)
 
 	dualBind := e.listenIPV6 != "" && e.listenIPV6 != e.listenIP && UDPNetwork(e.listenIP) != "udp"
+
+	if e.onListening != nil {
+		listeners := 1
+		if dualBind {
+			listeners++
+		}
+		if e.tcpEnabled {
+			listeners++
+		}
+		if e.tlsPort != 0 {
+			listeners++
+		}
+		var mu sync.Mutex
+		bound := 0
+		notify := e.onListening
+		ctx = context.WithValue(ctx, sipgo.ListenReadyCtxKey, sipgo.ListenReadyFuncCtxValue(func(network, addr string) {
+			mu.Lock()
+			bound++
+			done := bound == listeners
+			mu.Unlock()
+			if done {
+				notify()
+			}
+		}))
+	}
 
 	if e.tlsPort == 0 && !dualBind && !e.tcpEnabled {
 		return e.server.ListenAndServe(ctx, udpNet, udpAddr)

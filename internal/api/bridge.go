@@ -97,6 +97,9 @@ func (s *Server) bridgeForRoom(roomID, bridgeID string) (*room.Bridge, bool) {
 }
 
 func (s *Server) doCreateRoomBridge(roomID string, req CreateRoomBridgeRequest) (BridgeView, error) {
+	if err := s.admitNew(); err != nil {
+		return BridgeView{}, err
+	}
 	if req.RoomID == "" {
 		return BridgeView{}, newAPIError(http.StatusBadRequest, "room_id is required")
 	}

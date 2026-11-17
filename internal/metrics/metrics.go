@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/VoiceBlender/voiceblender/internal/events"
+	"github.com/VoiceBlender/voiceblender/internal/lifecycle"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -62,6 +63,8 @@ type Collector struct {
 	// send buffer was full.
 	vsiEventsDropped prometheus.Counter
 
+	instanceStatus atomic.Value // func() string
+
 	registry *prometheus.Registry
 }
 
@@ -83,6 +86,28 @@ func (c *Collector) SetDenoiseGTCRNStatsSource(fn func() (streams, instances int
 	if fn != nil {
 		c.denoiseGTCRNStats.Store(fn)
 	}
+}
+
+// SetInstanceStatusSource supplies the current instance status for the
+// voiceblender_instance_status and voiceblender_draining gauges.
+func (c *Collector) SetInstanceStatusSource(fn func() string) {
+	if fn != nil {
+		c.instanceStatus.Store(fn)
+	}
+}
+
+func (c *Collector) status() string {
+	if fn, ok := c.instanceStatus.Load().(func() string); ok && fn != nil {
+		return fn()
+	}
+	return ""
+}
+
+func boolGauge(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (c *Collector) denoise() (int, int) { return loadStats(&c.denoiseStats) }
@@ -210,6 +235,22 @@ func New(bus *events.Bus) *Collector {
 			Help: "Per-stream denoise_gtcrn states the kernel holds, live plus pooled.",
 		}, func() float64 { _, n := c.denoiseGTCRN(); return float64(n) }),
 	)
+
+	for _, st := range lifecycle.States {
+		st := string(st)
+		reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name:        "voiceblender_instance_status",
+			Help:        "1 for the instance's current status, 0 for the others.",
+			ConstLabels: prometheus.Labels{"status": st},
+		}, func() float64 { return boolGauge(c.status() == st) }))
+	}
+	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "voiceblender_draining",
+		Help: "1 while the instance is draining or drained, otherwise 0.",
+	}, func() float64 {
+		st := c.status()
+		return boolGauge(st == string(lifecycle.Draining) || st == string(lifecycle.Drained))
+	}))
 
 	_ = bus.Subscribe(c.handle)
 	return c

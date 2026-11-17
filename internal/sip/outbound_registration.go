@@ -64,6 +64,9 @@ type OutboundRegistrationParams struct {
 	// still verified.
 	TLSInsecureSkipVerify bool
 	SRTPMode              SRTPMode
+	// UnregisterOnDrain unregisters the trunk while the instance drains and
+	// registers it again if the drain is cancelled.
+	UnregisterOnDrain bool
 }
 
 // OutboundRegistration is the sip_register Trunk implementation. One
@@ -85,6 +88,13 @@ type OutboundRegistration struct {
 	contactUser   string
 
 	requestedExpires int
+
+	unregisterOnDrain bool
+	// opMu serialises Pause, Resume and Stop so a drain unregister never
+	// races a DELETE.
+	opMu    sync.Mutex
+	paused  bool
+	stopped bool
 
 	tlsInsecureSkipVerify bool
 	// trustedTLSHost is the hostname exempted from certificate verification
@@ -162,6 +172,7 @@ func NewOutboundRegistration(engine *Engine, bus *events.Bus, log *slog.Logger, 
 		callID:           sip.GenerateTagN(16) + "@" + engineHostOrFallback(engine),
 
 		tlsInsecureSkipVerify: p.TLSInsecureSkipVerify,
+		unregisterOnDrain:     p.UnregisterOnDrain,
 	}
 	r.computePeerSocket()
 	r.applyTLSTrust()
@@ -314,6 +325,7 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 			CSeq:                    r.cseq,
 			SourceAddress:           socketKey(r.peerHost, r.peerPort),
 			TLSInsecureSkipVerify:   r.tlsInsecureSkipVerify,
+			UnregisterOnDrain:       r.unregisterOnDrain,
 		},
 	}
 	if !r.lastRegistered.IsZero() {
@@ -329,7 +341,7 @@ func (r *OutboundRegistration) Snapshot() TrunkView {
 // more than once is a no-op.
 func (r *OutboundRegistration) Start(ctx context.Context) {
 	r.mu.Lock()
-	if r.cancelLoop != nil {
+	if r.cancelLoop != nil || r.paused {
 		r.mu.Unlock()
 		return
 	}
@@ -504,9 +516,13 @@ func (r *OutboundRegistration) markFailed(statusCode int, reason string) {
 	}
 }
 
-// Stop cancels the refresh loop and sends a final REGISTER with Expires: 0.
-// Best-effort; honours ctx.
-func (r *OutboundRegistration) Stop(ctx context.Context) error {
+// UnregisterOnDrain reports whether the trunk unregisters while the instance
+// drains.
+func (r *OutboundRegistration) UnregisterOnDrain() bool { return r.unregisterOnDrain }
+
+// stopLoop cancels the refresh loop, marks the trunk unregistering and waits
+// for the loop to exit or ctx to end.
+func (r *OutboundRegistration) stopLoop(ctx context.Context) {
 	r.mu.Lock()
 	if r.cancelLoop != nil {
 		r.cancelLoop()
@@ -522,6 +538,97 @@ func (r *OutboundRegistration) Stop(ctx context.Context) error {
 		case <-ctx.Done():
 		}
 	}
+}
+
+func (r *OutboundRegistration) publishExpired(reason string) {
+	if r.bus == nil {
+		return
+	}
+	r.bus.Publish(events.SIPOutboundRegistrationExpired, &events.SIPOutboundRegistrationExpiredData{
+		SIPRegistrationScope: events.SIPRegistrationScope{AppID: r.appID},
+		TrunkID:              r.id,
+		AOR:                  CanonicalizeAOR(r.aor),
+		Registrar:            r.registrarURI.String(),
+		Reason:               reason,
+	})
+}
+
+// Pause unregisters a trunk flagged UnregisterOnDrain and holds it until
+// Resume. Unlike Stop it keeps the TLS exemption, which Resume needs.
+func (r *OutboundRegistration) Pause(ctx context.Context) error {
+	if !r.unregisterOnDrain {
+		return nil
+	}
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+	r.mu.Lock()
+	if r.stopped || r.paused {
+		r.mu.Unlock()
+		return nil
+	}
+	r.paused = true
+	r.mu.Unlock()
+
+	r.stopLoop(ctx)
+	err := r.unregister(ctx)
+	if err != nil {
+		r.log.Warn("drain unregister failed", "error", err)
+	}
+	r.mu.Lock()
+	r.status = TrunkStatusExpired
+	r.mu.Unlock()
+	r.publishExpired("drain")
+	return err
+}
+
+// startPaused holds a trunk created during a drain without registering it.
+func (r *OutboundRegistration) startPaused() {
+	r.mu.Lock()
+	r.paused = true
+	r.status = TrunkStatusExpired
+	r.mu.Unlock()
+}
+
+// Resume registers a paused trunk again. It does nothing for a trunk that is
+// not paused or has been stopped.
+func (r *OutboundRegistration) Resume() {
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+	r.mu.Lock()
+	if r.stopped || !r.paused {
+		r.mu.Unlock()
+		return
+	}
+	r.paused = false
+	r.status = TrunkStatusRegistering
+	r.lastError = ""
+	r.grantedExpires = 0
+	r.nextRefresh = time.Time{}
+	r.expiredEmitted = false
+	r.mu.Unlock()
+	r.Start(context.Background())
+}
+
+// Stop cancels the refresh loop and sends a final REGISTER with Expires: 0.
+// A trunk paused for a drain is already unregistered, so it is not sent
+// again. Best-effort; honours ctx.
+func (r *OutboundRegistration) Stop(ctx context.Context) error {
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+	r.mu.Lock()
+	r.stopped = true
+	wasPaused := r.paused
+	r.mu.Unlock()
+
+	if wasPaused {
+		r.clearTLSTrust()
+		r.mu.Lock()
+		r.status = TrunkStatusExpired
+		r.mu.Unlock()
+		return nil
+	}
+
+	r.stopLoop(ctx)
 
 	// Best-effort unregister; ignore error but log.
 	err := r.unregister(ctx)
@@ -534,19 +641,11 @@ func (r *OutboundRegistration) Stop(ctx context.Context) error {
 	r.status = TrunkStatusExpired
 	r.mu.Unlock()
 
-	if r.bus != nil {
-		reason := "unregistered"
-		if err != nil {
-			reason = "shutdown"
-		}
-		r.bus.Publish(events.SIPOutboundRegistrationExpired, &events.SIPOutboundRegistrationExpiredData{
-			SIPRegistrationScope: events.SIPRegistrationScope{AppID: r.appID},
-			TrunkID:              r.id,
-			AOR:                  CanonicalizeAOR(r.aor),
-			Registrar:            r.registrarURI.String(),
-			Reason:               reason,
-		})
+	reason := "unregistered"
+	if err != nil {
+		reason = "shutdown"
 	}
+	r.publishExpired(reason)
 	return err
 }
 

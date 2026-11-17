@@ -145,8 +145,9 @@ type Leg interface {
 var ErrRTTNotNegotiated = errors.New("RTT not negotiated for this leg")
 
 type Manager struct {
-	mu   sync.RWMutex
-	legs map[string]Leg
+	mu       sync.RWMutex
+	legs     map[string]Leg
+	onChange func(int)
 }
 
 func NewManager() *Manager {
@@ -157,8 +158,27 @@ func NewManager() *Manager {
 
 func (m *Manager) Add(l Leg) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.legs[l.ID()] = l
+	n, fn := len(m.legs), m.onChange
+	m.mu.Unlock()
+	if fn != nil {
+		fn(n)
+	}
+}
+
+// Count returns the number of legs currently held.
+func (m *Manager) Count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.legs)
+}
+
+// OnCountChange registers fn to be called with the new leg count after every
+// Add and successful Remove. fn runs outside the manager lock.
+func (m *Manager) OnCountChange(fn func(int)) {
+	m.mu.Lock()
+	m.onChange = fn
+	m.mu.Unlock()
 }
 
 func (m *Manager) Get(id string) (Leg, bool) {
@@ -176,12 +196,17 @@ func (m *Manager) Get(id string) (Leg, bool) {
 // the leg as already being torn down by someone else.
 func (m *Manager) Remove(id string) (Leg, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	l, ok := m.legs[id]
 	if !ok {
+		m.mu.Unlock()
 		return nil, false
 	}
 	delete(m.legs, id)
+	n, fn := len(m.legs), m.onChange
+	m.mu.Unlock()
+	if fn != nil {
+		fn(n)
+	}
 	return l, true
 }
 

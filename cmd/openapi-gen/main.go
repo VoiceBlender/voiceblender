@@ -456,6 +456,10 @@ func configVars() *seq {
 		{Name: "INSTANCE_ID", Group: "Server", Default: "(auto-generated UUID)", Description: "Instance identifier included in all API responses and webhook events"},
 		{Name: "HTTP_ADDR", Group: "Server", Default: ":8080", Description: "REST API listen address"},
 		{Name: "ALLOWED_IPS", Group: "Server", Default: "(empty = allow all)", Description: "Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS)."},
+		{Name: "SHUTDOWN_TIMEOUT_SECONDS", Group: "Server", Default: "8", Description: "Upper bound, in seconds, on the ordered shutdown run on SIGTERM/SIGINT, at the end of an exit drain, or when a drain times out: legs are hung up with reason `server_shutdown`, recordings finished, BYEs and trunk unregisters sent, and queued webhooks and VSI events flushed. Past the limit the process exits anyway. Keep it below the orchestrator's kill timeout (docker stop: 10 s). Minimum 1."},
+		{Name: "DRAIN_TIMEOUT_SECONDS", Group: "Server", Default: "0", Description: "Default time limit for a drain (SIGUSR1, or POST /v1/drain without timeout_seconds). When it passes before the instance is drained, the ordered shutdown runs and the process exits. 0 means no limit."},
+		{Name: "DRAIN_EMPTY_GRACE_SECONDS", Group: "Server", Default: "5", Description: "How long a draining instance must have no legs before it counts as drained, so a call flow that hangs up one leg and dials the next is not cut off. 0 marks it drained as soon as the last leg ends."},
+		{Name: "DRAIN_RETRY_AFTER_SECONDS", Group: "Server", Default: "60", Description: "Retry-After value, in seconds, on the 503 replies to new INVITEs, out-of-dialog OPTIONS, refused API creates and /health/ready while draining or shutting down. 0 omits the header."},
 		{Name: "TRUST_PROXY_HEADERS", Group: "Server", Default: "false", Description: "When true, the client IP used for the ALLOWED_IPS check is taken from the leftmost X-Forwarded-For entry (falling back to the socket peer if absent). Enable only behind a trusted reverse proxy that overwrites the header — otherwise it is client-spoofable."},
 		{Name: "SIP_BIND_IP", Group: "SIP", Default: "127.0.0.1", Description: "IPv4 address advertised in SDP, Contact, and Via headers (and used as the listen address when SIP_LISTEN_IP is empty)"},
 		{Name: "SIP_LISTEN_IP", Group: "SIP", Default: "(same as SIP_BIND_IP)", Description: "UDP socket bind IP. Accepts 127.0.0.1, 0.0.0.0, ::, or any literal v4/v6 address"},
@@ -1223,6 +1227,34 @@ func addObservabilityPaths(paths *omap) {
 				newMap().set("description", "Prometheus text exposition format").
 					set("content", newMap().set("text/plain",
 						newMap().set("schema", newMap().set("type", "string"))))))))
+
+	// /health/* (outside /v1 prefix). Both return InstanceStatus, which the
+	// /drain routes already put in components.
+	statusBody := func(desc string) *omap {
+		return newMap().set("description", desc).
+			set("content", newMap().set("application/json",
+				newMap().set("schema", schemaRef("InstanceStatus"))))
+	}
+	paths.set("/health/live", newMap().set("get",
+		newMap().set("operationId", "getHealthLive").
+			set("summary", "Liveness probe").
+			set("description", "Returns 200 while the process is serving, draining included, and 503 once the ordered "+
+				"shutdown has started. Use it as a Kubernetes livenessProbe: it must not fail during a drain, or the pod "+
+				"is restarted with calls still up. The body reports the current status.\n").
+			set("tags", newSeq().add("Observability")).
+			set("responses", newMap().
+				setQuotedKey("200", statusBody("Process is serving (status starting, ready, draining or drained)")).
+				setQuotedKey("503", statusBody("Ordered shutdown in progress (status stopping)")))))
+	paths.set("/health/ready", newMap().set("get",
+		newMap().set("operationId", "getHealthReady").
+			set("summary", "Readiness probe").
+			set("description", "Returns 200 only while the instance takes new calls (status `ready`) and 503 otherwise, "+
+				"with `Retry-After` while draining or stopping. Use it as a readinessProbe or load-balancer health check "+
+				"to take a draining instance out of rotation. The body reports the current status.\n").
+			set("tags", newSeq().add("Observability")).
+			set("responses", newMap().
+				setQuotedKey("200", statusBody("Accepting new calls")).
+				setQuotedKey("503", statusBody("Not accepting new calls (starting, draining, drained or stopping)")))))
 
 	// /debug/pprof/ endpoints
 	paths.set("/debug/pprof/", newMap().set("get",

@@ -112,16 +112,15 @@ func (s *Server) doCreateSIPRegisterTrunk(req CreateTrunkRequest, srtpMode sipmo
 		RequestedExpiresSeconds: spec.ExpiresSeconds,
 		OutboundProxy:           outboundProxy,
 		TLSInsecureSkipVerify:   spec.TLSInsecureSkipVerify,
+		UnregisterOnDrain:       spec.UnregisterOnDrain == nil || *spec.UnregisterOnDrain,
 	})
 	s.SIPEngine.Trunks().Add(trunk)
-	// The trunk lifecycle outlives the request that created it — using a
-	// request-scoped context would cancel the REGISTER loop immediately.
-	trunk.Start(context.Background())
+	s.SIPEngine.Trunks().StartTrunk(trunk)
 
 	return CreateTrunkResponse{
 		ID:     id,
 		Type:   string(sipmod.TrunkTypeSIPRegister),
-		Status: string(sipmod.TrunkStatusRegistering),
+		Status: string(trunk.Snapshot().Status),
 	}, nil
 }
 

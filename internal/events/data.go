@@ -667,7 +667,7 @@ type SIPOutboundRegistrationFailedData struct {
 
 // SIPOutboundRegistrationExpiredData fires when a trunk is removed (DELETE
 // or shutdown) or when refresh failed past the previously granted lifetime.
-// Reason is one of: "unregistered", "refresh_failed", "shutdown".
+// Reason is one of: "unregistered", "refresh_failed", "shutdown", "drain".
 type SIPOutboundRegistrationExpiredData struct {
 	SIPRegistrationScope
 	TrunkID   string `json:"trunk_id"`
@@ -697,6 +697,29 @@ type SIPTrunkStatusData struct {
 	PeerURI    string `json:"peer_uri"`
 	StatusCode int    `json:"status_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+}
+
+// --- Instance lifecycle ---
+
+// InstanceScope embeds in instance-wide events, which belong to no leg, room
+// or app.
+type InstanceScope struct{}
+
+func (InstanceScope) GetLegID() string  { return "" }
+func (InstanceScope) GetRoomID() string { return "" }
+func (InstanceScope) GetAppID() string  { return "" }
+
+// InstanceStatusChangedData fires on every instance status change (starting,
+// ready, draining, drained, stopping).
+type InstanceStatusChangedData struct {
+	InstanceScope
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Legs            int    `json:"legs"`
+	Rooms           int    `json:"rooms"`
+	DrainSource     string `json:"drain_source,omitempty"`
+	ExitWhenDrained bool   `json:"exit_when_drained"`
+	DrainDeadline   string `json:"drain_deadline,omitempty"`
 }
 
 // LiveKit (Model B): no special event types. Remote LK participants

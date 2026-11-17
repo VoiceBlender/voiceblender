@@ -19,6 +19,15 @@ type TrunkManager struct {
 	byID     map[string]Trunk
 	byAOR    map[string]Trunk
 	bySocket map[string]Trunk
+	draining bool
+}
+
+// drainPauser is implemented by trunks that can unregister for a drain.
+type drainPauser interface {
+	UnregisterOnDrain() bool
+	Pause(ctx context.Context) error
+	Resume()
+	startPaused()
 }
 
 func NewTrunkManager() *TrunkManager {
@@ -265,6 +274,54 @@ func (m *TrunkManager) RefreshIndex(id string) {
 	host, port, _ := t.PeerSocket()
 	if k := socketKey(host, port); k != "" {
 		m.bySocket[k] = t
+	}
+}
+
+// StartTrunk starts t, or holds it unregistered when the instance is draining
+// and t unregisters on drain.
+func (m *TrunkManager) StartTrunk(t Trunk) {
+	m.mu.RLock()
+	draining := m.draining
+	m.mu.RUnlock()
+	if p, ok := t.(drainPauser); ok && draining && p.UnregisterOnDrain() {
+		p.startPaused()
+		return
+	}
+	// The trunk lifecycle outlives any request, so it never gets a request
+	// context.
+	t.Start(context.Background())
+}
+
+// PauseForDrain unregisters, in parallel, every trunk flagged to unregister
+// on drain.
+func (m *TrunkManager) PauseForDrain(ctx context.Context) {
+	m.mu.Lock()
+	m.draining = true
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, t := range m.List() {
+		p, ok := t.(drainPauser)
+		if !ok || !p.UnregisterOnDrain() {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = p.Pause(ctx)
+		}()
+	}
+	wg.Wait()
+}
+
+// ResumeAfterDrain registers again every trunk paused by PauseForDrain.
+func (m *TrunkManager) ResumeAfterDrain() {
+	m.mu.Lock()
+	m.draining = false
+	m.mu.Unlock()
+	for _, t := range m.List() {
+		if p, ok := t.(drainPauser); ok {
+			p.Resume()
+		}
 	}
 }
 
