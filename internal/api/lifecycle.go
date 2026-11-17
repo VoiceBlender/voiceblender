@@ -245,7 +245,6 @@ type StartDrainRequest struct {
 // InstanceStatus is the body of the drain and health endpoints.
 type InstanceStatus struct {
 	Status          string `json:"status"`
-	InstanceID      string `json:"instance_id"`
 	Version         string `json:"version,omitempty"`
 	UptimeSeconds   int64  `json:"uptime_seconds"`
 	DrainingSince   string `json:"draining_since,omitempty"`
@@ -260,7 +259,6 @@ func (s *Server) instanceStatus() InstanceStatus {
 	st := s.Lifecycle.Snapshot()
 	out := InstanceStatus{
 		Status:          string(st.State),
-		InstanceID:      s.Config.InstanceID,
 		Version:         s.Version,
 		UptimeSeconds:   int64(time.Since(s.startedAt).Seconds()),
 		DrainSource:     st.DrainSource,

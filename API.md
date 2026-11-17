@@ -5878,12 +5878,13 @@ Kubernetes `preStop` example.
 ### Status body
 
 Returned by both health endpoints, `POST`/`DELETE /v1/drain` and the VSI
-`start_drain` / `cancel_drain` results.
+`start_drain` / `cancel_drain` results. As with other VSI results, the VSI form
+has no `instance_id`.
 
 ```json
 {
-  "status": "draining",
   "instance_id": "vb-3",
+  "status": "draining",
   "version": "1.42.0",
   "uptime_seconds": 86412,
   "draining_since": "2026-11-16T10:02:11Z",

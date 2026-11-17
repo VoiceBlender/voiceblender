@@ -5241,9 +5241,10 @@ components:
         InstanceStatus:
             type: object
             properties:
-                status:
-                    type: string
                 instance_id:
+                    type: string
+                    description: Instance identifier
+                status:
                     type: string
                 version:
                     type: string
@@ -5263,7 +5264,6 @@ components:
                     type: integer
             required:
                 - status
-                - instance_id
                 - uptime_seconds
                 - exit_when_drained
                 - legs

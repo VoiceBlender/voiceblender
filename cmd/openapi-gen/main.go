@@ -169,8 +169,9 @@ func isCustomData(t reflect.Type) bool {
 // responseSchemaTypes tracks types that represent API responses (not requests).
 // These get instance_id prepended.
 var responseSchemaTypes = map[string]bool{
-	"LegView":  true,
-	"RoomView": true,
+	"LegView":        true,
+	"RoomView":       true,
+	"InstanceStatus": true,
 }
 
 func structToSchema(t reflect.Type) *omap {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -69,8 +70,11 @@ func TestHealth_CodesFollowStatus(t *testing.T) {
 			t.Errorf("%s: ready Retry-After = %q, want %q", c.name, got, c.retryAfter)
 		}
 		for _, w := range []interface{ Bytes() []byte }{live.Body, ready.Body} {
-			if st := decodeStatus(t, w.Bytes()); st.Status != c.name || st.InstanceID != "test-instance" {
-				t.Errorf("%s: body status=%q instance=%q", c.name, st.Status, st.InstanceID)
+			if st := decodeStatus(t, w.Bytes()); st.Status != c.name {
+				t.Errorf("%s: body status=%q", c.name, st.Status)
+			}
+			if n := bytes.Count(w.Bytes(), []byte(`"instance_id":"test-instance"`)); n != 1 {
+				t.Errorf("%s: instance_id appears %d times in %s", c.name, n, w.Bytes())
 			}
 		}
 	}

@@ -186,6 +186,11 @@ are flushed before the listeners close. A second signal exits at once.
 - `sip_register` trunks with `unregister_on_drain` (the default) unregister, and
   register again if the drain is cancelled.
 
+A peer that follows RFC 3261 to the letter may treat `Retry-After` on a `503` as
+"send nothing to this address for that long", including BYEs and re-INVITEs for
+calls in progress, and each refused OPTIONS ping renews it. If your proxy or
+carrier does that, set `DRAIN_RETRY_AFTER_SECONDS=0`.
+
 Start one with `POST /v1/drain` (the process stays up; `DELETE /v1/drain`
 cancels it) or with **SIGUSR1** (the process runs the ordered shutdown once
 drained). Either way `DRAIN_TIMEOUT_SECONDS` or the request's `timeout_seconds`
@@ -199,13 +204,17 @@ route, so allow the probe source addresses.
 
 **Kubernetes.** Kubernetes sends SIGTERM as soon as the `preStop` hook returns,
 so the hook must start the drain and then wait for it to finish. Size
-`terminationGracePeriodSeconds` to cover the longest drain you accept:
+`terminationGracePeriodSeconds` to cover the longest drain you accept, and set
+`DRAIN_TIMEOUT_SECONDS` below it minus `SHUTDOWN_TIMEOUT_SECONDS`. Otherwise a
+call that outlasts the grace period gets SIGKILL and its recording is lost:
 
 ```yaml
 spec:
   terminationGracePeriodSeconds: 3600
   containers:
     - name: voiceblender
+      env:
+        - { name: DRAIN_TIMEOUT_SECONDS, value: "3580" }
       livenessProbe:
         httpGet: { path: /health/live, port: 8080 }
       readinessProbe:
@@ -226,6 +235,13 @@ spec:
 The image's entrypoint is the server itself, so it is PID 1. `/health/live`
 answers `200` until the drain is over; then the ordered shutdown starts, it
 answers `503` (or stops answering once the process exits), and the loop ends.
+The liveness probe sees that `503` too, so keep its failure window
+(`failureThreshold` × `periodSeconds`, 30 s by default) longer than
+`SHUTDOWN_TIMEOUT_SECONDS`.
+
+`DELETE /v1/drain` also cancels a SIGUSR1 drain, so the process no longer exits
+when drained and the hook waits until the grace period ends. Don't cancel a
+drain from the API while a `preStop` hook is waiting on it.
 
 ## S3 bucket preflight
 

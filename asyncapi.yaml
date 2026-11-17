@@ -6973,8 +6973,6 @@ components:
             properties:
                 status:
                     type: string
-                instance_id:
-                    type: string
                 version:
                     type: string
                 uptime_seconds:
@@ -6993,7 +6991,6 @@ components:
                     type: integer
             required:
                 - status
-                - instance_id
                 - uptime_seconds
                 - exit_when_drained
                 - legs
