@@ -19,6 +19,10 @@ import (
 // PoC scope: leg goes straight to StateConnected; no DTMF, no RTT/text,
 // no event parity beyond LegConnected / LegDisconnected.
 func (s *Server) moqLeg(w http.ResponseWriter, r *http.Request) {
+	if err := s.admitNew(); err != nil {
+		handleAPIError(w, err)
+		return
+	}
 	if s.MoQWebTransport == nil {
 		writeError(w, http.StatusServiceUnavailable, "MoQ endpoint is not enabled (set MOQ_ENABLED=true)")
 		return
@@ -112,7 +116,6 @@ func (s *Server) moqLeg(w http.ResponseWriter, r *http.Request) {
 		"duration_ms", time.Since(connectedAt).Milliseconds(),
 	)
 	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 	}
 }

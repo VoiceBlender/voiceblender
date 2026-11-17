@@ -7,18 +7,20 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
 	"github.com/VoiceBlender/voiceblender/internal/audiofilter/denoisegtcrn"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/VoiceBlender/voiceblender/internal/api"
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/lifecycle"
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
 	"github.com/VoiceBlender/voiceblender/internal/moqmedia"
 	"github.com/VoiceBlender/voiceblender/internal/room"
@@ -47,9 +49,9 @@ func main() {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
-	// Root context with signal handling
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Root context, cancelled once the ordered shutdown has finished.
+	ctx, stopRoot := context.WithCancel(context.Background())
+	defer stopRoot()
 
 	// Event bus + webhooks
 	bus := events.NewBus(cfg.InstanceID)
@@ -294,6 +296,7 @@ func main() {
 	}
 	apiSrv := api.NewServer(legMgr, roomMgr, engine, bus, webhookReg, ttsProvider, ttsCache, s3Backend, metricsCollector, cfg, allowedIPs, log)
 	apiSrv.GCS = gcsBackend
+	apiSrv.Version = version
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: apiSrv,
@@ -348,6 +351,52 @@ func main() {
 	engine.OnRefer(apiSrv.HandleIncomingRefer)
 	engine.OnNotify(apiSrv.HandleReferNotify)
 
+	// Bound before the SIP listeners so the instance only turns ready once
+	// both are serving.
+	httpLn, err := net.Listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		log.Error("listen HTTP", "addr", cfg.HTTPAddr, "error", err)
+		os.Exit(1)
+	}
+
+	// The SIP listeners get their own context: BYEs and the final
+	// unregisters go out on them, so they close last.
+	sipCtx, stopSIP := context.WithCancel(context.Background())
+	defer stopSIP()
+
+	var shutdownOnce sync.Once
+	shutdownCh := make(chan struct{})
+	requestShutdown := func() { shutdownOnce.Do(func() { close(shutdownCh) }) }
+
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, append(stopSignals, drainSignals...)...)
+	go func() {
+		stopping := false
+		for sig := range sigCh {
+			if isDrainSignal(sig) {
+				st, err := apiSrv.Lifecycle.StartDrain(lifecycle.DrainOptions{Source: lifecycle.SourceSignal, ExitWhenDrained: true})
+				if err != nil {
+					log.Warn("drain signal ignored", "signal", sig.String(), "error", err)
+					continue
+				}
+				log.Info("drain started by signal; exiting once drained", "signal", sig.String(), "legs", st.Legs)
+				continue
+			}
+			if stopping {
+				log.Warn("second stop signal, exiting now", "signal", sig.String())
+				os.Exit(1)
+			}
+			stopping = true
+			log.Info("stop signal received", "signal", sig.String())
+			requestShutdown()
+		}
+	}()
+	go func() {
+		<-apiSrv.Lifecycle.ShutdownRequested()
+		log.Info("drain finished or timed out; shutting down")
+		requestShutdown()
+	}()
+
 	// Run SIP and HTTP servers
 	g, gCtx := errgroup.WithContext(ctx)
 
@@ -363,13 +412,16 @@ func main() {
 			args = append(args, "tls_port", sipTLSPort)
 		}
 		log.Info("starting SIP server", args...)
-		return engine.Serve(gCtx)
+		return engine.Serve(sipCtx)
 	})
 
 	// HTTP server
 	g.Go(func() error {
 		log.Info("starting HTTP server", "addr", cfg.HTTPAddr)
-		return httpSrv.ListenAndServe()
+		if err := httpSrv.Serve(httpLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
 	})
 
 	// MoQ-over-WebTransport server (HTTP/3 over UDP). Listens on
@@ -387,26 +439,30 @@ func main() {
 		})
 	}
 
-	// Graceful shutdown
+	// Ordered shutdown: on a stop signal, at the end of an exit drain, or when
+	// a server fails.
 	g.Go(func() error {
-		<-gCtx.Done()
-		log.Info("shutting down")
-
-		// Shutdown HTTP
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		select {
+		case <-shutdownCh:
+		case <-gCtx.Done():
+		}
+		timeout := time.Duration(cfg.ShutdownTimeoutSeconds) * time.Second
+		log.Info("shutting down", "timeout", timeout.String(), "legs", legMgr.Count())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		httpSrv.Shutdown(shutdownCtx)
+
+		if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("ordered shutdown incomplete", "error", err)
+		}
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			_ = httpSrv.Close()
+		}
 		if moqSrv != nil {
 			_ = moqSrv.Close()
 		}
-
-		// Unregister all outbound SIP trunks in parallel.
-		engine.Trunks().Shutdown(shutdownCtx)
-
-		// Hangup all active legs
-		for _, l := range legMgr.List() {
-			l.Hangup(shutdownCtx)
-		}
+		stopSIP()
+		webhookReg.Stop()
+		stopRoot()
 		return nil
 	})
 

@@ -236,6 +236,10 @@ func VSICommandsMetadata() []VSICommandMeta {
 		{Name: "list_sip_trunks", Tag: "SIP Trunks", Summary: "List configured SIP trunks", ResultType: TrunksListResponse{}},
 		{Name: "get_sip_trunk", Tag: "SIP Trunks", Summary: "Get a single SIP trunk", PayloadType: idPayload{}, ResultType: sipmod.TrunkView{}, ErrorCodes: []int{404}},
 		{Name: "delete_sip_trunk", Tag: "SIP Trunks", Summary: "Remove a SIP trunk", PayloadType: idPayload{}, ResultType: vsiStatusResponse{}, ErrorCodes: []int{404}},
+
+		// ── Instance ────────────────────────────────────────────────────
+		{Name: "start_drain", Tag: "Instance", Summary: "Start draining: refuse new SIP calls and let current calls end", PayloadType: StartDrainRequest{}, ResultType: InstanceStatus{}, ErrorCodes: []int{400, 409}},
+		{Name: "cancel_drain", Tag: "Instance", Summary: "Cancel a drain and accept new calls again", ResultType: InstanceStatus{}, ErrorCodes: []int{409}},
 	}
 }
 
@@ -265,6 +269,7 @@ func EventSections() []SectionMeta {
 		{"Speech & AMD", "Speaking detection, transcripts and answering machine detection"},
 		{"AI agents", "Conversational AI agent sessions"},
 		{"SIP registrations & trunks", "Inbound registrations and outbound trunk state"},
+		{"Instance", "Instance status and drain state"},
 	}
 }
 
@@ -340,9 +345,10 @@ func EventsMetadata() []EventMeta {
 		{events.SIPRegistrationExpired, "SIP AOR registration removed (TTL, explicit unregister, force-delete, or single-binding replacement)", reflect.TypeOf(events.SIPRegistrationExpiredData{}), "SIP registrations & trunks"},
 		{events.SIPOutboundRegistrationActive, "Outbound SIP trunk REGISTER accepted (initial or refresh)", reflect.TypeOf(events.SIPOutboundRegistrationActiveData{}), "SIP registrations & trunks"},
 		{events.SIPOutboundRegistrationFailed, "Outbound SIP trunk REGISTER failed (transport error, non-2xx response, or digest auth rejected)", reflect.TypeOf(events.SIPOutboundRegistrationFailedData{}), "SIP registrations & trunks"},
-		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{}), "SIP registrations & trunks"},
+		{events.SIPOutboundRegistrationExpired, "Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime) or unregistered for a drain", reflect.TypeOf(events.SIPOutboundRegistrationExpiredData{}), "SIP registrations & trunks"},
 		{events.SIPTrunkUp, "SIP trunk peer answered its OPTIONS health check (first answer, or recovery after sip.trunk_down)", reflect.TypeOf(events.SIPTrunkStatusData{}), "SIP registrations & trunks"},
 		{events.SIPTrunkDown, "SIP trunk peer failed its OPTIONS health check (no reply, transport error, 408, or 5xx other than 501)", reflect.TypeOf(events.SIPTrunkStatusData{}), "SIP registrations & trunks"},
+		{events.InstanceStatusChanged, "Instance status changed (starting, ready, draining, drained, stopping); sent to every VSI client whatever its app_id filter", reflect.TypeOf(events.InstanceStatusChangedData{}), "Instance"},
 	}
 }
 

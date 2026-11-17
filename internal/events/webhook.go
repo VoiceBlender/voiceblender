@@ -2,6 +2,7 @@ package events
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -32,6 +33,10 @@ type WebhookRegistry struct {
 	stopOnce      sync.Once
 	stopCh        chan struct{}
 	obs           MetricsObserver
+
+	pendingMu sync.Mutex
+	pending   int
+	idle      chan struct{} // closed while pending == 0
 }
 
 type deliveryJob struct {
@@ -54,7 +59,9 @@ func NewWebhookRegistry(bus *Bus, log *slog.Logger, globalURL, globalSecret stri
 		client:        &http.Client{Timeout: 10 * time.Second},
 		workCh:        make(chan deliveryJob, 1000),
 		stopCh:        make(chan struct{}),
+		idle:          make(chan struct{}),
 	}
+	close(r.idle)
 	_ = bus.Subscribe(r.dispatch)
 	for i := 0; i < 10; i++ {
 		go r.worker()
@@ -64,6 +71,43 @@ func NewWebhookRegistry(bus *Bus, log *slog.Logger, globalURL, globalSecret stri
 
 func (r *WebhookRegistry) Stop() {
 	r.stopOnce.Do(func() { close(r.stopCh) })
+}
+
+// Flush blocks until every queued or in-flight delivery has finished, or ctx
+// ends. Events enqueued while Flush waits are waited for too.
+func (r *WebhookRegistry) Flush(ctx context.Context) error {
+	for {
+		r.pendingMu.Lock()
+		if r.pending == 0 {
+			r.pendingMu.Unlock()
+			return nil
+		}
+		idle := r.idle
+		r.pendingMu.Unlock()
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (r *WebhookRegistry) addPending() {
+	r.pendingMu.Lock()
+	if r.pending == 0 {
+		r.idle = make(chan struct{})
+	}
+	r.pending++
+	r.pendingMu.Unlock()
+}
+
+func (r *WebhookRegistry) donePending() {
+	r.pendingMu.Lock()
+	r.pending--
+	if r.pending == 0 {
+		close(r.idle)
+	}
+	r.pendingMu.Unlock()
 }
 
 // SetMetricsObserver attaches o for egress counters. It is a setter rather than
@@ -107,6 +151,7 @@ func (r *WebhookRegistry) ClearRoomWebhook(roomID string) {
 }
 
 func (r *WebhookRegistry) enqueue(w *Webhook, e Event, obs MetricsObserver) {
+	r.addPending()
 	select {
 	case r.workCh <- deliveryJob{hook: w, event: e}:
 		if obs != nil {
@@ -114,7 +159,9 @@ func (r *WebhookRegistry) enqueue(w *Webhook, e Event, obs MetricsObserver) {
 		}
 	case <-r.stopCh:
 		// Abandoned at shutdown, deliberately uncounted.
+		r.donePending()
 	default:
+		r.donePending()
 		r.log.Warn("webhook delivery queue full, dropping event", "webhook_id", w.ID, "event", e.Type)
 		if obs != nil {
 			obs.OnWebhookDropped()
@@ -152,6 +199,7 @@ func (r *WebhookRegistry) worker() {
 		select {
 		case job := <-r.workCh:
 			r.deliver(job)
+			r.donePending()
 		case <-r.stopCh:
 			return
 		}
@@ -177,7 +225,15 @@ func (r *WebhookRegistry) deliver(job deliveryJob) {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-			time.Sleep(backoff)
+			t := time.NewTimer(backoff)
+			select {
+			case <-t.C:
+			case <-r.stopCh:
+				t.Stop()
+				r.log.Warn("webhook delivery abandoned at shutdown", "url", job.hook.URL, "event", job.event.Type)
+				outcome("exhausted")
+				return
+			}
 		}
 
 		req, err := http.NewRequest(http.MethodPost, job.hook.URL, bytes.NewReader(body))

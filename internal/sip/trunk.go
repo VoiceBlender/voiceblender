@@ -128,6 +128,9 @@ type SIPRegisterTrunkView struct {
 	SourceAddress string `json:"source_address,omitempty"`
 	// TLSInsecureSkipVerify echoes the per-trunk certificate exemption.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+	// UnregisterOnDrain echoes whether the trunk unregisters while the
+	// instance drains.
+	UnregisterOnDrain bool `json:"unregister_on_drain"`
 }
 
 // IPIPTrunkView holds the ip_ip-specific fields. Credentials (password) are

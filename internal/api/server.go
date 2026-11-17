@@ -8,6 +8,8 @@ import (
 	// Registers the "denoise" filter so its name is known to request
 	// validation even before the kernel is installed.
 	_ "github.com/VoiceBlender/voiceblender/internal/audiofilter/denoise"
+
+	"context"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -17,6 +19,7 @@ import (
 	"github.com/VoiceBlender/voiceblender/internal/config"
 	"github.com/VoiceBlender/voiceblender/internal/events"
 	"github.com/VoiceBlender/voiceblender/internal/leg"
+	"github.com/VoiceBlender/voiceblender/internal/lifecycle"
 	"github.com/VoiceBlender/voiceblender/internal/metrics"
 	"github.com/VoiceBlender/voiceblender/internal/room"
 	sipmod "github.com/VoiceBlender/voiceblender/internal/sip"
@@ -87,6 +90,16 @@ type Server struct {
 	// pendingRooms tracks outbound legs created with a room_id that have not
 	// joined it yet, so deleting the room can cancel them.
 	pendingRooms pendingRoomJoins
+
+	// Lifecycle tracks the instance status and drain state.
+	Lifecycle *lifecycle.Controller
+	// Version is reported by the health endpoints.
+	Version   string
+	startedAt time.Time
+	teardowns *inflight
+
+	vsiMu    sync.Mutex
+	vsiConns map[*vsiConn]struct{}
 }
 
 func NewServer(
@@ -128,6 +141,33 @@ func NewServer(
 		transfers:          newTransferStore(),
 		pendingRefers:      newPendingReferStore(),
 		regAttempts:        newRegisterAttemptStore(),
+		startedAt:          time.Now(),
+		teardowns:          newInflight(),
+		vsiConns:           make(map[*vsiConn]struct{}),
+	}
+	s.Lifecycle = lifecycle.New(bus, lifecycle.Config{
+		EmptyGrace:          time.Duration(cfg.DrainEmptyGraceSeconds) * time.Second,
+		DefaultDrainTimeout: time.Duration(cfg.DrainTimeoutSeconds) * time.Second,
+		RetryAfter:          cfg.DrainRetryAfterSeconds,
+		RoomCount:           func() int { return len(roomMgr.List()) },
+	})
+	legMgr.OnCountChange(s.Lifecycle.LegCountChanged)
+	if metricsCollector != nil {
+		lc := s.Lifecycle
+		metricsCollector.SetInstanceStatusSource(func() string { return string(lc.State()) })
+	}
+	if engine != nil {
+		lc := s.Lifecycle
+		engine.SetAdmission(func() (bool, int) { return lc.AcceptingSIP(), lc.RetryAfter() })
+		engine.OnListening(lc.MarkReady)
+		lc.SetDrainHooks(
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				engine.Trunks().PauseForDrain(ctx)
+			},
+			engine.Trunks().ResumeAfterDrain,
+		)
 	}
 	// The room layer tears down a mixer-panicked leg but cannot finish the job:
 	// the CDR, the span, the webhook and the LegMgr entry are API-layer state.
@@ -139,8 +179,7 @@ func NewServer(
 			// cleanupLeg skips its room block; run the room-scoped half here.
 			_ = s.roomScopedLegRemoval(roomID, l.ID(), nil)
 		}
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 	})
 
 	// Wired here rather than in main so that every construction path — the
@@ -206,6 +245,10 @@ func (s *Server) routes() {
 			s.Metrics.Handler().ServeHTTP(w, r)
 		})
 	}
+
+	// Health — outside /v1 like /metrics, for orchestrator probes.
+	r.Get("/health/live", s.healthLive)
+	r.Get("/health/ready", s.healthReady)
 
 	// pprof — compiled in only with -tags pprof; no-op otherwise.
 	registerPprof(r, s.Log)
@@ -327,6 +370,10 @@ func (s *Server) routes() {
 		r.Get("/sip/trunks", s.listTrunks)
 		r.Get("/sip/trunks/{id}", s.getTrunk)
 		r.Delete("/sip/trunks/{id}", s.deleteTrunk)
+
+		// Drain
+		r.Post("/drain", s.startDrain)
+		r.Delete("/drain", s.cancelDrain)
 
 		// Event stream
 		r.Get("/vsi", s.vsi)

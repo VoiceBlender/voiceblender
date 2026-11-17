@@ -49,6 +49,7 @@ A Go voice engine that connects SIP, WebRTC, WhatsApp, WebSocket and other call 
 - **Webhooks** -- signed, retried, deduplicated event delivery
 - **VSI** -- a single WebSocket for events and commands ([AsyncAPI spec](asyncapi.yaml))
 - **Prometheus metrics** -- at `GET /metrics`, plus optional pprof
+- **Graceful drain & shutdown** -- take an instance out of service without dropping calls, with health checks for orchestrators
 
 ## Quick Start
 

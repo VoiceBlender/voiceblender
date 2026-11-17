@@ -35,6 +35,8 @@ func TestVSIMetadata_AllNewCommandsRegistered(t *testing.T) {
 		"create_sip_trunk", "list_sip_trunks", "get_sip_trunk", "delete_sip_trunk",
 		// SIP registrations
 		"delete_sip_registration",
+		// Drain
+		"start_drain", "cancel_drain",
 	}
 	registered := make(map[string]VSICommandMeta)
 	for _, cmd := range VSICommandsMetadata() {
@@ -76,6 +78,8 @@ func TestVSIMetadata_EveryCommandHasDispatchCase(t *testing.T) {
 // upgrades (the connection itself is the transport) and infra endpoints.
 var restOnlyRoutes = map[string]bool{
 	"Get /metrics":        true, // Prometheus scrape
+	"Get /health/live":    true, // liveness probe
+	"Get /health/ready":   true, // readiness probe
 	"Get /legs/websocket": true, // inbound WebSocket media upgrade (wsLeg)
 	"Connect /legs/moq":   true, // WebTransport/HTTP3 upgrade (moqLeg)
 	"Get /rooms/{id}/ws":  true, // inbound WebSocket room upgrade (wsRoom)
@@ -189,6 +193,8 @@ var routeToVSICommand = map[string]string{
 	"Get /sip/trunks/{id}":                            "get_sip_trunk",
 	"Delete /sip/trunks/{id}":                         "delete_sip_trunk",
 	"Post /webrtc/offer":                              "webrtc_offer",
+	"Post /drain":                                     "start_drain",
+	"Delete /drain":                                   "cancel_drain",
 }
 
 // TestVSIRESTParity fails when a REST route registered in server.go is neither

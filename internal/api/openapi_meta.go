@@ -244,6 +244,14 @@ func WebhookFieldDescriptions() map[string]string {
 		"sip.registration_expired.contact": "Contact URI that was unbound",
 		"sip.registration_expired.socket":  "Transport-layer socket that held the binding",
 		"sip.registration_expired.reason":  "Why the binding was removed: ttl, unregistered, forced, or replaced",
+
+		"instance.status_changed.from":              "Previous status: starting, ready, draining, drained or stopping",
+		"instance.status_changed.to":                "New status: starting, ready, draining, drained or stopping",
+		"instance.status_changed.legs":              "Legs on the instance at the change",
+		"instance.status_changed.rooms":             "Rooms on the instance at the change",
+		"instance.status_changed.drain_source":      "What started the drain: api or signal. Empty when not draining",
+		"instance.status_changed.exit_when_drained": "True when the process exits once drained (a SIGUSR1 drain)",
+		"instance.status_changed.drain_deadline":    "When the drain times out and the ordered shutdown runs (RFC 3339). Absent when there is no limit",
 	}
 }
 
@@ -275,6 +283,8 @@ var KnownDisconnectReasons = []string{
 	// Lifecycle and API-driven teardown.
 	"api_hangup", "room_deleted", "remote_bye", "caller_cancel",
 	"max_duration", "session_expired", "rtp_timeout",
+	// Ordered shutdown (SIGTERM, an exit drain, or a drain timeout).
+	"server_shutdown",
 	// DELETE /legs/{id} rejection reasons (rejectionMapping).
 	"busy", "declined", "rejected", "unavailable", "not_found", "forbidden",
 	"server_error",
@@ -341,6 +351,7 @@ func TagDescriptions() map[string]string {
 		"SIP Trunks":        "SIP trunks to upstream carriers and PBXs (REGISTER or static peering)",
 		"Events":            "Real-time event stream and command channel (VSI)",
 		"Observability":     "Metrics and health endpoints",
+		"Instance":          "Drain mode: stop taking new calls while current calls end",
 	}
 }
 
@@ -483,6 +494,7 @@ func RoutesMetadata() []RouteMeta {
 				201: {Description: "Leg created", Type: LegView{}},
 				400: {Description: "Invalid JSON, bad URI/URL, unknown codec, or unsupported type"},
 				404: {Description: "Unknown `trunk_id`, or a `streams[].room_id` that does not exist"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 		{
@@ -516,6 +528,7 @@ func RoutesMetadata() []RouteMeta {
 				101: {Description: "Switching Protocols — WebSocket upgrade succeeded"},
 				400: {Description: "Invalid query parameters"},
 				500: {Description: "Room create failure"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 		{
@@ -546,7 +559,7 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "WebTransport extended-CONNECT accepted; MoQ session established (no JSON body — the response is the upgraded WebTransport session)", NoBody: true},
 				400: {Description: "Invalid query parameters or config"},
 				500: {Description: "Room create failure"},
-				503: {Description: "MoQ endpoint is not enabled (`MOQ_ENABLED=false`)"},
+				503: {Description: "MoQ endpoint is not enabled (`MOQ_ENABLED=false`), or the instance is drained or shutting down and not accepting new legs"},
 			},
 		},
 		{
@@ -1217,6 +1230,7 @@ func RoutesMetadata() []RouteMeta {
 			Responses: map[int]ResponseMeta{
 				201: {Description: "Room created", Type: RoomView{}},
 				409: {Description: "Room ID already exists"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 		{
@@ -1299,6 +1313,7 @@ func RoutesMetadata() []RouteMeta {
 				400: {Description: "Invalid JSON, self-bridge, sample-rate mismatch, or invalid direction"},
 				404: {Description: "Path room or room_id not found"},
 				409: {Description: "A bridge between these rooms already exists"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 		{
@@ -1406,6 +1421,7 @@ func RoutesMetadata() []RouteMeta {
 				404: {Description: "Room not found"},
 				409: {Description: "Room has no participants, or more than SIPREC_MAX_STREAMS"},
 				502: {Description: "The recording server rejected the session"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 		{
@@ -1959,6 +1975,37 @@ func RoutesMetadata() []RouteMeta {
 			},
 		},
 
+		// ── Instance ────────────────────────────────────────────────────
+		{
+			Method: "POST", Path: "/drain", OperationID: "startDrain",
+			Summary: "Start draining the instance",
+			Description: "Stops taking new calls while current calls end on their own. New INVITEs and out-of-dialog OPTIONS get " +
+				"`503` with `Retry-After`, and `/health/ready` returns 503. The API keeps working in full while any leg is up; once " +
+				"the last leg has gone and `DRAIN_EMPTY_GRACE_SECONDS` has passed, the status is `drained` and new legs and rooms get " +
+				"`503` too. `sip_register` trunks with `unregister_on_drain` unregister. A drain started here keeps the process " +
+				"running, unless `timeout_seconds` (default `DRAIN_TIMEOUT_SECONDS`, `0` = no limit) passes first: then the ordered " +
+				"shutdown runs, ending remaining calls with reason `server_shutdown`, and the process exits. Calling it while " +
+				"already draining updates the deadline.",
+			Tags:         []string{"Instance"},
+			RequestType:  StartDrainRequest{},
+			OptionalBody: true,
+			Responses: map[int]ResponseMeta{
+				202: {Description: "Drain started (or its deadline updated)", Type: InstanceStatus{}},
+				400: {Description: "Invalid body or negative timeout_seconds"},
+				409: {Description: "Instance is shutting down"},
+			},
+		},
+		{
+			Method: "DELETE", Path: "/drain", OperationID: "cancelDrain",
+			Summary:     "Cancel a drain",
+			Description: "Returns the instance to `ready`, clears any drain deadline, and registers again the trunks the drain unregistered. Also cancels a drain started by SIGUSR1, which then no longer exits.",
+			Tags:        []string{"Instance"},
+			Responses: map[int]ResponseMeta{
+				200: {Description: "Drain cancelled", Type: InstanceStatus{}},
+				409: {Description: "Instance is not draining, or is shutting down"},
+			},
+		},
+
 		// ── Event Stream ────────────────────────────────────────────────
 		{
 			Method: "GET", Path: "/vsi", OperationID: "vsi",
@@ -1985,6 +2032,7 @@ func RoutesMetadata() []RouteMeta {
 				200: {Description: "SDP answer with leg ID", Type: WebRTCOfferResult{}},
 				400: {Description: "Invalid JSON or invalid SDP offer"},
 				500: {Description: "Peer connection, track creation, or answer generation failed"},
+				503: {Description: "Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)"},
 			},
 		},
 	}

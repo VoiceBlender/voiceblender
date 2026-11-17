@@ -758,8 +758,7 @@ func (s *Server) setupLegEventForwarding(l *leg.SIPLeg) {
 
 	l.OnRTPTimeout(func() {
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "rtp_timeout")
+			s.teardownLeg(l, "rtp_timeout")
 		}
 	})
 }
@@ -975,8 +974,7 @@ func (s *Server) watchLegDialogEnd(l leg.Leg, dialogCtx context.Context, maxDura
 	}
 
 	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 	}
 }
 
@@ -1009,8 +1007,7 @@ func (s *Server) awaitInboundAnswer(l leg.Leg, call *sipmod.InboundCall, answerC
 	call.Drop()
 	// API path already published; ClaimDisconnect would no-op anyway.
 	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, reason)
+		s.teardownLeg(l, reason)
 	}
 	return false
 }
@@ -1076,24 +1073,26 @@ func (s *Server) doDeleteLeg(id string, reason string) error {
 			st := sl.State()
 			if st == leg.StateRinging || st == leg.StateEarlyMedia {
 				sl.SetDisconnectReason(reason)
+				s.teardowns.add()
 				go func() {
+					defer s.teardowns.done()
 					if err := sl.Reject(context.Background(), rejectCode, rejectPhrase); err != nil {
 						s.Log.Warn("reject error", "leg_id", sl.ID(), "error", err)
 					}
-					s.cleanupLeg(sl)
-					s.publishDisconnect(sl, reason)
+					s.teardownLeg(sl, reason)
 				}()
 				return nil
 			}
 		}
 	}
 
+	s.teardowns.add()
 	go func() {
+		defer s.teardowns.done()
 		if err := l.Hangup(context.Background()); err != nil {
 			s.Log.Warn("hangup error", "leg_id", l.ID(), "error", err)
 		}
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "api_hangup")
+		s.teardownLeg(l, "api_hangup")
 	}()
 	return nil
 }
@@ -1121,6 +1120,10 @@ func (s *Server) createLeg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.validateCustomData(req.CustomData); err != nil {
+		handleAPIError(w, err)
+		return
+	}
+	if err := s.admitNew(); err != nil {
 		handleAPIError(w, err)
 		return
 	}
@@ -1526,8 +1529,7 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			s.Log.Info("outbound invite failed", "leg_id", l.ID(), "error", err)
 			if l.State() != leg.StateHungUp { // not already deleted via API
 				reason := inviteFailureReason(err, ringTimeout > 0, ctx)
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, reason)
+				s.teardownLeg(l, reason)
 			}
 			return
 		}
@@ -1536,16 +1538,14 @@ func (s *Server) doCreateSIPOutboundLeg(req CreateLegRequest) (LegView, error) {
 			s.Log.Error("connect outbound failed", "leg_id", l.ID(), "error", err)
 			call.RTPSess.Close()
 			call.Dialog.Bye(context.Background())
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "connect_failed")
+			s.teardownLeg(l, "connect_failed")
 			return
 		}
 
 		// Wire session timer expiry to hangup + event.
 		l.OnSessionExpired(func() {
 			if l.State() != leg.StateHungUp {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, "session_expired")
+				s.teardownLeg(l, "session_expired")
 			}
 		})
 
@@ -1708,8 +1708,7 @@ func (s *Server) HandleInboundCall(call *sipmod.InboundCall) {
 	// Wire session timer expiry to hangup + event.
 	l.OnSessionExpired(func() {
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "session_expired")
+			s.teardownLeg(l, "session_expired")
 		}
 	})
 

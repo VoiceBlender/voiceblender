@@ -160,8 +160,7 @@ func (s *Server) handleWhatsAppInbound(call *sipmod.InboundCall) {
 	s.maybeStartSpeakingDetector(l, s.takeSpeechOverride(l.ID()))
 	<-ctx.Done()
 	if l.State() != leg.StateHungUp {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "remote_bye")
+		s.teardownLeg(l, "remote_bye")
 	}
 }
 
@@ -184,8 +183,7 @@ func (s *Server) whatsAppMediaLost(l *leg.WhatsAppLeg, cause string) {
 	if l.State() == leg.StateHungUp {
 		return
 	}
-	s.cleanupLeg(l)
-	s.publishDisconnect(l, pcDisconnectReason(cause, "ice_"+cause))
+	s.teardownLeg(l, pcDisconnectReason(cause, "ice_"+cause))
 }
 
 func (s *Server) createWhatsAppOutboundLeg(w http.ResponseWriter, r *http.Request, req CreateLegRequest) {
@@ -289,8 +287,7 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 	if err != nil {
 		s.Log.Info("whatsapp outbound: invite failed", "leg_id", l.ID(), "error", err)
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "invite_failed")
+			s.teardownLeg(l, "invite_failed")
 		}
 		return
 	}
@@ -300,8 +297,7 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 		s.Log.Error("whatsapp outbound: SetRemoteDescription", "leg_id", l.ID(), "error", err)
 		_ = call.Dialog.Bye(context.Background())
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "bad_answer")
+			s.teardownLeg(l, "bad_answer")
 		}
 		return
 	}
@@ -310,8 +306,7 @@ func (s *Server) driveWhatsAppOutbound(l *leg.WhatsAppLeg, media *leg.PCMedia, g
 		s.Log.Error("whatsapp outbound: ConnectOutbound", "leg_id", l.ID(), "error", err)
 		_ = call.Dialog.Bye(context.Background())
 		if l.State() != leg.StateHungUp {
-			s.cleanupLeg(l)
-			s.publishDisconnect(l, "connect_failed")
+			s.teardownLeg(l, "connect_failed")
 		}
 		return
 	}

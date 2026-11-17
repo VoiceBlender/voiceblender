@@ -952,6 +952,8 @@ type SIPRegisterTrunkSpec struct {
 	// TLSInsecureSkipVerify disables certificate verification for this trunk's
 	// TLS next hop only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+	// UnregisterOnDrain defaults to true when omitted.
+	UnregisterOnDrain *bool `json:"unregister_on_drain,omitempty"`
 }
 
 var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
@@ -962,6 +964,7 @@ var sipRegisterTrunkSpecFields = map[string]FieldEnrichment{
 	"password":                 {Description: "Digest auth password. Required. Never returned in any response."},
 	"contact_user":             {Description: "Override the user-part of the Contact header sent in REGISTER. Defaults to the AOR user-part."},
 	"tls_insecure_skip_verify": {Description: "Accept this trunk's next-hop certificate without verifying it, for a `sips:` / `;transport=tls` registrar or outbound proxy whose certificate is self-signed, privately signed, or carries no SAN (`x509: certificate relies on legacy Common Name field`). Scoped to that peer's hostname — every other TLS peer is still verified in full, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored (with a logged warning) when the next hop is not TLS, or when it is named by IP literal: such a dial sends no SNI and cannot be told apart from any other, so use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there. Prefer `SIP_TLS_CA_FILE` when the peer's CA can simply be trusted."},
+	"unregister_on_drain":      {Description: "Unregister (REGISTER with Expires: 0) when the instance starts draining, so the provider stops sending new calls here, and register again if the drain is cancelled. Calls already up and new outbound calls through the trunk are not affected. Set false for providers that end live calls, or refuse outbound calls, from a client that is no longer registered. Defaults to true.", Default: true},
 	"expires_seconds":          {Description: "Requested registration lifetime in seconds. Clamped to [SIP_OUTBOUND_REGISTRATION_MIN_EXPIRES_SECONDS, SIP_OUTBOUND_REGISTRATION_MAX_EXPIRES_SECONDS]. Default: SIP_OUTBOUND_REGISTRATION_DEFAULT_EXPIRES_SECONDS (3600)."},
 }
 

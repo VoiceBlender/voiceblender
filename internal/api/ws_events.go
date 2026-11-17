@@ -96,7 +96,8 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := make(chan events.Event, bufSize)
 	unsub := s.Bus.Subscribe(func(e events.Event) {
-		if appFilter != nil && !appFilter.MatchString(e.Data.GetAppID()) {
+		// Instance events belong to no app, and every client must see them.
+		if appFilter != nil && e.Type != events.InstanceStatusChanged && !appFilter.MatchString(e.Data.GetAppID()) {
 			return
 		}
 		select {
@@ -126,6 +127,9 @@ func (s *Server) vsi(w http.ResponseWriter, r *http.Request) {
 	// so the handler can unwind and run its deferred unsub instead of staying
 	// pinned on a socket the peer stopped draining.
 	lw := wsutilx.NewServerLockedWriter(conn, func() { _ = conn.Close() })
+	tracked := &vsiConn{conn: conn, lw: lw, ch: ch}
+	s.addVSIConn(tracked)
+	defer s.removeVSIConn(tracked)
 
 	connMsg, _ := json.Marshal(map[string]string{"type": "connected"})
 	if err := lw.WriteText(connMsg); err != nil {

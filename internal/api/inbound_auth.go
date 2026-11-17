@@ -115,8 +115,7 @@ func (s *Server) doChallengeLeg(id string, req ChallengeRequest) error {
 		if err := sl.Challenge(context.Background(), params); err != nil {
 			s.Log.Warn("challenge error", "leg_id", sl.ID(), "error", err)
 		}
-		s.cleanupLeg(sl)
-		s.publishDisconnect(sl, "challenged")
+		s.teardownLeg(sl, "challenged")
 	}()
 	return nil
 }

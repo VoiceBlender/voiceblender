@@ -14,6 +14,9 @@ import (
 )
 
 func (s *Server) doCreateRoom(req CreateRoomRequest) (RoomView, error) {
+	if err := s.admitNew(); err != nil {
+		return RoomView{}, err
+	}
 	rate := req.SampleRate
 	if rate == 0 {
 		rate = s.Config.DefaultSampleRate
@@ -104,14 +107,12 @@ func (s *Server) doDeleteRoom(id string) error {
 	// ClaimDisconnect gate in publishDisconnect deduplicates against any
 	// concurrent termination path (e.g. a racing DELETE /legs/{id}).
 	for _, l := range participants {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "room_deleted")
+		s.teardownLeg(l, "room_deleted")
 	}
 	// Outbound legs still ringing towards this room are not participants yet,
 	// so RoomMgr.Delete never saw them; cleanupLeg is what cancels them.
 	for _, l := range pending {
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "room_deleted")
+		s.teardownLeg(l, "room_deleted")
 	}
 	return nil
 }

@@ -144,8 +144,7 @@ func (s *Server) HandleSIPRECInbound(call *sipmod.InboundCall, signals sipmod.SI
 
 	if err := l.Answer(context.Background()); err != nil {
 		s.Log.Error("SIPREC: answer failed", "leg_id", l.ID(), "error", err)
-		s.cleanupLeg(l)
-		s.publishDisconnect(l, "siprec_answer_failed")
+		s.teardownLeg(l, "siprec_answer_failed")
 		return
 	}
 

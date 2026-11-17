@@ -36,6 +36,9 @@ func pcDisconnectReason(cause, iceReason string) string {
 }
 
 func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, error) {
+	if err := s.admitNew(); err != nil {
+		return nil, err
+	}
 	if err := s.validateCustomData(req.CustomData); err != nil {
 		return nil, err
 	}
@@ -72,8 +75,7 @@ func (s *Server) doWebRTCOffer(req WebRTCOfferRequest) (*WebRTCOfferResult, erro
 		},
 		OnDisconnect: func(reason string) {
 			if l != nil {
-				s.cleanupLeg(l)
-				s.publishDisconnect(l, pcDisconnectReason(reason, "ice_failure"))
+				s.teardownLeg(l, pcDisconnectReason(reason, "ice_failure"))
 			}
 		},
 		OnConnected: func() {

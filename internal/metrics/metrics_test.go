@@ -243,3 +243,38 @@ func filterLines(body, substr string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+func TestInstanceStatusGauges(t *testing.T) {
+	c := New(events.NewBus("test"))
+	body := getMetrics(t, c)
+	if !strings.Contains(body, `voiceblender_instance_status{status="ready"} 0`) || !strings.Contains(body, "voiceblender_draining 0") {
+		t.Fatalf("gauges without a source:\n%s", body)
+	}
+
+	status := "ready"
+	c.SetInstanceStatusSource(func() string { return status })
+	body = getMetrics(t, c)
+	for _, want := range []string{
+		`voiceblender_instance_status{status="ready"} 1`,
+		`voiceblender_instance_status{status="draining"} 0`,
+		"voiceblender_draining 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ready: missing %q", want)
+		}
+	}
+
+	for _, st := range []string{"draining", "drained"} {
+		status = st
+		body = getMetrics(t, c)
+		for _, want := range []string{
+			`voiceblender_instance_status{status="` + st + `"} 1`,
+			`voiceblender_instance_status{status="ready"} 0`,
+			"voiceblender_draining 1",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: missing %q", st, want)
+			}
+		}
+	}
+}

@@ -16,6 +16,22 @@ info:
           group: Server
           default: (empty = allow all)
           description: Comma-separated allowlist of IPs and CIDR ranges (IPv4 and IPv6) gating every HTTP endpoint, including /v1/vsi, /v1/legs/websocket, /v1/legs/moq, /metrics, and pprof. Bare addresses become /32 (v4) or /128 (v6); malformed entries fail server startup. Only X-Forwarded-For is consulted as a proxy header (see TRUST_PROXY_HEADERS).
+        - name: SHUTDOWN_TIMEOUT_SECONDS
+          group: Server
+          default: "8"
+          description: 'Upper bound, in seconds, on the ordered shutdown run on SIGTERM/SIGINT, at the end of an exit drain, or when a drain times out: legs are hung up with reason `server_shutdown`, recordings finished, BYEs and trunk unregisters sent, and queued webhooks and VSI events flushed. Past the limit the process exits anyway. Keep it below the orchestrator''s kill timeout (docker stop: 10 s). Minimum 1.'
+        - name: DRAIN_TIMEOUT_SECONDS
+          group: Server
+          default: "0"
+          description: Default time limit for a drain (SIGUSR1, or POST /v1/drain without timeout_seconds). When it passes before the instance is drained, the ordered shutdown runs and the process exits. 0 means no limit.
+        - name: DRAIN_EMPTY_GRACE_SECONDS
+          group: Server
+          default: "5"
+          description: How long a draining instance must have no legs before it counts as drained, so a call flow that hangs up one leg and dials the next is not cut off. 0 marks it drained as soon as the last leg ends.
+        - name: DRAIN_RETRY_AFTER_SECONDS
+          group: Server
+          default: "60"
+          description: Retry-After value, in seconds, on the 503 replies to new INVITEs, out-of-dialog OPTIONS, refused API creates and /health/ready while draining or shutting down. 0 omits the header.
         - name: TRUST_PROXY_HEADERS
           group: Server
           default: "false"
@@ -499,6 +515,8 @@ tags:
       description: Inbound SIP AOR registrations and parked REGISTER attempts
     - name: SIP Trunks
       description: SIP trunks to upstream carriers and PBXs (REGISTER or static peering)
+    - name: Instance
+      description: 'Drain mode: stop taking new calls while current calls end'
     - name: Events
       description: Real-time event stream and command channel (VSI)
     - name: Observability
@@ -533,6 +551,12 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '404':
                     description: Unknown `trunk_id`, or a `streams[].room_id` that does not exist
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
                     content:
                         application/json:
                             schema:
@@ -575,6 +599,12 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /legs/moq:
         post:
             operationId: moqLeg
@@ -602,7 +632,7 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Error'
                 '503':
-                    description: MoQ endpoint is not enabled (`MOQ_ENABLED=false`)
+                    description: MoQ endpoint is not enabled (`MOQ_ENABLED=false`), or the instance is drained or shutting down and not accepting new legs
                     content:
                         application/json:
                             schema:
@@ -2140,6 +2170,12 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
         get:
             operationId: listRooms
             summary: List all rooms with participants
@@ -2291,6 +2327,12 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '409':
                     description: A bridge between these rooms already exists
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
                     content:
                         application/json:
                             schema:
@@ -2530,6 +2572,12 @@ paths:
                                 $ref: '#/components/schemas/Error'
                 '502':
                     description: The recording server rejected the session
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
                     content:
                         application/json:
                             schema:
@@ -3758,6 +3806,56 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+    /drain:
+        post:
+            operationId: startDrain
+            summary: Start draining the instance
+            description: 'Stops taking new calls while current calls end on their own. New INVITEs and out-of-dialog OPTIONS get `503` with `Retry-After`, and `/health/ready` returns 503. The API keeps working in full while any leg is up; once the last leg has gone and `DRAIN_EMPTY_GRACE_SECONDS` has passed, the status is `drained` and new legs and rooms get `503` too. `sip_register` trunks with `unregister_on_drain` unregister. A drain started here keeps the process running, unless `timeout_seconds` (default `DRAIN_TIMEOUT_SECONDS`, `0` = no limit) passes first: then the ordered shutdown runs, ending remaining calls with reason `server_shutdown`, and the process exits. Calling it while already draining updates the deadline.'
+            tags:
+                - Instance
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StartDrainRequest'
+            responses:
+                '202':
+                    description: Drain started (or its deadline updated)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
+                '400':
+                    description: Invalid body or negative timeout_seconds
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+                '409':
+                    description: Instance is shutting down
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
+        delete:
+            operationId: cancelDrain
+            summary: Cancel a drain
+            description: Returns the instance to `ready`, clears any drain deadline, and registers again the trunks the drain unregistered. Also cancels a drain started by SIGUSR1, which then no longer exits.
+            tags:
+                - Instance
+            responses:
+                '200':
+                    description: Drain cancelled
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
+                '409':
+                    description: Instance is not draining, or is shutting down
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /vsi:
         get:
             operationId: vsi
@@ -3799,6 +3897,12 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Error'
+                '503':
+                    description: Instance is drained or shutting down and not accepting new legs or rooms (with Retry-After)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Error'
     /metrics:
         get:
             operationId: getMetrics
@@ -3814,6 +3918,48 @@ paths:
                         text/plain:
                             schema:
                                 type: string
+    /health/live:
+        get:
+            operationId: getHealthLive
+            summary: Liveness probe
+            description: |
+                Returns 200 while the process is serving, draining included, and 503 once the ordered shutdown has started. Use it as a Kubernetes livenessProbe: it must not fail during a drain, or the pod is restarted with calls still up. The body reports the current status.
+            tags:
+                - Observability
+            responses:
+                '200':
+                    description: Process is serving (status starting, ready, draining or drained)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
+                '503':
+                    description: Ordered shutdown in progress (status stopping)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
+    /health/ready:
+        get:
+            operationId: getHealthReady
+            summary: Readiness probe
+            description: |
+                Returns 200 only while the instance takes new calls (status `ready`) and 503 otherwise, with `Retry-After` while draining or stopping. Use it as a readinessProbe or load-balancer health check to take a draining instance out of rotation. The body reports the current status.
+            tags:
+                - Observability
+            responses:
+                '200':
+                    description: Accepting new calls
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
+                '503':
+                    description: Not accepting new calls (starting, draining, drained or stopping)
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/InstanceStatus'
     /debug/pprof/:
         get:
             operationId: pprofIndex
@@ -4689,6 +4835,11 @@ components:
                     description: New routing role for the leg. The room's routing matrix decides which other legs this leg hears and is heard by based on roles. Pass an empty string to clear the role (full mesh).
             required:
                 - role
+        StartDrainRequest:
+            type: object
+            properties:
+                timeout_seconds:
+                    type: integer
         StartSIPRECRequest:
             type: object
             properties:
@@ -5087,6 +5238,36 @@ components:
             required:
                 - peer_uri
                 - inbound_sources
+        InstanceStatus:
+            type: object
+            properties:
+                instance_id:
+                    type: string
+                    description: Instance identifier
+                status:
+                    type: string
+                version:
+                    type: string
+                uptime_seconds:
+                    type: integer
+                draining_since:
+                    type: string
+                drain_source:
+                    type: string
+                exit_when_drained:
+                    type: boolean
+                drain_deadline:
+                    type: string
+                legs:
+                    type: integer
+                rooms:
+                    type: integer
+            required:
+                - status
+                - uptime_seconds
+                - exit_when_drained
+                - legs
+                - rooms
         LegStreamView:
             type: object
             properties:
@@ -5447,6 +5628,10 @@ components:
                 tls_insecure_skip_verify:
                     type: boolean
                     description: 'Accept this trunk''s next-hop certificate without verifying it, for a `sips:` / `;transport=tls` registrar or outbound proxy whose certificate is self-signed, privately signed, or carries no SAN (`x509: certificate relies on legacy Common Name field`). Scoped to that peer''s hostname — every other TLS peer is still verified in full, unlike the server-wide `SIP_TLS_INSECURE_SKIP_VERIFY`. Ignored (with a logged warning) when the next hop is not TLS, or when it is named by IP literal: such a dial sends no SNI and cannot be told apart from any other, so use `SIP_TLS_CA_FILE` or `SIP_TLS_INSECURE_SKIP_VERIFY` there. Prefer `SIP_TLS_CA_FILE` when the peer''s CA can simply be trusted.'
+                unregister_on_drain:
+                    type: boolean
+                    description: 'Unregister (REGISTER with Expires: 0) when the instance starts draining, so the provider stops sending new calls here, and register again if the drain is cancelled. Calls already up and new outbound calls through the trunk are not affected. Set false for providers that end live calls, or refuse outbound calls, from a client that is no longer registered. Defaults to true.'
+                    default: true
             required:
                 - registrar_uri
                 - aor
@@ -5480,10 +5665,13 @@ components:
                     type: string
                 tls_insecure_skip_verify:
                     type: boolean
+                unregister_on_drain:
+                    type: boolean
             required:
                 - registrar_uri
                 - aor
                 - requested_expires_seconds
+                - unregister_on_drain
         STTWord:
             type: object
             properties:
@@ -5655,6 +5843,7 @@ components:
                 - sip.outbound_registration_expired
                 - sip.trunk_up
                 - sip.trunk_down
+                - instance.status_changed
         ICECandidateInit:
             type: object
             properties:
@@ -5770,7 +5959,7 @@ webhooks:
                                         properties:
                                             reason:
                                                 type: string
-                                                description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}. This is an open set — treat an unrecognized value as a new reason rather than an error. Known values: api_hangup, room_deleted, remote_bye, caller_cancel, max_duration, session_expired, rtp_timeout, busy, declined, rejected, unavailable, not_found, forbidden, server_error, ring_timeout, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, invite_failed, connect_failed, challenged, transfer_completed, transfer_originate_failed, transfer_connect_failed, bad_answer, siprec_answer_failed, mixer_panic, hangup, peer_slow, connection_reset, ws_error, ws_dial_failed, moq_error, ice_failure, ice_failed, ice_disconnected, peer_closed, dtls_failed, livekit_client_initiated, livekit_duplicate_identity, livekit_server_shutdown, livekit_kicked, livekit_room_deleted, livekit_state_mismatch, livekit_join_failure, livekit_migration, livekit_signal_close, livekit_room_closed, livekit_user_unavailable, livekit_user_rejected, livekit_token_expired, livekit_media_failure, livekit_disconnected, livekit_client_closed, livekit_signal_closed, livekit_signal_error, livekit_pc_setup_failed, livekit_add_track_failed, livekit_publisher_failed, livekit_subscriber_failed, livekit_signal_loop_exit, livekit_set_remote_desc_failed, livekit_create_answer_failed, livekit_set_local_desc_failed, livekit_signal_send_failed, livekit_set_publisher_remote_failed, livekit_participant_left.'
+                                                description: 'Disconnect reason. Common SIP failures are mapped to named reasons; unmapped 4xx/5xx/6xx codes appear as sip_{code}. This is an open set — treat an unrecognized value as a new reason rather than an error. Known values: api_hangup, room_deleted, remote_bye, caller_cancel, max_duration, session_expired, rtp_timeout, server_shutdown, busy, declined, rejected, unavailable, not_found, forbidden, server_error, ring_timeout, unauthorized, timeout, cancelled, not_acceptable, service_unavailable, invite_failed, connect_failed, challenged, transfer_completed, transfer_originate_failed, transfer_connect_failed, bad_answer, siprec_answer_failed, mixer_panic, hangup, peer_slow, connection_reset, ws_error, ws_dial_failed, moq_error, ice_failure, ice_failed, ice_disconnected, peer_closed, dtls_failed, livekit_client_initiated, livekit_duplicate_identity, livekit_server_shutdown, livekit_kicked, livekit_room_deleted, livekit_state_mismatch, livekit_join_failure, livekit_migration, livekit_signal_close, livekit_room_closed, livekit_user_unavailable, livekit_user_rejected, livekit_token_expired, livekit_media_failure, livekit_disconnected, livekit_client_closed, livekit_signal_closed, livekit_signal_error, livekit_pc_setup_failed, livekit_add_track_failed, livekit_publisher_failed, livekit_subscriber_failed, livekit_signal_loop_exit, livekit_set_remote_desc_failed, livekit_create_answer_failed, livekit_set_local_desc_failed, livekit_signal_send_failed, livekit_set_publisher_remote_failed, livekit_participant_left.'
                                             duration_total:
                                                 type: number
                                                 description: Seconds from leg creation to disconnect
@@ -7298,7 +7487,7 @@ webhooks:
                                         type: string
     sip.outbound_registration_expired:
         post:
-            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime)
+            summary: Outbound SIP trunk removed (DELETE, shutdown, or refresh failed past granted lifetime) or unregistered for a drain
             requestBody:
                 content:
                     application/json:
@@ -7360,3 +7549,34 @@ webhooks:
                                         type: integer
                                     reason:
                                         type: string
+    instance.status_changed:
+        post:
+            summary: Instance status changed (starting, ready, draining, drained, stopping); sent to every VSI client whatever its app_id filter
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/WebhookEvent'
+                                - properties:
+                                    from:
+                                        type: string
+                                        description: 'Previous status: starting, ready, draining, drained or stopping'
+                                    to:
+                                        type: string
+                                        description: 'New status: starting, ready, draining, drained or stopping'
+                                    legs:
+                                        type: integer
+                                        description: Legs on the instance at the change
+                                    rooms:
+                                        type: integer
+                                        description: Rooms on the instance at the change
+                                    drain_source:
+                                        type: string
+                                        description: 'What started the drain: api or signal. Empty when not draining'
+                                    exit_when_drained:
+                                        type: boolean
+                                        description: True when the process exits once drained (a SIGUSR1 drain)
+                                    drain_deadline:
+                                        type: string
+                                        description: When the drain times out and the ordered shutdown runs (RFC 3339). Absent when there is no limit

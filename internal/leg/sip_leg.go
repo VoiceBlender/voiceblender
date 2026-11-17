@@ -144,6 +144,8 @@ type SIPLeg struct {
 	byeOnce        sync.Once
 	rejectOnce     sync.Once
 	disconnectDone atomic.Bool
+	byeMu          sync.Mutex
+	byeDone        chan struct{}
 
 	engine          *sipmod.Engine    // for sending re-INVITEs
 	localIP         string            // for SDP answer generation
@@ -1643,6 +1645,7 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 	// BYE is fire-and-forget so a non-responsive peer can't stall callers.
 	l.byeOnce.Do(func() {
 		go func(inbound *sipmod.InboundCall, outbound *sipmod.OutboundCall) {
+			defer close(l.byeDoneCh())
 			byeCtx, byeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer byeCancel()
 			if inbound != nil {
@@ -1653,6 +1656,19 @@ func (l *SIPLeg) Hangup(ctx context.Context) error {
 		}(l.inbound, l.outbound)
 	})
 	return nil
+}
+
+// ByeDone is closed once the BYE sent by Hangup has completed or timed out.
+// It stays open until Hangup has run.
+func (l *SIPLeg) ByeDone() <-chan struct{} { return l.byeDoneCh() }
+
+func (l *SIPLeg) byeDoneCh() chan struct{} {
+	l.byeMu.Lock()
+	defer l.byeMu.Unlock()
+	if l.byeDone == nil {
+		l.byeDone = make(chan struct{})
+	}
+	return l.byeDone
 }
 
 // ClaimDisconnect returns true on the first caller and false on every

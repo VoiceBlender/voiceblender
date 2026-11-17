@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 )
 
 // apiError carries an HTTP-style status code so do* methods can signal
@@ -10,6 +11,8 @@ import (
 type apiError struct {
 	Code    int
 	Message string
+	// RetryAfter, when positive, is sent as a Retry-After header.
+	RetryAfter int
 }
 
 func (e *apiError) Error() string { return e.Message }
@@ -22,6 +25,9 @@ func newAPIError(code int, format string, args ...interface{}) *apiError {
 // Code; other errors become 500.
 func handleAPIError(w http.ResponseWriter, err error) {
 	if ae, ok := err.(*apiError); ok {
+		if ae.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(ae.RetryAfter))
+		}
 		writeError(w, ae.Code, ae.Message)
 		return
 	}

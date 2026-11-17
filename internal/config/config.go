@@ -12,26 +12,32 @@ import (
 )
 
 type Config struct {
-	InstanceID         string
-	SIPBindIP          string
-	SIPBindIPV6        string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
-	SIPListenIP        string
-	SIPListenIPV6      string // IPv6 socket bind; falls back to SIPBindIPV6
-	SIPExternalIP      string
-	SIPLocalNets       string // comma-separated CIDRs/IPs advertised SIP_BIND_IP instead of SIP_EXTERNAL_IP / SIP_DOMAIN
-	SIPAllowedIPs      string // comma-separated IPs and CIDR ranges SIP requests are accepted from; empty = accept all
-	SIPPort            string
-	SIPTLSPort         string // "" = TLS disabled
-	SIPTLSCert         string // path to CA-signed cert (fullchain.pem)
-	SIPTLSKey          string // path to private key (privkey.pem)
-	SIPTLSCAFile       string // extra PEM roots trusted when dialing remote peers over TLS
-	SIPTLSInsecure     bool   // accept any certificate a remote peer presents
-	SIPDebug           bool   // dump full SIP message content for every request and response
-	SIPDomain          string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
-	SIPHost            string
-	HTTPAddr           string
-	AllowedIPs         string // comma-separated IPs and CIDR ranges; empty = allow all
-	TrustProxyHeaders  bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
+	InstanceID        string
+	SIPBindIP         string
+	SIPBindIPV6       string // IPv6 advertised address; mirrors SIPBindIP for v6 deployments
+	SIPListenIP       string
+	SIPListenIPV6     string // IPv6 socket bind; falls back to SIPBindIPV6
+	SIPExternalIP     string
+	SIPLocalNets      string // comma-separated CIDRs/IPs advertised SIP_BIND_IP instead of SIP_EXTERNAL_IP / SIP_DOMAIN
+	SIPAllowedIPs     string // comma-separated IPs and CIDR ranges SIP requests are accepted from; empty = accept all
+	SIPPort           string
+	SIPTLSPort        string // "" = TLS disabled
+	SIPTLSCert        string // path to CA-signed cert (fullchain.pem)
+	SIPTLSKey         string // path to private key (privkey.pem)
+	SIPTLSCAFile      string // extra PEM roots trusted when dialing remote peers over TLS
+	SIPTLSInsecure    bool   // accept any certificate a remote peer presents
+	SIPDebug          bool   // dump full SIP message content for every request and response
+	SIPDomain         string // FQDN advertised in From/Contact/Via for all outbound SIP. Falls back to SIP_EXTERNAL_IP / SIP_BIND_IP when empty.
+	SIPHost           string
+	HTTPAddr          string
+	AllowedIPs        string // comma-separated IPs and CIDR ranges; empty = allow all
+	TrustProxyHeaders bool   // when true, leftmost X-Forwarded-For is the client IP for the allowlist check
+
+	ShutdownTimeoutSeconds int // bound on the ordered shutdown
+	DrainTimeoutSeconds    int // default drain time limit; 0 = no limit
+	DrainEmptyGraceSeconds int // time at zero legs before a drain counts as drained
+	DrainRetryAfterSeconds int // Retry-After on 503s while draining or stopping
+
 	ICEServers         []string
 	WebRTCExternalIPs  []string // Public IPs to advertise as host ICE candidates (pion SetNAT1To1IPs); needed when VB runs behind NAT/Docker
 	RecordingDir       string
@@ -229,6 +235,10 @@ func Load() Config {
 		HTTPAddr:                  envOr("HTTP_ADDR", ":8080"),
 		AllowedIPs:                os.Getenv("ALLOWED_IPS"),
 		TrustProxyHeaders:         envBool("TRUST_PROXY_HEADERS", false),
+		ShutdownTimeoutSeconds:    max(1, envInt("SHUTDOWN_TIMEOUT_SECONDS", 8)),
+		DrainTimeoutSeconds:       max(0, envInt("DRAIN_TIMEOUT_SECONDS", 0)),
+		DrainEmptyGraceSeconds:    max(0, envInt("DRAIN_EMPTY_GRACE_SECONDS", 5)),
+		DrainRetryAfterSeconds:    max(0, envInt("DRAIN_RETRY_AFTER_SECONDS", 60)),
 		ICEServers:                strings.Split(envOr("ICE_SERVERS", "stun:stun.l.google.com:19302"), ","),
 		WebRTCExternalIPs:         parseExternalIPs(os.Getenv("WEBRTC_EXTERNAL_IPS")),
 		ICEDisconnectedTimeout:    envPositiveDuration("WEBRTC_ICE_DISCONNECTED_TIMEOUT", 5*time.Second),

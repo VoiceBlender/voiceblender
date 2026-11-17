@@ -225,13 +225,11 @@ func (s *Server) HandleReferNotify(callID string, statusCode int, reason string,
 		})
 		if l, ok := s.LegMgr.Get(st.legID); ok {
 			if sl, ok := l.(*leg.SIPLeg); ok && sl.State() != leg.StateHungUp {
-				s.cleanupLeg(sl)
-				s.publishDisconnect(sl, "transfer_completed")
+				s.teardownLeg(sl, "transfer_completed")
 			}
 		}
 		if st.replacesLeg != nil && st.replacesLeg.State() != leg.StateHungUp {
-			s.cleanupLeg(st.replacesLeg)
-			s.publishDisconnect(st.replacesLeg, "transfer_completed")
+			s.teardownLeg(st.replacesLeg, "transfer_completed")
 		}
 		return
 	}
@@ -420,8 +418,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 	if err != nil {
 		s.Log.Info("transfer originate failed", "error", err)
 		s.notifyAndFail(referrer, 500, "Server Error")
-		s.cleanupLeg(newLeg)
-		s.publishDisconnect(newLeg, "transfer_originate_failed")
+		s.teardownLeg(newLeg, "transfer_originate_failed")
 		return
 	}
 	if err := newLeg.ConnectOutbound(call); err != nil {
@@ -429,16 +426,14 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		call.RTPSess.Close()
 		call.Dialog.Bye(context.Background())
 		s.notifyAndFail(referrer, 500, "Server Error")
-		s.cleanupLeg(newLeg)
-		s.publishDisconnect(newLeg, "transfer_connect_failed")
+		s.teardownLeg(newLeg, "transfer_connect_failed")
 		return
 	}
 
 	// Wire session timer expiry to hangup + event.
 	newLeg.OnSessionExpired(func() {
 		if newLeg.State() != leg.StateHungUp {
-			s.cleanupLeg(newLeg)
-			s.publishDisconnect(newLeg, "session_expired")
+			s.teardownLeg(newLeg, "session_expired")
 		}
 	})
 
@@ -456,8 +451,7 @@ func (s *Server) originateForRefer(referrer *leg.SIPLeg, target string, replaces
 		Reason:     "OK",
 	})
 
-	s.cleanupLeg(referrer)
-	s.publishDisconnect(referrer, "transfer_completed")
+	s.teardownLeg(referrer, "transfer_completed")
 
 	// The referrer is gone, so nothing else observes the transferred leg's
 	// dialog: the engine's BYE handling publishes no event of its own.
