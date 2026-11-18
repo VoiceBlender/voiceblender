@@ -17,6 +17,25 @@ info:
         - $ref: '#/components/tags/Instance'
         - $ref: '#/components/tags/Events'
         - $ref: '#/components/tags/Connection'
+x-tagGroups:
+    - name: Legs
+      tags:
+        - Legs
+        - WebRTC
+    - name: Rooms
+      tags:
+        - Rooms
+    - name: SIP
+      tags:
+        - SIP Trunks
+        - SIP Registrations
+    - name: Server
+      tags:
+        - Instance
+    - name: Events
+      tags:
+        - Events
+        - Connection
 channels:
     vsi:
         address: /v1/vsi

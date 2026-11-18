@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -353,6 +354,70 @@ func TagDescriptions() map[string]string {
 		"Observability":     "Metrics and health endpoints",
 		"Instance":          "Drain mode: stop taking new calls while current calls end",
 	}
+}
+
+// VSIConnectionTag tags the VSI connection lifecycle frames; it has no REST
+// routes, so TagDescriptions() does not list it.
+const VSIConnectionTag = "Connection"
+
+// TagGroupMeta gathers tags under one documentation heading.
+type TagGroupMeta struct {
+	Name string
+	Tags []string
+}
+
+// TagGroups lists, in display order, the headings documentation nests tags
+// under. Emitted as x-tagGroups; every tag must be in exactly one group.
+func TagGroups() []TagGroupMeta {
+	return []TagGroupMeta{
+		{"Legs", []string{"Legs", "WebRTC"}},
+		{"Rooms", []string{"Rooms"}},
+		{"SIP", []string{"SIP Trunks", "SIP Registrations"}},
+		{"Server", []string{"Instance", "Observability"}},
+		{"Events", []string{"Events", VSIConnectionTag}},
+	}
+}
+
+// TagGroupProblems reports every tag in no group or in several, every group
+// member that is not a tag, and every empty or repeated group. The spec
+// generators refuse to run while it reports anything.
+func TagGroupProblems() []string {
+	return tagGroupProblems(TagGroups(), TagDescriptions())
+}
+
+func tagGroupProblems(groups []TagGroupMeta, descs map[string]string) []string {
+	var out []string
+	known := map[string]bool{VSIConnectionTag: true}
+	for name := range descs {
+		known[name] = true
+	}
+	owner := map[string]string{}
+	seenGroup := map[string]bool{}
+	for _, g := range groups {
+		if seenGroup[g.Name] {
+			out = append(out, fmt.Sprintf("TagGroups() declares group %q twice", g.Name))
+		}
+		seenGroup[g.Name] = true
+		if len(g.Tags) == 0 {
+			out = append(out, fmt.Sprintf("tag group %q has no tags", g.Name))
+		}
+		for _, tag := range g.Tags {
+			if !known[tag] {
+				out = append(out, fmt.Sprintf("tag group %q lists %q, which is not in TagDescriptions()", g.Name, tag))
+			}
+			if prev, dup := owner[tag]; dup {
+				out = append(out, fmt.Sprintf("tag %q is in tag groups %q and %q", tag, prev, g.Name))
+				continue
+			}
+			owner[tag] = g.Name
+		}
+	}
+	for _, tag := range slices.Sorted(maps.Keys(known)) {
+		if _, ok := owner[tag]; !ok {
+			out = append(out, fmt.Sprintf("tag %q is in no group in TagGroups()", tag))
+		}
+	}
+	return out
 }
 
 // SectionMeta names a sub-group of a tag's routes.
