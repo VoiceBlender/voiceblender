@@ -263,13 +263,14 @@ const (
 )
 
 func main() {
-	if problems := api.SectionProblems(); len(problems) > 0 {
+	if problems := append(api.SectionProblems(), api.TagGroupProblems()...); len(problems) > 0 {
 		fmt.Fprintln(os.Stderr, strings.Join(problems, "\n"))
 		os.Exit(1)
 	}
 	doc := newMap()
 	doc.set("asyncapi", asyncAPIVersion)
 	doc.set("info", buildInfo())
+	doc.set("x-tagGroups", buildTagGroups())
 	doc.set("channels", buildChannels())
 	doc.set("operations", buildOperations())
 	doc.set("components", buildComponents())
@@ -307,8 +308,30 @@ func buildInfo() *omap {
 
 const (
 	eventsTag     = "Events"
-	connectionTag = "Connection"
+	connectionTag = api.VSIConnectionTag
 )
+
+// buildTagGroups emits api.TagGroups() as x-tagGroups, keeping only the tags
+// this spec uses.
+func buildTagGroups() *seq {
+	has := map[string]bool{}
+	for _, name := range tagOrder() {
+		has[name] = true
+	}
+	groups := newSeq()
+	for _, g := range api.TagGroups() {
+		members := newSeq()
+		for _, tag := range g.Tags {
+			if has[tag] {
+				members.add(tag)
+			}
+		}
+		if len(members.node.Content) > 0 {
+			groups.add(newMap().set("name", g.Name).set("tags", members))
+		}
+	}
+	return groups
+}
 
 // tagOrder lists every operation tag in display order.
 func tagOrder() []string {

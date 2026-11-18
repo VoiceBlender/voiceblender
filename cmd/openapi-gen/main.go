@@ -918,7 +918,7 @@ func main() {
 	webhookNestedFieldDescs = api.WebhookNestedFieldDescriptions()
 
 	routes := api.RoutesMetadata()
-	if problems := api.SectionProblems(); len(problems) > 0 {
+	if problems := append(api.SectionProblems(), api.TagGroupProblems()...); len(problems) > 0 {
 		fmt.Fprintln(os.Stderr, strings.Join(problems, "\n"))
 		os.Exit(1)
 	}
@@ -993,6 +993,7 @@ func main() {
 
 	// Tags.
 	doc.set("tags", buildTags(pathsNode))
+	doc.set("x-tagGroups", buildTagGroups(collectOperationTags(pathsNode)))
 
 	// Paths.
 	doc.set("paths", pathsNode)
@@ -1075,6 +1076,28 @@ func buildTags(paths *omap) *seq {
 	}
 
 	return tags
+}
+
+// buildTagGroups emits api.TagGroups() as x-tagGroups, keeping only the tags
+// this spec declares.
+func buildTagGroups(declared []string) *seq {
+	has := map[string]bool{}
+	for _, name := range declared {
+		has[name] = true
+	}
+	groups := newSeq()
+	for _, g := range api.TagGroups() {
+		members := newSeq()
+		for _, tag := range g.Tags {
+			if has[tag] {
+				members.add(tag)
+			}
+		}
+		if len(members.node.Content) > 0 {
+			groups.add(newMap().set("name", g.Name).set("tags", members))
+		}
+	}
+	return groups
 }
 
 // collectOperationTags walks the built paths node and returns every tag named

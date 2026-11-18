@@ -374,3 +374,68 @@ func TestSectionsAreDeclared(t *testing.T) {
 		t.Error(p)
 	}
 }
+
+func TestTagGroupsAreDeclared(t *testing.T) {
+	for _, p := range TagGroupProblems() {
+		t.Error(p)
+	}
+}
+
+func TestTagGroupProblemsDetectsMistakes(t *testing.T) {
+	descs := map[string]string{"A": "", "B": "", "C": ""}
+	groups := []TagGroupMeta{
+		{"G1", []string{"A", "B", VSIConnectionTag}},
+		{"G2", []string{"B", "Nope"}},
+		{"G1", nil},
+	}
+	got := strings.Join(tagGroupProblems(groups, descs), "\n")
+	for _, want := range []string{
+		`tag "B" is in tag groups "G1" and "G2"`,
+		`tag group "G2" lists "Nope", which is not in TagDescriptions()`,
+		`TagGroups() declares group "G1" twice`,
+		`tag group "G1" has no tags`,
+		`tag "C" is in no group in TagGroups()`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing problem %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `"A" is in no group`) || strings.Contains(got, `"Connection" is in no group`) {
+		t.Errorf("grouped tag reported as ungrouped:\n%s", got)
+	}
+
+	if p := tagGroupProblems([]TagGroupMeta{{"G", []string{"A", VSIConnectionTag}}}, map[string]string{"A": ""}); len(p) != 0 {
+		t.Errorf("valid groups reported problems: %v", p)
+	}
+}
+
+// TestSpecTagGroupsCoverTags guards the published spec: documentation hides
+// a tag that no x-tagGroups entry lists.
+func TestSpecTagGroupsCoverTags(t *testing.T) {
+	doc := loadSpec(t)
+	groups := mappingValue(doc, "x-tagGroups")
+	if groups == nil || len(groups.Content) == 0 {
+		t.Fatal("openapi.yaml has no x-tagGroups; run go generate ./internal/api/")
+	}
+	inGroup := map[string]int{}
+	for _, g := range groups.Content {
+		if tags := mappingValue(g, "tags"); tags != nil {
+			for _, tag := range tags.Content {
+				inGroup[tag.Value]++
+			}
+		}
+	}
+	declared := map[string]bool{}
+	for _, tag := range mappingValue(doc, "tags").Content {
+		name := mappingValue(tag, "name").Value
+		declared[name] = true
+		if inGroup[name] != 1 {
+			t.Errorf("root tag %q is in %d x-tagGroups entries, want 1", name, inGroup[name])
+		}
+	}
+	for name := range inGroup {
+		if !declared[name] {
+			t.Errorf("x-tagGroups lists %q, which the root tags list does not declare", name)
+		}
+	}
+}

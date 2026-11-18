@@ -521,6 +521,25 @@ tags:
       description: Real-time event stream and command channel (VSI)
     - name: Observability
       description: Metrics and health endpoints
+x-tagGroups:
+    - name: Legs
+      tags:
+        - Legs
+        - WebRTC
+    - name: Rooms
+      tags:
+        - Rooms
+    - name: SIP
+      tags:
+        - SIP Trunks
+        - SIP Registrations
+    - name: Server
+      tags:
+        - Instance
+        - Observability
+    - name: Events
+      tags:
+        - Events
 paths:
     /legs:
         post:
