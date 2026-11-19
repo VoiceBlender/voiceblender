@@ -5204,7 +5204,8 @@ With the OPTIONS health check enabled it publishes `sip.trunk_up` and
   when both would select a trunk, and is the only way to select an `ip_ip`
   trunk created without an `aor`. The trunk attaches its digest credentials and
   a loose-route `Route: <upstream;lr>` header naming its registrar
-  (`sip_register`) or peer (`ip_ip`). Caller-supplied `auth` always wins. The
+  (`sip_register`) or peer (`ip_ip`); the Route is omitted when `to` already
+  targets that upstream's host, port and transport. Caller-supplied `auth` always wins. The
   resulting leg's `leg.ringing` event carries `trunk_id`.
 
   ```bash
@@ -5578,7 +5579,7 @@ Resolution order, most specific first:
 | 2 | `outbound_proxy` on `POST /v1/legs` | That one INVITE. |
 | 3 | `outbound_proxy` on the call's trunk (`sip_register` or `ip_ip`) | That trunk's INVITEs, plus its REGISTER or OPTIONS pings. The INVITEs carry a loose `Route`; the REGISTER and OPTIONS are sent to the hop with no Route (see below). |
 | 4 | `SIP_OUTBOUND_PROXY` | Everything not covered above. |
-| 5 | The call's trunk upstream: `registrar_uri` or `peer_uri` | INVITEs placed through a trunk. An `ip_ip` trunk adds no `Route` when `to` already targets its peer. |
+| 5 | The call's trunk upstream: `registrar_uri` or `peer_uri` | INVITEs placed through a trunk. The trunk adds no `Route` when `to` already targets its registrar or peer. |
 | 6 | The Request-URI host | Everything else. |
 
 `SIP_OUTBOUND_PROXY` deliberately does **not** displace rule 5: setting it

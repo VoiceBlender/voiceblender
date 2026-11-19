@@ -283,17 +283,22 @@ func (r *OutboundRegistration) Credentials() (string, string) {
 	return r.username, r.password
 }
 
-// OutboundRoute always names the registrar as a Route, whatever the recipient:
-// the registrar authenticated this identity and expects to be in the path.
-func (r *OutboundRegistration) OutboundRoute(_ sip.Uri) OutboundRoute {
-	regURI := r.registrarURI
-	return OutboundRoute{
-		RouteURI:     &regURI,
+// OutboundRoute names the registrar as a Route so the call passes through the
+// upstream that authenticated this identity, unless the Request-URI already
+// targets the registrar: a Route naming the hop being contacted is redundant
+// and some peers mishandle it.
+func (r *OutboundRegistration) OutboundRoute(recipient sip.Uri) OutboundRoute {
+	route := OutboundRoute{
 		ProxyURI:     r.outboundProxy,
 		FromHost:     r.aor.Host,
 		AuthUsername: r.username,
 		AuthPassword: r.password,
 	}
+	if !sameSocket(recipient, r.registrarURI) {
+		regURI := r.registrarURI
+		route.RouteURI = &regURI
+	}
+	return route
 }
 
 // Snapshot returns the current TrunkView. Safe to call concurrently.

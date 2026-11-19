@@ -96,19 +96,31 @@ func TestIPIPTrunk_OutboundRoute(t *testing.T) {
 	}
 }
 
-// The registrar authenticated the identity and expects to stay in the path, so
-// its Route is kept even when the Request-URI already targets it.
 func TestOutboundRegistration_OutboundRoute(t *testing.T) {
-	r := newTrunkTo(nil, 5060)
-	route := r.OutboundRoute(mustParseURI(t, "sip:bob@127.0.0.1:5060"))
-	if got := proxyString(route.RouteURI); got != "sip:127.0.0.1:5060" {
-		t.Errorf("RouteURI = %q, want the registrar", got)
+	tests := []struct {
+		name      string
+		recipient string
+		wantRoute string
+	}{
+		{name: "recipient is the registrar", recipient: "sip:bob@127.0.0.1:5060"},
+		{name: "recipient omits the default port", recipient: "sip:bob@127.0.0.1"},
+		{name: "recipient elsewhere", recipient: "sip:bob@pbx.example", wantRoute: "sip:127.0.0.1:5060"},
+		{name: "different port", recipient: "sip:bob@127.0.0.1:5070", wantRoute: "sip:127.0.0.1:5060"},
+		{name: "different transport", recipient: "sip:bob@127.0.0.1:5060;transport=tcp", wantRoute: "sip:127.0.0.1:5060"},
 	}
-	if route.ProxyURI != nil {
-		t.Errorf("ProxyURI = %v, want nil", route.ProxyURI)
-	}
-	if route.FromHost != "127.0.0.1" || route.AuthUsername != "alice" || route.AuthPassword != "secret" {
-		t.Errorf("route = %+v", route)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			route := newTrunkTo(nil, 5060).OutboundRoute(mustParseURI(t, tc.recipient))
+			if got := proxyString(route.RouteURI); got != tc.wantRoute {
+				t.Errorf("RouteURI = %q, want %q", got, tc.wantRoute)
+			}
+			if route.ProxyURI != nil {
+				t.Errorf("ProxyURI = %v, want nil", route.ProxyURI)
+			}
+			if route.FromHost != "127.0.0.1" || route.AuthUsername != "alice" || route.AuthPassword != "secret" {
+				t.Errorf("route = %+v", route)
+			}
+		})
 	}
 }
 
