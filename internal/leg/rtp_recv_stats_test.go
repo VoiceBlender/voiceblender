@@ -1,6 +1,12 @@
 package leg
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pion/rtp"
+
+	"github.com/VoiceBlender/voiceblender/internal/codec"
+)
 
 func checkRecv(t *testing.T, r *rtpRecvStats, received, expected, lost uint32) {
 	t.Helper()
@@ -99,13 +105,10 @@ func TestRTPRecvStatsConfirmedJumpRestarts(t *testing.T) {
 	for seq := uint16(100); seq < 200; seq++ {
 		r.update(1, seq)
 	}
-	if r.update(1, 30_000) {
-		t.Fatal("first packet of a large jump was counted")
-	}
+	r.update(1, 30_000)
+	checkRecv(t, &r, 100, 100, 0)
 	for seq := uint16(30_001); seq < 30_051; seq++ {
-		if !r.update(1, seq) {
-			t.Fatalf("seq %d not counted", seq)
-		}
+		r.update(1, seq)
 	}
 	checkRecv(t, &r, 150, 150, 0)
 }
@@ -120,4 +123,30 @@ func TestRTPRecvStatsLoneStrayIgnored(t *testing.T) {
 		r.update(1, seq)
 	}
 	checkRecv(t, &r, 100, 100, 0)
+}
+
+func TestTrackRTPSeqSkipsNonV2(t *testing.T) {
+	l, s := &SIPLeg{}, &mediaStream{}
+	l.trackRTPSeq(s, &rtp.Header{Version: 0, SSRC: 1, SequenceNumber: 1})
+	if got := s.rtpRecv.received(); got != 0 {
+		t.Fatalf("version 0 packet counted: received = %d", got)
+	}
+	l.trackRTPSeq(s, &rtp.Header{Version: 2, SSRC: 1, SequenceNumber: 1})
+	if got := s.rtpRecv.received(); got != 1 {
+		t.Fatalf("version 2 packet not counted: received = %d", got)
+	}
+}
+
+func TestUpdateRTPJitterResetsOnNewSSRC(t *testing.T) {
+	l, s := &SIPLeg{}, &mediaStream{}
+	lc := &liveCodec{codecType: codec.CodecPCMU}
+	l.updateRTPJitter(s, lc, &rtp.Packet{Header: rtp.Header{SSRC: 1, Timestamp: 0}})
+	l.updateRTPJitter(s, lc, &rtp.Packet{Header: rtp.Header{SSRC: 2, Timestamp: 1 << 30}})
+	if s.rtpJitter > 8000 { // one second at 8 kHz; the old SSRC would add ~6.7e7
+		t.Fatalf("jitter %.0f after SSRC change, want the new sender to start fresh", s.rtpJitter)
+	}
+	l.updateRTPJitter(s, lc, &rtp.Packet{Header: rtp.Header{SSRC: 2, Timestamp: 1<<30 + 160}})
+	if s.rtpJitter > 8000 {
+		t.Fatalf("jitter %.0f on the new SSRC's second packet", s.rtpJitter)
+	}
 }

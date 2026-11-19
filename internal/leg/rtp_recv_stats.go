@@ -22,12 +22,12 @@ type rtpRecvStats struct {
 	priorRcv uint32 // received packets of the earlier runs
 }
 
-// update reports false for the first packet of a large jump, which is only
-// counted once the next packet confirms a sequence restart.
-func (r *rtpRecvStats) update(ssrc uint32, seq uint16) bool {
+// update leaves the first packet of a large jump uncounted; only the next
+// packet confirms a sequence restart.
+func (r *rtpRecvStats) update(ssrc uint32, seq uint16) {
 	if !r.seen || ssrc != r.ssrc {
 		r.restart(ssrc, seq)
-		return true
+		return
 	}
 	udelta := seq - r.maxSeq
 	switch {
@@ -39,15 +39,14 @@ func (r *rtpRecvStats) update(ssrc uint32, seq uint16) bool {
 	case uint32(udelta) <= rtpSeqMod-rtpMaxMisorder:
 		if uint32(seq) != r.badSeq {
 			r.badSeq = (uint32(seq) + 1) & (rtpSeqMod - 1)
-			return false
+			return
 		}
 		r.restart(ssrc, seq)
-		return true
+		return
 	default:
 		// Late or duplicate.
 	}
 	r.runRecv++
-	return true
 }
 
 func (r *rtpRecvStats) restart(ssrc uint32, seq uint16) {

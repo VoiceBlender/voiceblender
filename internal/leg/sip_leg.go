@@ -1371,7 +1371,8 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet)
 	transit := arrival - int64(pkt.Timestamp)
 
 	s.rtpStatsMu.Lock()
-	if s.rtpLastTransit != 0 {
+	// A new sender's timestamps are unrelated to the old one's.
+	if s.rtpHasTransit && pkt.SSRC == s.rtpJitterSSRC {
 		d := transit - s.rtpLastTransit
 		if d < 0 {
 			d = -d
@@ -1379,6 +1380,8 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet)
 		s.rtpJitter += (float64(d) - s.rtpJitter) / 16
 	}
 	s.rtpLastTransit = transit
+	s.rtpJitterSSRC = pkt.SSRC
+	s.rtpHasTransit = true
 	s.rtpStatsMu.Unlock()
 }
 

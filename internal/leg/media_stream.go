@@ -121,6 +121,8 @@ type mediaStream struct {
 	rtpRecv        rtpRecvStats
 	rtpJitter      float64 // running jitter in RTP clock units (RFC 3550 §A.8)
 	rtpLastTransit int64   // last transit time in RTP clock units
+	rtpJitterSSRC  uint32  // SSRC rtpLastTransit belongs to
+	rtpHasTransit  bool
 
 	// roomID is the room this stream's audio is mixed into, which need not be
 	// the leg's own room. Empty means detached.
