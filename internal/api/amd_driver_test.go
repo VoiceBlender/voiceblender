@@ -556,3 +556,54 @@ func TestAMDDriver_VerdictThroughRoomChainDoesNotDeadlock(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestAMDDriver_RoomObserverDetachedOnce clears a room-observing driver's feed
+// from two goroutines at once, as a verdict and the leg's teardown can: the
+// observer is detached exactly once and only one caller owns the clear.
+func TestAMDDriver_RoomObserverDetachedOnce(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		var mu sync.Mutex
+		detached := 0
+		done := make(chan struct{}, 2)
+		d := &amdDriver{l: &amdFakeLeg{}, analyzer: amd.New(amd.DefaultParams())}
+		d.mu.Lock()
+		d.detachObserver = func() {
+			mu.Lock()
+			detached++
+			mu.Unlock()
+			done <- struct{}{}
+		}
+		d.mu.Unlock()
+
+		var wg sync.WaitGroup
+		var owned [2]bool
+		for g := range owned {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if d.ownsTap() {
+					owned[g] = d.clearTap()
+				}
+			}()
+		}
+		wg.Wait()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("observer never detached")
+		}
+		select {
+		case <-done:
+			t.Fatal("observer detached twice")
+		case <-time.After(10 * time.Millisecond):
+		}
+		if owned[0] == owned[1] {
+			t.Fatalf("owned = %v, want exactly one caller to own the clear", owned)
+		}
+		mu.Lock()
+		if detached != 1 {
+			t.Fatalf("detached %d times, want 1", detached)
+		}
+		mu.Unlock()
+	}
+}
