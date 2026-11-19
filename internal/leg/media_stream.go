@@ -118,10 +118,7 @@ type mediaStream struct {
 
 	// Inbound RTP stream statistics for MOS calculation.
 	rtpStatsMu     sync.Mutex
-	rtpReceived    uint32
-	rtpFirstSeq    uint16
-	rtpLastSeq     uint16
-	rtpHasFirst    bool
+	rtpRecv        rtpRecvStats
 	rtpJitter      float64 // running jitter in RTP clock units (RFC 3550 §A.8)
 	rtpLastTransit int64   // last transit time in RTP clock units
 
