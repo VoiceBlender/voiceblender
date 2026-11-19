@@ -1926,7 +1926,8 @@ func (d *amdDriver) clearTap() bool {
 	if d.tap == nil {
 		// Observing the room's chain; there is no leg tap to claim.
 		if d.detachObserver != nil {
-			d.detachObserver()
+			// Off this goroutine: a verdict is reached inside the room reader's observer call, which holds its lock.
+			go d.detachObserver()
 			d.detachObserver = nil
 			return true
 		}
