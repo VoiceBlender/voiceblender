@@ -1223,7 +1223,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 
 		// Track sequence number on ALL valid RTP packets (including DTMF,
 		// comfort noise, etc.) since they share the same sequence number space.
-		l.trackRTPSeq(s, pkt.SequenceNumber)
+		l.trackRTPSeq(s, &pkt.Header)
 
 		// The live configuration is re-read per packet so a mid-call
 		// renegotiation takes effect on the very next packet, and so the PT
@@ -1351,18 +1351,14 @@ func (l *SIPLeg) deliverInbound(s *mediaStream, seq uint16, samples []int16) {
 	}
 }
 
-// trackRTPSeq updates sequence number and packet count for ALL received RTP
-// packets (audio, DTMF, comfort noise) since they share one sequence space.
-func (l *SIPLeg) trackRTPSeq(s *mediaStream, seq uint16) {
-	s.rtpStatsMu.Lock()
-	s.rtpReceived++
-	if !s.rtpHasFirst {
-		s.rtpFirstSeq = seq
-		s.rtpLastSeq = seq
-		s.rtpHasFirst = true
-	} else {
-		s.rtpLastSeq = seq
+// trackRTPSeq counts every RTP packet (audio, DTMF, CN): they share one
+// sequence space. STUN parses as version 0 and is skipped.
+func (l *SIPLeg) trackRTPSeq(s *mediaStream, h *rtp.Header) {
+	if h.Version != 2 {
+		return
 	}
+	s.rtpStatsMu.Lock()
+	s.rtpRecv.update(h.SSRC, h.SequenceNumber)
 	s.rtpStatsMu.Unlock()
 }
 
@@ -1375,7 +1371,8 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet)
 	transit := arrival - int64(pkt.Timestamp)
 
 	s.rtpStatsMu.Lock()
-	if s.rtpLastTransit != 0 {
+	// A new sender's timestamps are unrelated to the old one's.
+	if s.rtpHasTransit && pkt.SSRC == s.rtpJitterSSRC {
 		d := transit - s.rtpLastTransit
 		if d < 0 {
 			d = -d
@@ -1383,6 +1380,8 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet)
 		s.rtpJitter += (float64(d) - s.rtpJitter) / 16
 	}
 	s.rtpLastTransit = transit
+	s.rtpJitterSSRC = pkt.SSRC
+	s.rtpHasTransit = true
 	s.rtpStatsMu.Unlock()
 }
 
@@ -1394,14 +1393,13 @@ func (l *SIPLeg) RTPStats() RTPStats {
 	}
 
 	l.prim.rtpStatsMu.Lock()
-	received := l.prim.rtpReceived
-	firstSeq := l.prim.rtpFirstSeq
-	lastSeq := l.prim.rtpLastSeq
+	received := l.prim.rtpRecv.received()
+	expected := l.prim.rtpRecv.expected()
+	lost := l.prim.rtpRecv.lost()
 	jitter := l.prim.rtpJitter
-	hasFirst := l.prim.rtpHasFirst
 	l.prim.rtpStatsMu.Unlock()
 
-	if !hasFirst || received < 2 {
+	if received < 2 {
 		return RTPStats{}
 	}
 	var outbound *OutboundRTPStats
@@ -1419,11 +1417,6 @@ func (l *SIPLeg) RTPStats() RTPStats {
 		}
 	}
 
-	expected := uint32(lastSeq-firstSeq) + 1
-	var lost uint32
-	if received < expected {
-		lost = expected - received
-	}
 	lossRate := float64(lost) / float64(expected)
 	jitterMs := jitter / float64(lc.codecType.ClockRate()) * 1000
 
