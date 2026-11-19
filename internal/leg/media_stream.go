@@ -118,11 +118,11 @@ type mediaStream struct {
 
 	// Inbound RTP stream statistics for MOS calculation.
 	rtpStatsMu     sync.Mutex
-	rtpRecv        rtpRecvStats
+	rtpRecv        sipmod.RecvStats
 	rtpJitter      float64 // running jitter in RTP clock units (RFC 3550 §A.8)
 	rtpLastTransit int64   // last transit time in RTP clock units
-	rtpJitterSSRC  uint32  // SSRC rtpLastTransit belongs to
-	rtpHasTransit  bool
+	rtpJitterRun   uint32  // rtpRecv run rtpLastTransit belongs to; 0 for none
+	rtpUncounted   bool    // the last packet was an unconfirmed sequence jump
 
 	// roomID is the room this stream's audio is mixed into, which need not be
 	// the leg's own room. Empty means detached.

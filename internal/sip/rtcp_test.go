@@ -74,6 +74,46 @@ func TestRTCPJitter_IgnoresRepeatedTimestamps(t *testing.T) {
 	}
 }
 
+func TestRTCPReceptionReport_NewSSRCStartsAfresh(t *testing.T) {
+	r := &rtcpState{clockRate: 8000}
+	now := time.Now()
+	for i := 0; i < 20; i++ {
+		if i != 5 {
+			r.onReceive(recvHeader(uint16(100+i), uint32(i)*160), now.Add(time.Duration(i)*20*time.Millisecond))
+		}
+	}
+	if _, ok := r.receptionReport(now); !ok {
+		t.Fatal("no reception report")
+	}
+	for i := 20; i < 30; i++ {
+		h := &rtp.Header{SSRC: 0xdef, SequenceNumber: uint16(5000 + i), Timestamp: 1<<30 + uint32(i)*160}
+		r.onReceive(h, now.Add(time.Duration(i)*20*time.Millisecond))
+	}
+	rr, ok := r.receptionReport(now)
+	if !ok {
+		t.Fatal("no reception report after the SSRC change")
+	}
+	if rr.SSRC != 0xdef || rr.TotalLost != 0 || rr.FractionLost != 0 || rr.LastSequenceNumber != 5029 {
+		t.Errorf("ssrc %x lost %d fraction %d max %d, want def 0 0 5029", rr.SSRC, rr.TotalLost, rr.FractionLost, rr.LastSequenceNumber)
+	}
+	if rr.Jitter > 1 {
+		t.Errorf("jitter %d carried across the SSRC change", rr.Jitter)
+	}
+}
+
+func TestRTCPJitter_IgnoresStray(t *testing.T) {
+	r := &rtcpState{clockRate: 8000}
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		r.onReceive(recvHeader(uint16(i), uint32(i)*160), now.Add(time.Duration(i)*20*time.Millisecond))
+	}
+	r.onReceive(recvHeader(30_000, 1<<30), now.Add(200*time.Millisecond))
+	r.onReceive(recvHeader(10, 10*160), now.Add(200*time.Millisecond))
+	if r.src.jitter > 1 {
+		t.Errorf("jitter = %.1f after a stray packet", r.src.jitter)
+	}
+}
+
 func TestRTCPReport_RTTFromEchoedSR(t *testing.T) {
 	r := &rtcpState{clockRate: 8000}
 	r.onSend(&rtp.Header{SSRC: 7, Timestamp: 1000}, 160, time.Now())
