@@ -509,15 +509,16 @@ func TestTrunk_SIPRegister_Unregister(t *testing.T) {
 }
 
 // originateOverRegisteredTrunk brings up a sip_register trunk with AOR
-// sip:alice@vb.test, originates one outbound leg with the given `from`, and
-// returns the INVITE the fake registrar received.
+// sip:alice@vb.test, originates one outbound leg with the given `from` to `to`
+// (the registrar itself when empty), and returns the INVITE the fake registrar
+// received along with the registrar's port.
 //
 // The AOR host "vb.test" is deliberately not the engine's public host: the
 // harness builds its engine from a literal EngineConfig with BindIP
 // "127.0.0.1" and no PublicHost (call_test.go), so publicHost resolves to
 // "127.0.0.1". Any assertion below that finds "vb.test" therefore proves the
 // host came from the trunk and not from the engine.
-func originateOverRegisteredTrunk(t *testing.T, name, from string) *sip.Request {
+func originateOverRegisteredTrunk(t *testing.T, name, from, to string) (*sip.Request, int) {
 	t.Helper()
 	inst := newTestInstance(t, name)
 	reg := newRawSIPRegistrar(t, rawRegistrarOpts{grantExpires: 600})
@@ -539,11 +540,14 @@ func originateOverRegisteredTrunk(t *testing.T, name, from string) *sip.Request 
 	id, _ := created["id"].(string)
 	waitForTrunkStatus(t, inst.baseURL(), id, "active", 3*time.Second)
 
+	if to == "" {
+		to = fmt.Sprintf("sip:bob@127.0.0.1:%d", reg.port)
+	}
 	// Originating with a `from` that matches the trunk should auto-attach the
 	// trunk's auth, Route header, and From identity.
 	createLegResp := httpPost(t, inst.baseURL()+"/v1/legs", map[string]interface{}{
 		"type":   "sip",
-		"to":     fmt.Sprintf("sip:bob@127.0.0.1:%d", reg.port),
+		"to":     to,
 		"from":   from,
 		"codecs": []string{"PCMU"},
 	})
@@ -569,7 +573,7 @@ func originateOverRegisteredTrunk(t *testing.T, name, from string) *sip.Request 
 	if len(reg.receivedInvites) == 0 {
 		t.Fatal("fake registrar did not receive INVITE — trunk wiring not applied")
 	}
-	return reg.receivedInvites[0]
+	return reg.receivedInvites[0], reg.port
 }
 
 // assertInviteFromIdentity checks the From and P-Asserted-Identity of a
@@ -598,12 +602,24 @@ func assertInviteFromIdentity(t *testing.T, inv *sip.Request, wantUser, wantHost
 	}
 }
 
+// TestTrunk_SIPRegister_OutboundCallUsesTrunk dials a host that is not
+// listening: the INVITE can only reach the registrar through the trunk's
+// loose Route.
 func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
-	inv := originateOverRegisteredTrunk(t, "trunk-out", "alice")
-	if route := inv.GetHeader("Route"); route == nil {
-		t.Error("INVITE missing Route header (trunk routing not wired)")
-	}
+	to := fmt.Sprintf("sip:bob@127.0.0.1:%d", blackholePort(t))
+	inv, regPort := originateOverRegisteredTrunk(t, "trunk-out", "alice", to)
+	assertLooseRoute(t, inv, "127.0.0.1", regPort, to)
 	// A bare `from` carries no host, so the trunk's AOR realm supplies one.
+	assertInviteFromIdentity(t, inv, "alice", "vb.test")
+}
+
+// TestTrunk_SIPRegister_OutboundCallToRegistrarHasNoRoute pins that a call
+// whose Request-URI already targets the registrar carries no redundant Route.
+func TestTrunk_SIPRegister_OutboundCallToRegistrarHasNoRoute(t *testing.T) {
+	inv, _ := originateOverRegisteredTrunk(t, "trunk-out-direct", "alice", "")
+	if inv.GetHeader("Route") != nil {
+		t.Errorf("INVITE to the registrar itself carries a Route:\n%s", inv.String())
+	}
 	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
@@ -612,10 +628,7 @@ func TestTrunk_SIPRegister_OutboundCallUsesTrunk(t *testing.T) {
 // the peer received From: <sip:sip:alice@vb.test@vb.test> — two '@' and an
 // embedded scheme.
 func TestTrunk_SIPRegister_OutboundCallFromFullURI(t *testing.T) {
-	inv := originateOverRegisteredTrunk(t, "trunk-out-uri", "sip:alice@vb.test")
-	if route := inv.GetHeader("Route"); route == nil {
-		t.Error("INVITE missing Route header (full-URI `from` broke trunk matching)")
-	}
+	inv, _ := originateOverRegisteredTrunk(t, "trunk-out-uri", "sip:alice@vb.test", "")
 	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
@@ -627,10 +640,7 @@ func TestTrunk_SIPRegister_OutboundCallFromFullURI(t *testing.T) {
 // The user-part is checked unchanged in the same assertion — SIP user-parts are
 // case-sensitive and must survive verbatim.
 func TestTrunk_SIPRegister_OutboundCallFromHostNormalized(t *testing.T) {
-	inv := originateOverRegisteredTrunk(t, "trunk-out-case", "sip:alice@VB.TEST")
-	if route := inv.GetHeader("Route"); route == nil {
-		t.Error("INVITE missing Route header (case-differing host broke trunk matching)")
-	}
+	inv, _ := originateOverRegisteredTrunk(t, "trunk-out-case", "sip:alice@VB.TEST", "")
 	assertInviteFromIdentity(t, inv, "alice", "vb.test")
 }
 
