@@ -497,3 +497,62 @@ func TestAMDDriver_VerdictThroughFilterChainDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("result = %s, want human", got)
 	}
 }
+
+// TestAMDDriver_VerdictThroughRoomChainDoesNotDeadlock feeds the driver the
+// way a leg in a room does: as an observer of the room's ingress chain, whose
+// Read holds its lock while the driver reaches a verdict and detaches itself.
+func TestAMDDriver_VerdictThroughRoomChainDoesNotDeadlock(t *testing.T) {
+	s := newTestServer(t)
+	rec := recordAMDEvents(t, s)
+	params := amd.DefaultParams()
+	params.GreetingDuration = 1500 * time.Millisecond
+	params.AfterGreetingSilence = 300 * time.Millisecond
+
+	src, feed := io.Pipe()
+	rd, err := audiofilter.Build(src, 16000, 16000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &amdDriver{s: s, l: &amdFakeLeg{}, analyzer: amd.New(params)}
+	rd.SetObserver(observerAMD, d)
+	d.detachObserver = func() { rd.SetObserver(observerAMD, nil) }
+
+	go func() {
+		buf := make([]byte, 640)
+		for {
+			if _, err := rd.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		for i := 0; i < 15; i++ {
+			_, _ = feed.Write(amdSpeechFrame())
+		}
+		for i := 0; i < 100 && len(rd.Observers()) > 0; i++ {
+			_, _ = feed.Write(amdSilentFrame())
+		}
+	}()
+	select {
+	case <-fed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chain Read blocked: the verdict deadlocked the room's read loop")
+	}
+	_ = feed.Close()
+
+	if got := rec.count(events.AMDResult); got != 1 {
+		t.Fatalf("results=%d, want 1", got)
+	}
+	if got := rec.resultData()[0].Result; got != string(amd.ResultHuman) {
+		t.Fatalf("result = %s, want human", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(rd.Observers()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("observer still attached a second after the verdict")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
