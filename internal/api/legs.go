@@ -1754,7 +1754,7 @@ type amdDriver struct {
 	// It is nil when the leg is in a room: the driver observes the room's
 	// filter chain instead, and detachObserver removes it.
 	tap            io.Writer
-	detachObserver func()
+	detachObserver func() // guarded by mu
 
 	mu      sync.Mutex
 	beeping bool // classified as machine; now waiting for the voicemail beep
@@ -1925,13 +1925,16 @@ func (d *amdDriver) publishBeep(beep amd.BeepResult) {
 func (d *amdDriver) clearTap() bool {
 	if d.tap == nil {
 		// Observing the room's chain; there is no leg tap to claim.
-		if d.detachObserver != nil {
-			// Off this goroutine: a verdict is reached inside the room reader's observer call, which holds its lock.
-			go d.detachObserver()
-			d.detachObserver = nil
-			return true
+		d.mu.Lock()
+		detach := d.detachObserver
+		d.detachObserver = nil
+		d.mu.Unlock()
+		if detach == nil {
+			return false
 		}
-		return false
+		// Off this goroutine: a verdict is reached inside the room reader's observer call, which holds its lock.
+		go detach()
+		return true
 	}
 	cleared := d.l.ClearAMDTapIf(d.tap)
 	if cleared {
@@ -1949,6 +1952,8 @@ func (d *amdDriver) clearTap() bool {
 // called while holding d.mu.
 func (d *amdDriver) ownsTap() bool {
 	if d.tap == nil {
+		d.mu.Lock()
+		defer d.mu.Unlock()
 		return d.detachObserver != nil
 	}
 	return d.l.OwnsAMDTap(d.tap)
@@ -1986,7 +1991,9 @@ func (s *Server) prepareAMD(l *leg.SIPLeg, req *AMDParams) (func(), error) {
 			// an energy FSM and a beep detector, while an effect like robotic
 			// would wreck the signal they score.
 			tap, detach := s.amdFeed(l, d)
+			d.mu.Lock()
 			d.detachObserver = detach
+			d.mu.Unlock()
 			if tap != nil {
 				d.tap = tap
 				l.SetAMDTap(tap)
