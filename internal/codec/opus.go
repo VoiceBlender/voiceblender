@@ -149,15 +149,9 @@ func (d *OpusDecoder) Decode(data []byte) (out []int16, err error) {
 		}
 	}()
 
-	// 1-byte DTX silence indicator (RFC 6716 §3.2.1): emit silence directly
-	// since the underlying decoder can't handle 0-byte CELT frames.
+	// DTX gives digital silence rather than the decoder's concealment fade.
 	if len(data) == 1 && (data[0]&0x03) == 0 {
-		toc := data[0]
-		// Extract frame size from TOC config (bits 7-3).
-		config := toc >> 3
-		frameSizeMs := opusFrameSizeMs(config)
-		samples := 48 * frameSizeMs // 48kHz → 48 samples per ms
-		return make([]int16, samples), nil
+		return make([]int16, gopus.ParseTOC(data[0]).FrameSize), nil
 	}
 
 	n, err := d.dec.DecodeInt16(data, d.pcmBuf)
@@ -167,33 +161,6 @@ func (d *OpusDecoder) Decode(data []byte) (out []int16, err error) {
 	out = make([]int16, n)
 	copy(out, d.pcmBuf[:n])
 	return out, nil
-}
-
-// opusFrameSizeMs returns the frame duration in ms for an Opus TOC config value.
-// See RFC 6716 Table 2. The 2.5ms CELT sizes are rounded up to 3ms (rare in VoIP).
-func opusFrameSizeMs(config uint8) int {
-	switch {
-	case config <= 3: // SILK NB
-		return []int{10, 20, 40, 60}[config]
-	case config <= 7: // SILK MB
-		return []int{10, 20, 40, 60}[config-4]
-	case config <= 11: // SILK WB
-		return []int{10, 20, 40, 60}[config-8]
-	case config <= 13: // Hybrid SWB
-		return []int{10, 20}[config-12]
-	case config <= 15: // Hybrid FB
-		return []int{10, 20}[config-14]
-	case config <= 19: // CELT NB
-		return []int{3, 5, 10, 20}[config-16]
-	case config <= 23: // CELT WB
-		return []int{3, 5, 10, 20}[config-20]
-	case config <= 27: // CELT SWB
-		return []int{3, 5, 10, 20}[config-24]
-	case config <= 31: // CELT FB
-		return []int{3, 5, 10, 20}[config-28]
-	default:
-		return 20
-	}
 }
 
 // opusGapSamples is the 20 ms a gap decoder fills, at 48 kHz.
