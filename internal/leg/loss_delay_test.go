@@ -66,7 +66,7 @@ func TestReadLoopLossAndPlayoutDelay(t *testing.T) {
 				deadline := time.Now().Add(2 * time.Second)
 				for {
 					l.prim.rtpStatsMu.Lock()
-					got := l.prim.rtpRecv.received()
+					got := l.prim.rtpRecv.Received()
 					l.prim.rtpStatsMu.Unlock()
 					if got >= sent {
 						return

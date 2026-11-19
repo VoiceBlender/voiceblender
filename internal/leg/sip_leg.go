@@ -1270,7 +1270,7 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 
 		// Update jitter on audio packets only (DTMF retransmits share
 		// timestamps, which would spike the jitter estimate).
-		l.updateRTPJitter(s, lc, pkt)
+		l.updateRTPJitter(s, lc, pkt, time.Now())
 
 		if lc.decoder != gapDec {
 			gapDec, gaps = lc.decoder, nil
@@ -1352,27 +1352,35 @@ func (l *SIPLeg) deliverInbound(s *mediaStream, seq uint16, samples []int16) {
 }
 
 // trackRTPSeq counts every RTP packet (audio, DTMF, CN): they share one
-// sequence space. STUN parses as version 0 and is skipped.
+// sequence space.
 func (l *SIPLeg) trackRTPSeq(s *mediaStream, h *rtp.Header) {
-	if h.Version != 2 {
-		return
-	}
 	s.rtpStatsMu.Lock()
-	s.rtpRecv.update(h.SSRC, h.SequenceNumber)
+	s.rtpUncounted = !s.rtpRecv.Update(h.SSRC, h.SequenceNumber)
 	s.rtpStatsMu.Unlock()
+}
+
+// rtpArrival converts t to RTP clock units. Scaling seconds and nanoseconds
+// separately keeps the product inside int64.
+func rtpArrival(t time.Time, clockRate int64) int64 {
+	ns := t.UnixNano()
+	return ns/1e9*clockRate + ns%1e9*clockRate/1e9
 }
 
 // updateRTPJitter updates inter-arrival jitter (RFC 3550 §A.8) on audio
 // packets only. DTMF end-of-event retransmits share the same RTP timestamp,
 // which would spike the jitter estimate if included.
-func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet) {
-	clockRate := int64(lc.codecType.ClockRate())
-	arrival := time.Now().UnixNano() * clockRate / 1e9
-	transit := arrival - int64(pkt.Timestamp)
+func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet, now time.Time) {
+	transit := rtpArrival(now, int64(lc.codecType.ClockRate())) - int64(pkt.Timestamp)
 
 	s.rtpStatsMu.Lock()
-	// A new sender's timestamps are unrelated to the old one's.
-	if s.rtpHasTransit && pkt.SSRC == s.rtpJitterSSRC {
+	defer s.rtpStatsMu.Unlock()
+	// A stray's timestamp is as unreliable as its sequence number.
+	if s.rtpUncounted {
+		return
+	}
+	// A new SSRC or sequence restart brings unrelated timestamps.
+	run := s.rtpRecv.Run()
+	if run != 0 && run == s.rtpJitterRun {
 		d := transit - s.rtpLastTransit
 		if d < 0 {
 			d = -d
@@ -1380,9 +1388,7 @@ func (l *SIPLeg) updateRTPJitter(s *mediaStream, lc *liveCodec, pkt *rtp.Packet)
 		s.rtpJitter += (float64(d) - s.rtpJitter) / 16
 	}
 	s.rtpLastTransit = transit
-	s.rtpJitterSSRC = pkt.SSRC
-	s.rtpHasTransit = true
-	s.rtpStatsMu.Unlock()
+	s.rtpJitterRun = run
 }
 
 // RTPStats returns inbound stream quality metrics and a MOS estimate.
@@ -1393,9 +1399,9 @@ func (l *SIPLeg) RTPStats() RTPStats {
 	}
 
 	l.prim.rtpStatsMu.Lock()
-	received := l.prim.rtpRecv.received()
-	expected := l.prim.rtpRecv.expected()
-	lost := l.prim.rtpRecv.lost()
+	received := l.prim.rtpRecv.Received()
+	expected := l.prim.rtpRecv.Expected()
+	lost := l.prim.rtpRecv.Lost()
 	jitter := l.prim.rtpJitter
 	l.prim.rtpStatsMu.Unlock()
 

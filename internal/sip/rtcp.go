@@ -49,16 +49,10 @@ type rtcpState struct {
 	peerReported bool
 }
 
-// recvState tracks the peer's RTP stream; a new SSRC starts it afresh.
+// recvState tracks the peer's RTP stream; reports describe its current run.
 type recvState struct {
-	ssrc        uint32
-	seen        bool
-	baseSeq     uint32
-	maxSeq      uint16
-	cycles      uint32
-	received    uint32
-	expPrior    uint32
-	recvPrior   uint32
+	stats       RecvStats
+	jitterRun   uint32
 	jitter      float64
 	lastTS      uint32
 	lastArrival time.Time
@@ -84,15 +78,12 @@ func (r *rtcpState) onReceive(h *rtp.Header, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	src := &r.src
-	if !src.seen || h.SSRC != src.ssrc {
-		*src = recvState{ssrc: h.SSRC, seen: true, baseSeq: uint32(h.SequenceNumber), maxSeq: h.SequenceNumber}
-	} else if d := h.SequenceNumber - src.maxSeq; d != 0 && d < 0x8000 {
-		if h.SequenceNumber < src.maxSeq {
-			src.cycles += 1 << 16
-		}
-		src.maxSeq = h.SequenceNumber
+	if !src.stats.Update(h.SSRC, h.SequenceNumber) {
+		return
 	}
-	src.received++
+	if run := src.stats.Run(); run != src.jitterRun {
+		src.jitterRun, src.jitter, src.lastArrival = run, 0, time.Time{}
+	}
 
 	if r.clockRate == 0 || (!src.lastArrival.IsZero() && h.Timestamp == src.lastTS) {
 		return
@@ -108,19 +99,19 @@ func (r *rtcpState) onReceive(h *rtp.Header, now time.Time) {
 // arrived since the previous report.
 func (r *rtcpState) receptionReport(now time.Time) (rtcp.ReceptionReport, bool) {
 	src := &r.src
-	if !src.seen || src.received == src.recvPrior {
+	st := &src.stats
+	if st.Run() == 0 {
 		return rtcp.ReceptionReport{}, false
 	}
-	extMax := src.cycles + uint32(src.maxSeq)
-	expected := extMax - src.baseSeq + 1
-	lost := max(0, min(int64(expected)-int64(src.received), 0x7fffff))
-
-	expInt := int64(expected - src.expPrior)
-	lostInt := expInt - int64(src.received-src.recvPrior)
-	src.expPrior, src.recvPrior = expected, src.received
+	expInt, rcvInt := st.Interval()
+	if rcvInt == 0 {
+		return rtcp.ReceptionReport{}, false
+	}
+	lost := max(0, min(int64(st.RunExpected())-int64(st.RunReceived()), 0x7fffff))
+	lostInt := int64(expInt) - int64(rcvInt)
 	var fraction uint8
 	if expInt > 0 && lostInt > 0 {
-		fraction = uint8(min(lostInt<<8/expInt, 255))
+		fraction = uint8(min(lostInt<<8/int64(expInt), 255))
 	}
 
 	var dlsr uint32
@@ -128,10 +119,10 @@ func (r *rtcpState) receptionReport(now time.Time) (rtcp.ReceptionReport, bool) 
 		dlsr = uint32(now.Sub(r.lastSRAt).Seconds() * 65536)
 	}
 	return rtcp.ReceptionReport{
-		SSRC:               src.ssrc,
+		SSRC:               st.SSRC(),
 		FractionLost:       fraction,
 		TotalLost:          uint32(lost),
-		LastSequenceNumber: extMax,
+		LastSequenceNumber: st.ExtendedMax(),
 		Jitter:             uint32(src.jitter),
 		LastSenderReport:   r.lastSR,
 		Delay:              dlsr,

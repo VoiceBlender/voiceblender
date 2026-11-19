@@ -104,6 +104,25 @@ func TestReadRTPInto_RejectsMuxedRTCP(t *testing.T) {
 	}
 }
 
+func TestReadRTPInto_RejectsSTUN(t *testing.T) {
+	sess, peer := newLoopbackPair(t)
+	if err := sess.SetRemote("127.0.0.1", 9); err != nil {
+		t.Fatal(err)
+	}
+	// A 20-byte STUN Binding Request: long enough to parse as an RTP header.
+	stun := []byte{0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	if _, err := peer.WriteToUDP(stun, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sess.LocalPort()}); err != nil {
+		t.Fatal(err)
+	}
+	var pkt rtp.Packet
+	if err := sess.ReadRTPInto(&pkt); !errors.Is(err, ErrNotRTP) || errors.Is(err, ErrSRTPAuth) {
+		t.Fatalf("got %v, want ErrNotRTP", err)
+	}
+	if got := sess.RemoteAddr(); got.Port != 9 {
+		t.Fatalf("STUN latched the remote address: %v", got)
+	}
+}
+
 func TestWriteRTPBuf_RoundTripAndReuse(t *testing.T) {
 	sess, peer := newLoopbackPair(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)

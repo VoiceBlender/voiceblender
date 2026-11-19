@@ -173,6 +173,10 @@ func (s *RTPSession) readInto(pkt *rtp.Packet, buf []byte) error {
 			return s.readRTCP(buf[:n])
 		}
 	}
+	// STUN (version bits 0) and other non-RTP traffic sharing the port.
+	if n > 0 && buf[0]>>6 != 2 {
+		return fmt.Errorf("%w: version %d", ErrNotRTP, buf[0]>>6)
+	}
 
 	if rx := s.rx.Load(); rx != nil {
 		plain, err := rx.decrypt(buf[:n])
