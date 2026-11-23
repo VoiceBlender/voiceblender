@@ -11,7 +11,7 @@ require (
 	github.com/VoiceBlender/goamr-nb v1.1.0
 	github.com/VoiceBlender/goamr-wb v1.4.0
 	github.com/VoiceBlender/gtcrn-go v0.1.0
-	github.com/VoiceBlender/rnnoise-go v0.3.0
+	github.com/VoiceBlender/rnnoise-go v0.4.0
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
@@ -41,7 +41,7 @@ require (
 	github.com/thesyncim/gopus v0.1.1
 	github.com/zaf/g711 v1.4.0
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	google.golang.org/api v0.247.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
